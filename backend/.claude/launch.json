@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "stocker-admin",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": ["-c", "cd /home/ddiiv/Desktop/repositories/frontend/isumayorista-admin && npm run dev"],
+      "port": 5173
+    }
+  ]
+}
