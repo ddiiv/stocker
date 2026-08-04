@@ -47,6 +47,7 @@ export default function LoginPage() {
           </div>
           <h1 className="mt-4 font-display text-xl font-semibold text-paper-50">Stocker</h1>
           <p className="mt-1 text-sm text-ink-400">Iniciá sesión en tu cuenta</p>
+          
         </div>
 
         <div className="mb-3 flex rounded-md border border-white/10 bg-ink-900 p-1">
