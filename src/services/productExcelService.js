@@ -166,11 +166,9 @@ async function importProductsXlsx(businessId, buffer) {
       if (!hasStock && !v1v && !v2v && !toStr(row.skuVariante)) continue; // fila solo con datos del producto
 
       try {
-        let variant = await ProductVariant.findOne({ where: { sku: skuVariante } });
-        if (variant && variant.productId !== product.id) {
-          summary.errors.push(`Fila ${row._row}: el SKU de variante "${skuVariante}" ya pertenece a otro producto.`);
-          continue;
-        }
+        // Buscar variante SÓLO dentro del producto actual — dos productos distintos
+        // (incluso de otros negocios) pueden tener variantes con el mismo SKU.
+        let variant = await ProductVariant.findOne({ where: { productId: product.id, sku: skuVariante } });
         const variantFields = {
           variante1Nombre: v1n || null, variante1Valor: v1v || null,
           variante2Nombre: v2n || null, variante2Valor: v2v || null,

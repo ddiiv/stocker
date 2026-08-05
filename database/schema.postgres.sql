@@ -161,7 +161,7 @@ CREATE TABLE IF NOT EXISTS products (
     "fechaActualizacion" TIMESTAMP DEFAULT NOW(),
     "createdAt"          TIMESTAMP DEFAULT NOW(),
     "updatedAt"          TIMESTAMP DEFAULT NOW(),
-    CONSTRAINT uq_products_sku UNIQUE (sku)
+    CONSTRAINT uq_products_biz_sku UNIQUE ("businessId", sku)
 );
 CREATE INDEX IF NOT EXISTS idx_products_biz   ON products ("businessId");
 CREATE INDEX IF NOT EXISTS idx_products_agrup ON products ("skuAgrupador");
@@ -180,7 +180,7 @@ CREATE TABLE IF NOT EXISTS product_variants (
     activo           BOOLEAN DEFAULT TRUE,
     "createdAt"        TIMESTAMP DEFAULT NOW(),
     "updatedAt"        TIMESTAMP DEFAULT NOW(),
-    CONSTRAINT uq_variants_sku UNIQUE (sku)
+    CONSTRAINT uq_variants_product_sku UNIQUE ("productId", sku)
 );
 CREATE INDEX IF NOT EXISTS idx_variants_product ON product_variants ("productId");
 

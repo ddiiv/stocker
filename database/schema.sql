@@ -246,7 +246,7 @@ BEGIN
         fechaActualizacion DATETIME2 DEFAULT SYSDATETIME(),
         createdAt          DATETIME2 DEFAULT SYSDATETIME(),
         updatedAt          DATETIME2 DEFAULT SYSDATETIME(),
-        CONSTRAINT uq_products_sku UNIQUE (sku),
+        CONSTRAINT uq_products_biz_sku UNIQUE (businessId, sku),
         CONSTRAINT fk_products_business FOREIGN KEY (businessId)
             REFERENCES businesses(id) ON DELETE CASCADE
     );
@@ -272,7 +272,7 @@ BEGIN
         activo           BIT DEFAULT 1,
         createdAt        DATETIME2 DEFAULT SYSDATETIME(),
         updatedAt        DATETIME2 DEFAULT SYSDATETIME(),
-        CONSTRAINT uq_variants_sku UNIQUE (sku),
+        CONSTRAINT uq_variants_product_sku UNIQUE (productId, sku),
         CONSTRAINT fk_variants_product FOREIGN KEY (productId)
             REFERENCES products(id) ON DELETE CASCADE
     );
