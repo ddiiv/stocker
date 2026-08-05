@@ -159,32 +159,37 @@ const forgotPassword = async (req, res, next) => {
       code, attemptsLeft: MAX_ATTEMPTS, expiresAt: expires,
     });
 
-    // Enviar el mail — lo esperamos (await) para reportar al usuario si falló
-    // el envío (así sabe que revise config de mail, no que espere en vano).
-    // Si el envío tarda >6s cortamos y respondemos igual — el mail sigue en background.
-    let mailError = null;
-    try {
-      await Promise.race([
-        sendPasswordResetCode({
-          to: business.email,
-          ownerName: business.ownerNombre,
-          code,
-          businessName: business.nombreNegocio,
-          expiresInMinutes: CODE_EXPIRATION_MIN,
-        }),
-        new Promise((_, rej) => setTimeout(() => rej(new Error('mail-timeout')), 6000)),
-      ]);
-    } catch (err) {
-      mailError = err.message;
+    // Disparamos el envío y esperamos hasta 15s. Si tarda más, respondemos igual
+    // (el envío sigue en background). Railway → Gmail SMTP a veces tiene latencia
+    // alta en cold-start; no queremos que el usuario piense que falló.
+    const sendPromise = sendPasswordResetCode({
+      to: business.email,
+      ownerName: business.ownerNombre,
+      code,
+      businessName: business.nombreNegocio,
+      expiresInMinutes: CODE_EXPIRATION_MIN,
+    }).catch((err) => {
       console.error('[email reset code]', err.message);
-    }
+      return { _error: err.message };
+    });
+
+    // Race sólo para el TIEMPO de la respuesta HTTP; el send sigue en background.
+    const timeoutSentinel = Symbol('timeout');
+    const raced = await Promise.race([
+      sendPromise,
+      new Promise((r) => setTimeout(() => r(timeoutSentinel), 15000)),
+    ]);
+    const timedOut = raced === timeoutSentinel;
+    const mailError = raced && raced._error;
 
     res.json({
       ok: true,
-      email: business.email,          // devolvemos el email real (idéntico al que pidió) para el paso siguiente
+      email: business.email,
       message: mailError
-        ? 'Registramos tu pedido pero hubo un problema enviando el mail. Reintentá en unos segundos.'
-        : `Te enviamos un código a ${maskEmail(business.email)}. Revisá también la carpeta Spam.`,
+        ? 'Registramos tu pedido pero el envío del mail falló. Revisá la configuración o pedí un nuevo código en un momento.'
+        : timedOut
+          ? `Te enviamos un código a ${maskEmail(business.email)}. Puede tardar hasta 1 minuto en llegar — revisá también la carpeta Spam.`
+          : `Te enviamos un código a ${maskEmail(business.email)}. Revisá también la carpeta Spam.`,
     });
   } catch (error) { next(error); }
 };
