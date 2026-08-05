@@ -126,7 +126,17 @@ export default function ArcaConfigPage() {
           </div>
           <p className="mb-3 text-sm text-ink-700">Dá de alta un Punto de Venta <strong>electrónico</strong> en AFIP e ingresá el número acá.</p>
           <label className="label">Número</label>
-          <input className="input" type="number" min="1" value={puntoVenta} onChange={(e) => setPuntoVenta(e.target.value)} placeholder="1" />
+          <input
+            className="input"
+            type="number"
+            min="1"
+            max="99999"
+            step="1"
+            inputMode="numeric"
+            value={puntoVenta}
+            onChange={(e) => setPuntoVenta(e.target.value.replace(/\D/g, "").slice(0, 5))}
+            placeholder="1"
+          />
           <label className="label mt-3">Condición IVA</label>
           <select className="input" value={condicionIva} onChange={(e) => setCondicionIva(e.target.value)}>
             <option value="">— Elegir —</option>

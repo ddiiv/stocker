@@ -40,8 +40,11 @@ export default function VariantRow({ variant, onSave, onDelete }) {
           <input
             className="input h-8 w-24 text-xs"
             type="number"
+            min="0"
+            step="0.01"
+            inputMode="decimal"
             value={form.costo}
-            onChange={(e) => set("costo", Number(e.target.value))}
+            onChange={(e) => set("costo", Math.max(0, Number(e.target.value)))}
           />
         ) : (
           formatCurrency(variant.costo)
@@ -52,8 +55,11 @@ export default function VariantRow({ variant, onSave, onDelete }) {
           <input
             className="input h-8 w-24 text-xs"
             type="number"
+            min="0"
+            step="0.01"
+            inputMode="decimal"
             value={form.precio}
-            onChange={(e) => set("precio", Number(e.target.value))}
+            onChange={(e) => set("precio", Math.max(0, Number(e.target.value)))}
           />
         ) : (
           <span className="font-medium text-ink-900">{formatCurrency(variant.precio)}</span>
@@ -64,8 +70,11 @@ export default function VariantRow({ variant, onSave, onDelete }) {
           <input
             className="input h-8 w-20 text-xs"
             type="number"
+            min="0"
+            step="1"
+            inputMode="numeric"
             value={form.stock}
-            onChange={(e) => set("stock", Number(e.target.value))}
+            onChange={(e) => set("stock", Math.max(0, Math.floor(Number(e.target.value))))}
           />
         ) : (
           <span className={`badge ${status}`}>{variant.stock} un.</span>
@@ -76,8 +85,11 @@ export default function VariantRow({ variant, onSave, onDelete }) {
           <input
             className="input h-8 w-16 text-xs"
             type="number"
+            min="0"
+            step="1"
+            inputMode="numeric"
             value={form.stockMinimo}
-            onChange={(e) => set("stockMinimo", Number(e.target.value))}
+            onChange={(e) => set("stockMinimo", Math.max(0, Math.floor(Number(e.target.value))))}
           />
         ) : (
           <span className="text-ink-600">{variant.stockMinimo}</span>

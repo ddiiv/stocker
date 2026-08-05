@@ -183,9 +183,18 @@ function NewLocationModal({ open, onClose }) {
   return (
     <Modal open={open} onClose={onClose} title="Nuevo local / sucursal">
       <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
-        <div><label className="label">Nombre del local</label><input className="input" {...register("nombre", { required: true })} /></div>
-        <div><label className="label">Dirección</label><input className="input" {...register("direccion", { required: true })} /></div>
-        <div><label className="label">Teléfono (opcional)</label><input className="input" {...register("telefono")} /></div>
+        <div>
+          <label className="label">Nombre del local *</label>
+          <input className="input" required minLength={2} maxLength={150} {...register("nombre", { required: "Obligatorio" })} />
+        </div>
+        <div>
+          <label className="label">Dirección *</label>
+          <input className="input" required minLength={3} maxLength={255} {...register("direccion", { required: "Obligatorio" })} />
+        </div>
+        <div>
+          <label className="label">Teléfono <span className="text-ink-500 font-normal">(opcional)</span></label>
+          <input className="input" type="tel" maxLength={30} {...register("telefono")} />
+        </div>
         <div className="flex justify-end gap-2"><button type="button" className="btn-ghost" onClick={onClose}>Cancelar</button><button type="submit" className="btn-accent" disabled={isSubmitting}>Guardar local</button></div>
       </form>
     </Modal>
@@ -213,7 +222,10 @@ function NewRoleModal({ open, onClose }) {
   return (
     <Modal open={open} onClose={onClose} title="Nuevo cargo / rol" width="max-w-2xl">
       <div className="space-y-4">
-        <div><label className="label">Nombre del cargo</label><input className="input" value={nombre} onChange={(e) => setNombre(e.target.value)} /></div>
+        <div>
+          <label className="label">Nombre del cargo *</label>
+          <input className="input" required minLength={2} maxLength={80} value={nombre} onChange={(e) => setNombre(e.target.value)} />
+        </div>
         <p className="text-xs font-medium uppercase tracking-wide text-ink-600">Permisos</p>
         <div className="rounded-md border border-line overflow-hidden">
           <table className="w-full text-sm">

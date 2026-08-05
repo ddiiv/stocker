@@ -210,7 +210,14 @@ function ClientFormModal({ open, onClose, onSaved, client }) {
         <div className="grid grid-cols-2 gap-4">
           <div className="col-span-2">
             <label className="label">CUIT (se autocompleta con ARCA)</label>
-            <input className="input font-mono" value={form.cuit} onChange={(e) => handleCuitChange(e.target.value)} placeholder="20-12345678-6" />
+            <input
+              className="input font-mono"
+              value={form.cuit}
+              onChange={(e) => handleCuitChange(e.target.value.replace(/[^0-9-]/g, "").slice(0, 13))}
+              placeholder="20-12345678-6"
+              inputMode="numeric"
+              maxLength={13}
+            />
             {cuitStatus?.loading && <p className="mt-1 text-xs text-ink-500">Consultando ARCA…</p>}
             {cuitStatus?.error && (
               <p className="mt-1 flex items-center gap-1 text-xs text-brick-500"><AlertCircle size={12} /> {cuitStatus.error}</p>
@@ -223,9 +230,9 @@ function ClientFormModal({ open, onClose, onSaved, client }) {
               </p>
             )}
           </div>
-          <div><label className="label">Nombre / Razón social *</label><input className="input" required value={form.nombre} onChange={(e) => update("nombre", e.target.value)} /></div>
-          <div><label className="label">Apellido</label><input className="input" value={form.apellido || ""} onChange={(e) => update("apellido", e.target.value)} /></div>
-          <div><label className="label">DNI</label><input className="input font-mono" value={form.dni || ""} onChange={(e) => update("dni", e.target.value)} /></div>
+          <div><label className="label">Nombre / Razón social *</label><input className="input" required minLength={2} maxLength={100} value={form.nombre} onChange={(e) => update("nombre", e.target.value)} /></div>
+          <div><label className="label">Apellido</label><input className="input" maxLength={100} value={form.apellido || ""} onChange={(e) => update("apellido", e.target.value)} /></div>
+          <div><label className="label">DNI</label><input className="input font-mono" inputMode="numeric" maxLength={8} pattern="[0-9]*" value={form.dni || ""} onChange={(e) => update("dni", e.target.value.replace(/\D/g, "").slice(0, 8))} /></div>
           <div>
             <label className="label">Tipo</label>
             <select className="input" value={form.tipo} onChange={(e) => update("tipo", e.target.value)}>

@@ -156,7 +156,14 @@ function CuitFormModal({ open, onClose, onSaved, cuit }) {
         {error && <p className="rounded-md bg-brick-50 px-3 py-2 text-sm text-brick-500">{error}</p>}
         <div>
           <label className="label">CUIT</label>
-          <input className="input font-mono" value={form.cuit} onChange={(e) => handleCuitChange(e.target.value)} placeholder="30-70308853-4" />
+          <input
+            className="input font-mono"
+            value={form.cuit}
+            onChange={(e) => handleCuitChange(e.target.value.replace(/[^0-9-]/g, "").slice(0, 13))}
+            placeholder="30-70308853-4"
+            inputMode="numeric"
+            maxLength={13}
+          />
           {cuitStatus?.loading && <p className="mt-1 text-xs text-ink-500">Consultando ARCA…</p>}
           {cuitStatus?.error && <p className="mt-1 text-xs text-brick-500">{cuitStatus.error}</p>}
           {cuitStatus?.data && <p className="mt-1 text-xs text-teal-600">CUIT válido · {cuitStatus.data.tipoPersona}</p>}

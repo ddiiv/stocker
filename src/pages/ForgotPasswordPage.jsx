@@ -15,6 +15,7 @@ export default function ForgotPasswordPage() {
   const [cuit, setCuit]   = useState("");
   const [reqLoading, setReqLoading] = useState(false);
   const [reqError, setReqError] = useState("");
+  const [sentInfo, setSentInfo] = useState("");   // mensaje cuando el envío fue OK (dice a qué mail)
 
   // code
   const [code, setCode] = useState("");
@@ -32,13 +33,27 @@ export default function ForgotPasswordPage() {
   async function handleRequest(e) {
     e.preventDefault();
     setReqError("");
-    if (!email || !cuit) return setReqError("Ingresá el email y el CUIT del dueño.");
+    setSentInfo("");
+    const emailNorm = email.trim().toLowerCase();
+    const cuitDigits = cuit.replace(/\D/g, "");
+    if (!emailNorm || !cuitDigits) return setReqError("Ingresá el email y el CUIT del dueño.");
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailNorm)) return setReqError("Formato de email inválido.");
+    if (cuitDigits.length !== 11) return setReqError("El CUIT tiene que ser de 11 dígitos.");
+
     setReqLoading(true);
     try {
-      await forgotPassword({ email, cuit });
+      const res = await forgotPassword({ email: emailNorm, cuit: cuitDigits });
+      // El backend nos confirma con qué email quedó registrado (útil para el paso 2)
+      if (res?.email) setEmail(res.email);
+      setSentInfo(res?.message || "Código enviado. Revisá tu email.");
       setStep("code");
     } catch (err) {
-      setReqError(err.response?.data?.message || "No se pudo procesar la solicitud.");
+      const status = err.response?.status;
+      if (status === 404) {
+        setReqError("Email o CUIT incorrectos. Verificá que coincidan con los del registro.");
+      } else {
+        setReqError(err.response?.data?.message || "No se pudo procesar la solicitud.");
+      }
     } finally { setReqLoading(false); }
   }
 
@@ -122,6 +137,11 @@ export default function ForgotPasswordPage() {
                 {locked && (
                   <p className="mt-1 text-xs">Superaste los intentos. Le enviamos un aviso al dueño y necesitás pedir un nuevo código.</p>
                 )}
+              </div>
+            )}
+            {sentInfo && !codeError && (
+              <div className="rounded-md bg-teal-50 px-3 py-2 text-sm text-teal-600">
+                {sentInfo}
               </div>
             )}
             <p className="text-sm text-ink-700">Revisá tu casilla <strong>{email}</strong> — te llegó un código de 6 dígitos.</p>

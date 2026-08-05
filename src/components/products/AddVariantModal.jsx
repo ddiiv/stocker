@@ -61,24 +61,24 @@ export default function AddVariantModal({ open, onClose, group, onCreate }) {
         <div className="grid grid-cols-2 gap-4">
           <div>
             <label className="label">Costo</label>
-            <input className="input" type="number" step="1" {...register("costo")} />
+            <input className="input" type="number" min="0" step="0.01" inputMode="decimal" {...register("costo")} />
             {errors.costo && <p className="field-error">{errors.costo.message}</p>}
           </div>
           <div>
             <label className="label">Precio de venta</label>
-            <input className="input" type="number" step="1" {...register("precio")} />
+            <input className="input" type="number" min="0" step="0.01" inputMode="decimal" {...register("precio")} />
             {errors.precio && <p className="field-error">{errors.precio.message}</p>}
           </div>
         </div>
         <div className="grid grid-cols-2 gap-4">
           <div>
             <label className="label">Stock inicial</label>
-            <input className="input" type="number" {...register("stock")} />
+            <input className="input" type="number" min="0" step="1" inputMode="numeric" {...register("stock")} />
             {errors.stock && <p className="field-error">{errors.stock.message}</p>}
           </div>
           <div>
             <label className="label">Stock mínimo</label>
-            <input className="input" type="number" {...register("stockMinimo")} />
+            <input className="input" type="number" min="0" step="1" inputMode="numeric" {...register("stockMinimo")} />
             {errors.stockMinimo && <p className="field-error">{errors.stockMinimo.message}</p>}
           </div>
         </div>

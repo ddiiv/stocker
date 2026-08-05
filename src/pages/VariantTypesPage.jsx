@@ -121,14 +121,15 @@ function VariantFormModal({ open, onClose, onSaved, variant }) {
       <form onSubmit={handleSubmit} className="space-y-4">
         {error && <p className="rounded-md bg-brick-50 px-3 py-2 text-sm text-brick-500">{error}</p>}
         <div>
-          <label className="label">Nombre de la variante</label>
-          <input className="input" value={nombre} onChange={(e) => setNombre(e.target.value)} placeholder="Ej: Color, Talle, Sabor…" />
+          <label className="label">Nombre de la variante *</label>
+          <input className="input" required minLength={2} maxLength={80} value={nombre} onChange={(e) => setNombre(e.target.value)} placeholder="Ej: Color, Talle, Sabor…" />
         </div>
         <div>
           <label className="label">Valores posibles</label>
           <div className="mb-2 flex gap-2">
             <input
               className="input flex-1"
+              maxLength={60}
               value={nuevo}
               onChange={(e) => setNuevo(e.target.value)}
               onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addValor(); } }}

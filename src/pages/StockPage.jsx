@@ -215,15 +215,39 @@ function NewProductModal({ open, onClose, onCreated }) {
       <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
         {serverError && <p className="rounded-md bg-brick-50 px-3 py-2 text-sm text-brick-500">{serverError}</p>}
         <div className="grid grid-cols-2 gap-4">
-          <div><label className="label">Título</label><input className="input" {...register("titulo", { required: true })} /></div>
-          <div><label className="label">SKU padre</label><input className="input font-mono" {...register("sku", { required: true })} /></div>
-          <div><label className="label">SKU agrupador</label><input className="input font-mono" {...register("skuAgrupador", { required: true })} /></div>
-          <div><label className="label">Modelo</label><input className="input" {...register("modelo")} /></div>
-          <div><label className="label">Categoría</label><input className="input" {...register("categoria")} /></div>
-          <div><label className="label">Género</label><input className="input" {...register("genero")} /></div>
-          <div><label className="label">Costo</label><input className="input" type="number" {...register("costo")} /></div>
-          <div><label className="label">Precio minorista</label><input className="input" type="number" {...register("precioMinorista")} /></div>
-          <div><label className="label">Precio mayorista (≥3 prendas)</label><input className="input" type="number" {...register("precioMayorista")} /></div>
+          <div>
+            <label className="label">Título *</label>
+            <input className="input" maxLength={200} {...register("titulo", { required: "Obligatorio", minLength: { value: 2, message: "Mínimo 2 caracteres" } })} />
+            {errors.titulo && <p className="field-error">{errors.titulo.message}</p>}
+          </div>
+          <div>
+            <label className="label">SKU padre *</label>
+            <input className="input font-mono uppercase" maxLength={80} {...register("sku", { required: "Obligatorio", pattern: { value: /^[A-Za-z0-9._-]+$/, message: "Solo letras, números, . _ -" } })} />
+            {errors.sku && <p className="field-error">{errors.sku.message}</p>}
+          </div>
+          <div>
+            <label className="label">SKU agrupador *</label>
+            <input className="input font-mono uppercase" maxLength={80} {...register("skuAgrupador", { required: "Obligatorio", pattern: { value: /^[A-Za-z0-9._-]+$/, message: "Solo letras, números, . _ -" } })} />
+            {errors.skuAgrupador && <p className="field-error">{errors.skuAgrupador.message}</p>}
+          </div>
+          <div><label className="label">Modelo</label><input className="input" maxLength={80} {...register("modelo")} /></div>
+          <div><label className="label">Categoría</label><input className="input" maxLength={80} {...register("categoria")} /></div>
+          <div><label className="label">Género</label><input className="input" maxLength={40} {...register("genero")} /></div>
+          <div>
+            <label className="label">Costo</label>
+            <input className="input" type="number" min="0" step="0.01" inputMode="decimal" {...register("costo", { min: { value: 0, message: "No puede ser negativo" } })} />
+            {errors.costo && <p className="field-error">{errors.costo.message}</p>}
+          </div>
+          <div>
+            <label className="label">Precio minorista</label>
+            <input className="input" type="number" min="0" step="0.01" inputMode="decimal" {...register("precioMinorista", { min: { value: 0, message: "No puede ser negativo" } })} />
+            {errors.precioMinorista && <p className="field-error">{errors.precioMinorista.message}</p>}
+          </div>
+          <div>
+            <label className="label">Precio mayorista (≥3 prendas)</label>
+            <input className="input" type="number" min="0" step="0.01" inputMode="decimal" {...register("precioMayorista", { min: { value: 0, message: "No puede ser negativo" } })} />
+            {errors.precioMayorista && <p className="field-error">{errors.precioMayorista.message}</p>}
+          </div>
         </div>
         <div><label className="label">Descripción</label><textarea className="input min-h-16" {...register("descripcion")} /></div>
 
