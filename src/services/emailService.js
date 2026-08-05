@@ -200,4 +200,87 @@ async function sendSaleNotificationToBusiness({ to, cliente, sale, items, busine
   console.log(`[email] Aviso interno venta ${sale.numero} enviado a ${to}`);
 }
 
-module.exports = { sendInvoiceEmail, sendSaleReceiptToCustomer, sendSaleNotificationToBusiness };
+// ── Email código de recuperación de contraseña ─────────────────
+async function sendPasswordResetCode({ to, ownerName, code, businessName, expiresInMinutes = 15 }) {
+  if (!mailReady() || !to) return;
+  const body = `
+    <p>Hola <strong>${escapeHtml(ownerName || '')}</strong>,</p>
+    <p>Recibimos un pedido de recuperación de contraseña para tu cuenta de <strong>${escapeHtml(businessName)}</strong>.</p>
+    <p>Ingresá este código en la pantalla de Stocker para continuar:</p>
+    <div style="margin:20px auto;padding:18px;background:${C.paper100};border:2px dashed ${C.brass500};border-radius:8px;text-align:center;">
+      <div style="font-family:monospace;font-size:34px;font-weight:700;letter-spacing:8px;color:${C.ink950};">${escapeHtml(code)}</div>
+    </div>
+    <p style="color:${C.ink600};font-size:12px;">El código vence en ${expiresInMinutes} minutos. Si vos no pediste este cambio, ignorá este mensaje.</p>`;
+  // Versión texto plano (crítico para spam scoring — mails HTML-only son sospechosos).
+  const text =
+`Hola ${ownerName || ''},
+
+Recibimos un pedido de recuperación de contraseña para tu cuenta de ${businessName}.
+Ingresá este código en la pantalla de Stocker para continuar:
+
+    ${code}
+
+El código vence en ${expiresInMinutes} minutos.
+Si vos no pediste este cambio, ignorá este mensaje.
+
+— Stocker`;
+
+  const info = await transport().sendMail({
+    from: process.env.MAIL_FROM || `"Stocker" <${process.env.MAIL_USER}>`,
+    to,
+    replyTo: process.env.MAIL_FROM || process.env.MAIL_USER,
+    subject: `Tu código de Stocker: ${code}`,
+    html: shell({ title: 'Recuperar contraseña', businessName: 'Stocker', bodyHtml: body }),
+    text,
+    headers: {
+      'X-Entity-Ref-ID': `stocker-reset-${Date.now()}`,
+      'X-Auto-Response-Suppress': 'OOF, AutoReply',
+      'Auto-Submitted': 'auto-generated',
+    },
+  });
+  console.log(`[email] Código de reset → ${to}  (id=${info.messageId})`);
+  return info;
+}
+
+// ── Email alerta de intentos fallidos de recuperación ──────────
+async function sendPasswordResetAlert({ to, ownerName, businessName, attemptedAt, ip }) {
+  if (!mailReady() || !to) return;
+  const body = `
+    <p>Hola <strong>${escapeHtml(ownerName || '')}</strong>,</p>
+    <p style="color:${C.brick500};font-weight:700;">Alguien intentó recuperar la contraseña de tu cuenta de <strong>${escapeHtml(businessName)}</strong> y falló varias veces con el código.</p>
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border:1px solid ${C.line};border-radius:6px;overflow:hidden;margin:12px 0;">
+      <tr style="background:${C.paper100};"><td style="padding:8px 10px;color:${C.ink600};">Fecha</td><td style="padding:8px 10px;color:${C.ink950};">${new Date(attemptedAt).toLocaleString('es-AR')}</td></tr>
+      <tr><td style="padding:8px 10px;color:${C.ink600};">IP</td><td style="padding:8px 10px;font-family:monospace;color:${C.ink950};">${escapeHtml(ip || '—')}</td></tr>
+    </table>
+    <p><strong>Si fuiste vos y olvidaste la contraseña</strong>: podés reintentar el proceso desde el login.</p>
+    <p><strong>Si no fuiste vos</strong>: te recomendamos cambiar la contraseña actual desde tu cuenta (Configuración → Seguridad) y revisar las sesiones activas de tus empleados.</p>`;
+  const text =
+`Hola ${ownerName || ''},
+
+Alguien intentó recuperar la contraseña de tu cuenta de ${businessName} y falló varias veces.
+
+Fecha: ${new Date(attemptedAt).toLocaleString('es-AR')}
+IP:    ${ip || '—'}
+
+Si fuiste vos y olvidaste la contraseña, reintentá desde el login.
+Si NO fuiste vos, cambiá la contraseña y revisá las sesiones activas.
+
+— Stocker`;
+
+  const info = await transport().sendMail({
+    from: process.env.MAIL_FROM || `"Stocker" <${process.env.MAIL_USER}>`,
+    to,
+    replyTo: process.env.MAIL_FROM || process.env.MAIL_USER,
+    subject: `Alerta de seguridad en tu cuenta de Stocker`,
+    html: shell({ title: 'Alerta de seguridad', businessName: 'Stocker', bodyHtml: body }),
+    text,
+    headers: {
+      'X-Entity-Ref-ID': `stocker-alert-${Date.now()}`,
+      'X-Auto-Response-Suppress': 'OOF, AutoReply',
+    },
+  });
+  console.log(`[email] Alerta seguridad → ${to}  (id=${info.messageId})`);
+  return info;
+}
+
+module.exports = { sendInvoiceEmail, sendSaleReceiptToCustomer, sendSaleNotificationToBusiness, sendPasswordResetCode, sendPasswordResetAlert };

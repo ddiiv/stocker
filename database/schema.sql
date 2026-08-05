@@ -429,6 +429,27 @@ BEGIN
 END
 GO
 
+-- ── 11b. PASSWORD_RESET_CODES ─────────────────────────────────────
+IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'password_reset_codes')
+BEGIN
+    CREATE TABLE password_reset_codes (
+        id            INT IDENTITY(1,1) PRIMARY KEY,
+        businessId    INT NOT NULL,
+        code          NVARCHAR(10) NOT NULL,
+        attemptsLeft  INT NOT NULL DEFAULT 4,
+        expiresAt     DATETIME2 NOT NULL,
+        usedAt        DATETIME2,
+        alertSentAt   DATETIME2,
+        createdAt     DATETIME2 DEFAULT SYSDATETIME(),
+        updatedAt     DATETIME2 DEFAULT SYSDATETIME(),
+        CONSTRAINT fk_prc_business FOREIGN KEY (businessId)
+            REFERENCES businesses(id) ON DELETE CASCADE
+    );
+    CREATE INDEX idx_prc_biz ON password_reset_codes(businessId, expiresAt DESC);
+    PRINT '✔ Tabla password_reset_codes creada.'
+END
+GO
+
 -- ── 12. INVOICE_ITEMS ─────────────────────────────────────────────
 IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'invoice_items')
 BEGIN

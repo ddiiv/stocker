@@ -282,6 +282,21 @@ CREATE TABLE IF NOT EXISTS invoices (
 CREATE INDEX IF NOT EXISTS idx_invoices_biz   ON invoices ("businessId");
 CREATE INDEX IF NOT EXISTS idx_invoices_fecha ON invoices ("fechaEmision");
 
+-- ── 15b. PASSWORD_RESET_CODES ─────────────────────────────────────
+CREATE TABLE IF NOT EXISTS password_reset_codes (
+    id            SERIAL PRIMARY KEY,
+    "businessId"    INT NOT NULL REFERENCES businesses(id) ON DELETE CASCADE,
+    code          VARCHAR(10) NOT NULL,
+    "attemptsLeft"  INT NOT NULL DEFAULT 4,
+    "expiresAt"     TIMESTAMP NOT NULL,
+    "usedAt"        TIMESTAMP,
+    "alertSentAt"   TIMESTAMP,
+    "createdAt"     TIMESTAMP DEFAULT NOW(),
+    "updatedAt"     TIMESTAMP DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_prc_biz
+    ON password_reset_codes ("businessId", "expiresAt" DESC);
+
 -- ── 16. INVOICE_ITEMS ─────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS invoice_items (
     id               SERIAL PRIMARY KEY,

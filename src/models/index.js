@@ -56,6 +56,17 @@ const VariantType = db.define('VariantType', {
   },
 }, { tableName: 'variant_types' });
 
+// ─── PasswordResetCode (recuperación de contraseña) ─────────────
+const PasswordResetCode = db.define('PasswordResetCode', {
+  id:           { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
+  businessId:   { type: DataTypes.INTEGER, allowNull: false },
+  code:         { type: DataTypes.STRING(10), allowNull: false },
+  attemptsLeft: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 4 },
+  expiresAt:    { type: DataTypes.DATE, allowNull: false },
+  usedAt:       { type: DataTypes.DATE },
+  alertSentAt:  { type: DataTypes.DATE },
+}, { tableName: 'password_reset_codes' });
+
 // ─── EmployeeSession (tracking) ──────────────────────────────────
 const EmployeeSession = db.define('EmployeeSession', {
   id:         { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
@@ -282,6 +293,9 @@ VariantType.belongsTo(Business, { foreignKey: 'businessId' });
 Employee.hasMany(EmployeeSession, { foreignKey: 'employeeId', as: 'sesiones', onDelete: 'CASCADE' });
 EmployeeSession.belongsTo(Employee, { foreignKey: 'employeeId' });
 
+Business.hasMany(PasswordResetCode, { foreignKey: 'businessId', as: 'resetCodes', onDelete: 'CASCADE' });
+PasswordResetCode.belongsTo(Business, { foreignKey: 'businessId' });
+
 Business.hasMany(Role,     { foreignKey: 'businessId', as: 'roles',     onDelete: 'CASCADE' });
 Role.belongsTo(Business,   { foreignKey: 'businessId' });
 
@@ -335,7 +349,7 @@ InvoiceItem.belongsTo(Invoice, { foreignKey: 'invoiceId' });
 module.exports = {
   db,
   Business, BusinessLocation, BusinessCuit, BusinessArcaConfig, VariantType,
-  Role, Employee, EmployeeSession, Client,
+  Role, Employee, EmployeeSession, PasswordResetCode, Client,
   Product, ProductVariant, StockMovement,
   Sale, SaleItem, Invoice, InvoiceItem,
 };

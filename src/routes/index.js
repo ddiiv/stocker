@@ -4,7 +4,8 @@ const { requireAuth, requirePermission } = require('../middleware/auth');
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
-const { register, login, employeeLogin, me } = require('../controllers/authController');
+const { register, login, employeeLogin, me, forgotPassword, verifyResetCode, resetPassword } = require('../controllers/authController');
+const { validatePasswordBody } = require('../utils/passwordPolicy');
 const productCtrl = require('../controllers/productController');
 const employeeCtrl = require('../controllers/employeeController');
 const saleCtrl     = require('../controllers/saleController');
@@ -24,10 +25,13 @@ const { testSend: whatsappTestSend } = require('../controllers/whatsappTestContr
 const r = Router();
 
 // ── Auth ──────────────────────────────────────────────────────────
-r.post('/auth/register',        register);
-r.post('/auth/login',           login);
-r.post('/auth/employee-login',  employeeLogin);
-r.get ('/auth/me',              requireAuth, me);
+r.post('/auth/register',              validatePasswordBody(), register);
+r.post('/auth/login',                 login);
+r.post('/auth/employee-login',        employeeLogin);
+r.get ('/auth/me',                    requireAuth, me);
+r.post('/auth/forgot-password',       forgotPassword);
+r.post('/auth/verify-reset-code',     verifyResetCode);
+r.post('/auth/reset-password',        validatePasswordBody('newPassword'), resetPassword);
 
 // ── Locations ─────────────────────────────────────────────────────
 r.get   ('/locations',     requireAuth, getLocations);
