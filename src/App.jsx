@@ -1,11 +1,13 @@
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { AuthProvider } from "./context/AuthContext";
+import { PermissionGuardProvider } from "./context/PermissionGuardContext";
 import ProtectedRoute from "./components/layout/ProtectedRoute";
 import PermissionRoute from "./components/layout/PermissionRoute";
 import AppLayout from "./components/layout/AppLayout";
 
 import LoginPage from "./pages/LoginPage";
 import RegisterPage from "./pages/RegisterPage";
+import ForgotPasswordPage from "./pages/ForgotPasswordPage";
 import DashboardPage from "./pages/DashboardPage";
 import StockPage from "./pages/StockPage";
 import ProductDetailPage from "./pages/ProductDetailPage";
@@ -23,9 +25,11 @@ export default function App() {
   return (
     <BrowserRouter>
       <AuthProvider>
+       <PermissionGuardProvider>
         <Routes>
           <Route path="/login" element={<LoginPage />} />
           <Route path="/registro" element={<RegisterPage />} />
+          <Route path="/olvide-password" element={<ForgotPasswordPage />} />
 
           <Route
             element={
@@ -51,6 +55,7 @@ export default function App() {
           <Route path="/" element={<Navigate to="/dashboard" replace />} />
           <Route path="*" element={<Navigate to="/dashboard" replace />} />
         </Routes>
+       </PermissionGuardProvider>
       </AuthProvider>
     </BrowserRouter>
   );

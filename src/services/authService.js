@@ -32,3 +32,17 @@ export async function getMe() {
     return null;
   }
 }
+
+// ── Recuperación de contraseña ─────────────────────────────────
+export async function forgotPassword({ email, cuit }) {
+  const { data } = await http.post("/auth/forgot-password", { email, cuit });
+  return data;
+}
+export async function verifyResetCode({ email, code }) {
+  const { data } = await http.post("/auth/verify-reset-code", { email, code });
+  return data;
+}
+export async function resetPassword({ email, code, newPassword }) {
+  const { data } = await http.post("/auth/reset-password", { email, code, newPassword });
+  return data;
+}

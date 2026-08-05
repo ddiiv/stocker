@@ -3,7 +3,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import { Tag } from "lucide-react";
+import { Tag, AlertCircle } from "lucide-react";
 import { useAuth } from "../context/AuthContext";
 
 const schema = z.object({
@@ -34,7 +34,14 @@ export default function LoginPage() {
       else await login(values);
       navigate("/dashboard");
     } catch (err) {
-      setServerError(err.response?.data?.message || err.message || "Error al iniciar sesión");
+      const status = err.response?.status;
+      if (status === 401) {
+        setServerError(mode === "employee"
+          ? "Email o contraseña de empleado incorrectos. Verificá con el dueño."
+          : "Email o contraseña incorrectos. Reintentá — si la olvidaste, podés recuperarla abajo.");
+      } else {
+        setServerError(err.response?.data?.message || err.message || "Error al iniciar sesión");
+      }
     }
   }
 
@@ -67,7 +74,9 @@ export default function LoginPage() {
 
         <form onSubmit={handleSubmit(onSubmit)} className="card space-y-4 p-6">
           {serverError && (
-            <p className="rounded-md bg-brick-50 px-3 py-2 text-sm text-brick-500">{serverError}</p>
+            <div className="rounded-md bg-brick-50 px-3 py-2 text-sm text-brick-500">
+              <p className="flex items-start gap-1"><AlertCircle size={14} className="mt-0.5 shrink-0" /> <span>{serverError}</span></p>
+            </div>
           )}
           <div>
             <label className="label">Email</label>
@@ -90,6 +99,13 @@ export default function LoginPage() {
           {mode === "employee" && (
             <p className="text-center text-xs text-ink-500">
               Usá el email y contraseña que te asignó el dueño del negocio.
+            </p>
+          )}
+          {mode === "business" && (
+            <p className="text-center text-xs text-ink-500">
+              <Link to="/olvide-password" className="text-brass-500 hover:underline">
+                Olvidé mi contraseña
+              </Link>
             </p>
           )}
         </form>
