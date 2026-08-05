@@ -62,9 +62,7 @@ export default function Sidebar({ open, onClose }) {
           ))}
         </nav>
 
-        <div className="border-t border-white/10 px-5 py-4 text-[11px] text-ink-400">
-          Stocker API · <span className="font-mono">{import.meta.env.VITE_API_URL || "localhost:3000/api"}</span>
-        </div>
+        
       </aside>
     </>
   );
