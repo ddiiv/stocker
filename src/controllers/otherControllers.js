@@ -1,6 +1,7 @@
 const { Op } = require('sequelize');
 const bcrypt = require('bcryptjs');
 const { BusinessLocation, Role, Client, Sale, SaleItem, Invoice, ProductVariant, Product, StockMovement } = require('../models');
+const { ilikeOperator } = require('../utils/sqlHelpers');
 
 // ─── LOCATIONS ────────────────────────────────────────────────────
 const getLocations = async (req, res, next) => {
@@ -71,12 +72,15 @@ const getClients = async (req, res, next) => {
   try {
     const { search } = req.query;
     const where = { businessId: req.auth.businessId };
-    if (search) where[Op.or] = [
-      { nombre:   { [Op.like]: `%${search}%` } },
-      { apellido: { [Op.like]: `%${search}%` } },
-      { cuit:     { [Op.like]: `%${search}%` } },
-      { email:    { [Op.like]: `%${search}%` } },
-    ];
+    if (search) {
+      const like = ilikeOperator();
+      where[Op.or] = [
+        { nombre:   { [like]: `%${search}%` } },
+        { apellido: { [like]: `%${search}%` } },
+        { cuit:     { [like]: `%${search}%` } },
+        { email:    { [like]: `%${search}%` } },
+      ];
+    }
     const clients = await Client.findAll({ where, order: [['nombre', 'ASC']] });
     res.json(clients);
   } catch (e) { next(e); }

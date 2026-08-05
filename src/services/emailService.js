@@ -31,11 +31,19 @@ function variantDesc(item) {
 let transportSingleton = null;
 function transport() {
   if (transportSingleton) return transportSingleton;
+  // Defaults sensatos: si no seteás MAIL_PORT usa 465, y `secure` se deriva
+  // del puerto (465 = TLS directo, 587 = STARTTLS). En Railway pasa esto
+  // seguido: MAIL_PORT / MAIL_SECURE no seteadas → sin defaults, NaN, timeout.
+  const port     = parseInt(process.env.MAIL_PORT, 10) || 465;
+  const secure   = process.env.MAIL_SECURE === 'true' || (process.env.MAIL_SECURE == null && port === 465);
   transportSingleton = nodemailer.createTransport({
     host:   process.env.MAIL_HOST || 'smtp.gmail.com',
-    port:   parseInt(process.env.MAIL_PORT) || 465,
-    secure: true,
+    port,
+    secure,
     auth:   { user: process.env.MAIL_USER, pass: process.env.MAIL_PASS },
+    connectionTimeout: 15000,
+    greetingTimeout:   10000,
+    socketTimeout:     20000,
   });
   return transportSingleton;
 }
@@ -229,8 +237,10 @@ Si vos no pediste este cambio, ignorá este mensaje.
     from: process.env.MAIL_FROM || `"Stocker" <${process.env.MAIL_USER}>`,
     to,
     replyTo: process.env.MAIL_FROM || process.env.MAIL_USER,
-    subject: `Tu código de Stocker: ${code}`,
-    html: shell({ title: 'Recuperar contraseña', businessName: 'Stocker', bodyHtml: body }),
+    // Subject sin el código dentro (Gmail marca como phishing "your code is XXX").
+    // Formato con brackets tipo el de venta que sí llega bien al inbox.
+    subject: `[Stocker] Recuperar contraseña de ${businessName}`,
+    html: shell({ title: 'Recuperar contraseña', businessName: businessName || 'Stocker', bodyHtml: body }),
     text,
     headers: {
       'X-Entity-Ref-ID': `stocker-reset-${Date.now()}`,

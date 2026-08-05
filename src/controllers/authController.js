@@ -135,12 +135,15 @@ const forgotPassword = async (req, res, next) => {
     if (!email || !cuit) {
       return res.status(400).json({ message: 'Email y CUIT son obligatorios.' });
     }
+    if (cuit.length !== 11) {
+      return res.status(400).json({ message: 'El CUIT debe tener 11 dígitos.' });
+    }
 
     const business = await Business.findOne({ where: { email } });
-    // Sólo procesamos si el business existe Y el CUIT coincide.
+    // Corroborar en el momento: si no coincide, devolvemos 404 explícito.
+    // Tradeoff: pierde algo de seguridad (enumeration) pero mejora UX del dueño.
     if (!business || String(business.cuit).replace(/[^0-9]/g, '') !== cuit) {
-      // Devolvemos 200 igualmente — no revelar si el email existe.
-      return res.json({ ok: true, message: 'Si los datos son correctos, te enviamos un mail con instrucciones.' });
+      return res.status(404).json({ message: 'Email o CUIT incorrectos. Verificá que ambos coincidan con los del registro.' });
     }
 
     // Invalidar códigos previos no usados del mismo business
@@ -156,17 +159,43 @@ const forgotPassword = async (req, res, next) => {
       code, attemptsLeft: MAX_ATTEMPTS, expiresAt: expires,
     });
 
-    sendPasswordResetCode({
-      to: business.email,
-      ownerName: business.ownerNombre,
-      code,
-      businessName: business.nombreNegocio,
-      expiresInMinutes: CODE_EXPIRATION_MIN,
-    }).catch((err) => console.error('[email reset code]', err.message));
+    // Enviar el mail — lo esperamos (await) para reportar al usuario si falló
+    // el envío (así sabe que revise config de mail, no que espere en vano).
+    // Si el envío tarda >6s cortamos y respondemos igual — el mail sigue en background.
+    let mailError = null;
+    try {
+      await Promise.race([
+        sendPasswordResetCode({
+          to: business.email,
+          ownerName: business.ownerNombre,
+          code,
+          businessName: business.nombreNegocio,
+          expiresInMinutes: CODE_EXPIRATION_MIN,
+        }),
+        new Promise((_, rej) => setTimeout(() => rej(new Error('mail-timeout')), 6000)),
+      ]);
+    } catch (err) {
+      mailError = err.message;
+      console.error('[email reset code]', err.message);
+    }
 
-    res.json({ ok: true, message: 'Si los datos son correctos, te enviamos un mail con instrucciones.' });
+    res.json({
+      ok: true,
+      email: business.email,          // devolvemos el email real (idéntico al que pidió) para el paso siguiente
+      message: mailError
+        ? 'Registramos tu pedido pero hubo un problema enviando el mail. Reintentá en unos segundos.'
+        : `Te enviamos un código a ${maskEmail(business.email)}. Revisá también la carpeta Spam.`,
+    });
   } catch (error) { next(error); }
 };
+
+// Enmascara email para mostrar sólo primera letra + dominio: d***n45@gmail.com
+function maskEmail(email) {
+  const [user, domain] = String(email || '').split('@');
+  if (!user || !domain) return email;
+  if (user.length <= 2) return `${user[0]}*@${domain}`;
+  return `${user[0]}${'*'.repeat(Math.min(user.length - 2, 4))}${user.slice(-1)}@${domain}`;
+}
 
 // Busca el reset code vigente y valida. Devuelve el business + la row.
 async function findVigentReset({ email, code }) {

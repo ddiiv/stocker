@@ -1,6 +1,7 @@
 const { Op } = require('sequelize');
 const sequelize = require('../config/database');
 const { Product, ProductVariant, StockMovement } = require('../models');
+const { ilikeOperator } = require('../utils/sqlHelpers');
 const { exportProductsXlsx, importProductsXlsx } = require('../services/productExcelService');
 
 // ── Helpers ────────────────────────────────────────────────────────
@@ -22,11 +23,14 @@ const getProducts = async (req, res, next) => {
     const where = { businessId: req.auth.businessId, activo: true };
     if (categoria) where.categoria = categoria;
     if (genero)    where.genero    = genero;
-    if (search)    where[Op.or] = [
-      { titulo: { [Op.like]: `%${search}%` } },
-      { sku:    { [Op.like]: `%${search}%` } },
-      { skuAgrupador: { [Op.like]: `%${search}%` } },
-    ];
+    if (search) {
+      const like = ilikeOperator();
+      where[Op.or] = [
+        { titulo: { [like]: `%${search}%` } },
+        { sku:    { [like]: `%${search}%` } },
+        { skuAgrupador: { [like]: `%${search}%` } },
+      ];
+    }
 
     const offset = (Math.max(1, Number(page)) - 1) * Math.min(Number(limit), 100);
     const { count, rows } = await Product.findAndCountAll({
@@ -157,10 +161,13 @@ const adjustStock = async (req, res, next) => {
     if (!cantidad || cantidad <= 0)
       return res.status(400).json({ message: 'La cantidad debe ser mayor a 0.' });
 
+    // Postgres no soporta `FOR UPDATE` sobre LEFT OUTER JOIN. Lockeamos sólo
+    // la tabla principal con { of: ProductVariant }; el include se resuelve
+    // sin lock (Product no se modifica en esta operación de todos modos).
     const variant = await ProductVariant.findByPk(req.params.variantId, {
       include: [{ model: Product, as: 'producto' }],
       transaction: t,
-      lock: t.LOCK.UPDATE,
+      lock: { level: t.LOCK.UPDATE, of: ProductVariant },
     });
     if (!variant || variant.producto.businessId !== req.auth.businessId) {
       await t.rollback();
