@@ -12,6 +12,9 @@ async function sync() {
     // Si necesitás agregar columnas nuevas, modificá schema.sql y correlo
     // con: sqlcmd -S localhost -U sa -P 'Password' -i database/schema.sql
     await db.sync({ alter: false });
+    const { ensureColumns } = require('./ensureColumns');
+    const nuevas = await ensureColumns(db);
+    if (nuevas.length) console.log('  Columnas agregadas:', nuevas.join(', '));
 
     console.log('✔  Modelos sincronizados correctamente.');
     process.exit(0);

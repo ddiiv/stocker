@@ -209,6 +209,9 @@ const ProductVariant = db.define('ProductVariant', {
   id:              { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
   productId:       { type: DataTypes.INTEGER, allowNull: false },
   sku:             { type: DataTypes.STRING(100), allowNull: false },
+  // Código que devuelve el lector de barras. Puede ser el EAN del proveedor
+  // o el de una etiqueta propia. Si está vacío, el escaneo cae al SKU.
+  codigoBarras:    { type: DataTypes.STRING(60) },
   variante1Nombre: { type: DataTypes.STRING(40) },
   variante1Valor:  { type: DataTypes.STRING(80) },
   variante2Nombre: { type: DataTypes.STRING(40) },

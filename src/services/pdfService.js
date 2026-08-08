@@ -418,6 +418,7 @@ async function generateSaleTicketPdf(sale, items, business, { cliente, emisor } 
           titulo: it.titulo,
           cantidad: Number(it.cantidad),
           subtotal: Number(it.subtotal),
+          precioUnitario: Number(it.precioUnitario),
         });
       }
     }
@@ -431,13 +432,14 @@ async function generateSaleTicketPdf(sale, items, business, { cliente, emisor } 
 
     doc.font('Helvetica').fontSize(8);
     for (const g of grouped.values()) {
-      const cant = String(g.cantidad).padStart(3, ' ');
-      const importe = money(g.subtotal);
-      // Título en su propia línea (hasta 34 chars), luego línea con cant + subtotal alineado
+      // Título del producto padre en su propia línea (puede ser largo),
+      // y debajo "cantidad x precio unitario" con el subtotal alineado a la
+      // derecha — como en cualquier ticket de supermercado.
       doc.font('Helvetica-Bold').fontSize(8.5).text(g.titulo, 8, doc.y, { width: innerW });
       const y = doc.y;
-      doc.font('Courier').fontSize(8).text(cant, 8, y, { width: 30, continued: false });
-      doc.text(importe, 8, y, { width: innerW, align: 'right' });
+      const unitario = g.precioUnitario || (g.cantidad ? g.subtotal / g.cantidad : 0);
+      doc.font('Courier').fontSize(8).text(`${g.cantidad} x ${money(unitario)}`, 8, y, { width: innerW * 0.6 });
+      doc.font('Courier').fontSize(8).text(money(g.subtotal), 8, y, { width: innerW, align: 'right' });
       doc.moveDown(0.2);
     }
 

@@ -79,11 +79,20 @@ async function conectarConCodigo({ businessId, code }) {
     ultimoError:   null,
   };
 
-  const [cuenta, creada] = await MercadoLibreAccount.findOrCreate({
-    where: { businessId }, defaults: valores,
-  });
-  if (!creada) await cuenta.update(valores);
-  return cuenta;
+  // Un negocio = una sola cuenta de ML (la tabla tiene businessId único).
+  // Si ya había una conectada, reconectar la reemplaza; dejamos registro en el
+  // log porque cambiar de cuenta invalida los vínculos SKU↔publicación viejos.
+  const existente = await MercadoLibreAccount.findOne({ where: { businessId } });
+  if (existente && existente.mlUserId && existente.mlUserId !== valores.mlUserId) {
+    console.warn(
+      `[ML] El negocio ${businessId} cambió de cuenta: ${existente.nickname || existente.mlUserId} → ${valores.nickname || valores.mlUserId}.`,
+    );
+  }
+  if (existente) {
+    await existente.update(valores);
+    return existente;
+  }
+  return MercadoLibreAccount.create(valores);
 }
 
 /**

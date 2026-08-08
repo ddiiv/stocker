@@ -60,6 +60,19 @@ async function start() {
   try {
     await sequelize.authenticate();
     console.log('✔ Conectado a la base de datos.');
+
+    // Crea las tablas que falten. Con alter:false NO toca las existentes:
+    // solo ejecuta CREATE TABLE IF NOT EXISTS, así que es seguro correrlo en
+    // cada arranque. Sin esto, un deploy con modelos nuevos rompe con
+    // "relation ... does not exist" hasta que alguien corra db:sync a mano.
+    if (process.env.DB_AUTO_SYNC !== 'false') {
+      await sequelize.sync({ alter: false, logging: false });
+      // sync no agrega columnas a tablas que ya existen: eso lo cubre este paso.
+      const { ensureColumns } = require('./src/database/ensureColumns');
+      const nuevas = await ensureColumns(sequelize);
+      console.log(`✔ Esquema verificado${nuevas.length ? ` — columnas agregadas: ${nuevas.join(', ')}` : ''}.`);
+    }
+
     app.listen(PORT, () => {
       console.log(`✔ Stocker API corriendo en http://localhost:${PORT}`);
       console.log(`  PDFs en: ${pdfDir}`);

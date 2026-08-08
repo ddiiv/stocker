@@ -105,6 +105,9 @@ r.delete('/business-cuits/:id', requireAuth, requirePermission('facturacion','ed
 r.get   ('/products',                                     requireAuth, requirePermission('stock','ver'),    productCtrl.getProducts);
 r.get   ('/products/export',                              requireAuth, requirePermission('stock','ver'),    productCtrl.exportProducts);
 r.post  ('/products/import',    requireAuth, requirePermission('stock','editar'), upload.single('file'),    productCtrl.importProducts);
+// Escaneo con lector de barras — antes de /products/:id para que no lo capture
+r.get   ('/products/scan/:codigo',                        requireAuth, requirePermission('stock','ver'),    productCtrl.scanLookup);
+r.post  ('/products/scan/stock',                          requireAuth, requirePermission('stock','editar'), productCtrl.scanAdjustStock);
 r.get   ('/products/:id',                                 requireAuth, requirePermission('stock','ver'),    productCtrl.getProduct);
 r.post  ('/products',                                     requireAuth, requirePermission('stock','editar'), productCtrl.createProduct);
 r.put   ('/products/:id',                                 requireAuth, requirePermission('stock','editar'), productCtrl.updateProduct);

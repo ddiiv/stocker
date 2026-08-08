@@ -127,6 +127,106 @@ const deleteProduct = async (req, res, next) => {
   } catch (error) { next(error); }
 };
 
+// ── Escaneo con lector de barras ─────────────────────────────────
+// Busca una variante por el código que devuelve el lector. Probamos primero
+// el código de barras y después el SKU, así funciona tanto con etiquetas del
+// proveedor (EAN) como con etiquetas propias impresas con el SKU.
+async function buscarPorCodigo(codigo, businessId, transaction = null) {
+  const limpio = String(codigo || '').trim();
+  if (!limpio) return null;
+  const opciones = {
+    include: [{ model: Product, as: 'producto', where: { businessId } }],
+    transaction,
+  };
+  return (
+    await ProductVariant.findOne({ ...opciones, where: { codigoBarras: limpio } })
+    || await ProductVariant.findOne({ ...opciones, where: { sku: limpio } })
+  );
+}
+
+// ── GET /api/products/scan/:codigo ───────────────────────────────
+// Identifica un producto a partir del código escaneado. Lo usa el punto de
+// venta para ir sumando ítems al carrito.
+const scanLookup = async (req, res, next) => {
+  try {
+    const variant = await buscarPorCodigo(req.params.codigo, req.auth.businessId);
+    if (!variant) {
+      return res.status(404).json({ message: `Ningún producto coincide con el código "${req.params.codigo}".` });
+    }
+    res.json({
+      id: variant.id,
+      sku: variant.sku,
+      codigoBarras: variant.codigoBarras,
+      titulo: variant.producto.titulo,
+      skuAgrupador: variant.producto.skuAgrupador,
+      variante1Nombre: variant.variante1Nombre,
+      variante1Valor:  variant.variante1Valor,
+      variante2Nombre: variant.variante2Nombre,
+      variante2Valor:  variant.variante2Valor,
+      stock: variant.stock,
+      precioMinorista: Number(variant.producto.precioMinorista) || 0,
+      precioMayorista: Number(variant.producto.precioMayorista) || 0,
+    });
+  } catch (error) { next(error); }
+};
+
+// ── POST /api/products/scan/stock ────────────────────────────────
+// Modifica el stock de un producto escaneado. Pensado para uso continuo:
+// el front manda un request por cada lectura del scanner.
+//   modo "agregar" → suma      (recepción de mercadería)
+//   modo "quitar"  → resta     (bajas, roturas)
+//   modo "fijar"   → reemplaza (conteo de inventario)
+const scanAdjustStock = async (req, res, next) => {
+  const t = await sequelize.transaction();
+  try {
+    const { codigo, modo = 'agregar', cantidad = 1, motivo } = req.body;
+    if (!['agregar', 'quitar', 'fijar'].includes(modo)) {
+      await t.rollback();
+      return res.status(400).json({ message: 'Modo inválido. Usá agregar, quitar o fijar.' });
+    }
+    const cant = Number(cantidad);
+    if (!Number.isFinite(cant) || cant < 0 || (modo !== 'fijar' && cant <= 0)) {
+      await t.rollback();
+      return res.status(400).json({ message: 'Cantidad inválida.' });
+    }
+
+    const variant = await buscarPorCodigo(codigo, req.auth.businessId, t);
+    if (!variant) {
+      await t.rollback();
+      return res.status(404).json({ message: `Ningún producto coincide con el código "${codigo}".` });
+    }
+
+    const stockAnterior = variant.stock;
+    let stockNuevo;
+    if (modo === 'agregar')     stockNuevo = stockAnterior + cant;
+    else if (modo === 'quitar') stockNuevo = Math.max(0, stockAnterior - cant);
+    else                        stockNuevo = cant;
+
+    await variant.update({ stock: stockNuevo }, { transaction: t });
+    await StockMovement.create({
+      productVariantId: variant.id,
+      employeeId: req.auth.employeeId || null,
+      tipo: modo === 'agregar' ? 'ingreso' : modo === 'quitar' ? 'egreso' : 'ajuste',
+      cantidad: cant,
+      stockAnterior,
+      stockNuevo,
+      motivo: motivo || `Escaneo masivo (${modo})`,
+    }, { transaction: t });
+
+    await t.commit();
+    res.json({
+      sku: variant.sku,
+      titulo: variant.producto.titulo,
+      variante: [variant.variante1Valor, variant.variante2Valor].filter(Boolean).join(' · ') || null,
+      stockAnterior, stockNuevo,
+      delta: stockNuevo - stockAnterior,
+    });
+  } catch (error) {
+    await t.rollback().catch(() => {});
+    next(error);
+  }
+};
+
 // ── DELETE /api/products/variants/:variantId ─────────────────────
 const deleteVariant = async (req, res, next) => {
   try {
@@ -144,8 +244,8 @@ const addVariant = async (req, res, next) => {
     const product = await Product.findOne({ where: { id: req.params.id, businessId: req.auth.businessId } });
     if (!product) return res.status(404).json({ message: 'Producto no encontrado.' });
 
-    const { sku, variante1Nombre, variante1Valor, variante2Nombre, variante2Valor, stock = 0, stockMinimo = 5 } = req.body;
-    const variant = await ProductVariant.create({ productId: product.id, sku, variante1Nombre, variante1Valor, variante2Nombre, variante2Valor, stock, stockMinimo });
+    const { sku, codigoBarras, variante1Nombre, variante1Valor, variante2Nombre, variante2Valor, stock = 0, stockMinimo = 5 } = req.body;
+    const variant = await ProductVariant.create({ productId: product.id, sku, codigoBarras: codigoBarras || null, variante1Nombre, variante1Valor, variante2Nombre, variante2Valor, stock, stockMinimo });
     res.status(201).json(variant);
   } catch (error) { next(error); }
 };
@@ -244,4 +344,4 @@ const importProducts = async (req, res, next) => {
   } catch (error) { next(error); }
 };
 
-module.exports = { getProducts, getProduct, createProduct, updateProduct, deleteProduct, addVariant, updateVariant, deleteVariant, adjustStock, getVariantMovements, exportProducts, importProducts };
+module.exports = { getProducts, getProduct, createProduct, updateProduct, deleteProduct, addVariant, updateVariant, deleteVariant, adjustStock, getVariantMovements, exportProducts, importProducts, scanLookup, scanAdjustStock };
