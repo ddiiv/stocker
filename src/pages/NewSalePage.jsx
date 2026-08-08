@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Trash2, UserPlus } from "lucide-react";
+import { Trash2, UserPlus, UserCircle2, Check } from "lucide-react";
 import ProductPicker from "../components/sales/ProductPicker";
 import { fetchEmployees, fetchPos, fetchClients, createClient } from "../services/employeeService";
 import { createSale } from "../services/salesService";
@@ -19,6 +19,7 @@ export default function NewSalePage() {
   const [clients, setClients] = useState([]);
   const [clientSearch, setClientSearch] = useState("");
   const [selectedClientId, setSelectedClientId] = useState("");
+  const [consumidorFinal, setConsumidorFinal] = useState(false);
   const [employeeId, setEmployeeId] = useState("");
   const [locationId, setLocationId] = useState("");
   const [descuentoPct, setDescuentoPct] = useState(0);
@@ -135,13 +136,39 @@ export default function NewSalePage() {
 
           <Card>
             <p className="mb-4 font-display text-sm font-semibold text-ink-950">Cliente</p>
+
+            {/* Consumidor final: venta rápida sin datos del cliente. Es el caso
+                del mostrador, donde no hace falta identificarlo ni facturar. */}
+            <button
+              type="button"
+              onClick={() => { setConsumidorFinal(true); setSelectedClientId(""); setClientSearch(""); }}
+              className={`mb-3 w-full rounded-md border px-3 py-2 text-left text-sm transition ${
+                consumidorFinal
+                  ? "border-teal-500 bg-teal-50 text-teal-700"
+                  : "border-line bg-paper-50 text-ink-700 hover:bg-paper-100"
+              }`}
+            >
+              <span className="flex items-center gap-2">
+                <UserCircle2 size={15} />
+                Consumidor final
+                {consumidorFinal && <Check size={14} className="ml-auto" />}
+              </span>
+              <span className="mt-0.5 block text-xs text-ink-500">Venta sin datos del cliente</span>
+            </button>
+
             <div className="mb-3">
-              <label className="label">Buscar cliente registrado</label>
-              <input className="input" placeholder="Nombre, email o CUIT…" value={clientSearch} onChange={(e) => setClientSearch(e.target.value)} />
+              <label className="label">O buscar cliente registrado</label>
+              <input
+                className="input"
+                placeholder="Nombre, email o CUIT…"
+                value={clientSearch}
+                onChange={(e) => { setClientSearch(e.target.value); if (e.target.value) setConsumidorFinal(false); }}
+              />
               {clients.length > 0 && clientSearch && (
                 <div className="mt-1 rounded-md border border-line bg-paper-50 shadow">
                   {clients.map((c) => (
-                    <button type="button" key={c.id} onClick={() => { setSelectedClientId(c.id); setClientSearch(`${c.nombre} ${c.apellido || ""}`); }}
+                    <button type="button" key={c.id}
+                      onClick={() => { setSelectedClientId(c.id); setConsumidorFinal(false); setClientSearch(`${c.nombre} ${c.apellido || ""}`); }}
                       className="flex w-full items-center justify-between border-b border-line px-3 py-2 text-left text-sm last:border-0 hover:bg-paper-100">
                       <span>{c.nombre} {c.apellido}</span>
                       <span className="text-xs text-ink-500">{c.cuit || c.email}</span>
@@ -150,7 +177,11 @@ export default function NewSalePage() {
                 </div>
               )}
             </div>
-            <p className="text-xs text-ink-500">Si no está registrado podés continuar sin cliente o crearlo en la sección de Clientes.</p>
+            <p className="text-xs text-ink-500">
+              {consumidorFinal
+                ? "La venta se registra como consumidor final, sin datos personales."
+                : "Si no está registrado podés elegir consumidor final o crearlo en la sección de Clientes."}
+            </p>
           </Card>
         </div>
 

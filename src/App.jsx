@@ -18,6 +18,9 @@ import BillingPage from "./pages/BillingPage";
 import EmployeesPage from "./pages/EmployeesPage";
 import ClientsPage from "./pages/ClientsPage";
 import VariantTypesPage from "./pages/VariantTypesPage";
+import MercadoLibrePage from "./pages/MercadoLibrePage";
+import SalesTimelinePage from "./pages/SalesTimelinePage";
+import ProductMetricsPage from "./pages/ProductMetricsPage";
 import BusinessCuitsPage from "./pages/BusinessCuitsPage";
 import ArcaConfigPage from "./pages/ArcaConfigPage";
 
@@ -39,6 +42,8 @@ export default function App() {
             }
           >
             <Route path="/dashboard"                    element={<PermissionRoute permission="dashboard"><DashboardPage /></PermissionRoute>} />
+            <Route path="/dashboard/ventas"             element={<PermissionRoute permission="dashboard"><SalesTimelinePage /></PermissionRoute>} />
+            <Route path="/dashboard/productos"          element={<PermissionRoute permission="dashboard"><ProductMetricsPage /></PermissionRoute>} />
             <Route path="/stock"                        element={<PermissionRoute permission="stock"><StockPage /></PermissionRoute>} />
             <Route path="/stock/variantes"              element={<PermissionRoute permission="stock" level="editar"><VariantTypesPage /></PermissionRoute>} />
             <Route path="/stock/:skuAgrupador"          element={<PermissionRoute permission="stock"><ProductDetailPage /></PermissionRoute>} />
@@ -50,6 +55,7 @@ export default function App() {
             <Route path="/facturacion/cuits/:cuitId/arca" element={<PermissionRoute permission="facturacion" level="editar"><ArcaConfigPage /></PermissionRoute>} />
             <Route path="/clientes"                     element={<PermissionRoute permission="ventas"><ClientsPage /></PermissionRoute>} />
             <Route path="/empleados"                    element={<PermissionRoute permission="empleados"><EmployeesPage /></PermissionRoute>} />
+            <Route path="/integraciones/mercadolibre"   element={<PermissionRoute permission="stock"><MercadoLibrePage /></PermissionRoute>} />
           </Route>
 
           <Route path="/" element={<Navigate to="/dashboard" replace />} />

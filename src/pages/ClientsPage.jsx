@@ -145,6 +145,8 @@ function ClientFormModal({ open, onClose, onSaved, client }) {
 
   function update(key, value) { setForm((f) => ({ ...f, [key]: value })); }
   const isLocked = (k) => lockedFields.includes(k);
+  // El DNI sale del CUIT: solo lo bloqueamos si efectivamente hay un CUIT válido.
+  const dniDerivadoDelCuit = String(form.cuit || "").replace(/\D/g, "").length === 11;
 
   function handleCuitChange(value) {
     update("cuit", value);
@@ -176,17 +178,18 @@ function ClientFormModal({ open, onClose, onSaved, client }) {
 
         if (data.razonSocial) {
           if (data.tipoPersona === "juridica") {
-            console.log("AFIP: empresa", data.razonSocial, "locked:", locked);
+            // Empresas: la razón social entera va en "nombre" y no llevan apellido.
             takeOver("nombre", data.razonSocial);
-            if (fromAfip && locked.includes("apellido")) next.apellido = ""; // empresas no llevan apellido
+            if (fromAfip && locked.includes("apellido")) next.apellido = "";
           } else {
-       
-            if (data.apellido)    takeOver("apellido", data.apellido);
-            if (data.nombreSolo)  takeOver("nombre", data.nombreSolo);
-            if (!data.apellido && !data.nombreSolo) {
-              const parts = data.razonSocial.split(/[,\s]+/).filter(Boolean);
-              if (parts.length > 1) takeOver("apellido", parts[0]);
-              takeOver("nombre", parts.slice(parts.length > 1 ? 1 : 0).join(" "));
+            // Personas físicas: AFIP manda nombre y apellido por separado.
+            if (data.apellido) takeOver("apellido", data.apellido);
+            if (data.nombre)   takeOver("nombre", data.nombre);
+            // Si solo vino la razón social armada ("APELLIDO, NOMBRE"), la partimos.
+            if (!data.apellido && !data.nombre) {
+              const [ape, ...resto] = data.razonSocial.split(/[,\s]+/).filter(Boolean);
+              if (resto.length) takeOver("apellido", ape);
+              takeOver("nombre", resto.length ? resto.join(" ") : ape);
             }
           }
         }
@@ -259,8 +262,16 @@ function ClientFormModal({ open, onClose, onSaved, client }) {
             <input className={`input ${isLocked("apellido") ? "bg-paper-100 cursor-not-allowed" : ""}`} maxLength={100} value={form.apellido || ""} readOnly={isLocked("apellido")} onChange={(e) => update("apellido", e.target.value)} />
           </div>
           <div>
-            <label className="label">DNI <span title="Se infiere del CUIT y no es editable">🔒</span></label>
-            <input className="input font-mono bg-paper-100 cursor-not-allowed" readOnly inputMode="numeric" maxLength={8} value={form.dni || ""} />
+            {/* El DNI se deriva del CUIT, así que solo se bloquea si hay CUIT cargado.
+                Sin CUIT (ej. consumidor final con solo DNI) se puede escribir a mano. */}
+            <label className="label">DNI {dniDerivadoDelCuit && <span title="Se infiere del CUIT y no es editable">🔒</span>}</label>
+            <input
+              className={`input font-mono ${dniDerivadoDelCuit ? "bg-paper-100 cursor-not-allowed" : ""}`}
+              inputMode="numeric" maxLength={8} pattern="[0-9]*"
+              readOnly={dniDerivadoDelCuit}
+              value={form.dni || ""}
+              onChange={(e) => update("dni", e.target.value.replace(/\D/g, "").slice(0, 8))}
+            />
           </div>
           <div>
             <label className="label">Tipo</label>

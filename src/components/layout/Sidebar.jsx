@@ -7,6 +7,7 @@ import {
   Users,
   Tag,
   UserCircle2,
+  Store,
 } from "lucide-react";
 import { useAuth } from "../../context/AuthContext";
 import { canView } from "../../utils/permissions";
@@ -18,6 +19,7 @@ const ALL_LINKS = [
   { to: "/facturacion", label: "Facturación",           icon: Receipt,         permission: "facturacion" },
   { to: "/clientes",    label: "Clientes",              icon: UserCircle2,     permission: "ventas" }, // clientes cae bajo ventas
   { to: "/empleados",   label: "Empleados",             icon: Users,           permission: "empleados" },
+  { to: "/integraciones/mercadolibre", label: "MercadoLibre", icon: Store, permission: "stock" },
 ];
 
 export default function Sidebar({ open, onClose }) {

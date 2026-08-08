@@ -4,6 +4,7 @@ import { getDashboardMetrics } from "../services/dashboardService";
 import { formatCurrency, formatDate } from "../utils/formatters";
 import { Card, PageHeader } from "../components/ui/Layout";
 import StatCard from "../components/dashboard/StatCard";
+import MetricsTabs from "../components/dashboard/MetricsTabs";
 import RevenueChart from "../components/dashboard/RevenueChart";
 import TopProductsChart from "../components/dashboard/TopProductsChart";
 
@@ -47,6 +48,7 @@ export default function DashboardPage() {
           </div>
         }
       />
+      <MetricsTabs />
 
       {loading || !metrics ? (
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
@@ -81,6 +83,88 @@ export default function DashboardPage() {
               )}
             </Card>
           </div>
+
+          {/* Evolución año a año: crecimiento del negocio en el tiempo. */}
+          {metrics.serieAnual?.length > 0 && (
+            <Card className="mt-6">
+              <p className="mb-4 font-display text-sm font-semibold text-ink-950">Progreso por año</p>
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[520px] text-sm">
+                  <thead>
+                    <tr className="border-b border-line text-left text-xs uppercase tracking-wide text-ink-600">
+                      <th className="py-2 font-medium">Año</th>
+                      <th className="py-2 font-medium">Facturado</th>
+                      <th className="py-2 font-medium">Ventas</th>
+                      <th className="py-2 font-medium">Unidades</th>
+                      <th className="py-2 font-medium">vs. año anterior</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {metrics.serieAnual.map((a) => {
+                      const maxTotal = Math.max(...metrics.serieAnual.map((x) => x.total));
+                      return (
+                        <tr key={a.anio} className="border-b border-line last:border-0">
+                          <td className="py-2 font-display font-semibold text-ink-900">{a.anio}</td>
+                          <td className="py-2">
+                            <div className="flex items-center gap-2">
+                              <span className="w-24 text-ink-900">{formatCurrency(a.total)}</span>
+                              <span className="h-1.5 flex-1 rounded-full bg-paper-200">
+                                <span className="block h-full rounded-full bg-brass-500" style={{ width: `${maxTotal ? (a.total / maxTotal) * 100 : 0}%` }} />
+                              </span>
+                            </div>
+                          </td>
+                          <td className="py-2 text-ink-700">{a.ventas}</td>
+                          <td className="py-2 text-ink-700">{a.unidades} un.</td>
+                          <td className="py-2">
+                            {a.variacionPct == null ? (
+                              <span className="text-xs text-ink-500">—</span>
+                            ) : (
+                              <span className={`text-xs font-medium ${a.variacionPct >= 0 ? "text-teal-600" : "text-brick-500"}`}>
+                                {a.variacionPct >= 0 ? "▲" : "▼"} {Math.abs(a.variacionPct)}%
+                              </span>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </Card>
+          )}
+
+          {/* Variantes concretas (talle/color) con más salida. */}
+          {metrics.topVariants?.length > 0 && (
+            <Card className="mt-6">
+              <p className="mb-4 font-display text-sm font-semibold text-ink-950">Variantes con más salida</p>
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[560px] text-sm">
+                  <thead>
+                    <tr className="border-b border-line text-left text-xs uppercase tracking-wide text-ink-600">
+                      <th className="py-2 font-medium">Producto</th>
+                      <th className="py-2 font-medium">Variante</th>
+                      <th className="py-2 font-medium">SKU</th>
+                      <th className="py-2 font-medium">Unidades</th>
+                      <th className="py-2 font-medium">Facturado</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {metrics.topVariants.map((v) => (
+                      <tr key={v.sku} className="border-b border-line last:border-0">
+                        <td className="py-2 text-ink-900">{v.titulo}</td>
+                        <td className="py-2 text-ink-700">
+                          {[v.variante1Valor, v.variante2Valor].filter(Boolean).join(" · ") || "—"}
+                        </td>
+                        <td className="py-2"><span className="tag-chip">{v.sku}</span></td>
+                        <td className="py-2 font-medium text-ink-900">{v.unidades} un.</td>
+                        <td className="py-2 text-ink-700">{formatCurrency(v.facturado)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </Card>
+          )}
 
           <div className="mt-6 grid gap-4 lg:grid-cols-5">
             <Card className="lg:col-span-3">
