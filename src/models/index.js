@@ -42,6 +42,21 @@ const BusinessArcaConfig = db.define('BusinessArcaConfig', {
   ultimoError:          { type: DataTypes.STRING(500) },
 }, { tableName: 'business_arca_configs' });
 
+// ─── ArcaToken (cache del TA de AFIP) ────────────────────────────
+// AFIP no reemite un TA hasta que el vigente expira (12h). Guardarlo en
+// disco no sirve en hosting con filesystem efímero (Railway): cada deploy
+// lo perdería y quedaríamos 12h sin poder autenticar. En la base sobrevive
+// deploys y lo comparten todas las instancias.
+const ArcaToken = db.define('ArcaToken', {
+  id:        { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
+  // clave = cuit::ambiente::service
+  clave:     { type: DataTypes.STRING(120), allowNull: false, unique: true },
+  token:     { type: DataTypes.TEXT, allowNull: false },
+  sign:      { type: DataTypes.TEXT, allowNull: false },
+  cuit:      { type: DataTypes.STRING(11) },
+  expiraEn:  { type: DataTypes.DATE, allowNull: false },
+}, { tableName: 'arca_tokens' });
+
 // ─── VariantType (variantes maestras: Color, Talle, …) ───────────
 const VariantType = db.define('VariantType', {
   id:         { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
@@ -348,7 +363,7 @@ InvoiceItem.belongsTo(Invoice, { foreignKey: 'invoiceId' });
 
 module.exports = {
   db,
-  Business, BusinessLocation, BusinessCuit, BusinessArcaConfig, VariantType,
+  Business, BusinessLocation, BusinessCuit, BusinessArcaConfig, ArcaToken, VariantType,
   Role, Employee, EmployeeSession, PasswordResetCode, Client,
   Product, ProductVariant, StockMovement,
   Sale, SaleItem, Invoice, InvoiceItem,

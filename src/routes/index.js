@@ -65,6 +65,7 @@ r.get('/arca/cuit/:cuit', requireAuth, lookupCuit);
 
 // ── ARCA / config por CUIT del negocio ───────────────────────────
 r.get ('/arca/status',                  requireAuth, arcaConfigCtrl.status);
+r.get ('/arca/debug',                   requireAuth, arcaConfigCtrl.debug);
 r.get ('/arca/cuits/:cuitId/config',    requireAuth, arcaConfigCtrl.getConfig);
 r.put ('/arca/cuits/:cuitId/config',    requireAuth, requirePermission('facturacion','editar'), arcaConfigCtrl.saveConfig);
 r.post('/arca/cuits/:cuitId/verify',    requireAuth, requirePermission('facturacion','editar'), arcaConfigCtrl.verifyDelegation);

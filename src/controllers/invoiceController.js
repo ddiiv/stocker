@@ -3,6 +3,7 @@ const sequelize = require('../config/database');
 const { Invoice, InvoiceItem, Sale, SaleItem, Business, Client, BusinessCuit, BusinessArcaConfig } = require('../models');
 const { nextInvoiceNumber } = require('../services/invoiceNumberService');
 const { solicitarCAE, determineInvoiceType, calcularIVA } = require('../services/arcaService');
+const { lookupCuit } = require('../services/arcaLookupService');
 const { generateInvoicePdf } = require('../services/pdfService');
 const { sendInvoiceEmail } = require('../services/emailService');
 const { sendInvoiceWhatsapp } = require('../services/whatsappService');
@@ -87,8 +88,21 @@ const createInvoice = async (req, res, next) => {
     const clienteNombre = cliente ? `${cliente.nombre} ${cliente.apellido || ''}`.trim() : (sale.clienteAdHoc || 'Consumidor Final');
     const clienteWhatsapp = cliente?.whatsapp || cliente?.telefono || null;
 
-    // Tipo de factura (A, B o C)
-    const tipo = tipoOverride || determineInvoiceType(finalCuit);
+    // Tipo de factura (A, B o C).
+    // Consultamos el padrón AFIP para saber la condición IVA REAL del receptor:
+    // sin esto, cualquier CUIT de 11 dígitos se facturaba como A, cuando un
+    // monotributista o un exento deben recibir B.
+    let condicionReceptor = null;
+    let padronInfo = null;
+    if (finalCuit) {
+      try {
+        padronInfo = await lookupCuit(finalCuit);
+        if (padronInfo?.source === 'afip') condicionReceptor = padronInfo.condicionIva;
+      } catch { /* si el padrón falla, seguimos con la heurística */ }
+    }
+    const tipo = tipoOverride
+      || (padronInfo?.condicionIvaId ? (padronInfo.condicionIvaId === 1 ? 'A' : 'B') : null)
+      || determineInvoiceType(finalCuit);
 
     // Totales e IVA
     const { neto, iva } = calcularIVA(sale.total, tipo);
@@ -104,6 +118,7 @@ const createInvoice = async (req, res, next) => {
     }
     const { cae, caeVencimiento, respuesta: arcaRespuesta } = await solicitarCAE({
       tipo, total: sale.total, clienteCuit: finalCuit,
+      clienteCondicion: condicionReceptor,
       businessCuit: emisorCuit,
       puntoVenta: arcaConfig?.puntoVenta || null,
       ambiente:   arcaConfig?.ambiente   || 'homologacion',

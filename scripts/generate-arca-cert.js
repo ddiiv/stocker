@@ -22,6 +22,10 @@ const fs   = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
 
+const isMock = process.env.ARCA_MOCK === 'true';
+const c = process.env.ARCA_STOCKER_CUIT;
+console.log(`[ARCA] Modo ${isMock ? 'MOCK' : 'REAL'} — Stocker CUIT=${c || '(no configurado)'}`);
+
 const CUIT = process.env.ARCA_STOCKER_CUIT;
 const ORG  = process.env.ARCA_ORG || 'Stocker';
 if (!CUIT || !/^\d{11}$/.test(CUIT)) {

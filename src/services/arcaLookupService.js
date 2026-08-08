@@ -93,6 +93,53 @@ async function fetchFromExternalApi(cuit) {
   }
 }
 
+// Consulta directa al padrón oficial de AFIP usando nuestro cert.
+// Es la fuente autoritativa — mejor que cualquier API externa. Requiere
+// que el CUIT de Stocker tenga adherido "ws_sr_constancia_inscripcion" en AFIP.
+async function fetchFromAfipPadron(cuit) {
+  if (process.env.ARCA_MOCK === 'true') return null;
+  const stockerCuit = process.env.ARCA_STOCKER_CUIT;
+  if (!stockerCuit) return null;
+  // El padrón SOLO existe en producción (homologación no autoriza ws_sr_*).
+  // Como es una consulta de solo lectura (no emite comprobantes), usamos
+  // siempre el cert productivo aunque estemos facturando en homologación.
+  const { loadCredentials } = require('./arcaCredentials');
+  const creds = loadCredentials('produccion');
+  if (!creds) return null;
+  try {
+    const arcaClient = require('./arcaClient');
+    const data = await arcaClient.padronA5({
+      cert: creds.cert,
+      key:  creds.key,
+      ambiente: 'produccion',
+      cuitConsultado: cuit,
+    });
+    return {
+      razonSocial:    data.razonSocial,
+      apellido:       data.apellido,
+      nombreSolo:     !data.apellido && data.nombre ? data.nombre : null,
+      condicionIva:   data.condicionIva || null,
+      condicionIvaId: data.condicionIvaId || null,
+      domicilio:      data.domicilio?.direccion || null,
+      localidad:      data.domicilio?.localidad || null,
+      provincia:      data.domicilio?.descripcionProvincia || null,
+      codigoPostal:   data.domicilio?.codPostal || null,
+      actividad:      data.actividadPrincipal || null,
+      estadoClave:    data.estadoClave || null,
+      servicioUsado:  data.servicioUsado || null,
+    };
+  } catch (err) {
+    const msg = err.message || '';
+    // Errores "esperados" cuando el cert no tiene autorizado el padrón — silenciosos.
+    // El caller cae automáticamente a validación local (comportamiento normal).
+    if (/computador no autorizado/i.test(msg) || /ya posee un TA valido/i.test(msg)) {
+      return null;
+    }
+    console.warn('[padron AFIP]', msg);
+    return null;
+  }
+}
+
 async function lookupCuit(rawCuit) {
   const cuit = String(rawCuit || '').replace(/[^0-9]/g, '');
   const valido = validateCuit(cuit);
@@ -109,14 +156,36 @@ async function lookupCuit(rawCuit) {
 
   const cached = cache.get(cuit);
   if (cached && Date.now() - cached.at < TTL_MS) {
-    return { ...base, ...cached.data, source: 'cache' };
+    const origen = cached.source === 'afip' ? 'AFIP (oficial, cacheado)' : 'API EXTERNA (NO AFIP, cacheado)';
+    console.log(`[CUIT ${cuit}] Datos de ${origen}.`);
+    return { ...base, ...cached.data, source: cached.source, lockedFields: cached.lockedFields || [] };
   }
 
+  // Prioridad 1: padrón oficial AFIP (si tenemos cert configurado)
+  const afip = await fetchFromAfipPadron(cuit);
+  if (afip) {
+    // Marcamos qué campos vinieron efectivamente de AFIP para que el
+    // frontend los bloquee (son datos oficiales, no se deben editar).
+    const lockedFields = [];
+    if (afip.razonSocial || afip.apellido || afip.nombreSolo) lockedFields.push('nombre', 'apellido');
+    if (afip.domicilio)    lockedFields.push('direccion');
+    // Con la condición IVA real de AFIP el tipo de factura deja de ser una
+    // heurística por prefijo de CUIT: solo un Responsable Inscripto lleva A.
+    if (afip.condicionIvaId) base.tipoFactura = afip.condicionIvaId === 1 ? 'A' : 'B';
+    cache.set(cuit, { at: Date.now(), data: afip, source: 'afip', lockedFields });
+    console.log(`[CUIT ${cuit}] Datos OFICIALES de AFIP — padrón productivo vía ${afip.servicioUsado}. ${afip.razonSocial || ''} · ${afip.condicionIva || 'sin condición IVA'} · Factura ${base.tipoFactura}`);
+    return { ...base, ...afip, source: 'afip', lockedFields };
+  }
+
+  // Prioridad 2: API externa configurable (fallback)
   const padron = await fetchFromExternalApi(cuit);
   if (padron) {
-    cache.set(cuit, { at: Date.now(), data: padron });
-    return { ...base, ...padron, source: 'padron' };
+    cache.set(cuit, { at: Date.now(), data: padron, source: 'padron-externo', lockedFields: [] });
+    console.log(`[CUIT ${cuit}] Datos de API EXTERNA (NO es AFIP) — CUIT_API_URL configurada. Fuente no oficial, puede estar desactualizada o ser incorrecta.`);
+    return { ...base, ...padron, source: 'padron-externo' };
   }
+
+  console.log(`[CUIT ${cuit}] Sin datos externos: solo validación local (dígito verificador + inferencia por prefijo). No se consultó AFIP ni ninguna API.`);
   return { ...base, source: 'local-only' };
 }
 
