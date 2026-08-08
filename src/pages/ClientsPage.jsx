@@ -176,9 +176,11 @@ function ClientFormModal({ open, onClose, onSaved, client }) {
 
         if (data.razonSocial) {
           if (data.tipoPersona === "juridica") {
+            console.log("AFIP: empresa", data.razonSocial, "locked:", locked);
             takeOver("nombre", data.razonSocial);
             if (fromAfip && locked.includes("apellido")) next.apellido = ""; // empresas no llevan apellido
           } else {
+       
             if (data.apellido)    takeOver("apellido", data.apellido);
             if (data.nombreSolo)  takeOver("nombre", data.nombreSolo);
             if (!data.apellido && !data.nombreSolo) {
@@ -256,7 +258,10 @@ function ClientFormModal({ open, onClose, onSaved, client }) {
             <label className="label">Apellido {isLocked("apellido") && <span title="Dato oficial de AFIP">🔒</span>}</label>
             <input className={`input ${isLocked("apellido") ? "bg-paper-100 cursor-not-allowed" : ""}`} maxLength={100} value={form.apellido || ""} readOnly={isLocked("apellido")} onChange={(e) => update("apellido", e.target.value)} />
           </div>
-          <div><label className="label">DNI</label><input className="input font-mono" inputMode="numeric" maxLength={8} pattern="[0-9]*" value={form.dni || ""} onChange={(e) => update("dni", e.target.value.replace(/\D/g, "").slice(0, 8))} /></div>
+          <div>
+            <label className="label">DNI <span title="Se infiere del CUIT y no es editable">🔒</span></label>
+            <input className="input font-mono bg-paper-100 cursor-not-allowed" readOnly inputMode="numeric" maxLength={8} value={form.dni || ""} />
+          </div>
           <div>
             <label className="label">Tipo</label>
             <select className="input" value={form.tipo} onChange={(e) => update("tipo", e.target.value)}>

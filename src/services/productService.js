@@ -85,6 +85,10 @@ export async function updateProduct(id, payload) {
   return data;
 }
 
+export async function deleteVariant(variantId) {
+  return http.delete(`/products/variants/${variantId}`);
+}
+
 export async function deleteProduct(id) {
   await http.delete(`/products/${id}`);
 }

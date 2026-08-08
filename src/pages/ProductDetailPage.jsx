@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useParams, Link } from "react-router-dom";
-import { ArrowLeft, Plus } from "lucide-react";
-import { fetchProductGroups, adjustVariantStock, createVariant } from "../services/productService";
+import { ArrowLeft, Plus, Trash2 } from "lucide-react";
+import { fetchProductGroups, adjustVariantStock, createVariant, deleteVariant } from "../services/productService";
 import { PageHeader, Card, EmptyState } from "../components/ui/Layout";
 import { formatCurrency } from "../utils/formatters";
 import { Boxes, PencilLine, Check } from "lucide-react";
@@ -24,6 +24,16 @@ export default function ProductDetailPage() {
   async function handleAdjustStock(variant, tipo, cantidad, motivo) {
     await adjustVariantStock(variant.id, { tipo, cantidad: Number(cantidad), motivo });
     load();
+  }
+
+  async function handleDeleteVariant(variant) {
+    if (!confirm(`¿Eliminar la variante ${variant.sku}? Esta acción no se puede deshacer.`)) return;
+    try {
+      await deleteVariant(variant.id);
+      load();
+    } catch (err) {
+      alert(err.response?.data?.message || "Error al eliminar la variante");
+    }
   }
 
   if (loading) return <div className="card h-64 animate-pulse bg-paper-200/60" />;
@@ -60,7 +70,7 @@ export default function ProductDetailPage() {
             </tr>
           </thead>
           <tbody>
-            {group.variants.map((v) => <VariantEditRow key={v.id} variant={v} onAdjust={handleAdjustStock} />)}
+            {group.variants.map((v) => <VariantEditRow key={v.id} variant={v} onAdjust={handleAdjustStock} onDelete={handleDeleteVariant} />)}
           </tbody>
         </table>
       </div>
@@ -68,7 +78,7 @@ export default function ProductDetailPage() {
   );
 }
 
-function VariantEditRow({ variant, onAdjust }) {
+function VariantEditRow({ variant, onAdjust, onDelete }) {
   const [form, setForm] = useState({ tipo: "ingreso", cantidad: 1, motivo: "" });
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -104,7 +114,10 @@ function VariantEditRow({ variant, onAdjust }) {
             <button className="btn-ghost px-2 py-1 text-xs" onClick={() => setEditing(false)}>✕</button>
           </div>
         ) : (
-          <button className="btn-ghost px-2 py-1.5 text-xs" onClick={() => setEditing(true)}><PencilLine size={13} /> Ajustar stock</button>
+          <div className="flex gap-1">
+            <button className="btn-ghost px-2 py-1.5 text-xs" onClick={() => setEditing(true)}><PencilLine size={13} /> Ajustar stock</button>
+            <button className="btn-ghost px-2 py-1.5 text-xs text-brick-500" title="Eliminar variante" onClick={() => onDelete(variant)}><Trash2 size={13} /></button>
+          </div>
         )}
       </td>
     </tr>

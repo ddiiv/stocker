@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { Search, Boxes, RefreshCw, Plus, Download, Upload } from "lucide-react";
-import { fetchProductGroups, createProduct, exportProductsExcel, importProductsExcel } from "../services/productService";
+import { Search, Boxes, RefreshCw, Plus, Download, Upload, Trash2 } from "lucide-react";
+import { fetchProductGroups, createProduct, deleteProduct, exportProductsExcel, importProductsExcel } from "../services/productService";
 import { fetchVariantTypes } from "../services/variantTypeService";
 import { formatCurrency } from "../utils/formatters";
 import { PageHeader, EmptyState } from "../components/ui/Layout";
@@ -50,6 +50,17 @@ export default function StockPage() {
 
   function handleImportClick() {
     fileInputRef.current?.click();
+  }
+
+  async function handleDeleteGroup(g) {
+    if (!confirm(`¿Eliminar el producto "${g.title}" y todas sus variantes? Esta acción no se puede deshacer.`)) return;
+    try {
+      // Un grupo puede tener varios productos padre; los eliminamos todos
+      await Promise.all(g.variants.map((v) => deleteProduct(v.productId)));
+      await load(search);
+    } catch (err) {
+      alert(err.response?.data?.message || "Error al eliminar el producto");
+    }
   }
 
   async function handleImportFile(e) {
@@ -152,7 +163,10 @@ export default function StockPage() {
                     </span>
                   </td>
                   <td className="px-4 py-3 text-right">
-                    <Link to={`/stock/${g.skuAgrupador}`} className="btn-ghost px-3 py-1.5 text-xs">Ver / editar</Link>
+                    <div className="flex justify-end gap-1">
+                      <Link to={`/stock/${g.skuAgrupador}`} className="btn-ghost px-3 py-1.5 text-xs">Ver / editar</Link>
+                      <button className="btn-ghost px-2 py-1.5 text-brick-500" title="Eliminar producto" onClick={() => handleDeleteGroup(g)}><Trash2 size={14} /></button>
+                    </div>
                   </td>
                 </tr>
               ))}
