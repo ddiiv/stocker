@@ -145,11 +145,59 @@ const getDashboard = async (req, res, next) => {
       }
     }
 
+    // Top de variantes individuales (SKU exacto), además del agrupado por padre.
+    // Sirve para ver qué talle/color concreto tiene más salida.
+    const byVariant = new Map();
+    for (const s of paid) {
+      for (const i of s.items) {
+        const acc = byVariant.get(i.sku) || {
+          sku: i.sku, titulo: i.titulo, skuAgrupador: i.skuAgrupador,
+          variante1Nombre: i.variante1Nombre, variante1Valor: i.variante1Valor,
+          variante2Nombre: i.variante2Nombre, variante2Valor: i.variante2Valor,
+          unidades: 0, facturado: 0,
+        };
+        acc.unidades  += i.cantidad;
+        acc.facturado += Number(i.subtotal);
+        byVariant.set(i.sku, acc);
+      }
+    }
+
     const byDay = new Map();
     for (const s of paid) byDay.set(s.fecha, (byDay.get(s.fecha) || 0) + Number(s.total));
 
     const invoices = await Invoice.findAll({ where: { businessId, estado: 'emitida' } });
     const stockBajo = await ProductVariant.findAll({ include: [{ model: Product, as: 'producto', where: { businessId } }], order: [['stock', 'ASC']], limit: 200 });
+
+    // ── Progreso histórico ──────────────────────────────────────────
+    // Query aparte sin filtro de fecha: el rango de arriba solo aplica a los
+    // KPIs del período, pero la evolución anual necesita todo el historial.
+    const historicas = await Sale.findAll({
+      where: { businessId, tipo: 'venta', estado: 'pagado' },
+      include: [{ model: SaleItem, as: 'items' }],
+    });
+
+    const byYear  = new Map();
+    const byMonth = new Map();
+    for (const s of historicas) {
+      const anio = String(s.fecha).slice(0, 4);
+      const mes  = String(s.fecha).slice(0, 7); // YYYY-MM
+      const unidades = s.items.reduce((n, i) => n + i.cantidad, 0);
+
+      const ay = byYear.get(anio) || { anio, total: 0, ventas: 0, unidades: 0 };
+      ay.total += Number(s.total); ay.ventas += 1; ay.unidades += unidades;
+      byYear.set(anio, ay);
+
+      const am = byMonth.get(mes) || { mes, total: 0, ventas: 0, unidades: 0 };
+      am.total += Number(s.total); am.ventas += 1; am.unidades += unidades;
+      byMonth.set(mes, am);
+    }
+
+    const serieAnual = Array.from(byYear.values()).sort((a, b) => a.anio.localeCompare(b.anio));
+    // Variación año contra año, para mostrar si el negocio crece o cae.
+    serieAnual.forEach((a, idx) => {
+      const previo = idx > 0 ? serieAnual[idx - 1].total : 0;
+      a.variacionPct = previo ? Math.round(((a.total - previo) / previo) * 100) : null;
+    });
 
     res.json({
       revenue, cogs, margin: revenue - cogs,
@@ -158,7 +206,10 @@ const getDashboard = async (req, res, next) => {
       salesCount: paid.length,
       ticketPromedio: paid.length ? Math.round(revenue / paid.length) : 0,
       topProducts: Array.from(byGroup.entries()).map(([k, v]) => ({ skuAgrupador: k, ...v })).sort((a, b) => b.unidades - a.unidades).slice(0, 8),
+      topVariants: Array.from(byVariant.values()).sort((a, b) => b.unidades - a.unidades).slice(0, 10),
       revenueSeries: Array.from(byDay.entries()).map(([fecha, total]) => ({ fecha, total })).sort((a, b) => a.fecha > b.fecha ? 1 : -1),
+      serieAnual,
+      serieMensual: Array.from(byMonth.values()).sort((a, b) => a.mes.localeCompare(b.mes)),
       lowStock: stockBajo.filter((v) => v.stock <= v.stockMinimo).slice(0, 10).map((v) => ({ sku: v.sku, titulo: v.producto.titulo, talle: v.variante2Valor, color: v.variante1Valor, stock: v.stock, stockMinimo: v.stockMinimo })),
       invoicesCount: invoices.length,
       invoicesTotal: invoices.reduce((s, i) => s + Number(i.total), 0),

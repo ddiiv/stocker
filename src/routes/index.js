@@ -21,6 +21,8 @@ const arcaConfigCtrl = require('../controllers/arcaConfigController');
 const variantTypeCtrl = require('../controllers/variantTypeController');
 const businessCuitCtrl = require('../controllers/businessCuitController');
 const { testSend: whatsappTestSend } = require('../controllers/whatsappTestController');
+const mlCtrl = require('../controllers/mercadolibreController');
+const metricsCtrl = require('../controllers/metricsController');
 
 const r = Router();
 
@@ -70,6 +72,19 @@ r.get ('/arca/cuits/:cuitId/config',    requireAuth, arcaConfigCtrl.getConfig);
 r.put ('/arca/cuits/:cuitId/config',    requireAuth, requirePermission('facturacion','editar'), arcaConfigCtrl.saveConfig);
 r.post('/arca/cuits/:cuitId/verify',    requireAuth, requirePermission('facturacion','editar'), arcaConfigCtrl.verifyDelegation);
 
+// ── MercadoLibre (sincronización de stock por SKU) ───────────────
+// El callback es público: ML redirige al usuario ahí sin nuestro JWT,
+// el negocio se identifica por el parámetro `state`.
+r.get   ('/mercadolibre/callback',    mlCtrl.callback);
+r.get   ('/mercadolibre/status',      requireAuth, requirePermission('stock','ver'),    mlCtrl.status);
+r.get   ('/mercadolibre/auth-url',    requireAuth, requirePermission('stock','editar'), mlCtrl.authUrl);
+r.delete('/mercadolibre/disconnect',  requireAuth, requirePermission('stock','editar'), mlCtrl.disconnect);
+r.get   ('/mercadolibre/preview',     requireAuth, requirePermission('stock','ver'),    mlCtrl.preview);
+r.post  ('/mercadolibre/sync',        requireAuth, requirePermission('stock','editar'), mlCtrl.sync);
+r.get   ('/mercadolibre/links',       requireAuth, requirePermission('stock','ver'),    mlCtrl.listLinks);
+r.post  ('/mercadolibre/links',       requireAuth, requirePermission('stock','editar'), mlCtrl.upsertLink);
+r.delete('/mercadolibre/links/:id',   requireAuth, requirePermission('stock','editar'), mlCtrl.deleteLink);
+
 // ── Variant types (variantes maestras del negocio) ───────────────
 r.get   ('/variant-types',      requireAuth, requirePermission('stock','ver'),    variantTypeCtrl.list);
 r.post  ('/variant-types',      requireAuth, requirePermission('stock','editar'), variantTypeCtrl.create);
@@ -117,5 +132,9 @@ r.get   ('/invoices/:id/pdf',   requireAuth, requirePermission('facturacion','ve
 
 // ── Dashboard ─────────────────────────────────────────────────────
 r.get('/dashboard', requireAuth, requirePermission('dashboard','ver'), getDashboard);
+
+// ── Métricas analíticas (histórico + rendimiento por producto) ───
+r.get('/metrics/timeline', requireAuth, requirePermission('dashboard','ver'), metricsCtrl.timeline);
+r.get('/metrics/products', requireAuth, requirePermission('dashboard','ver'), metricsCtrl.products);
 
 module.exports = r;

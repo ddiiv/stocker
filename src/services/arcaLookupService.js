@@ -117,6 +117,9 @@ async function fetchFromAfipPadron(cuit) {
     return {
       razonSocial:    data.razonSocial,
       apellido:       data.apellido,
+      // `nombre` es el nombre de pila tal cual lo da AFIP (para personas físicas).
+      // `nombreSolo` queda para el caso sin apellido, donde el nombre es todo.
+      nombre:         data.nombre,
       nombreSolo:     !data.apellido && data.nombre ? data.nombre : null,
       condicionIva:   data.condicionIva || null,
       condicionIvaId: data.condicionIvaId || null,

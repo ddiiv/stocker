@@ -57,6 +57,37 @@ const ArcaToken = db.define('ArcaToken', {
   expiraEn:  { type: DataTypes.DATE, allowNull: false },
 }, { tableName: 'arca_tokens' });
 
+// ─── MercadoLibreAccount (integración por negocio) ───────────────
+// Guarda el OAuth de ML. El access_token dura 6h y se renueva con el
+// refresh_token (que dura 6 meses y se rota en cada refresh, así que hay
+// que persistir el nuevo cada vez).
+const MercadoLibreAccount = db.define('MercadoLibreAccount', {
+  id:              { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
+  businessId:      { type: DataTypes.INTEGER, allowNull: false, unique: true },
+  mlUserId:        { type: DataTypes.STRING(30) },
+  nickname:        { type: DataTypes.STRING(120) },
+  accessToken:     { type: DataTypes.TEXT },
+  refreshToken:    { type: DataTypes.TEXT },
+  tokenExpiraEn:   { type: DataTypes.DATE },
+  // sincronizacion
+  syncActiva:      { type: DataTypes.BOOLEAN, defaultValue: true },
+  ultimaSync:      { type: DataTypes.DATE },
+  ultimoError:     { type: DataTypes.STRING(500) },
+}, { tableName: 'mercadolibre_accounts' });
+
+// ─── MercadoLibreLink (vínculo SKU Stocker ↔ publicación ML) ─────
+const MercadoLibreLink = db.define('MercadoLibreLink', {
+  id:              { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
+  businessId:      { type: DataTypes.INTEGER, allowNull: false },
+  sku:             { type: DataTypes.STRING(60), allowNull: false },
+  mlItemId:        { type: DataTypes.STRING(30), allowNull: false }, // MLA123456789
+  mlVariationId:   { type: DataTypes.STRING(30) },                   // si la publicación tiene variantes
+  titulo:          { type: DataTypes.STRING(200) },
+  ultimoStockEnviado: { type: DataTypes.INTEGER },
+  ultimaSync:      { type: DataTypes.DATE },
+  ultimoError:     { type: DataTypes.STRING(500) },
+}, { tableName: 'mercadolibre_links' });
+
 // ─── VariantType (variantes maestras: Color, Talle, …) ───────────
 const VariantType = db.define('VariantType', {
   id:         { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
@@ -364,6 +395,7 @@ InvoiceItem.belongsTo(Invoice, { foreignKey: 'invoiceId' });
 module.exports = {
   db,
   Business, BusinessLocation, BusinessCuit, BusinessArcaConfig, ArcaToken, VariantType,
+  MercadoLibreAccount, MercadoLibreLink,
   Role, Employee, EmployeeSession, PasswordResetCode, Client,
   Product, ProductVariant, StockMovement,
   Sale, SaleItem, Invoice, InvoiceItem,
