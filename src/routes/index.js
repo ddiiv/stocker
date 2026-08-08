@@ -6,7 +6,7 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 
 
 const { register, login, employeeLogin, me, forgotPassword, verifyResetCode, resetPassword } = require('../controllers/authController');
 const { validatePasswordBody } = require('../utils/passwordPolicy');
-const productCtrl = require('../controllers/productController');
+const productCtrl  = require('../controllers/productController');
 const employeeCtrl = require('../controllers/employeeController');
 const saleCtrl     = require('../controllers/saleController');
 const invoiceCtrl  = require('../controllers/invoiceController');
@@ -96,6 +96,7 @@ r.put   ('/products/:id',                                 requireAuth, requirePe
 r.delete('/products/:id',                                 requireAuth, requirePermission('stock','editar'), productCtrl.deleteProduct);
 r.post  ('/products/:id/variants',                        requireAuth, requirePermission('stock','editar'), productCtrl.addVariant);
 r.put   ('/products/variants/:variantId',                 requireAuth, requirePermission('stock','editar'), productCtrl.updateVariant);
+r.delete('/products/variants/:variantId',                 requireAuth, requirePermission('stock','editar'), productCtrl.deleteVariant);
 r.patch ('/products/variants/:variantId/stock',           requireAuth, requirePermission('stock','editar'), productCtrl.adjustStock);
 r.get   ('/products/variants/:variantId/movements',       requireAuth, requirePermission('stock','ver'),    productCtrl.getVariantMovements);
 

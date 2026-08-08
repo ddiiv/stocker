@@ -4,7 +4,7 @@ const { Invoice, InvoiceItem, Sale, SaleItem, Business, Client, BusinessCuit, Bu
 const { nextInvoiceNumber } = require('../services/invoiceNumberService');
 const { solicitarCAE, determineInvoiceType, calcularIVA } = require('../services/arcaService');
 const { lookupCuit } = require('../services/arcaLookupService');
-const { generateInvoicePdf } = require('../services/pdfService');
+const { generateInvoicePdf, generateInvoicePdfBuffer } = require('../services/pdfService');
 const { sendInvoiceEmail } = require('../services/emailService');
 const { sendInvoiceWhatsapp } = require('../services/whatsappService');
 
@@ -202,15 +202,23 @@ const voidInvoice = async (req, res, next) => {
   } catch (error) { next(error); }
 };
 
-// GET /api/invoices/:id/pdf  → devuelve el PDF como descarga
+// GET /api/invoices/:id/pdf  → devuelve el PDF (regenerado en memoria, sin disco)
 const downloadPdf = async (req, res, next) => {
   try {
-    const invoice = await Invoice.findOne({ where: { id: req.params.id, businessId: req.auth.businessId } });
+    const invoice = await Invoice.findOne({
+      where: { id: req.params.id, businessId: req.auth.businessId },
+      include: [{ model: InvoiceItem, as: 'items' }],
+    });
     if (!invoice) return res.status(404).json({ message: 'Factura no encontrada.' });
-    if (!invoice.pdfPath) return res.status(404).json({ message: 'PDF no generado todavía.' });
 
-    const abs = path.resolve(invoice.pdfPath);
-    res.download(abs, `factura-${invoice.numero}.pdf`);
+    const business = await Business.findByPk(req.auth.businessId);
+    const buffer = await generateInvoicePdfBuffer(invoice.toJSON(), invoice.items || [], business.toJSON());
+
+    const filename = `factura-${(invoice.numero || invoice.id).toString().replace(/\//g, '-')}.pdf`;
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
+    res.setHeader('Content-Length', buffer.length);
+    res.send(buffer);
   } catch (error) { next(error); }
 };
 

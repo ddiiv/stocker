@@ -127,6 +127,17 @@ const deleteProduct = async (req, res, next) => {
   } catch (error) { next(error); }
 };
 
+// ── DELETE /api/products/variants/:variantId ─────────────────────
+const deleteVariant = async (req, res, next) => {
+  try {
+    const variant = await ProductVariant.findByPk(req.params.variantId, { include: [{ model: Product, as: 'producto' }] });
+    if (!variant || variant.producto.businessId !== req.auth.businessId)
+      return res.status(404).json({ message: 'Variante no encontrada.' });
+    await variant.destroy();
+    res.status(204).send();
+  } catch (error) { next(error); }
+};
+
 // ── POST /api/products/:id/variants ───────────────────────────────
 const addVariant = async (req, res, next) => {
   try {
@@ -233,4 +244,4 @@ const importProducts = async (req, res, next) => {
   } catch (error) { next(error); }
 };
 
-module.exports = { getProducts, getProduct, createProduct, updateProduct, deleteProduct, addVariant, updateVariant, adjustStock, getVariantMovements, exportProducts, importProducts };
+module.exports = { getProducts, getProduct, createProduct, updateProduct, deleteProduct, addVariant, updateVariant, deleteVariant, adjustStock, getVariantMovements, exportProducts, importProducts };

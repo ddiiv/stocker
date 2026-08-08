@@ -211,6 +211,62 @@ async function generateInvoicePdf(invoice, items, business) {
   });
 }
 
+// Misma lógica pero devuelve un Buffer en memoria (sin tocar el disco).
+// Usar para servir el PDF directamente desde el endpoint, funciona en
+// cualquier hosting con filesystem efímero (Railway, Render, etc.).
+async function generateInvoicePdfBuffer(invoice, items, business) {
+  const emisorNombre = invoice.emisorNombre || business.nombreNegocio;
+  const emisorCuit   = invoice.emisorCuit   || business.cuit;
+
+  return new Promise((resolve, reject) => {
+    const doc = new PDFDocument({ size: 'A4', margin: 50 });
+    const chunks = [];
+    doc.on('data', (c) => chunks.push(c));
+    doc.on('end',  () => resolve(Buffer.concat(chunks)));
+    doc.on('error', reject);
+
+    drawHeaderBar(doc, {
+      titulo: emisorNombre,
+      subtitulo: `CUIT ${emisorCuit}${business.telefono ? ' · Tel ' + business.telefono : ''}`,
+      badge: { top: 'FACTURA', big: invoice.tipo || 'B' },
+    });
+
+    let y = 110;
+    y = drawSectionTitle(doc, 'Comprobante', y);
+    const col1x = 50, col2x = 310;
+    drawKeyValue(doc, col1x, y,    'N° Factura',    invoice.numero);
+    drawKeyValue(doc, col1x, y+14, 'Fecha emisión', dateTime(invoice.fechaEmision));
+    drawKeyValue(doc, col1x, y+28, 'Tipo',          `Factura ${invoice.tipo}`);
+    drawKeyValue(doc, col2x, y,    'CAE',           invoice.cae || '—');
+    drawKeyValue(doc, col2x, y+14, 'Vto. CAE',      invoice.caeVencimiento ? dateOnly(invoice.caeVencimiento) : '—');
+    drawKeyValue(doc, col2x, y+28, 'Estado',        (invoice.estado || 'emitida').toUpperCase());
+    y += 60;
+
+    y = drawSectionTitle(doc, 'Cliente', y);
+    drawKeyValue(doc, col1x, y,    'Nombre',    invoice.clienteNombre || 'Consumidor final');
+    drawKeyValue(doc, col1x, y+14, 'CUIT/DNI',  invoice.clienteCuit || '—');
+    drawKeyValue(doc, col1x, y+28, 'Email',     invoice.clienteEmail || '—');
+    drawKeyValue(doc, col2x, y,    'Dirección', invoice.clienteDireccion || '—');
+    drawKeyValue(doc, col2x, y+14, 'Precio',    invoice.esMayorista ? 'MAYORISTA' : 'MINORISTA');
+    y += 60;
+
+    y = drawSectionTitle(doc, 'Detalle', y);
+    y = drawItemsTable(doc, items, y);
+    y += 10;
+
+    drawTotals(doc, y, {
+      subtotal: invoice.subtotal,
+      descuento: 0, descuentoPct: 0,
+      iva: invoice.iva || 0,
+      total: invoice.total,
+      esMayorista: invoice.esMayorista,
+    });
+
+    drawFooter(doc, business);
+    doc.end();
+  });
+}
+
 // ── PDF de Venta / Pedido ─────────────────────────────────────────
 async function generateSalePdf(sale, items, business, { cliente, emisor } = {}) {
   await ensureDir();
@@ -418,4 +474,4 @@ async function generateSaleTicketPdf(sale, items, business, { cliente, emisor } 
   });
 }
 
-module.exports = { generateInvoicePdf, generateSalePdf, generateSaleTicketPdf, PDF_DIR, COLOR };
+module.exports = { generateInvoicePdf, generateInvoicePdfBuffer, generateSalePdf, generateSaleTicketPdf, PDF_DIR, COLOR };
