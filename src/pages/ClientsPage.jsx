@@ -132,19 +132,24 @@ function ClientFormModal({ open, onClose, onSaved, client }) {
   const [saving, setSaving] = useState(false);
   const [serverError, setServerError] = useState("");
   const [cuitStatus, setCuitStatus] = useState(null); // { loading, data, error }
+  // Campos bloqueados porque los devolvió AFIP (fuente oficial, no editable).
+  const [lockedFields, setLockedFields] = useState([]);
   const cuitDebounce = useRef(null);
 
   useEffect(() => {
     setForm(client ? { ...empty, ...client } : empty);
     setCuitStatus(null);
+    setLockedFields([]);
     setServerError("");
   }, [client, open]);
 
   function update(key, value) { setForm((f) => ({ ...f, [key]: value })); }
+  const isLocked = (k) => lockedFields.includes(k);
 
   function handleCuitChange(value) {
     update("cuit", value);
     setCuitStatus(null);
+    setLockedFields([]); // reset: si cambian el CUIT, se desbloquean los campos
     clearTimeout(cuitDebounce.current);
     const clean = value.replace(/[^0-9]/g, "");
     if (clean.length !== 11) return;
@@ -155,29 +160,37 @@ function ClientFormModal({ open, onClose, onSaved, client }) {
       if (!data.valido) return setCuitStatus({ error: "CUIT inválido (dígito verificador incorrecto)" });
       setCuitStatus({ data });
 
-      // Autocompletar: cada campo se llena solo si está vacío, para no pisar edición
+      // Si vino de AFIP: pisamos los campos con la fuente oficial y los bloqueamos.
+      // Si vino solo de heurística local: solo llenamos los que estén vacíos.
+      const fromAfip = data.source === "afip";
+      const locked = fromAfip ? (data.lockedFields || []) : [];
+      setLockedFields(locked);
+
       setForm((f) => {
         const next = { ...f };
+        const takeOver = (k, v) => {
+          if (v == null || v === "") return;
+          if (fromAfip && locked.includes(k)) next[k] = v; // AFIP: pisa
+          else if (!f[k]) next[k] = v;                     // heurística: rellena vacíos
+        };
 
-        // 1) Datos que devuelve la API externa (si está configurada y respondió)
         if (data.razonSocial) {
           if (data.tipoPersona === "juridica") {
-            if (!f.nombre) next.nombre = data.razonSocial;
+            takeOver("nombre", data.razonSocial);
+            if (fromAfip && locked.includes("apellido")) next.apellido = ""; // empresas no llevan apellido
           } else {
-            // Persona física: intentar separar en apellido / nombre
-            if (data.apellido && !f.apellido) next.apellido = data.apellido;
-            if (data.nombreSolo && !f.nombre) next.nombre = data.nombreSolo;
+            if (data.apellido)    takeOver("apellido", data.apellido);
+            if (data.nombreSolo)  takeOver("nombre", data.nombreSolo);
             if (!data.apellido && !data.nombreSolo) {
               const parts = data.razonSocial.split(/[,\s]+/).filter(Boolean);
-              if (!f.apellido && parts.length > 1) next.apellido = parts[0];
-              if (!f.nombre) next.nombre = parts.slice(parts.length > 1 ? 1 : 0).join(" ");
+              if (parts.length > 1) takeOver("apellido", parts[0]);
+              takeOver("nombre", parts.slice(parts.length > 1 ? 1 : 0).join(" "));
             }
           }
         }
-        if (data.domicilio    && !f.direccion) next.direccion = data.domicilio;
+        if (data.domicilio) takeOver("direccion", data.domicilio);
 
-        // 2) Datos deducibles del CUIT sin API (siempre)
-        // DNI: el CUIT lo contiene, así que siempre lo sincronizamos.
+        // DNI: siempre inferido del CUIT (personas físicas).
         if (data.dniInferido) next.dni = data.dniInferido;
         else if (data.tipoPersona === "juridica") next.dni = "";
         if (data.tipoCliente && f.tipo === "minorista" && data.tipoPersona === "juridica") {
@@ -224,14 +237,25 @@ function ClientFormModal({ open, onClose, onSaved, client }) {
             )}
             {cuitStatus?.data && (
               <p className="mt-1 flex items-center gap-1 text-xs text-teal-600">
-                <BadgeCheck size={12} /> CUIT válido · {cuitStatus.data.tipoPersona} · sugerido: Factura {cuitStatus.data.tipoFactura}
+                <BadgeCheck size={12} />
+                {cuitStatus.data.source === "afip" ? "Datos oficiales AFIP" : "CUIT válido"}
+                {" · "}{cuitStatus.data.tipoPersona} · sugerido: Factura {cuitStatus.data.tipoFactura}
                 {cuitStatus.data.dniInferido && ` · DNI ${cuitStatus.data.dniInferido}`}
                 {cuitStatus.data.razonSocial && ` · ${cuitStatus.data.razonSocial}`}
               </p>
             )}
+            {lockedFields.length > 0 && (
+              <p className="mt-1 text-xs text-ink-500">Los campos marcados con candado los completa AFIP y no se pueden editar.</p>
+            )}
           </div>
-          <div><label className="label">Nombre / Razón social *</label><input className="input" required minLength={2} maxLength={100} value={form.nombre} onChange={(e) => update("nombre", e.target.value)} /></div>
-          <div><label className="label">Apellido</label><input className="input" maxLength={100} value={form.apellido || ""} onChange={(e) => update("apellido", e.target.value)} /></div>
+          <div>
+            <label className="label">Nombre / Razón social * {isLocked("nombre") && <span title="Dato oficial de AFIP">🔒</span>}</label>
+            <input className={`input ${isLocked("nombre") ? "bg-paper-100 cursor-not-allowed" : ""}`} required minLength={2} maxLength={100} value={form.nombre} readOnly={isLocked("nombre")} onChange={(e) => update("nombre", e.target.value)} />
+          </div>
+          <div>
+            <label className="label">Apellido {isLocked("apellido") && <span title="Dato oficial de AFIP">🔒</span>}</label>
+            <input className={`input ${isLocked("apellido") ? "bg-paper-100 cursor-not-allowed" : ""}`} maxLength={100} value={form.apellido || ""} readOnly={isLocked("apellido")} onChange={(e) => update("apellido", e.target.value)} />
+          </div>
           <div><label className="label">DNI</label><input className="input font-mono" inputMode="numeric" maxLength={8} pattern="[0-9]*" value={form.dni || ""} onChange={(e) => update("dni", e.target.value.replace(/\D/g, "").slice(0, 8))} /></div>
           <div>
             <label className="label">Tipo</label>
@@ -248,7 +272,10 @@ function ClientFormModal({ open, onClose, onSaved, client }) {
             <label className="label">WhatsApp <span className="text-ink-500 font-normal">(si es distinto al teléfono)</span></label>
             <PhoneInput value={form.whatsapp || ""} onChange={(v) => update("whatsapp", v)} />
           </div>
-          <div className="col-span-2"><label className="label">Dirección</label><input className="input" value={form.direccion || ""} onChange={(e) => update("direccion", e.target.value)} /></div>
+          <div className="col-span-2">
+            <label className="label">Dirección {isLocked("direccion") && <span title="Dato oficial de AFIP">🔒</span>}</label>
+            <input className={`input ${isLocked("direccion") ? "bg-paper-100 cursor-not-allowed" : ""}`} value={form.direccion || ""} readOnly={isLocked("direccion")} onChange={(e) => update("direccion", e.target.value)} />
+          </div>
           <div className="col-span-2"><label className="label">Notas</label><textarea className="input min-h-16" value={form.notas || ""} onChange={(e) => update("notas", e.target.value)} /></div>
         </div>
         <div className="flex justify-end gap-2">

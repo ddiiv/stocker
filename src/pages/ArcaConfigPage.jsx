@@ -1,7 +1,11 @@
 import { useEffect, useState } from "react";
 import { useParams, Link } from "react-router-dom";
-import { ArrowLeft, CheckCircle2, XCircle, ExternalLink, Copy, RefreshCw, ShieldCheck, AlertCircle } from "lucide-react";
+import {
+  ArrowLeft, CheckCircle2, XCircle, ExternalLink, Copy, RefreshCw,
+  ShieldCheck, AlertCircle, Info, Store, KeyRound, HelpCircle,
+} from "lucide-react";
 import { PageHeader, Card } from "../components/ui/Layout";
+import Modal from "../components/ui/Modal";
 import { getArcaConfig, saveArcaConfig, verifyArcaDelegation, getArcaStatus } from "../services/arcaConfigService";
 
 const CONDICIONES = [
@@ -12,7 +16,7 @@ const CONDICIONES = [
 
 export default function ArcaConfigPage() {
   const { cuitId } = useParams();
-  const [data, setData] = useState(null);   // { cuit, config, stockerCuit, mockMode }
+  const [data, setData] = useState(null);
   const [health, setHealth] = useState(null);
   const [saving, setSaving] = useState(false);
   const [verifying, setVerifying] = useState(false);
@@ -21,6 +25,7 @@ export default function ArcaConfigPage() {
   const [puntoVenta, setPuntoVenta] = useState("");
   const [condicionIva, setCondicionIva] = useState("");
   const [ambiente, setAmbiente] = useState("homologacion");
+  const [showHelp, setShowHelp] = useState(false);
 
   async function load() {
     setError("");
@@ -63,6 +68,8 @@ export default function ArcaConfigPage() {
   const stockerCuit = data.stockerCuit || "(sin configurar en el servidor)";
   const cuit = data.cuit;
   const config = data.config;
+  const puntoVentaMatchesArca =
+    verifyResult?.ok && verifyResult.puntosVenta?.some((pv) => Number(pv.Nro) === Number(config?.puntoVenta));
 
   return (
     <div>
@@ -72,6 +79,11 @@ export default function ArcaConfigPage() {
       <PageHeader
         title={`Configurar ARCA · ${cuit.nombre}`}
         subtitle={`Activar facturación electrónica para el CUIT ${cuit.cuit}`}
+        actions={
+          <button className="btn-ghost" onClick={() => setShowHelp(true)}>
+            <HelpCircle size={15} /> ¿Cómo funciona?
+          </button>
+        }
       />
 
       {error && <p className="mb-4 rounded-md bg-brick-50 px-3 py-2 text-sm text-brick-500">{error}</p>}
@@ -79,7 +91,7 @@ export default function ArcaConfigPage() {
       {/* Estado global del servicio */}
       <div className={`mb-6 rounded-md border px-4 py-3 text-sm ${health?.ok ? "border-teal-500 bg-teal-50 text-teal-600" : "border-line bg-paper-100 text-ink-700"}`}>
         {data.mockMode ? (
-          <>⚠ Modo MOCK activo — los CAE se generan simulados sin llamar a AFIP. Cuando cargues el certificado y quites <code>ARCA_MOCK=true</code>, este panel valida contra ARCA real.</>
+          <><strong>⚠ Modo MOCK activo</strong> — los CAE se generan simulados sin llamar a AFIP. Este panel valida flujos pero no emite facturas reales. Cuando Stocker esté configurado con el certificado real, tocás el switch a producción.</>
         ) : health?.ok ? (
           <>✓ Servicio ARCA responde OK ({health.ambiente}). Certificado de Stocker configurado y funcionando.</>
         ) : (
@@ -87,29 +99,60 @@ export default function ArcaConfigPage() {
         )}
       </div>
 
-      <div className="grid gap-5 lg:grid-cols-3">
-        {/* Instrucciones AFIP */}
-        <Card className="lg:col-span-2">
+      {/* Explicación rápida del modelo */}
+      <div className="mb-6 rounded-md border border-brass-500/40 bg-brass-50/50 px-4 py-3 text-sm text-ink-700">
+        <p className="mb-1 flex items-center gap-1 font-medium text-ink-950"><Info size={14} /> ¿Qué hago acá?</p>
+        <p>Vas a autorizar a Stocker a emitir facturas <strong>a tu nombre</strong> ante AFIP.
+        Nosotros ponemos el certificado y firma; vos ponés el CUIT y el punto de venta.
+        Solo necesitás hacer 2 clicks en AFIP una única vez (pasos <strong>1</strong> y <strong>2</strong> abajo).</p>
+      </div>
+
+      {/* ═══════════════════ PASOS EN AFIP ═══════════════════ */}
+      <p className="mb-3 text-xs font-medium uppercase tracking-wide text-ink-600">Lo que hacés en AFIP (una única vez, ~5 min)</p>
+
+      <div className="mb-6 grid gap-5 lg:grid-cols-2">
+        {/* Paso 1 — crear PdV Web Services */}
+        <Card>
           <div className="mb-3 flex items-center gap-2">
             <span className="flex h-7 w-7 items-center justify-center rounded-full bg-brass-500 text-xs font-bold text-ink-950">1</span>
+            <Store size={16} className="text-brass-600" />
+            <h3 className="font-display text-base font-semibold text-ink-950">Crear Punto de Venta electrónico</h3>
+          </div>
+          <p className="mb-3 text-sm text-ink-700">
+            Entrá a{" "}
+            <a className="text-brass-600 hover:underline inline-flex items-center gap-1" href="https://auth.afip.gob.ar/contribuyente_/login.xhtml" target="_blank" rel="noreferrer">
+              AFIP con Clave Fiscal <ExternalLink size={11} />
+            </a>{" "}
+            → buscá el servicio <strong>Administración de puntos de venta y domicilios</strong> → tocá <strong>A/B/M de puntos de venta</strong> → <strong>Agregar</strong>.
+          </p>
+          <p className="rounded-md border border-brass-500 bg-brass-50 px-3 py-2 text-xs text-ink-900">
+            <strong>Importante:</strong> el tipo debe ser <strong>"Web Services"</strong>
+            <span className="text-ink-600"> (o "Factura Electrónica - Monotributo - Web Services" si sos monotributista). </span>
+            <br />Anotate el número que te asigna AFIP (ej. <span className="font-mono">0001</span>) — lo vas a necesitar abajo.
+          </p>
+        </Card>
+
+        {/* Paso 2 — Delegar wsfe */}
+        <Card>
+          <div className="mb-3 flex items-center gap-2">
+            <span className="flex h-7 w-7 items-center justify-center rounded-full bg-brass-500 text-xs font-bold text-ink-950">2</span>
+            <KeyRound size={16} className="text-brass-600" />
             <h3 className="font-display text-base font-semibold text-ink-950">Delegar el servicio wsfe a Stocker</h3>
           </div>
-          <p className="mb-3 text-sm text-ink-700">Entrá al portal de AFIP con la Clave Fiscal del titular del CUIT <span className="font-mono">{cuit.cuit}</span> y agregá una relación nueva:</p>
-          <ol className="mb-3 list-inside list-decimal space-y-1 text-sm text-ink-700">
-            <li>Ir a <a className="text-brass-600 hover:underline inline-flex items-center gap-1" href="https://auth.afip.gob.ar/contribuyente_/login.xhtml" target="_blank" rel="noreferrer">auth.afip.gob.ar <ExternalLink size={11} /></a></li>
-            <li>Buscar el servicio <strong>Administrador de Relaciones de Clave Fiscal</strong>.</li>
-            <li>Seleccionar tu CUIT y click en <strong>Nueva Relación</strong>.</li>
-            <li>En <em>Servicio</em>: buscar y elegir <strong>Facturación Electrónica</strong> (wsfe).</li>
-            <li>En <em>Representante</em>: click en Buscar → poner nuestro CUIT abajo y confirmar.</li>
-            <li>Guardar y confirmar la relación.</li>
-          </ol>
-          <div className="mb-3 rounded-md border border-line bg-paper-100 px-3 py-2 text-sm">
-            <p className="text-xs uppercase tracking-wide text-ink-600">CUIT de Stocker (representante):</p>
+          <p className="mb-3 text-sm text-ink-700">
+            En el mismo portal → <strong>Administrador de Relaciones de Clave Fiscal</strong> → seleccioná tu CUIT → <strong>Nueva Relación</strong>.
+          </p>
+          <ul className="mb-3 space-y-1 text-sm text-ink-700">
+            <li><strong>Servicio:</strong> AFIP → Web Services → <strong>Facturación Electrónica (wsfe)</strong></li>
+            <li><strong>Representante:</strong> ingresá el CUIT de Stocker (abajo)</li>
+          </ul>
+          <div className="rounded-md border border-line bg-paper-100 px-3 py-2 text-sm">
+            <p className="text-xs uppercase tracking-wide text-ink-600">CUIT de Stocker (copiar y pegar en AFIP)</p>
             <div className="mt-1 flex items-center justify-between gap-2">
-              <span className="font-mono text-base text-ink-950">{stockerCuit}</span>
+              <span className="font-mono text-base font-semibold text-ink-950">{stockerCuit}</span>
               <button
                 className="btn-ghost px-2 py-1"
-                onClick={() => navigator.clipboard.writeText(stockerCuit).then(() => alert("CUIT copiado"))}
+                onClick={() => navigator.clipboard.writeText(String(stockerCuit).replace(/\D/g, "")).then(() => alert("CUIT copiado"))}
                 disabled={stockerCuit.startsWith("(")}
               >
                 <Copy size={13} /> Copiar
@@ -117,76 +160,56 @@ export default function ArcaConfigPage() {
             </div>
           </div>
         </Card>
-
-        {/* Punto de venta */}
-        <Card>
-          <div className="mb-3 flex items-center gap-2">
-            <span className="flex h-7 w-7 items-center justify-center rounded-full bg-brass-500 text-xs font-bold text-ink-950">2</span>
-            <h3 className="font-display text-base font-semibold text-ink-950">Punto de venta</h3>
-          </div>
-          <p className="mb-3 text-sm text-ink-700">Dá de alta un Punto de Venta <strong>electrónico</strong> en AFIP e ingresá el número acá.</p>
-          <label className="label">Número</label>
-          <input
-            className="input"
-            type="number"
-            min="1"
-            max="99999"
-            step="1"
-            inputMode="numeric"
-            value={puntoVenta}
-            onChange={(e) => setPuntoVenta(e.target.value.replace(/\D/g, "").slice(0, 5))}
-            placeholder="1"
-          />
-          <label className="label mt-3">Condición IVA</label>
-          <select className="input" value={condicionIva} onChange={(e) => setCondicionIva(e.target.value)}>
-            <option value="">— Elegir —</option>
-            {CONDICIONES.map((c) => <option key={c} value={c}>{c}</option>)}
-          </select>
-          <label className="label mt-3">Ambiente</label>
-          <select className="input" value={ambiente} onChange={(e) => setAmbiente(e.target.value)}>
-            <option value="homologacion">Homologación (test)</option>
-            <option value="produccion">Producción (real)</option>
-          </select>
-          <button className="btn-accent mt-3 w-full" onClick={handleSave} disabled={saving}>{saving ? "Guardando…" : "Guardar"}</button>
-        </Card>
       </div>
 
-      {/* Verificar delegación */}
-      <div className="mt-5 grid gap-5 lg:grid-cols-3">
+      {/* ═══════════════════ CONFIG EN STOCKER ═══════════════════ */}
+      <p className="mb-3 text-xs font-medium uppercase tracking-wide text-ink-600">Configuración en Stocker</p>
+
+      <div className="mb-6 grid gap-5 lg:grid-cols-3">
+        {/* Paso 3 — cargar en Stocker */}
         <Card className="lg:col-span-2">
           <div className="mb-3 flex items-center gap-2">
             <span className="flex h-7 w-7 items-center justify-center rounded-full bg-brass-500 text-xs font-bold text-ink-950">3</span>
-            <h3 className="font-display text-base font-semibold text-ink-950">Verificar delegación</h3>
+            <h3 className="font-display text-base font-semibold text-ink-950">Punto de venta y condición IVA</h3>
           </div>
-          <p className="mb-3 text-sm text-ink-700">Cuando hayas hecho el paso 1 en AFIP, tocá <em>Verificar ahora</em>. Stocker le pregunta a ARCA si tiene autorización — si responde OK, ya podés facturar desde este CUIT.</p>
-          <button className="btn-accent" onClick={handleVerify} disabled={verifying}>
-            <RefreshCw size={15} /> {verifying ? "Verificando…" : "Verificar ahora"}
-          </button>
-
-          {verifyResult && (
-            <div className={`mt-4 rounded-md border px-4 py-3 text-sm ${verifyResult.ok ? "border-teal-500 bg-teal-50" : "border-brick-500 bg-brick-50"}`}>
-              {verifyResult.ok ? (
-                <div className="flex items-start gap-2 text-teal-600">
-                  <CheckCircle2 size={16} className="mt-0.5" />
-                  <div>
-                    <p className="font-medium">Delegación verificada ✓</p>
-                    <p className="text-xs mt-1">ARCA acepta que Stocker facture en nombre de {cuit.cuit}. Ambiente: {verifyResult.ambiente}.</p>
-                  </div>
-                </div>
-              ) : (
-                <div className="flex items-start gap-2 text-brick-500">
-                  <XCircle size={16} className="mt-0.5" />
-                  <div>
-                    <p className="font-medium">No verificado</p>
-                    <p className="text-xs mt-1"><strong>Error:</strong> {verifyResult.error}</p>
-                    {verifyResult.hint && <p className="text-xs mt-1"><strong>Sugerencia:</strong> {verifyResult.hint}</p>}
-                  </div>
-                </div>
-              )}
+          <p className="mb-3 text-sm text-ink-700">Ingresá el número de Punto de Venta que te dio AFIP en el paso 1, y tu condición frente al IVA.</p>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div>
+              <label className="label">Punto de Venta (nro) *</label>
+              <input
+                className="input font-mono"
+                type="number"
+                min="1"
+                max="99999"
+                step="1"
+                inputMode="numeric"
+                value={puntoVenta}
+                onChange={(e) => setPuntoVenta(e.target.value.replace(/\D/g, "").slice(0, 5))}
+                placeholder="1"
+              />
             </div>
-          )}
+            <div>
+              <label className="label">Condición IVA</label>
+              <select className="input" value={condicionIva} onChange={(e) => setCondicionIva(e.target.value)}>
+                <option value="">— Elegir —</option>
+                {CONDICIONES.map((c) => <option key={c} value={c}>{c}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="label">Ambiente</label>
+              <select className="input" value={ambiente} onChange={(e) => setAmbiente(e.target.value)}>
+                <option value="homologacion">Homologación (test)</option>
+                <option value="produccion">Producción (real)</option>
+              </select>
+              <p className="mt-1 text-xs text-ink-500">Empezá en Homologación para probar sin emitir facturas reales.</p>
+            </div>
+            <div className="self-end">
+              <button className="btn-accent w-full" onClick={handleSave} disabled={saving}>{saving ? "Guardando…" : "Guardar configuración"}</button>
+            </div>
+          </div>
         </Card>
 
+        {/* Estado actual */}
         <Card>
           <div className="mb-3 flex items-center gap-2">
             <ShieldCheck size={18} className={config?.delegacionVerificada ? "text-teal-500" : "text-ink-400"} />
@@ -211,6 +234,115 @@ export default function ArcaConfigPage() {
           </dl>
         </Card>
       </div>
+
+      {/* ═══════════════════ VERIFICAR ═══════════════════ */}
+      <Card>
+        <div className="mb-3 flex items-center gap-2">
+          <span className="flex h-7 w-7 items-center justify-center rounded-full bg-brass-500 text-xs font-bold text-ink-950">4</span>
+          <h3 className="font-display text-base font-semibold text-ink-950">Verificar delegación con AFIP</h3>
+        </div>
+        <p className="mb-3 text-sm text-ink-700">Le preguntamos a AFIP si tu CUIT ya nos delegó el servicio wsfe y si el punto de venta existe. Es una prueba de conectividad, no emite ninguna factura.</p>
+        <button className="btn-accent" onClick={handleVerify} disabled={verifying || !config?.puntoVenta}>
+          <RefreshCw size={15} className={verifying ? "animate-spin" : ""} /> {verifying ? "Verificando…" : "Verificar ahora"}
+        </button>
+        {!config?.puntoVenta && <p className="mt-2 text-xs text-ink-500">Primero completá y guardá el punto de venta.</p>}
+
+        {verifyResult && (
+          <div className={`mt-4 rounded-md border px-4 py-3 text-sm ${verifyResult.ok ? "border-teal-500 bg-teal-50" : "border-brick-500 bg-brick-50"}`}>
+            {verifyResult.ok ? (
+              <>
+                <div className="flex items-start gap-2 text-teal-600">
+                  <CheckCircle2 size={16} className="mt-0.5" />
+                  <div>
+                    <p className="font-medium">Delegación verificada ✓</p>
+                    <p className="text-xs mt-1">ARCA confirma que Stocker puede facturar en nombre de {cuit.cuit}. Ambiente: <strong>{verifyResult.ambiente}</strong>.</p>
+                  </div>
+                </div>
+                {verifyResult.puntosVenta?.length > 0 && (
+                  <div className="mt-3 rounded-md bg-paper-50 border border-line px-3 py-2 text-ink-700">
+                    <p className="text-xs uppercase tracking-wide text-ink-600 mb-1">Puntos de venta electrónicos que AFIP ve en tu CUIT:</p>
+                    <ul className="text-xs">
+                      {verifyResult.puntosVenta.map((pv) => (
+                        <li key={pv.Nro} className="flex items-center gap-2 py-0.5">
+                          <span className={`inline-block h-2 w-2 rounded-full ${Number(pv.Nro) === Number(config?.puntoVenta) ? "bg-teal-500" : "bg-ink-400"}`} />
+                          <span className="font-mono">Nro {String(pv.Nro).padStart(4, "0")}</span>
+                          {pv.EmisionTipo && <span className="text-ink-500">· {pv.EmisionTipo}</span>}
+                          {Number(pv.Nro) === Number(config?.puntoVenta) && <span className="ml-auto text-teal-600 font-medium">← el que configuraste</span>}
+                        </li>
+                      ))}
+                    </ul>
+                    {!puntoVentaMatchesArca && (
+                      <p className="mt-2 flex items-start gap-1 text-xs text-brick-500">
+                        <AlertCircle size={12} className="mt-0.5" />
+                        El punto de venta que cargaste ({config?.puntoVenta}) NO aparece en AFIP. Revisá el número o creá uno nuevo tipo "Web Services".
+                      </p>
+                    )}
+                  </div>
+                )}
+              </>
+            ) : (
+              <div className="flex items-start gap-2 text-brick-500">
+                <XCircle size={16} className="mt-0.5" />
+                <div>
+                  <p className="font-medium">No verificado</p>
+                  <p className="text-xs mt-1"><strong>Error:</strong> {verifyResult.error}</p>
+                  {verifyResult.hint && <p className="text-xs mt-1"><strong>Sugerencia:</strong> {verifyResult.hint}</p>}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </Card>
+
+      {/* Modal de ayuda */}
+      <Modal open={showHelp} onClose={() => setShowHelp(false)} title="¿Cómo funciona la facturación con Stocker?" width="max-w-2xl">
+        <div className="space-y-4 text-sm text-ink-700">
+          <p>Stocker actúa como <strong>intermediario técnico</strong> entre tu negocio y AFIP. Vos seguís siendo el emisor legal de las facturas — nosotros solo firmamos técnicamente y enviamos el pedido.</p>
+
+          <div className="rounded-md border border-line bg-paper-100 p-3">
+            <p className="mb-2 font-medium text-ink-950">Flujo cuando emitís una factura</p>
+            <ol className="list-inside list-decimal space-y-1 text-xs">
+              <li>Cerrás una venta en Stocker y tocás "Generar factura".</li>
+              <li>Nuestro servidor arma el XML de la factura con <strong>tu CUIT como emisor</strong> y <strong>tu punto de venta</strong>.</li>
+              <li>Firmamos el pedido con el certificado de Stocker (paso técnico requerido por AFIP).</li>
+              <li>AFIP recibe el XML, verifica que tu CUIT nos delegó el servicio wsfe, y emite el CAE a tu nombre.</li>
+              <li>Guardamos el CAE + PDF en Stocker y te lo mostramos.</li>
+            </ol>
+          </div>
+
+          <div className="rounded-md border border-line bg-paper-100 p-3">
+            <p className="mb-2 font-medium text-ink-950">Ventajas del modelo</p>
+            <ul className="list-inside list-disc space-y-1 text-xs">
+              <li><strong>Cero mantenimiento de certificados</strong>: vos no generás, subís ni renovás ningún .crt/.key.</li>
+              <li><strong>Nunca pedimos tu Clave Fiscal</strong> — ni la guardamos.</li>
+              <li><strong>Revocación limpia</strong>: si dejás de usar Stocker, quitás la delegación desde AFIP en 30 segundos y listo.</li>
+              <li><strong>Auditabilidad</strong>: en AFIP queda registro de que Stocker es el representante autorizado.</li>
+            </ul>
+          </div>
+
+          <div className="rounded-md border border-line bg-paper-100 p-3">
+            <p className="mb-2 font-medium text-ink-950">Preguntas frecuentes</p>
+            <div className="space-y-2 text-xs">
+              <div>
+                <p className="font-medium text-ink-900">¿Las facturas salen a mi nombre o a Stocker?</p>
+                <p className="text-ink-600">A tu nombre. Stocker es solo el intermediario técnico; el CUIT emisor es siempre el tuyo.</p>
+              </div>
+              <div>
+                <p className="font-medium text-ink-900">¿Puedo dejar de usar Stocker?</p>
+                <p className="text-ink-600">Sí. En AFIP → Administrador de Relaciones → sacás la delegación wsfe hacia nuestro CUIT y desde ese momento no podemos emitir más facturas a tu nombre.</p>
+              </div>
+              <div>
+                <p className="font-medium text-ink-900">¿Qué pasa si me equivoco de punto de venta?</p>
+                <p className="text-ink-600">La verificación (paso 4) te lo avisa antes de facturar. Si el número no matchea con los PdV que AFIP ve en tu CUIT, corregís y probás de nuevo.</p>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex justify-end">
+            <button className="btn-accent" onClick={() => setShowHelp(false)}>Entendido</button>
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 }
