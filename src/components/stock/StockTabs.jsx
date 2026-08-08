@@ -3,6 +3,7 @@ import { NavLink } from "react-router-dom";
 const TABS = [
   { to: "/stock", label: "Productos", end: true },
   { to: "/stock/variantes", label: "Variantes" },
+  { to: "/stock/escanear", label: "Escanear stock" },
 ];
 
 export default function StockTabs() {

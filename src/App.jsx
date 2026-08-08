@@ -21,6 +21,8 @@ import VariantTypesPage from "./pages/VariantTypesPage";
 import MercadoLibrePage from "./pages/MercadoLibrePage";
 import SalesTimelinePage from "./pages/SalesTimelinePage";
 import ProductMetricsPage from "./pages/ProductMetricsPage";
+import ScanStockPage from "./pages/ScanStockPage";
+import PosPage from "./pages/PosPage";
 import BusinessCuitsPage from "./pages/BusinessCuitsPage";
 import ArcaConfigPage from "./pages/ArcaConfigPage";
 
@@ -46,9 +48,11 @@ export default function App() {
             <Route path="/dashboard/productos"          element={<PermissionRoute permission="dashboard"><ProductMetricsPage /></PermissionRoute>} />
             <Route path="/stock"                        element={<PermissionRoute permission="stock"><StockPage /></PermissionRoute>} />
             <Route path="/stock/variantes"              element={<PermissionRoute permission="stock" level="editar"><VariantTypesPage /></PermissionRoute>} />
+            <Route path="/stock/escanear"               element={<PermissionRoute permission="stock" level="editar"><ScanStockPage /></PermissionRoute>} />
             <Route path="/stock/:skuAgrupador"          element={<PermissionRoute permission="stock"><ProductDetailPage /></PermissionRoute>} />
             <Route path="/ventas"                       element={<PermissionRoute permission="ventas"><SalesPage /></PermissionRoute>} />
             <Route path="/ventas/nueva"                 element={<PermissionRoute permission="ventas" level="editar"><NewSalePage /></PermissionRoute>} />
+            <Route path="/ventas/pos"                   element={<PermissionRoute permission="ventas" level="editar"><PosPage /></PermissionRoute>} />
             <Route path="/ventas/:id"                   element={<PermissionRoute permission="ventas"><SaleDetailPage /></PermissionRoute>} />
             <Route path="/facturacion"                  element={<PermissionRoute permission="facturacion"><BillingPage /></PermissionRoute>} />
             <Route path="/facturacion/cuits"            element={<PermissionRoute permission="facturacion" level="editar"><BusinessCuitsPage /></PermissionRoute>} />

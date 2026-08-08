@@ -115,3 +115,20 @@ export async function importProductsExcel(file) {
   });
   return data;
 }
+
+/** Identifica un producto por el código que devuelve el lector de barras. */
+export async function scanProduct(codigo) {
+  const { data } = await http.get(`/products/scan/${encodeURIComponent(codigo)}`);
+  return data;
+}
+
+/**
+ * Modifica el stock de un producto escaneado.
+ * @param {string} codigo  Lo que devolvió el lector
+ * @param {"agregar"|"quitar"|"fijar"} modo
+ * @param {number} cantidad
+ */
+export async function scanAdjustStock({ codigo, modo = "agregar", cantidad = 1, motivo }) {
+  const { data } = await http.post("/products/scan/stock", { codigo, modo, cantidad, motivo });
+  return data;
+}

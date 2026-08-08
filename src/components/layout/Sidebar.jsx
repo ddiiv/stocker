@@ -8,6 +8,7 @@ import {
   Tag,
   UserCircle2,
   Store,
+  ScanLine,
 } from "lucide-react";
 import { useAuth } from "../../context/AuthContext";
 import { canView } from "../../utils/permissions";
@@ -15,6 +16,7 @@ import { canView } from "../../utils/permissions";
 const ALL_LINKS = [
   { to: "/dashboard",   label: "Dashboard",             icon: LayoutDashboard, permission: "dashboard" },
   { to: "/stock",       label: "Stock",                 icon: Boxes,           permission: "stock" },
+  { to: "/ventas/pos",  label: "Punto de venta",        icon: ScanLine,        permission: "ventas" },
   { to: "/ventas",      label: "Ventas y cotizaciones", icon: ShoppingCart,    permission: "ventas" },
   { to: "/facturacion", label: "Facturación",           icon: Receipt,         permission: "facturacion" },
   { to: "/clientes",    label: "Clientes",              icon: UserCircle2,     permission: "ventas" }, // clientes cae bajo ventas
