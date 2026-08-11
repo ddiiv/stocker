@@ -148,11 +148,15 @@ const createSale = async (req, res, next) => {
     // Construir sale items
     const enrichedItems = [];
     for (const item of items) {
+      // El id de variante viene del cliente: hay que confirmar que pertenezca
+      // a este negocio. Sin esta comprobación se puede vender el producto de
+      // otro negocio, leyendo su título y precio y descontándole el stock.
       const variant = await ProductVariant.findByPk(item.productVariantId, {
         include: [{ model: Product, as: 'producto' }],
         transaction: t,
       });
-      if (!variant) throw Object.assign(new Error(`Variante ${item.productVariantId} no encontrada.`), { status: 404 });
+      if (!variant || variant.producto?.businessId !== req.auth.businessId)
+        throw Object.assign(new Error(`Variante ${item.productVariantId} no encontrada.`), { status: 404 });
 
       const precioUnitario = item.precioUnitario ?? calcPrecio(variant, esMayorista);
       const subtotal = precioUnitario * item.cantidad;

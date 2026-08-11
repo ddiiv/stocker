@@ -13,13 +13,39 @@ const DATABASE_URL = process.env.DATABASE_URL;
 const DIALECT      = process.env.DB_DIALECT || (DATABASE_URL ? 'postgres' : 'mssql');
 const isDev        = process.env.NODE_ENV === 'development';
 
+/*
+ * Sequelize, si se le pasa `console.log`, escupe el SQL completo — con los
+ * valores del WHERE y del INSERT. Eso significa emails, CUITs, DNIs, hashes de
+ * contraseña y los tokens de AFIP y MercadoLibre yendo a parar a los logs de
+ * Railway, que quedan guardados y los ve cualquiera con acceso al proyecto.
+ *
+ * En vez del SQL registramos sólo la operación y la tabla: alcanza para ver qué
+ * está haciendo la aplicación y detectar consultas de más, sin un solo dato
+ * adentro. Para depurar una consulta puntual está DB_LOG_SQL=true, que nunca
+ * debe activarse en producción.
+ */
+const logSqlCrudo = process.env.DB_LOG_SQL === 'true';
+
+function logConsulta(sql) {
+  if (logSqlCrudo) return console.log(sql);
+  const texto = String(sql).replace(/^Executing \(\w+\):\s*/i, '');
+  const verbo = (texto.match(/^\s*(SELECT|INSERT|UPDATE|DELETE|CREATE|ALTER|DROP|BEGIN|COMMIT|ROLLBACK)/i) || [])[1];
+  if (!verbo) return console.log('[debug] db · consulta');
+  // El nombre de la tabla es estructura, no dato: se puede loguear.
+  const tabla = (texto.match(/(?:FROM|INTO|UPDATE|TABLE)\s+[`"\[]?(\w+)/i) || [])[1];
+  console.log(`[debug] db · ${verbo.toUpperCase()}${tabla ? ` ${tabla}` : ''}`);
+}
+
+// Sólo en desarrollo, y aun así sin valores.
+const logging = isDev ? logConsulta : false;
+
 let sequelize;
 
 if (DATABASE_URL) {
   // Postgres via URL (Railway, Neon, Supabase, Heroku, Render).
   sequelize = new Sequelize(DATABASE_URL, {
     dialect: 'postgres',
-    logging: isDev ? console.log : false,
+    logging,
     dialectOptions: {
       ssl: process.env.DB_SSL === 'false' ? false : { require: true, rejectUnauthorized: false },
     },
@@ -36,7 +62,7 @@ if (DATABASE_URL) {
       host:    process.env.DB_SERVER || 'localhost',
       port:    parseInt(process.env.DB_PORT) || 5432,
       dialect: 'postgres',
-      logging: isDev ? console.log : false,
+      logging,
       dialectOptions: process.env.DB_SSL === 'true' ? { ssl: { require: true, rejectUnauthorized: false } } : {},
       pool: { max: 10, min: 0, acquire: 30000, idle: 10000 },
       define: { timestamps: true },
@@ -52,7 +78,7 @@ if (DATABASE_URL) {
       host:    process.env.DB_SERVER || 'localhost',
       port:    parseInt(process.env.DB_PORT) || 1433,
       dialect: 'mssql',
-      logging: isDev ? console.log : false,
+      logging,
       dialectOptions: {
         options: {
           encrypt:              process.env.DB_ENCRYPT    === 'true',

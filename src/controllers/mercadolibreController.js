@@ -50,8 +50,12 @@ const callback = async (req, res, next) => {
     if (error) return volver({ ml_error: errorDescription || error });
     if (!code || !state) return volver({ ml_error: 'Faltan parámetros en la respuesta de MercadoLibre.' });
 
-    const businessId = Number(state);
-    if (!Number.isInteger(businessId)) return volver({ ml_error: 'Parámetro state inválido.' });
+    // El state tiene que ser uno que hayamos firmado nosotros: si no, alguien
+    // está intentando enganchar su cuenta de ML a un negocio ajeno.
+    const businessId = ml.leerState(state);
+    if (!businessId) {
+      return volver({ ml_error: 'La autorización no es válida o venció. Reintentá desde la app.' });
+    }
 
     await ml.conectarConCodigo({ businessId, code });
     volver({ ml_ok: '1' });

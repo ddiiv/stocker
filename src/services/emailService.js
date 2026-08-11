@@ -1,4 +1,5 @@
 const nodemailer = require('nodemailer');
+const { log, mask } = require('../utils/logger');
 
 // Paleta espejo del frontend
 const C = {
@@ -141,7 +142,7 @@ async function sendInvoiceEmail({ to, clienteNombre, invoice, pdfPath, business 
     html: shell({ title: `Factura ${invoice.tipo}`, businessName: emisorNombre, cuit: emisorCuit, bodyHtml: body }),
     attachments: pdfPath ? [{ filename: `factura-${invoice.numero.replace(/\//g, '-')}.pdf`, path: pdfPath }] : [],
   });
-  console.log(`[email] Factura ${invoice.numero} enviada a ${to}`);
+  log.info('email', 'factura enviada', { numero: invoice.numero, a: mask.email(to) });
 }
 
 // ── Email VENTA al CLIENTE ────────────────────────────────────────
@@ -171,7 +172,7 @@ async function sendSaleReceiptToCustomer({ to, cliente, sale, items, business, p
     }),
     attachments: pdfPath ? [{ filename: `${sale.tipo === 'cotizacion' ? 'cotizacion' : 'venta'}-${sale.numero.replace(/\//g, '-')}.pdf`, path: pdfPath }] : [],
   });
-  console.log(`[email] Comprobante venta ${sale.numero} enviado a ${to}`);
+  log.info('email', 'comprobante de venta enviado', { numero: sale.numero, a: mask.email(to) });
 }
 
 // ── Email VENTA al NEGOCIO (aviso interno) ───────────────────────
@@ -205,7 +206,7 @@ async function sendSaleNotificationToBusiness({ to, cliente, sale, items, busine
     html: shell({ title: 'Nueva operación', businessName: business.nombreNegocio, cuit: business.cuit, bodyHtml: body }),
     attachments: pdfPath ? [{ filename: `${sale.tipo === 'cotizacion' ? 'cotizacion' : 'venta'}-${sale.numero.replace(/\//g, '-')}.pdf`, path: pdfPath }] : [],
   });
-  console.log(`[email] Aviso interno venta ${sale.numero} enviado a ${to}`);
+  log.info('email', 'aviso interno de venta enviado', { numero: sale.numero, a: mask.email(to) });
 }
 
 // ── Email código de recuperación de contraseña ─────────────────
@@ -248,7 +249,7 @@ Si vos no pediste este cambio, ignorá este mensaje.
       'Auto-Submitted': 'auto-generated',
     },
   });
-  console.log(`[email] Código de reset → ${to}  (id=${info.messageId})`);
+  log.info('email', 'código de recuperación enviado', { a: mask.email(to) });
   return info;
 }
 
@@ -289,7 +290,7 @@ Si NO fuiste vos, cambiá la contraseña y revisá las sesiones activas.
       'X-Auto-Response-Suppress': 'OOF, AutoReply',
     },
   });
-  console.log(`[email] Alerta seguridad → ${to}  (id=${info.messageId})`);
+  log.info('email', 'alerta de seguridad enviada', { a: mask.email(to) });
   return info;
 }
 

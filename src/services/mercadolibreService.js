@@ -22,6 +22,7 @@
 
 const axios = require('axios');
 const { MercadoLibreAccount, MercadoLibreLink, ProductVariant, Product } = require('../models');
+const { signToken, verifyToken } = require('../utils/jwt');
 
 const ML_AUTH = 'https://auth.mercadolibre.com.ar';
 const ML_API  = 'https://api.mercadolibre.com';
@@ -42,14 +43,34 @@ function estaConfigurado() {
 // ── OAuth ─────────────────────────────────────────────────────────
 
 /** URL a la que mandamos al usuario para que autorice la app. */
+// `state` viaja de ida y vuelta para saber de qué negocio es el callback.
+//
+// Va firmado y no en crudo: con el businessId a la vista (un entero chico),
+// cualquiera podía pedirle a ML un `code` de su propia cuenta y después armar
+// a mano .../callback?code=<suyo>&state=<id de la víctima>, dejando su cuenta
+// de MercadoLibre enganchada al negocio de otro. Al firmarlo, un state que no
+// haya salido de acá no valida. Los 10 minutos acotan la ventana de reuso.
+function firmarState(businessId) {
+  return signToken({ tipo: 'ml_oauth', businessId }, { expiresIn: '10m' });
+}
+
+function leerState(state) {
+  try {
+    const payload = verifyToken(String(state || ''));
+    if (payload?.tipo !== 'ml_oauth') return null;
+    return Number(payload.businessId) || null;
+  } catch {
+    return null; // firma inválida, vencido o manipulado
+  }
+}
+
 function urlAutorizacion(businessId) {
   const c = config();
   const params = new URLSearchParams({
     response_type: 'code',
     client_id:     c.clientId,
     redirect_uri:  c.redirectUri,
-    // `state` viaja de ida y vuelta: así sabemos de qué negocio es el callback.
-    state:         String(businessId),
+    state:         firmarState(businessId),
   });
   return `${ML_AUTH}/authorization?${params}`;
 }
@@ -307,6 +328,7 @@ async function sincronizarStock(businessId, { simular = false, skus = null } = {
 module.exports = {
   estaConfigurado,
   urlAutorizacion,
+  leerState,
   conectarConCodigo,
   tokenValido,
   listarPublicaciones,

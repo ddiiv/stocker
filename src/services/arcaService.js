@@ -14,6 +14,7 @@
 // el cliente nos haya delegado el servicio wsfe.
 
 const fs   = require('fs');
+const { log } = require('../utils/logger');
 const { loadCredentials } = require('./arcaCredentials');
 
 const isMock = process.env.ARCA_MOCK === 'true';
@@ -96,15 +97,15 @@ async function solicitarCAE({ tipo, total, clienteCuit, clienteCondicion, busine
   if (isMock) {
     const cae = `${Date.now()}`.slice(0, 14).padEnd(14, '0');
     const vto = new Date(); vto.setDate(vto.getDate() + 10);
-    console.log(`[ARCA MOCK] CAE simulado ${cae} tipo=${tipo} total=${total}`);
+    log.info('arca', 'CAE simulado (modo mock)', { tipo });
     return {
       cae, caeVencimiento: vto.toISOString().slice(0, 10), numero: null,
       respuesta: { mock: true, tipo, total, clienteCuit },
     };
   }
 
-  if (!businessCuit) throw new Error('Falta businessCuit (CUIT emisor).');
-  if (!puntoVenta)   throw new Error('Falta puntoVenta configurado en ARCA para este CUIT.');
+  if (!businessCuit) throw Object.assign(new Error('Falta businessCuit (CUIT emisor).'), { status: 400 });
+  if (!puntoVenta)   throw Object.assign(new Error('Falta puntoVenta configurado en ARCA para este CUIT.'), { status: 400 });
 
   const { cert, key } = loadCert(ambiente);
   const cli = loadClient();
@@ -151,14 +152,14 @@ async function solicitarCAE({ tipo, total, clienteCuit, clienteCondicion, busine
     const msg = err.message || '';
     // Traducimos errores comunes a mensajes útiles para el usuario final
     if (/No aparecio CUIT en lista de relaciones/i.test(msg) || /600.*relaci/i.test(msg)) {
-      throw new Error(
+      throw Object.assign(new Error(
         `El CUIT ${cuitEmisor} no tiene delegado el servicio de facturación electrónica a Stocker en AFIP. ` +
         `Andá a Configurar ARCA de este CUIT y seguí el paso 2 (delegar wsfe a Stocker en Administrador de Relaciones AFIP), ` +
         `después probá con "Verificar" antes de intentar facturar.`
-      );
+      ), { status: 400 });
     }
     if (/computador no autorizado/i.test(msg)) {
-      throw new Error('El certificado de Stocker no está autorizado para wsfe en AFIP. Contactar soporte.');
+      throw Object.assign(new Error('El certificado de Stocker no está autorizado para wsfe en AFIP. Contactar soporte.'), { status: 502 });
     }
     throw err;
   }

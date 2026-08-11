@@ -1,7 +1,8 @@
 require('dotenv').config();
-const express   = require('express');
-const cors      = require('cors');
-const path      = require('path');
+const express      = require('express');
+const cors         = require('cors');
+const cookieParser = require('cookie-parser');
+const path         = require('path');
 const fse       = require('fs-extra');
 const sequelize = require('./src/config/database');
 require('./src/models'); // carga asociaciones
@@ -13,14 +14,20 @@ const app  = express();
 const PORT = process.env.PORT || 3000;
 
 // ── CORS ─────────────────────────────────────────────────────────
-// Se aceptan: FRONTEND_URL exacto (env), cualquier *.vercel.app del proyecto,
+// Se aceptan: FRONTEND_URL exacto (env), los dominios de Railway y Vercel,
 // cualquier tunnel de ngrok, y localhost. Requests sin Origin (curl, health
 // checks, mismo dominio) pasan libres.
+//
+// Sirviendo el front y la API desde el mismo origen esto casi no interviene,
+// pero el navegador sí manda Origin en los POST same-origin: sin el patrón de
+// Railway, el login en producción moriría con 500 antes de llegar al handler.
 const CORS_STATIC_ORIGINS = (process.env.FRONTEND_URL || '')
   .split(',').map((s) => s.trim()).filter(Boolean);
 const CORS_ORIGIN_PATTERNS = [
   /^https?:\/\/localhost(:\d+)?$/,
   /^https?:\/\/127\.0\.0\.1(:\d+)?$/,
+  // Cubre tanto proyecto.railway.app como proyecto.up.railway.app.
+  /^https:\/\/[a-z0-9-]+(\.[a-z0-9-]+)*\.railway\.app$/i,
   /^https:\/\/[a-z0-9-]+\.vercel\.app$/i,
   /^https:\/\/[a-z0-9-]+\.ngrok-free\.app$/i,
   /^https:\/\/[a-z0-9-]+\.ngrok\.app$/i,
@@ -39,6 +46,13 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'ngrok-skip-browser-warning'],
 }));
 
+// Detrás del proxy de Railway: sin esto, req.ip devuelve la IP del proxy y
+// las cookies Secure no se emiten porque Express cree que la conexión es http.
+app.set('trust proxy', 1);
+// No anunciar el framework: le ahorra a un atacante saber contra qué apuntar.
+app.disable('x-powered-by');
+
+app.use(cookieParser());
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
@@ -49,7 +63,8 @@ app.use('/storage/pdfs', express.static(pdfDir));
 
 // ── Rutas ─────────────────────────────────────────────────────────
 app.get('/', (req, res) => res.json({ message: 'Stocker API v2 ✔', status: 'ok' }));
-app.use('/api', routes);
+const { apiLimiter } = require('./src/middleware/rateLimit');
+app.use('/api', apiLimiter, routes);
 
 // ── 404 y errores ─────────────────────────────────────────────────
 app.use(notFound);
@@ -73,8 +88,11 @@ async function start() {
       console.log(`✔ Esquema verificado${nuevas.length ? ` — columnas agregadas: ${nuevas.join(', ')}` : ''}.`);
     }
 
-    app.listen(PORT, () => {
-      console.log(`✔ Stocker API corriendo en http://localhost:${PORT}`);
+    // La red privada de Railway es IPv6: si el server sólo escucha en 0.0.0.0,
+    // `backend.railway.internal` no resuelve a nada y el proxy da ECONNREFUSED.
+    // Con '::' Linux acepta también IPv4 mapeado, así que no perdemos nada.
+    app.listen(PORT, '::', () => {
+      console.log(`✔ Stocker API corriendo en el puerto ${PORT} (IPv4 + IPv6)`);
       console.log(`  PDFs en: ${pdfDir}`);
     });
   } catch (error) {

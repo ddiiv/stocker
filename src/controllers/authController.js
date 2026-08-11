@@ -1,7 +1,8 @@
 const bcrypt   = require('bcryptjs');
 const { Op }   = require('sequelize');
 const { Business, Employee, Role, EmployeeSession, BusinessCuit, PasswordResetCode } = require('../models');
-const { signToken } = require('../utils/jwt');
+const { crearSesion, IDLE_MIN } = require('../utils/session');
+const { setAuthCookie, clearAuthCookie } = require('../utils/authCookie');
 const { sendPasswordResetCode, sendPasswordResetAlert } = require('../services/emailService');
 
 function clientIp(req) {
@@ -49,8 +50,9 @@ const register = async (req, res, next) => {
       { businessId: business.id, nombre: 'Cajero', permisos: { stock:'ver', ventas:'editar', facturacion:'editar', empleados:'ninguno', dashboard:'ver', cotizaciones:'ver' } },
     ]);
 
-    const token = signToken({ type: 'business', businessId: business.id });
-    res.status(201).json({ token, business: sanitizeBusiness(business) });
+    const token = crearSesion({ type: 'business', businessId: business.id });
+    setAuthCookie(res, token);
+    res.status(201).json({ business: sanitizeBusiness(business) });
   } catch (error) { next(error); }
 };
 
@@ -62,8 +64,9 @@ const login = async (req, res, next) => {
     if (!business || !(await bcrypt.compare(password, business.passwordHash)))
       return res.status(401).json({ message: 'Email o contraseña incorrectos.' });
 
-    const token = signToken({ type: 'business', businessId: business.id });
-    res.json({ token, business: sanitizeBusiness(business) });
+    const token = crearSesion({ type: 'business', businessId: business.id });
+    setAuthCookie(res, token);
+    res.json({ business: sanitizeBusiness(business) });
   } catch (error) { next(error); }
 };
 
@@ -78,7 +81,7 @@ const employeeLogin = async (req, res, next) => {
       return res.status(401).json({ message: 'Email o contraseña incorrectos.' });
 
     const permisos = employee.cargo?.permisos || {};
-    const token = signToken({
+    const token = crearSesion({
       type: 'employee', businessId: employee.businessId,
       employeeId: employee.id, roleId: employee.roleId, permisos,
     });
@@ -88,21 +91,33 @@ const employeeLogin = async (req, res, next) => {
       loginAt: new Date(), lastSeenAt: new Date(),
     }).catch(() => {});
     await employee.update({ ultimaConexion: new Date() }).catch(() => {});
-    res.json({ token, employee: sanitizeEmployee(employee) });
+    setAuthCookie(res, token);
+    res.json({ employee: sanitizeEmployee(employee) });
   } catch (error) { next(error); }
+};
+
+// POST /api/auth/logout
+// La cookie es httpOnly, así que sólo el servidor puede borrarla.
+const logout = async (req, res) => {
+  clearAuthCookie(res);
+  res.json({ ok: true });
 };
 
 // GET /api/auth/me
 const me = async (req, res, next) => {
   try {
+    // El front usa esto para cerrar la pantalla por inactividad antes de que
+    // el servidor rechace el pedido. Una sola fuente de verdad para el valor.
+    const sesion = { inactividadMin: IDLE_MIN };
+
     if (req.auth.type === 'business') {
       const b = await Business.findByPk(req.auth.businessId);
       if (!b) return res.status(404).json({ message: 'Negocio no encontrado.' });
-      return res.json({ type: 'business', data: sanitizeBusiness(b) });
+      return res.json({ type: 'business', data: sanitizeBusiness(b), sesion });
     }
     const e = await Employee.findByPk(req.auth.employeeId, { include: [{ association: 'cargo' }, { association: 'local' }] });
     if (!e) return res.status(404).json({ message: 'Empleado no encontrado.' });
-    res.json({ type: 'employee', data: sanitizeEmployee(e) });
+    res.json({ type: 'employee', data: sanitizeEmployee(e), sesion });
   } catch (error) { next(error); }
 };
 
@@ -280,4 +295,4 @@ const resetPassword = async (req, res, next) => {
   } catch (error) { next(error); }
 };
 
-module.exports = { register, login, employeeLogin, me, forgotPassword, verifyResetCode, resetPassword };
+module.exports = { register, login, employeeLogin, logout, me, forgotPassword, verifyResetCode, resetPassword };

@@ -1,4 +1,5 @@
 const axios = require('axios');
+const { log, mask } = require('../utils/logger');
 
 // Cache en memoria para no golpear la API externa repetidas veces (24h)
 const cache = new Map();
@@ -159,8 +160,8 @@ async function lookupCuit(rawCuit) {
 
   const cached = cache.get(cuit);
   if (cached && Date.now() - cached.at < TTL_MS) {
-    const origen = cached.source === 'afip' ? 'AFIP (oficial, cacheado)' : 'API EXTERNA (NO AFIP, cacheado)';
-    console.log(`[CUIT ${cuit}] Datos de ${origen}.`);
+    const origen = cached.source === 'afip' ? 'AFIP (oficial)' : 'API EXTERNA (NO AFIP)';
+    log.info('padron', `datos de ${origen}, desde caché`, { cuit: mask.cuit(cuit) });
     return { ...base, ...cached.data, source: cached.source, lockedFields: cached.lockedFields || [] };
   }
 
@@ -176,7 +177,14 @@ async function lookupCuit(rawCuit) {
     // heurística por prefijo de CUIT: solo un Responsable Inscripto lleva A.
     if (afip.condicionIvaId) base.tipoFactura = afip.condicionIvaId === 1 ? 'A' : 'B';
     cache.set(cuit, { at: Date.now(), data: afip, source: 'afip', lockedFields });
-    console.log(`[CUIT ${cuit}] Datos OFICIALES de AFIP — padrón productivo vía ${afip.servicioUsado}. ${afip.razonSocial || ''} · ${afip.condicionIva || 'sin condición IVA'} · Factura ${base.tipoFactura}`);
+    // Se mantiene la señal de origen (era el motivo de este log) pero sin la
+    // razón social ni el CUIT completo: son datos del contribuyente.
+    log.info('padron', 'datos OFICIALES de AFIP — padrón productivo', {
+      cuit: mask.cuit(cuit),
+      servicio: afip.servicioUsado,
+      condicionIva: afip.condicionIva || 'desconocida',
+      factura: base.tipoFactura,
+    });
     return { ...base, ...afip, source: 'afip', lockedFields };
   }
 
@@ -184,11 +192,11 @@ async function lookupCuit(rawCuit) {
   const padron = await fetchFromExternalApi(cuit);
   if (padron) {
     cache.set(cuit, { at: Date.now(), data: padron, source: 'padron-externo', lockedFields: [] });
-    console.log(`[CUIT ${cuit}] Datos de API EXTERNA (NO es AFIP) — CUIT_API_URL configurada. Fuente no oficial, puede estar desactualizada o ser incorrecta.`);
+    log.warn('padron', 'datos de API EXTERNA (NO es AFIP) — fuente no oficial, puede estar desactualizada', { cuit: mask.cuit(cuit) });
     return { ...base, ...padron, source: 'padron-externo' };
   }
 
-  console.log(`[CUIT ${cuit}] Sin datos externos: solo validación local (dígito verificador + inferencia por prefijo). No se consultó AFIP ni ninguna API.`);
+  log.info('padron', 'sin datos externos: sólo validación local (dígito verificador + prefijo)', { cuit: mask.cuit(cuit) });
   return { ...base, source: 'local-only' };
 }
 

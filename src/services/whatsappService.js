@@ -1,4 +1,5 @@
 const axios = require('axios');
+const { log, mask } = require('../utils/logger');
 
 /*
  * Integración WhatsApp Cloud API (Meta) — proveedor por defecto.
@@ -64,7 +65,7 @@ async function sendViaMeta({ to, text, templateName, templateLang }) {
   try {
     const res = await post({ messaging_product: 'whatsapp', to, type: 'text', text: { body: text } });
     const info = extractInfo(res.data);
-    console.log(`[whatsapp meta] TEXT aceptado to=${to} wa_id=${info.waId || '?'} id=${info.messageId} status=${info.msgStatus || 'accepted'}`);
+    log.info('whatsapp', 'texto aceptado', { a: mask.telefono(to), estado: info.msgStatus || 'accepted' });
     return { ok: true, provider: 'meta', mode: 'text', ...info, raw: res.data };
   } catch (err) {
     const errData = err.response?.data?.error || {};
@@ -87,7 +88,7 @@ async function sendViaMeta({ to, text, templateName, templateLang }) {
         template: { name: templateName, language: { code: templateLang || 'es_AR' } },
       });
       const info = extractInfo(res.data);
-      console.log(`[whatsapp meta] TEMPLATE ${templateName} aceptado to=${to} wa_id=${info.waId || '?'} id=${info.messageId}`);
+      log.info('whatsapp', 'plantilla aceptada', { plantilla: templateName, a: mask.telefono(to) });
       return { ok: true, provider: 'meta', mode: 'template', template: templateName, ...info, raw: res.data };
     } catch (err2) {
       const errData2 = err2.response?.data?.error || {};
@@ -132,7 +133,7 @@ async function sendWhatsappMessage({ telefono, mensaje }) {
     return { ok: false, error: 'sin credenciales' };
   }
 
-  if (result.ok) console.log(`[whatsapp] enviado a ${to} vía ${result.provider}${result.mode ? ' (' + result.mode + ')' : ''}`);
+  if (result.ok) log.info('whatsapp', 'mensaje enviado', { a: mask.telefono(to), proveedor: result.provider });
   return result;
 }
 

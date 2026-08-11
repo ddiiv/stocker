@@ -1,10 +1,11 @@
 const { Router } = require('express');
 const multer = require('multer');
-const { requireAuth, requirePermission } = require('../middleware/auth');
+const { requireAuth, requirePermission, requireAnyPermission, requireOwner } = require('../middleware/auth');
+const { loginLimiter, passwordResetLimiter, registerLimiter } = require('../middleware/rateLimit');
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
-const { register, login, employeeLogin, me, forgotPassword, verifyResetCode, resetPassword } = require('../controllers/authController');
+const { register, login, employeeLogin, logout, me, forgotPassword, verifyResetCode, resetPassword } = require('../controllers/authController');
 const { validatePasswordBody } = require('../utils/passwordPolicy');
 const productCtrl  = require('../controllers/productController');
 const employeeCtrl = require('../controllers/employeeController');
@@ -27,15 +28,19 @@ const metricsCtrl = require('../controllers/metricsController');
 const r = Router();
 
 // ── Auth ──────────────────────────────────────────────────────────
-r.post('/auth/register',              validatePasswordBody(), register);
-r.post('/auth/login',                 login);
-r.post('/auth/employee-login',        employeeLogin);
+r.post('/auth/register',              registerLimiter, validatePasswordBody(), register);
+r.post('/auth/login',                 loginLimiter, login);
+r.post('/auth/employee-login',        loginLimiter, employeeLogin);
+r.post('/auth/logout',                logout);
 r.get ('/auth/me',                    requireAuth, me);
-r.post('/auth/forgot-password',       forgotPassword);
-r.post('/auth/verify-reset-code',     verifyResetCode);
-r.post('/auth/reset-password',        validatePasswordBody('newPassword'), resetPassword);
+r.post('/auth/forgot-password',       passwordResetLimiter, forgotPassword);
+r.post('/auth/verify-reset-code',     passwordResetLimiter, verifyResetCode);
+r.post('/auth/reset-password',        passwordResetLimiter, validatePasswordBody('newPassword'), resetPassword);
 
 // ── Locations ─────────────────────────────────────────────────────
+// El listado queda con requireAuth solo: lo necesitan casi todas las pantallas
+// (venta, POS, stock, movimientos) y sólo devuelve nombres de sucursal del
+// propio negocio. Escribir sí exige permiso de empleados.
 r.get   ('/locations',     requireAuth, getLocations);
 r.post  ('/locations',     requireAuth, requirePermission('empleados','editar'), createLocation);
 r.put   ('/locations/:id', requireAuth, requirePermission('empleados','editar'), updateLocation);
@@ -63,12 +68,14 @@ r.put   ('/clients/:id', requireAuth, requirePermission('ventas','editar'), upda
 r.delete('/clients/:id', requireAuth, requirePermission('ventas','editar'), deleteClient);
 
 // ── ARCA / CUIT lookup ───────────────────────────────────────────
-r.get('/arca/cuit/:cuit', requireAuth, lookupCuit);
+// Lo consumen la pantalla de clientes y la de CUITs del negocio.
+r.get('/arca/cuit/:cuit', requireAuth, requireAnyPermission(['ventas', 'facturacion']), lookupCuit);
 
 // ── ARCA / config por CUIT del negocio ───────────────────────────
-r.get ('/arca/status',                  requireAuth, arcaConfigCtrl.status);
-r.get ('/arca/debug',                   requireAuth, arcaConfigCtrl.debug);
-r.get ('/arca/cuits/:cuitId/config',    requireAuth, arcaConfigCtrl.getConfig);
+r.get ('/arca/status',                  requireAuth, requirePermission('facturacion','ver'), arcaConfigCtrl.status);
+// Expone CUIT de Stocker y rutas de certificados: sólo el dueño.
+r.get ('/arca/debug',                   requireAuth, requireOwner, arcaConfigCtrl.debug);
+r.get ('/arca/cuits/:cuitId/config',    requireAuth, requirePermission('facturacion','ver'), arcaConfigCtrl.getConfig);
 r.put ('/arca/cuits/:cuitId/config',    requireAuth, requirePermission('facturacion','editar'), arcaConfigCtrl.saveConfig);
 r.post('/arca/cuits/:cuitId/verify',    requireAuth, requirePermission('facturacion','editar'), arcaConfigCtrl.verifyDelegation);
 
@@ -92,11 +99,13 @@ r.put   ('/variant-types/:id',  requireAuth, requirePermission('stock','editar')
 r.delete('/variant-types/:id',  requireAuth, requirePermission('stock','editar'), variantTypeCtrl.remove);
 
 // ── WhatsApp test (debug) ─────────────────────────────────────────
-r.post('/whatsapp/test', requireAuth, whatsappTestSend);
-r.get ('/whatsapp/test', requireAuth, whatsappTestSend);
+// Manda mensajes reales: si lo alcanza cualquier empleado, es un spammer.
+r.post('/whatsapp/test', requireAuth, requireOwner, whatsappTestSend);
+r.get ('/whatsapp/test', requireAuth, requireOwner, whatsappTestSend);
 
 // ── Business CUITs (multi-CUIT para facturación) ─────────────────
-r.get   ('/business-cuits',     requireAuth, businessCuitCtrl.list);
+// Lo lee la pantalla de CUITs y también el detalle de venta.
+r.get   ('/business-cuits',     requireAuth, requireAnyPermission(['facturacion', 'ventas']), businessCuitCtrl.list);
 r.post  ('/business-cuits',     requireAuth, requirePermission('facturacion','editar'), businessCuitCtrl.create);
 r.put   ('/business-cuits/:id', requireAuth, requirePermission('facturacion','editar'), businessCuitCtrl.update);
 r.delete('/business-cuits/:id', requireAuth, requirePermission('facturacion','editar'), businessCuitCtrl.remove);
