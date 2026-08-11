@@ -22,11 +22,44 @@ import { createProxyMiddleware } from 'http-proxy-middleware';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const app = express();
-const PORT = process.env.PORT || 8080;
 const DIST = path.join(__dirname, 'dist');
 
-// En Railway: http://<nombre-del-servicio>.railway.internal:3000
-const API_TARGET = process.env.API_INTERNAL_URL || 'http://localhost:3000';
+/*
+ * Puerto en el que escucha el front.
+ *
+ * Acá PORT gana sobre FRONTEND_PORT, al revés que en el backend: este servicio
+ * sí tiene dominio público, y el edge de Railway enruta al puerto que inyecta.
+ * Ignorarlo dejaría la app inalcanzable desde afuera.
+ */
+const PORT = Number(process.env.PORT || process.env.FRONTEND_PORT) || 8080;
+
+/*
+ * Destino del proxy: el backend, por la red privada.
+ *
+ * Se puede dar entero en API_INTERNAL_URL, o armarlo con las variables
+ * compartidas del proyecto (BACKEND_DOMAIN + BACKEND_PORT). Como BACKEND_PORT
+ * es la misma variable que usa el backend para elegir su puerto, los dos
+ * coinciden solos y desaparece el desencuentro clásico de "escucha en un
+ * puerto y le hablo a otro".
+ *
+ * BACKEND_DOMAIN puede venir como host pelado o como URL. Dentro de la red
+ * privada se usa http: el tráfico no sale de Railway y no hay TLS.
+ */
+function destinoApi() {
+  if (process.env.API_INTERNAL_URL) return process.env.API_INTERNAL_URL.replace(/\/+$/, '');
+
+  const dominio = (process.env.BACKEND_DOMAIN || '').trim().replace(/\/+$/, '');
+  if (!dominio) return 'http://localhost:3000';
+
+  const puerto = process.env.BACKEND_PORT || '3000';
+  // Si ya trae protocolo, respetamos lo que puso el usuario.
+  if (/^https?:\/\//i.test(dominio)) {
+    return /:\d+$/.test(dominio) ? dominio : `${dominio}:${puerto}`;
+  }
+  return /:\d+$/.test(dominio) ? `http://${dominio}` : `http://${dominio}:${puerto}`;
+}
+
+const API_TARGET = destinoApi();
 
 app.disable('x-powered-by');
 // Railway termina TLS en su edge y reenvía al contenedor por http, contándolo
@@ -37,6 +70,41 @@ app.use(compression());
 // Antes de la redirección a https: el healthcheck de Railway pega por http
 // dentro de la red, y un 308 lo haría fallar.
 app.get('/healthz', (req, res) => res.json({ ok: true, apiTarget: API_TARGET }));
+
+// Diagnóstico de la red privada: intenta llegar al backend y cuenta qué pasó.
+// Sirve para distinguir de una sola vez si el problema es el nombre del
+// servicio, el puerto, o que el backend no está levantando.
+app.get('/healthz/api', async (req, res) => {
+  const inicio = Date.now();
+  try {
+    const r = await fetch(`${API_TARGET}/`, {
+      signal: AbortSignal.timeout(8000),
+    });
+    const cuerpo = await r.text();
+    res.json({
+      alcanzable: true,
+      destino: API_TARGET,
+      status: r.status,
+      ms: Date.now() - inicio,
+      respuesta: cuerpo.slice(0, 200),
+    });
+  } catch (err) {
+    const causas = {
+      ECONNREFUSED: 'El nombre resuelve pero nadie escucha en ese puerto. Casi siempre el backend se cayó al arrancar: mirá sus Deploy Logs. Otra opción es que su PORT no sea el que figura acá.',
+      ENOTFOUND:    'No resuelve el nombre del servicio. Revisá que API_INTERNAL_URL use el nombre exacto del servicio backend y que ambos estén en el mismo proyecto y environment.',
+      EAI_AGAIN:    'Falla la resolución DNS interna. Suele ser transitorio en los primeros segundos tras un deploy: reintentá.',
+      ETIMEDOUT:    'El backend no respondió a tiempo. Puede estar arrancando todavía.',
+    };
+    const codigo = err.cause?.code || err.code || err.name;
+    res.status(502).json({
+      alcanzable: false,
+      destino: API_TARGET,
+      codigo,
+      queSignifica: causas[codigo] || err.message,
+      ms: Date.now() - inicio,
+    });
+  }
+});
 
 // Railway ya redirige http→https en el edge, pero si algún día se sirve por
 // otro lado esto evita que un request en claro llegue a ver la app.
@@ -74,7 +142,19 @@ app.use(createProxyMiddleware({
   timeout: 30_000,
   on: {
     error(err, req, res) {
-      console.error(`[proxy] ${req.method} ${req.url} → ${err.message}`);
+      // El código del error es lo que dice qué pasó; err.message a veces
+      // viene vacío y deja el log sin información útil.
+      const causas = {
+        ECONNREFUSED: 'el backend no está escuchando en ese puerto (¿se cayó al arrancar? ¿PORT distinto?)',
+        ENOTFOUND:    'no resuelve el nombre del servicio (¿API_INTERNAL_URL bien escrito? ¿mismo proyecto y environment?)',
+        ETIMEDOUT:    'el backend no respondió a tiempo',
+        ECONNRESET:   'el backend cortó la conexión',
+        EAI_AGAIN:    'falló la resolución DNS interna (suele ser transitorio al arrancar el contenedor)',
+      };
+      const detalle = causas[err.code] || err.message || 'motivo desconocido';
+      console.error(`[proxy] ${req.method} ${req.url} → ${err.code || 'ERROR'}: ${detalle}`);
+      console.error(`[proxy] destino configurado: ${API_TARGET}`);
+
       if (res && !res.headersSent) {
         res.writeHead(502, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ message: 'No se pudo contactar a la API.' }));
@@ -101,7 +181,25 @@ app.use((req, res) => {
   res.sendFile(path.join(DIST, 'index.html'));
 });
 
-app.listen(PORT, '::', () => {
-  console.log(`✔ Front sirviendo en el puerto ${PORT}`);
-  console.log(`  API interna: ${API_TARGET}`);
+const server = app.listen(PORT, '::', () => {
+  // Si el listen falló, address() es null y leerlo tira encima del error real,
+  // tapándolo. El handler de 'error' de abajo es el que informa qué pasó.
+  const dir = server.address();
+  if (!dir) return;
+  const origenPuerto = process.env.PORT ? 'PORT' : process.env.FRONTEND_PORT ? 'FRONTEND_PORT' : 'valor por defecto';
+  const origenApi = process.env.API_INTERNAL_URL ? 'API_INTERNAL_URL' :
+                    process.env.BACKEND_DOMAIN ? 'BACKEND_DOMAIN + BACKEND_PORT' : 'valor por defecto';
+  console.log('─────────────────────────────────────────');
+  console.log(`  Front escuchando en ${dir.address}:${dir.port}  (puerto de ${origenPuerto})`);
+  console.log(`  Proxy /api → ${API_TARGET}  (de ${origenApi})`);
+  console.log(`  Diagnóstico de la red privada: GET /healthz/api`);
+  console.log('─────────────────────────────────────────');
+});
+
+server.on('error', (err) => {
+  const detalle = err.code === 'EADDRINUSE'
+    ? `el puerto ${PORT} ya está ocupado por otro proceso`
+    : err.code || err.message;
+  console.error(`✖ No se pudo escuchar en el puerto ${PORT}: ${detalle}`);
+  process.exit(1);
 });
