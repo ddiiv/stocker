@@ -1,9 +1,9 @@
 import { useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import { Tag, AlertCircle } from "lucide-react";
+import { Tag, AlertCircle, Clock } from "lucide-react";
 import { useAuth } from "../context/AuthContext";
 
 const schema = z.object({
@@ -21,6 +21,9 @@ export default function LoginPage() {
   const navigate = useNavigate();
   const [serverError, setServerError] = useState("");
   const [mode, setMode] = useState("business");
+  // El cierre automático redirige con ?motivo=inactividad.
+  const [searchParams] = useSearchParams();
+  const cerroPorInactividad = searchParams.get("motivo") === "inactividad";
   const {
     register,
     handleSubmit,
@@ -73,6 +76,15 @@ export default function LoginPage() {
         </div>
 
         <form onSubmit={handleSubmit(onSubmit)} className="card space-y-4 p-6">
+          {/* Sin esto, volver al login tras el cierre automático parece un error. */}
+          {cerroPorInactividad && !serverError && (
+            <div className="rounded-md bg-paper-200 px-3 py-2 text-sm text-ink-700">
+              <p className="flex items-start gap-1">
+                <Clock size={14} className="mt-0.5 shrink-0" />
+                <span>Cerramos tu sesión por inactividad. Ingresá de nuevo para seguir.</span>
+              </p>
+            </div>
+          )}
           {serverError && (
             <div className="rounded-md bg-brick-50 px-3 py-2 text-sm text-brick-500">
               <p className="flex items-start gap-1"><AlertCircle size={14} className="mt-0.5 shrink-0" /> <span>{serverError}</span></p>

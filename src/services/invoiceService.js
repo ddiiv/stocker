@@ -1,4 +1,4 @@
-import { http, API_URL } from "../lib/http";
+import { http } from "../lib/http";
 
 export async function fetchInvoices() {
   const { data } = await http.get("/invoices", { params: { limit: 100 } });
@@ -20,13 +20,8 @@ export async function voidInvoice(id) {
   return data;
 }
 
-export function getInvoicePdfUrl(id) {
-  const token = localStorage.getItem("isu_token");
-  return `${API_URL}/invoices/${id}/pdf?token=${token}`;
-}
-
-// Descarga el PDF de la factura usando el token del Authorization header
-// (evita depender del query param, que no todos los endpoints protegidos aceptan).
+// Descarga el PDF de la factura. La cookie de sesión viaja sola en el
+// request, así que no hace falta pasar el token por la URL.
 export async function downloadInvoicePdf(invoice) {
   const { data } = await http.get(`/invoices/${invoice.id}/pdf`, { responseType: "blob" });
   const url = window.URL.createObjectURL(new Blob([data], { type: "application/pdf" }));

@@ -1,30 +1,30 @@
 import { http } from "../lib/http";
 
+// El backend responde con Set-Cookie (httpOnly): no hay token que guardar
+// acá, el navegador lo adjunta solo en cada request.
 export async function register(payload) {
   const { data } = await http.post("/auth/register", payload);
-  localStorage.setItem("isu_token", data.token);
   return data;
 }
 
 export async function login({ email, password }) {
   const { data } = await http.post("/auth/login", { email, password });
-  localStorage.setItem("isu_token", data.token);
   return data;
 }
 
 export async function employeeLogin({ email, password }) {
   const { data } = await http.post("/auth/employee-login", { email, password });
-  localStorage.setItem("isu_token", data.token);
   return data;
 }
 
-export function logout() {
-  localStorage.removeItem("isu_token");
+export async function logout() {
+  // Sólo el servidor puede borrar una cookie httpOnly.
+  try { await http.post("/auth/logout"); } catch { /* la sesión se cierra igual */ }
 }
 
+// Sin token en JS, la única forma de saber si hay sesión es preguntarle
+// al backend: si la cookie no vale, responde 401 y devolvemos null.
 export async function getMe() {
-  const token = localStorage.getItem("isu_token");
-  if (!token) return null;
   try {
     const { data } = await http.get("/auth/me");
     return data;
