@@ -10,8 +10,39 @@ require('./src/models'); // carga asociaciones
 const routes              = require('./src/routes');
 const { errorHandler, notFound } = require('./src/middleware/errorHandler');
 
-const app  = express();
-const PORT = process.env.PORT || 3000;
+const app = express();
+
+/*
+ * Puerto.
+ *
+ * BACKEND_PORT gana sobre PORT a propósito. Railway inyecta su propia PORT en
+ * cada servicio, y si el backend la obedeciera mientras el front proxea a
+ * BACKEND_PORT (la variable compartida), cada uno usaría un puerto distinto y
+ * la conexión interna fallaría sin decir por qué. Al ser BACKEND_PORT la misma
+ * variable que lee el front, los dos coinciden por construcción.
+ *
+ * Esto es correcto porque el backend no tiene dominio público: la PORT de
+ * Railway sólo hace falta cuando el edge tiene que enrutar tráfico de afuera.
+ */
+const PORT = Number(process.env.BACKEND_PORT || process.env.PORT) || 3000;
+
+if (process.env.BACKEND_PORT && process.env.PORT
+    && process.env.BACKEND_PORT !== process.env.PORT) {
+  console.warn(
+    `[config] BACKEND_PORT=${process.env.BACKEND_PORT} y PORT=${process.env.PORT} no coinciden. ` +
+    `Se usa ${PORT}, que es a donde apunta el front.`
+  );
+}
+
+// La URL pública del front, para CORS. Se acepta como dominio pelado
+// (FRONTEND_DOMAIN, la variable compartida) o como URL completa.
+function comoUrl(valor) {
+  if (!valor) return null;
+  const s = String(valor).trim().replace(/\/+$/, '');
+  if (!s) return null;
+  return /^https?:\/\//i.test(s) ? s : `https://${s}`;
+}
+const FRONT_URL = comoUrl(process.env.FRONTEND_URL) || comoUrl(process.env.FRONTEND_DOMAIN);
 
 // ── CORS ─────────────────────────────────────────────────────────
 // Se aceptan: FRONTEND_URL exacto (env), los dominios de Railway y Vercel,
@@ -21,8 +52,12 @@ const PORT = process.env.PORT || 3000;
 // Sirviendo el front y la API desde el mismo origen esto casi no interviene,
 // pero el navegador sí manda Origin en los POST same-origin: sin el patrón de
 // Railway, el login en producción moriría con 500 antes de llegar al handler.
-const CORS_STATIC_ORIGINS = (process.env.FRONTEND_URL || '')
-  .split(',').map((s) => s.trim()).filter(Boolean);
+// Admite varias separadas por coma en FRONTEND_URL, más la que salga de
+// FRONTEND_DOMAIN (la variable compartida del proyecto).
+const CORS_STATIC_ORIGINS = [
+  ...(process.env.FRONTEND_URL || '').split(',').map((s) => comoUrl(s)),
+  comoUrl(process.env.FRONTEND_DOMAIN),
+].filter(Boolean);
 const CORS_ORIGIN_PATTERNS = [
   /^https?:\/\/localhost(:\d+)?$/,
   /^https?:\/\/127\.0\.0\.1(:\d+)?$/,
@@ -71,8 +106,30 @@ app.use(notFound);
 app.use(errorHandler);
 
 // ── Arranque ──────────────────────────────────────────────────────
+
+// Resumen de configuración al arrancar. En Railway los logs son la única
+// ventana al contenedor, y sin esto diagnosticar "no conecta" es adivinar:
+// no se ve en qué puerto quedó escuchando ni qué variables llegaron.
+// Se informa presencia y longitud, nunca el valor.
+function resumenConfig() {
+  const e = process.env;
+  const estado = (v) => (v ? `ok (${String(v).length} chars)` : '✖ FALTA');
+  console.log('─────────────────────────────────────────');
+  console.log('  Configuración efectiva');
+  const origenPuerto = e.BACKEND_PORT ? 'BACKEND_PORT' : e.PORT ? 'PORT' : 'valor por defecto';
+  console.log(`    NODE_ENV .......... ${e.NODE_ENV || '(sin definir)'}`);
+  console.log(`    Puerto ............ ${PORT}  (de ${origenPuerto})`);
+  console.log(`    JWT_SECRET ........ ${estado(e.JWT_SECRET)}`);
+  console.log(`    DATABASE_URL ...... ${e.DATABASE_URL ? 'ok' : '✖ FALTA (se usará la config de DB_* suelta)'}`);
+  console.log(`    Front (CORS) ...... ${FRONT_URL || '(sin definir)'}`);
+  console.log(`    ARCA_STOCKER_CUIT . ${e.ARCA_STOCKER_CUIT ? 'ok' : '(sin definir)'}`);
+  console.log(`    Sesión ............ ${e.SESSION_IDLE_MINUTES || 30} min inactividad · ${e.SESSION_ABSOLUTE_HOURS || 24} h máximo`);
+  console.log('─────────────────────────────────────────');
+}
+
 async function start() {
   try {
+    resumenConfig();
     await sequelize.authenticate();
     console.log('✔ Conectado a la base de datos.');
 
@@ -91,14 +148,29 @@ async function start() {
     // La red privada de Railway es IPv6: si el server sólo escucha en 0.0.0.0,
     // `backend.railway.internal` no resuelve a nada y el proxy da ECONNREFUSED.
     // Con '::' Linux acepta también IPv4 mapeado, así que no perdemos nada.
-    app.listen(PORT, '::', () => {
-      console.log(`✔ Stocker API corriendo en el puerto ${PORT} (IPv4 + IPv6)`);
+    const server = app.listen(PORT, '::', () => {
+      const dir = server.address();
+      console.log(`✔ Stocker API escuchando en ${dir.address}:${dir.port} (IPv4 + IPv6)`);
+      console.log(`  El servicio del front debe apuntar a: http://<nombre-de-este-servicio>.railway.internal:${dir.port}`);
       console.log(`  PDFs en: ${pdfDir}`);
+    });
+
+    server.on('error', (err) => {
+      console.error(`✖ No se pudo escuchar en el puerto ${PORT}: ${err.code || err.message}`);
+      process.exit(1);
     });
   } catch (error) {
     console.error('✖ No se pudo conectar a la base de datos:', error.message);
     process.exit(1);
   }
 }
+
+// Un throw fuera del try (por ejemplo al cargar un módulo) moría con un stack
+// trace pelado, sin decir qué variable faltaba.
+process.on('uncaughtException', (err) => {
+  console.error('✖ El proceso se detuvo por un error no capturado:');
+  console.error(`  ${err.message}`);
+  process.exit(1);
+});
 
 start();

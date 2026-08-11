@@ -27,11 +27,26 @@ const { signToken, verifyToken } = require('../utils/jwt');
 const ML_AUTH = 'https://auth.mercadolibre.com.ar';
 const ML_API  = 'https://api.mercadolibre.com';
 
+// El callback tiene que caer en el FRONT, que es el único servicio con dominio
+// público: desde ahí el proxy lo reenvía al backend por la red privada. Si no
+// se define ML_REDIRECT_URI, se arma con el dominio compartido del proyecto.
+//
+// Ojo: MercadoLibre compara esta URL carácter por carácter contra la que
+// tengas registrada en developers.mercadolibre.com.ar. Si no coinciden
+// exactamente, rechaza la autorización.
+function redirectUri() {
+  if (process.env.ML_REDIRECT_URI) return process.env.ML_REDIRECT_URI;
+  const dominio = process.env.FRONTEND_DOMAIN || process.env.FRONTEND_URL;
+  if (!dominio) return null;
+  const base = /^https?:\/\//i.test(dominio) ? dominio : `https://${dominio}`;
+  return `${base.replace(/\/+$/, '')}/api/mercadolibre/callback`;
+}
+
 function config() {
   return {
     clientId:     process.env.ML_CLIENT_ID,
     clientSecret: process.env.ML_CLIENT_SECRET,
-    redirectUri:  process.env.ML_REDIRECT_URI,
+    redirectUri:  redirectUri(),
   };
 }
 

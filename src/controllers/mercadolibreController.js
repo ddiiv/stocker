@@ -44,8 +44,10 @@ const authUrl = async (req, res, next) => {
 const callback = async (req, res, next) => {
   try {
     const { code, state, error, error_description: errorDescription } = req.query;
-    const frontUrl = process.env.FRONTEND_URL || '';
-    const volver = (params) => res.redirect(`${frontUrl}/integraciones/mercadolibre?${new URLSearchParams(params)}`);
+    // Relativo a propósito: el navegador llegó por el dominio del front (que
+    // proxea /api), así que volver sin host lo deja en el mismo origen. Evita
+    // depender de que FRONTEND_URL esté bien puesta.
+    const volver = (params) => res.redirect(`/integraciones/mercadolibre?${new URLSearchParams(params)}`);
 
     if (error) return volver({ ml_error: errorDescription || error });
     if (!code || !state) return volver({ ml_error: 'Faltan parámetros en la respuesta de MercadoLibre.' });
@@ -60,9 +62,8 @@ const callback = async (req, res, next) => {
     await ml.conectarConCodigo({ businessId, code });
     volver({ ml_ok: '1' });
   } catch (e) {
-    const frontUrl = process.env.FRONTEND_URL || '';
     const detalle = e.response?.data?.message || e.message;
-    res.redirect(`${frontUrl}/integraciones/mercadolibre?${new URLSearchParams({ ml_error: detalle })}`);
+    res.redirect(`/integraciones/mercadolibre?${new URLSearchParams({ ml_error: detalle })}`);
   }
 };
 

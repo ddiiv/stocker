@@ -46,12 +46,14 @@ const jwt = e.JWT_SECRET && e.JWT_SECRET.length >= 32
   : require('crypto').randomBytes(48).toString('base64');
 
 const backend = [
+  { seccion: 'Variables compartidas del proyecto' },
+  req('BACKEND_PORT', '${{shared.BACKEND_PORT}}', 'gana sobre la PORT que inyecta Railway; el front apunta a este mismo valor'),
+  req('FRONTEND_DOMAIN', '${{shared.FRONTEND_DOMAIN}}', 'de acá sale el origen permitido en CORS y el callback de MercadoLibre'),
+
   { seccion: 'Obligatorias' },
   req('NODE_ENV', 'production', 'activa Secure en la cookie y apaga el SQL en logs'),
-  req('PORT', '3000', 'debe coincidir con el puerto de API_INTERNAL_URL del front'),
   req('DATABASE_URL', '${{Postgres.DATABASE_URL}}', 'referencia interna de Railway, pegar tal cual'),
   req('JWT_SECRET', jwt, e.JWT_SECRET ? 'el mismo que usás local' : 'GENERADO ACÁ: guardalo'),
-  req('FRONTEND_URL', frontUrl, 'URL pública del front'),
 
   { seccion: 'ARCA / AFIP' },
   req('ARCA_STOCKER_CUIT', e.ARCA_STOCKER_CUIT),
@@ -87,10 +89,12 @@ const backend = [
 ];
 
 const frontend = [
+  { seccion: 'Variables compartidas del proyecto' },
+  req('BACKEND_DOMAIN', '${{shared.BACKEND_DOMAIN}}', 'de acá sale el destino del proxy'),
+  req('BACKEND_PORT', '${{shared.BACKEND_PORT}}', 'el mismo que usa el backend para escuchar'),
+
   { seccion: 'Servicio del front' },
   req('NODE_ENV', 'production', 'activa HSTS y la redirección a https'),
-  req('API_INTERNAL_URL', `http://${backServiceName}.railway.internal:3000`,
-      'http, no https: dentro de la red privada no hay TLS'),
 ];
 
 function render(titulo, filas) {
