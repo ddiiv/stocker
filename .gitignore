@@ -9,6 +9,16 @@ npm-debug.log*
 .env
 .env.local
 .env.*.local
+# Respaldos que deja scripts/arca-cert.js: contienen el .env entero.
+.env.bak-*
+.env.bak
+# Certificados y claves sueltos, por si quedan al pie del proyecto
+*.key
+*.crt
+*.pem
+*.pfx
+*.p12
+*.csr
 
 # Storage — PDFs generados, certificados ARCA, assets
 storage/
