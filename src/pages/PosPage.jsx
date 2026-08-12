@@ -26,7 +26,11 @@ export default function PosPage() {
   const [locations, setLocations] = useState([]);
   const [cobrando, setCobrando] = useState(false);
   const [ultimaVenta, setUltimaVenta] = useState(null);
+  const [resaltado, setResaltado] = useState(null);
   const inputRef = useRef(null);
+  const resaltadoTimer = useRef(null);
+
+  useEffect(() => () => clearTimeout(resaltadoTimer.current), []);
 
   useEffect(() => {
     fetchEmployees().then(setEmployees).catch(() => {});
@@ -51,6 +55,12 @@ export default function PosPage() {
         }
         return [...prev, { ...p, cantidad: 1 }];
       });
+      // Escaneando rápido no se alcanza a leer la tabla: resaltar la línea que
+      // acaba de cambiar es lo que permite confirmar que sumó al producto
+      // correcto y no creó una línea nueva.
+      setResaltado(p.id);
+      clearTimeout(resaltadoTimer.current);
+      resaltadoTimer.current = setTimeout(() => setResaltado(null), 1200);
       beep(880, 70);
     } catch (e) {
       setError(e.response?.data?.message || `No se encontró el código ${codigo}`);
@@ -58,7 +68,9 @@ export default function PosPage() {
     }
   }
 
-  useBarcodeScanner({ onScan: procesarCodigo, activo: !cobrando });
+  // Siempre activo salvo mientras se está cobrando, para que un escaneo
+  // accidental no altere una venta que ya se está registrando.
+  const { scannerActivo, lecturas } = useBarcodeScanner({ onScan: procesarCodigo, activo: !cobrando });
 
   function submitManual(e) {
     e.preventDefault();
@@ -133,8 +145,12 @@ export default function PosPage() {
         <div className="lg:col-span-2">
           <Card className="mb-4">
             <form onSubmit={submitManual}>
-              <div className="flex items-center gap-2 rounded-md border-2 border-dashed border-teal-300 bg-teal-50/50 px-3 py-3">
-                <ScanLine size={20} className="shrink-0 animate-pulse text-teal-600" />
+              <div className={`flex items-center gap-2 rounded-md border-2 border-dashed px-3 py-3 transition-colors ${
+                scannerActivo ? "border-teal-400 bg-teal-50" : "border-line bg-paper-100/60"
+              }`}>
+                {/* Late sólo cuando hay lecturas reales: un ícono animado
+                    permanente no distingue "funciona" de "no hay lector". */}
+                <ScanLine size={20} className={`shrink-0 ${scannerActivo ? "animate-pulse text-teal-600" : "text-ink-400"}`} />
                 <input
                   ref={inputRef}
                   data-scanner="true"
@@ -142,6 +158,9 @@ export default function PosPage() {
                   placeholder="Escaneá un producto o escribí el código…"
                   autoComplete="off"
                 />
+                {lecturas > 0 && (
+                  <span className="shrink-0 text-xs tabular-nums text-ink-500">{lecturas} lect.</span>
+                )}
               </div>
             </form>
             {error && (
@@ -160,7 +179,12 @@ export default function PosPage() {
                 <table className="w-full text-sm">
                   <tbody>
                     {items.map((i) => (
-                      <tr key={i.id} className="border-b border-line last:border-0">
+                      <tr
+                        key={i.id}
+                        className={`border-b border-line last:border-0 transition-colors ${
+                          resaltado === i.id ? "bg-teal-50" : ""
+                        }`}
+                      >
                         <td className="px-4 py-3">
                           <p className="font-medium text-ink-900">{i.titulo}</p>
                           <p className="mt-0.5 text-xs text-ink-500">

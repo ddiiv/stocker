@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import {
-  ScanLine, Plus, Minus, Hash, Play, Square, Trash2,
-  CheckCircle2, XCircle,
+  Plus, Minus, Hash, Trash2, CheckCircle2, XCircle,
 } from "lucide-react";
 import { scanAdjustStock } from "../services/productService";
 import { useBarcodeScanner } from "../hooks/useBarcodeScanner";
 import { PageHeader, Card } from "../components/ui/Layout";
 import StockTabs from "../components/stock/StockTabs";
+import ScannerStatus from "../components/scanner/ScannerStatus";
 
 const MODOS = [
   { value: "agregar", label: "Agregar",  icon: Plus,  desc: "Suma al stock actual. Para recepción de mercadería.", color: "teal" },
@@ -18,9 +18,9 @@ export default function ScanStockPage() {
   const [modo, setModo] = useState("agregar");
   const [cantidad, setCantidad] = useState(1);
   const [motivo, setMotivo] = useState("");
-  const [escaneando, setEscaneando] = useState(false);
   const [historial, setHistorial] = useState([]);
   const [error, setError] = useState("");
+  const [procesando, setProcesando] = useState(false);
   const inputRef = useRef(null);
   // El modo y la cantidad se leen dentro del callback del scanner, que vive en
   // una ref: sin esto tomaría los valores del primer render.
@@ -30,6 +30,7 @@ export default function ScanStockPage() {
   async function procesarCodigo(codigo) {
     const { modo: m, cantidad: c, motivo: mo } = config.current;
     setError("");
+    setProcesando(true);
     try {
       const r = await scanAdjustStock({ codigo, modo: m, cantidad: Number(c) || 1, motivo: mo });
       setHistorial((h) => [{ ...r, codigo, modo: m, ok: true, at: Date.now() }, ...h]);
@@ -40,12 +41,17 @@ export default function ScanStockPage() {
       setHistorial((h) => [{ codigo, ok: false, error: msg, at: Date.now() }, ...h]);
       setError(msg);
       beep(220, 220);
+    } finally {
+      setProcesando(false);
     }
   }
 
-  useBarcodeScanner({ onScan: procesarCodigo, activo: escaneando });
+  // Siempre escuchando: el operador gatilla el lector y el stock se ajusta.
+  // No hay que activar nada — tipear a mano nunca dispara una lectura porque
+  // el hook descarta el buffer cuando las teclas llegan a ritmo humano.
+  const { scannerActivo, lecturas } = useBarcodeScanner({ onScan: procesarCodigo });
 
-  useEffect(() => { if (escaneando) inputRef.current?.focus(); }, [escaneando]);
+  useEffect(() => { inputRef.current?.focus(); }, []);
 
   // Alta manual, para cuando el código no se lee o no hay lector a mano.
   function submitManual(e) {
@@ -69,23 +75,24 @@ export default function ScanStockPage() {
         {/* Configuración */}
         <div className="space-y-5 lg:col-span-1">
           <Card>
-            <p className="mb-3 font-display text-sm font-semibold text-ink-950">1. Qué hacer con cada lectura</p>
+            {/* Como el lector aplica el modo apenas lee, tiene que quedar claro
+                de un vistazo qué va a pasar con la próxima lectura. */}
+            <p className="mb-3 font-display text-sm font-semibold text-ink-950">Qué hace cada lectura</p>
             <div className="space-y-2">
               {MODOS.map((m) => {
                 const Icon = m.icon;
-                const activo = modo === m.value;
+                const elegido = modo === m.value;
                 return (
                   <button
                     key={m.value}
                     type="button"
-                    disabled={escaneando}
                     onClick={() => setModo(m.value)}
                     className={`w-full rounded-md border px-3 py-2 text-left transition ${
-                      activo ? "border-ink-950 bg-ink-950 text-paper-50" : "border-line bg-paper-50 hover:bg-paper-100"
-                    } ${escaneando ? "cursor-not-allowed opacity-60" : ""}`}
+                      elegido ? "border-ink-950 bg-ink-950 text-paper-50" : "border-line bg-paper-50 hover:bg-paper-100"
+                    }`}
                   >
                     <span className="flex items-center gap-2 text-sm font-medium"><Icon size={15} /> {m.label}</span>
-                    <span className={`mt-0.5 block text-xs ${activo ? "text-paper-200" : "text-ink-500"}`}>{m.desc}</span>
+                    <span className={`mt-0.5 block text-xs ${elegido ? "text-paper-200" : "text-ink-500"}`}>{m.desc}</span>
                   </button>
                 );
               })}
@@ -95,47 +102,37 @@ export default function ScanStockPage() {
               <label className="label">Cantidad por lectura</label>
               <input
                 type="number" min={modo === "fijar" ? 0 : 1} className="input"
-                value={cantidad} disabled={escaneando}
+                value={cantidad}
                 onChange={(e) => setCantidad(e.target.value)}
               />
-              <p className="mt-1 text-xs text-ink-500">
-                {modo === "fijar"
-                  ? "Cada producto escaneado queda con esta cantidad exacta."
-                  : `Cada lectura ${modo === "agregar" ? "suma" : "resta"} esta cantidad.`}
-              </p>
             </div>
 
             <div className="mt-4">
               <label className="label">Motivo <span className="font-normal text-ink-500">(opcional)</span></label>
-              <input className="input" value={motivo} disabled={escaneando}
+              <input className="input" value={motivo}
                 onChange={(e) => setMotivo(e.target.value)} placeholder="Ej: Remito 1234" />
             </div>
           </Card>
 
           <Card>
-            <p className="mb-3 font-display text-sm font-semibold text-ink-950">2. Escanear</p>
-            {!escaneando ? (
-              <button className="btn-accent w-full justify-center" onClick={() => { setEscaneando(true); setError(""); }}>
-                <Play size={15} /> Empezar a escanear
-              </button>
-            ) : (
-              <button className="btn-ghost w-full justify-center border border-brick-300 text-brick-500" onClick={() => setEscaneando(false)}>
-                <Square size={15} /> Detener
-              </button>
-            )}
+            <ScannerStatus activo={scannerActivo} lecturas={lecturas} />
 
-            {escaneando && (
-              <>
-                <div className="mt-4 flex items-center gap-2 rounded-md bg-teal-50 px-3 py-2 text-sm text-teal-700">
-                  <ScanLine size={16} className="animate-pulse" />
-                  Listo — gatillá el lector
-                </div>
-                <form onSubmit={submitManual} className="mt-3">
-                  <label className="label">O ingresá el código a mano</label>
-                  <input ref={inputRef} data-scanner="true" className="input font-mono" placeholder="Código o SKU" autoComplete="off" />
-                </form>
-              </>
-            )}
+            {/* Resumen de la acción en curso, en el mismo lugar donde el
+                operador mira mientras escanea. */}
+            <p className="mt-3 rounded-md bg-paper-100 px-3 py-2 text-sm text-ink-700">
+              Cada lectura{" "}
+              <strong className="text-ink-950">
+                {modo === "fijar"
+                  ? `deja el stock en ${Number(cantidad) || 0}`
+                  : `${modo === "agregar" ? "suma" : "resta"} ${Number(cantidad) || 1}`}
+              </strong>
+              {procesando && <span className="ml-2 text-xs text-ink-500">procesando…</span>}
+            </p>
+
+            <form onSubmit={submitManual} className="mt-3">
+              <label className="label">O ingresá el código a mano</label>
+              <input ref={inputRef} data-scanner="true" className="input font-mono" placeholder="Código o SKU" autoComplete="off" />
+            </form>
           </Card>
         </div>
 
@@ -162,7 +159,7 @@ export default function ScanStockPage() {
             </div>
             {historial.length === 0 ? (
               <p className="px-4 py-10 text-center text-sm text-ink-600">
-                Todavía no escaneaste nada. Elegí el modo, apretá «Empezar a escanear» y gatillá el lector.
+                Todavía no escaneaste nada. Elegí qué hace cada lectura y gatillá el lector.
               </p>
             ) : (
               <div className="max-h-[520px] overflow-y-auto">
