@@ -2,6 +2,7 @@ const bcrypt   = require('bcryptjs');
 const { Op }   = require('sequelize');
 const { Business, Employee, Role, EmployeeSession, BusinessCuit, PasswordResetCode, PaymentMethod } = require('../models');
 const { PRESETS } = require('../config/permisos');
+const { exigirLibre, normalizar } = require('../services/cuitRegistry');
 const { crearSesion, IDLE_MIN } = require('../utils/session');
 const { setAuthCookie, clearAuthCookie } = require('../utils/authCookie');
 const { sendPasswordResetCode, sendPasswordResetAlert } = require('../services/emailService');
@@ -32,9 +33,18 @@ const register = async (req, res, next) => {
     if (await Business.findOne({ where: { email } }))
       return res.status(409).json({ message: 'Ya existe una cuenta con ese email.' });
 
+    // El CUIT no puede estar en uso en ninguna otra cuenta, ni como cuenta ni
+    // como CUIT de facturación: dos negocios facturando con el mismo CUIT se
+    // pisarían la numeración de comprobantes ante AFIP.
+    const cuitLimpio = normalizar(cuit);
+    if (cuitLimpio.length !== 11) {
+      return res.status(400).json({ message: 'El CUIT debe tener 11 dígitos.' });
+    }
+    await exigirLibre(cuitLimpio);
+
     const passwordHash = await bcrypt.hash(password, 10);
     const business = await Business.create({
-      nombreNegocio, ownerNombre, ownerApellido, cuit,
+      nombreNegocio, ownerNombre, ownerApellido, cuit: cuitLimpio,
       telefono, ownerTelefono, email, passwordHash,
     });
 

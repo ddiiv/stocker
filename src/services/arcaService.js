@@ -194,7 +194,44 @@ async function verifyDelegation({ businessCuit, ambiente = 'homologacion' }) {
     const puntos = await cli.feParamGetPtosVenta({
       cert, key, ambiente, cuitEmisor: String(businessCuit).replace(/\D/g, ''),
     });
-    return { ok: true, ambiente, puntosVenta: puntos, stockerCuit: process.env.ARCA_STOCKER_CUIT };
+
+    /*
+     * Que AFIP conteste ya prueba que la delegación existe: si no nos hubiera
+     * autorizado, la llamada fallaría. Pero la lista puede venir vacía, y ahí
+     * la delegación está bien y facturar igual no se puede — falta que el CUIT
+     * dé de alta un punto de venta electrónico en AFIP.
+     *
+     * Devolver ok:true a secas en ese caso deja la pantalla diciendo
+     * "verificado" y el primer intento de factura falla sin explicación.
+     */
+    const activos = (puntos || []).filter((p) => !p.bloqueado && !p.Bloqueado);
+
+    if (activos.length === 0) {
+      return {
+        ok: true,
+        listoParaFacturar: false,
+        ambiente,
+        puntosVenta: puntos || [],
+        stockerCuit: process.env.ARCA_STOCKER_CUIT,
+        advertencia: 'La delegación está bien, pero este CUIT todavía no tiene ningún punto de venta electrónico dado de alta en AFIP.',
+        pasos: [
+          'Entrá a afip.gob.ar con clave fiscal del CUIT que factura.',
+          'Buscá el servicio "Administración de Puntos de Venta y Domicilios".',
+          'Elegí la empresa, entrá a "A/B/M de puntos de venta" y tocá "Agregar".',
+          'Como sistema elegí "RECE para aplicativo y web services" (comprobantes electrónicos).',
+          'Asociá el domicilio fiscal y guardá. Anotá el número que te asigna.',
+          'Volvé acá, cargá ese número como Punto de Venta y verificá de nuevo.',
+        ],
+      };
+    }
+
+    return {
+      ok: true,
+      listoParaFacturar: true,
+      ambiente,
+      puntosVenta: puntos,
+      stockerCuit: process.env.ARCA_STOCKER_CUIT,
+    };
   } catch (err) {
     const msg = err.message || String(err);
     const hint =

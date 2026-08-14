@@ -15,6 +15,25 @@
 
 const forge = require('node-forge');
 const axios = require('axios');
+const https = require('node:https');
+
+/*
+ * Agente TLS para hablar con AFIP.
+ *
+ * Sus servidores de producción todavía negocian Diffie-Hellman con claves de
+ * 1024 bits. OpenSSL 3 (Node 17 en adelante) las rechaza por debajo de su
+ * nivel de seguridad por defecto, y la conexión muere antes del handshake con
+ * "dh key too small" — un error de red que parece un problema del certificado
+ * o del punto de venta, cuando en realidad AFIP no actualizó sus parámetros.
+ *
+ * SECLEVEL=1 es lo mínimo que las acepta. Va en un agente propio y no en una
+ * variable global de OpenSSL: así el resto de las conexiones salientes del
+ * servidor (mail, MercadoLibre) conservan el nivel de seguridad normal.
+ */
+const agenteAfip = new https.Agent({
+  ciphers: 'DEFAULT:@SECLEVEL=1',
+  keepAlive: true,
+});
 
 // ── URLs por ambiente ─────────────────────────────────────────────
 const URLS = {
@@ -97,6 +116,7 @@ async function getTA({ cert, key, ambiente, service = 'wsfe' }) {
     res = await axios.post(URLS[ambiente].wsaa, soapEnvelope, {
       headers: { 'Content-Type': 'application/soap+xml; charset=utf-8', 'SOAPAction': '' },
       timeout: 20000,
+      httpsAgent: agenteAfip,
     });
   } catch (err) {
     const faultDetail = extractSoapFault(err.response?.data) || err.message;
@@ -178,6 +198,7 @@ async function callWsfe({ cert, key, ambiente, cuitEmisor, method, params = {} }
         'SOAPAction': `http://ar.gov.afip.dif.FEV1/${method}`,
       },
       timeout: 30000,
+      httpsAgent: agenteAfip,
     });
   } catch (err) {
     const faultDetail = extractSoapFault(err.response?.data) || err.message;
@@ -345,6 +366,7 @@ async function padronA5({ cert, key, ambiente, cuitConsultado }) {
       const res = await axios.post(URLS[amb][v.urlKey], soapEnvelope, {
         headers: { 'Content-Type': 'text/xml; charset=utf-8', 'SOAPAction': '' },
         timeout: 20000,
+        httpsAgent: agenteAfip,
       });
       const fault = extractSoapFault(res.data);
       if (fault) { lastError = new Error(`Padrón ${v.service}: ${fault}`); continue; }

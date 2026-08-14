@@ -1,3 +1,4 @@
+const { exigirLibre } = require('../services/cuitRegistry');
 const { BusinessCuit, sequelize } = require('../models');
 const seq = require('../config/database');
 
@@ -28,6 +29,26 @@ const create = async (req, res, next) => {
       await t.rollback();
       return res.status(400).json({ message: 'Nombre y CUIT son obligatorios.' });
     }
+    /*
+     * El CUIT no puede estar en uso en ningún otro negocio — ni como cuenta,
+     * ni como principal, ni como secundario. Dos negocios facturando con el
+     * mismo CUIT se pisan la numeración de comprobantes ante AFIP.
+     */
+    await exigirLibre(cuit, { businessId: req.auth.businessId });
+
+    // Repetido dentro del propio negocio: exigirLibre lo excluye a propósito
+    // (para poder editar sin chocar consigo mismo), así que este caso llegaba
+    // hasta la restricción de la base y devolvía su nombre interno al usuario.
+    const cuitLimpio = String(cuit).replace(/[^0-9]/g, '');
+    const yaEnEsteNegocio = await BusinessCuit.findOne({
+      where: { businessId: req.auth.businessId, cuit: cuitLimpio },
+      transaction: t,
+    });
+    if (yaEnEsteNegocio) {
+      await t.rollback();
+      return res.status(409).json({ message: `Ya tenés cargado el CUIT ${cuitLimpio} en este negocio.` });
+    }
+
     // Si viene esPrincipal=true, primero limpio los otros principales
     if (esPrincipal) {
       await BusinessCuit.update({ esPrincipal: false }, { where: { businessId: req.auth.businessId }, transaction: t });
@@ -51,11 +72,38 @@ const update = async (req, res, next) => {
   try {
     const row = await BusinessCuit.findOne({ where: { id: req.params.id, businessId: req.auth.businessId }, transaction: t });
     if (!row) { await t.rollback(); return res.status(404).json({ message: 'CUIT no encontrado.' }); }
-    if (req.body.esPrincipal === true && !row.esPrincipal) {
-      await BusinessCuit.update({ esPrincipal: false }, { where: { businessId: req.auth.businessId }, transaction: t });
+    /*
+     * El CUIT principal es el de la cuenta: se fijó al registrarse y no se
+     * toca. Cambiarlo dejaría la cuenta facturando con un CUIT distinto del
+     * que la identifica, y las facturas ya emitidas quedarían huérfanas.
+     * Los datos descriptivos (nombre, domicilio, condición) sí se editan.
+     */
+    const patch = {};
+    if (req.body.nombre !== undefined)       patch.nombre = String(req.body.nombre).trim();
+    if (req.body.condicionIva !== undefined) patch.condicionIva = req.body.condicionIva || null;
+    if (req.body.domicilio !== undefined)    patch.domicilio = req.body.domicilio || null;
+
+    const cuitPedido = req.body.cuit !== undefined ? String(req.body.cuit).replace(/[^0-9]/g, '') : null;
+    if (cuitPedido && cuitPedido !== String(row.cuit).replace(/[^0-9]/g, '')) {
+      if (row.esPrincipal) {
+        await t.rollback();
+        return res.status(400).json({
+          message: 'El CUIT principal es el de la cuenta y no se puede cambiar. Si necesitás facturar con otro CUIT, agregalo como CUIT adicional.',
+        });
+      }
+      await exigirLibre(cuitPedido, { businessId: req.auth.businessId, businessCuitId: row.id });
+      patch.cuit = cuitPedido;
     }
-    const patch = { ...req.body };
-    if (patch.cuit) patch.cuit = String(patch.cuit).replace(/[^0-9]/g, '');
+
+    // Cambiar cuál es el principal también movería el CUIT de facturación de
+    // la cuenta: el principal lo define el registro, no esta pantalla.
+    if (req.body.esPrincipal === true && !row.esPrincipal) {
+      await t.rollback();
+      return res.status(400).json({
+        message: 'El CUIT principal es el de la cuenta y no se puede reasignar desde acá.',
+      });
+    }
+
     await row.update(patch, { transaction: t });
     await t.commit();
     res.json(row);
