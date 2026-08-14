@@ -1,4 +1,5 @@
 const { Op } = require('sequelize');
+const { sanitizarPermisos } = require('../config/permisos');
 const bcrypt = require('bcryptjs');
 const { BusinessLocation, Role, Client, Sale, SaleItem, Invoice, ProductVariant, Product, StockMovement } = require('../models');
 const { ilikeOperator } = require('../utils/sqlHelpers');
@@ -46,7 +47,14 @@ const createRole = async (req, res, next) => {
   try {
     const { nombre, permisos } = req.body;
     if (!nombre) return res.status(400).json({ message: 'El nombre del cargo es obligatorio.' });
-    const role = await Role.create({ businessId: req.auth.businessId, nombre, permisos });
+    // Se normaliza siempre: descarta módulos inventados y niveles inválidos, y
+    // completa los que falten. Un permiso mal escrito no da acceso y no avisa,
+    // así que conviene no dejarlo entrar.
+    const role = await Role.create({
+      businessId: req.auth.businessId,
+      nombre,
+      permisos: sanitizarPermisos(permisos),
+    });
     res.status(201).json(role);
   } catch (e) { next(e); }
 };
@@ -54,7 +62,12 @@ const updateRole = async (req, res, next) => {
   try {
     const role = await Role.findOne({ where: { id: req.params.id, businessId: req.auth.businessId } });
     if (!role) return res.status(404).json({ message: 'Cargo no encontrado.' });
-    await role.update(req.body);
+    // businessId nunca se toma del body: mover un cargo a otro negocio sería
+    // regalarle acceso a datos ajenos.
+    const patch = {};
+    if (req.body?.nombre !== undefined) patch.nombre = req.body.nombre;
+    if (req.body?.permisos !== undefined) patch.permisos = sanitizarPermisos(req.body.permisos);
+    await role.update(patch);
     res.json(role);
   } catch (e) { next(e); }
 };

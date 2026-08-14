@@ -55,30 +55,34 @@ async function requireAuth(req, res, next) {
   }
 }
 
-const LEVELS = { ninguno: 0, ver: 1, editar: 2 };
+const { alcanza: alcanzaNivel } = require('../config/permisos');
+
+/*
+ * El dueño del negocio tiene acceso total a todo. No es un permiso que se le
+ * conceda: es una condición de la cuenta, y por eso no figura en la matriz de
+ * cargos ni se puede otorgar o quitar a un empleado.
+ */
+function esAdministradorTotal(auth) {
+  return auth?.type === 'business';
+}
 
 function requirePermission(moduleKey, minLevel = 'ver') {
   return (req, res, next) => {
     if (!req.auth) return res.status(401).json({ message: 'No autenticado.' });
-    if (req.auth.type === 'business') return next(); // dueño tiene acceso total
-    const level = req.auth.permisos?.[moduleKey] || 'ninguno';
-    if (LEVELS[level] >= LEVELS[minLevel]) return next();
+    if (esAdministradorTotal(req.auth)) return next();
+    if (alcanzaNivel(req.auth.permisos, moduleKey, minLevel)) return next();
     return res.status(403).json({ message: `Sin permiso de ${minLevel} en ${moduleKey}.` });
   };
 }
 
 // Para endpoints que alimentan pantallas de módulos distintos. Ej: la consulta
-// de padrón AFIP la usan tanto la pantalla de clientes (ventas) como la de
-// CUITs del negocio (facturación); exigir un solo módulo dejaría afuera a la
-// mitad de los roles legítimos.
+// de padrón AFIP la usan tanto la pantalla de clientes como la de CUITs del
+// negocio; exigir un solo módulo dejaría afuera a la mitad de los roles.
 function requireAnyPermission(modulos, minLevel = 'ver') {
   return (req, res, next) => {
     if (!req.auth) return res.status(401).json({ message: 'No autenticado.' });
-    if (req.auth.type === 'business') return next();
-    const alcanza = modulos.some(
-      (m) => LEVELS[req.auth.permisos?.[m] || 'ninguno'] >= LEVELS[minLevel]
-    );
-    if (alcanza) return next();
+    if (esAdministradorTotal(req.auth)) return next();
+    if (modulos.some((m) => alcanzaNivel(req.auth.permisos, m, minLevel))) return next();
     return res.status(403).json({ message: `Sin permiso de ${minLevel} en ${modulos.join(' o ')}.` });
   };
 }
@@ -87,9 +91,9 @@ function requireAnyPermission(modulos, minLevel = 'ver') {
 // corresponde a ningún módulo de permisos y no debería ver un empleado.
 function requireOwner(req, res, next) {
   if (!req.auth) return res.status(401).json({ message: 'No autenticado.' });
-  if (req.auth.type !== 'business')
+  if (!esAdministradorTotal(req.auth))
     return res.status(403).json({ message: 'Sólo el dueño de la cuenta puede acceder a esto.' });
   next();
 }
 
-module.exports = { requireAuth, requirePermission, requireAnyPermission, requireOwner };
+module.exports = { requireAuth, requirePermission, requireAnyPermission, requireOwner, esAdministradorTotal };

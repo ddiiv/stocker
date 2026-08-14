@@ -1,7 +1,8 @@
 const path = require('path');
 const sequelize = require('../config/database');
-const { Sale, SaleItem, ProductVariant, Product, Client, Employee, StockMovement, Business, BusinessCuit } = require('../models');
+const { Sale, SaleItem, SalePayment, ProductVariant, Product, Client, Employee, BusinessLocation, StockMovement, Business, BusinessCuit } = require('../models');
 const { nextSaleNumber } = require('../services/invoiceNumberService');
+const { calcularPagos } = require('../services/paymentService');
 const { generateSalePdf, generateSaleTicketPdf } = require('../services/pdfService');
 const { sendSaleReceiptToCustomer, sendSaleNotificationToBusiness } = require('../services/emailService');
 const { sendSaleWhatsapp } = require('../services/whatsappService');
@@ -131,15 +132,53 @@ const createSale = async (req, res, next) => {
   const t = await sequelize.transaction();
   try {
     const {
-      tipo = 'venta', fecha, clientId, locationId, items = [],
+      tipo = 'venta', fecha, clientId, locationId: locationIdPedido, items = [],
       descuentoPct = 0, estado, medioPago, notas, cotizacionId,
+      // Detalle de cobro: una línea por medio de pago usado.
+      pagos,
       // Si no hay clientId registrado, datos ad-hoc del cliente
       clienteAdHoc,
     } = req.body;
 
     if (!items.length) throw Object.assign(new Error('La venta necesita al menos un ítem.'), { status: 400 });
 
+    // El vendedor es siempre quien está logueado: un empleado no puede
+    // registrar una venta a nombre de otro. El dueño no tiene employeeId, así
+    // que sus ventas quedan sin vendedor asignado salvo que lo mande.
     const employeeId = req.auth.employeeId || null;
+
+    // El local también se fija solo para los empleados, con el que tienen
+    // asignado. Lo que llegue en el body se ignora: la restricción es del
+    // servidor, no de que el frontend deshabilite el desplegable.
+    let locationId = locationIdPedido || null;
+    if (req.auth.employeeId) {
+      const empleado = await Employee.findOne({
+        where: { id: req.auth.employeeId, businessId: req.auth.businessId },
+        transaction: t,
+      });
+      locationId = empleado?.locationId || null;
+
+      // Sin turno abierto la venta no tiene contra qué arquearse: el efectivo
+      // entraría a una caja que nadie rinde. Las cotizaciones no cobran, así
+      // que no lo necesitan.
+      if (tipo !== 'cotizacion') {
+        const { turnoAbierto } = require('../services/cashService');
+        const turno = await turnoAbierto(req.auth.employeeId, req.auth.businessId);
+        if (!turno) {
+          throw Object.assign(
+            new Error('Necesitás abrir tu turno de caja antes de vender.'),
+            { status: 409 }
+          );
+        }
+      }
+    } else if (locationId) {
+      // Dueño: elige, pero sólo entre los locales de su negocio.
+      const local = await BusinessLocation.findOne({
+        where: { id: locationId, businessId: req.auth.businessId },
+        transaction: t,
+      });
+      if (!local) throw Object.assign(new Error('El local indicado no pertenece a este negocio.'), { status: 400 });
+    }
 
     // Determinar si es mayorista: total de unidades >= 3
     const totalUnidades = items.reduce((s, i) => s + i.cantidad, 0);
@@ -157,6 +196,32 @@ const createSale = async (req, res, next) => {
       });
       if (!variant || variant.producto?.businessId !== req.auth.businessId)
         throw Object.assign(new Error(`Variante ${item.productVariantId} no encontrada.`), { status: 404 });
+
+      /*
+       * Stock disponible.
+       *
+       * Al descontar se hacía Math.max(0, stock - cantidad), que recorta a cero
+       * en silencio: vender 5 unidades teniendo 2 dejaba la venta hecha y el
+       * stock en 0, sin que nadie se enterara. A partir de ahí el inventario
+       * miente y la diferencia sólo aparece al contar a mano.
+       *
+       * Sólo se exige en ventas que se cobran: una cotización no mueve stock.
+       */
+      if (tipo !== 'cotizacion' && estado === 'pagado') {
+        const disponible = Number(variant.stock) || 0;
+        if (disponible < item.cantidad) {
+          const nombre = [variant.producto.titulo, variant.variante1Valor, variant.variante2Valor]
+            .filter(Boolean).join(' · ');
+          throw Object.assign(
+            new Error(
+              disponible === 0
+                ? `No queda stock de ${nombre} (${variant.sku}).`
+                : `Sólo quedan ${disponible} de ${nombre} (${variant.sku}) y estás vendiendo ${item.cantidad}.`
+            ),
+            { status: 409 }
+          );
+        }
+      }
 
       const precioUnitario = item.precioUnitario ?? calcPrecio(variant, esMayorista);
       const subtotal = precioUnitario * item.cantidad;
@@ -184,6 +249,12 @@ const createSale = async (req, res, next) => {
     const finalEstado = tipo === 'cotizacion' ? 'pendiente' : (estado || 'pendiente');
     const numero = await nextSaleNumber(req.auth.businessId, tipo);
 
+    // Los recargos y descuentos por medio de pago se calculan sobre el total
+    // de mercadería. `total` no se toca: sobre él se apoyan la facturación y
+    // las métricas, y el costo financiero del medio de pago no es venta.
+    const { lineas, recargoPagos, totalCobrado, resumen } =
+      await calcularPagos(pagos, total, req.auth.businessId);
+
     const sale = await Sale.create({
       businessId:  req.auth.businessId,
       locationId:  locationId || null,
@@ -193,7 +264,9 @@ const createSale = async (req, res, next) => {
       estado:      finalEstado,
       esMayorista,
       subtotal, descuentoPct, descuento, total,
-      medioPago:   finalEstado === 'pagado' ? medioPago : null,
+      medioPago:   finalEstado === 'pagado' ? (resumen || medioPago || null) : null,
+      recargoPagos,
+      totalCobrado,
       notas,
       cotizacionId: cotizacionId || null,
       fecha:       fecha || new Date().toISOString().slice(0, 10),
@@ -201,12 +274,34 @@ const createSale = async (req, res, next) => {
 
     await SaleItem.bulkCreate(enrichedItems.map((i) => ({ ...i, saleId: sale.id })), { transaction: t });
 
+    if (lineas.length) {
+      await SalePayment.bulkCreate(
+        lineas.map((l) => ({ ...l, saleId: sale.id })),
+        { transaction: t }
+      );
+    }
+
     // Si se paga, descuentar stock
     if (finalEstado === 'pagado') {
       for (const item of enrichedItems) {
         const variant = await ProductVariant.findByPk(item.productVariantId, { transaction: t, lock: t.LOCK.UPDATE });
-        const stockAnterior = variant.stock;
-        const stockNuevo    = Math.max(0, stockAnterior - item.cantidad);
+        const stockAnterior = Number(variant.stock) || 0;
+
+        // Segunda comprobación, ahora con la fila bloqueada. La de más arriba
+        // corre sin lock y da un error temprano y claro; ésta es la que
+        // garantiza que dos cajas vendiendo la última unidad a la vez no la
+        // vendan las dos.
+        if (stockAnterior < item.cantidad) {
+          throw Object.assign(
+            new Error(
+              `Se quedó sin stock ${item.titulo} (${item.sku}) mientras se registraba la venta: ` +
+              `quedan ${stockAnterior} y se piden ${item.cantidad}.`
+            ),
+            { status: 409 }
+          );
+        }
+
+        const stockNuevo = stockAnterior - item.cantidad;
         await variant.update({ stock: stockNuevo }, { transaction: t });
         await StockMovement.create({
           productVariantId: variant.id,
@@ -253,8 +348,22 @@ const updateSaleStatus = async (req, res, next) => {
       for (const item of sale.items) {
         const variant = await ProductVariant.findByPk(item.productVariantId, { transaction: t, lock: t.LOCK.UPDATE });
         if (!variant) continue;
-        const stockAnterior = variant.stock;
-        const stockNuevo    = Math.max(0, stockAnterior - item.cantidad);
+        const stockAnterior = Number(variant.stock) || 0;
+
+        // Entre que se registró la venta pendiente y este cobro pudo haberse
+        // vendido la misma mercadería. Cobrar igual dejaría el stock en cero
+        // sin aviso, que es lo que hacía el Math.max(0, …) de antes.
+        if (stockAnterior < item.cantidad) {
+          throw Object.assign(
+            new Error(
+              `No hay stock suficiente de ${item.titulo} (${item.sku}): quedan ${stockAnterior} ` +
+              `y la venta pide ${item.cantidad}. Ajustá el stock o modificá la venta antes de cobrarla.`
+            ),
+            { status: 409 }
+          );
+        }
+
+        const stockNuevo = stockAnterior - item.cantidad;
         await variant.update({ stock: stockNuevo }, { transaction: t });
         await StockMovement.create({
           productVariantId: variant.id,

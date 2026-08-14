@@ -294,4 +294,68 @@ Si NO fuiste vos, cambiá la contraseña y revisá las sesiones activas.
   return info;
 }
 
-module.exports = { sendInvoiceEmail, sendSaleReceiptToCustomer, sendSaleNotificationToBusiness, sendPasswordResetCode, sendPasswordResetAlert };
+
+// ── Email de descuadre de caja ─────────────────────────────────
+// Se manda al dueño cuando un turno cierra con diferencia. El objetivo es que
+// se entere el mismo día: revisar un faltante una semana después, cuando nadie
+// recuerda el turno, no sirve de nada.
+async function sendCashDiscrepancyAlert({ to, ownerName, businessName, turno, empleado, local, desglose }) {
+  if (!mailReady() || !to) return;
+
+  const dif = Number(turno.diferencia);
+  const falta = dif < 0;
+  const money = (n) => `$${Number(n || 0).toLocaleString('es-AR', { minimumFractionDigits: 2 })}`;
+  const color = falta ? C.brick500 : C.brass500;
+  const titulo = falta ? 'Faltante de caja' : 'Sobrante de caja';
+
+  const fila = (etiqueta, valor, destacado = false) =>
+    `<tr${destacado ? ` style="background:${C.paper100};"` : ''}><td style="padding:8px 10px;color:${C.ink600};">${etiqueta}</td><td style="padding:8px 10px;text-align:right;color:${C.ink950};${destacado ? 'font-weight:700;' : ''}">${valor}</td></tr>`;
+
+  const body = `
+    <p>Hola <strong>${escapeHtml(ownerName || '')}</strong>,</p>
+    <p>El turno de caja de <strong>${escapeHtml(empleado)}</strong>${local ? ` en ${escapeHtml(local)}` : ''} cerró con una diferencia.</p>
+    <p style="color:${color};font-weight:700;font-size:18px;margin:14px 0;">${titulo}: ${money(Math.abs(dif))}</p>
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border:1px solid ${C.line};border-radius:6px;overflow:hidden;margin:12px 0;">
+      ${fila('Efectivo inicial', money(desglose.montoInicial))}
+      ${fila('Ventas en efectivo', money(desglose.efectivoVentas), true)}
+      ${fila('Ingresos', money(desglose.ingresos))}
+      ${fila('Egresos', `- ${money(desglose.egresos)}`, true)}
+      ${fila('Retiros', `- ${money(desglose.retiros)}`)}
+      ${fila('Debería haber', money(turno.montoEsperado), true)}
+      ${fila('Contado por el empleado', money(turno.montoDeclarado))}
+    </table>
+    ${turno.notaCierre ? `<p style="color:${C.ink600};"><strong>Nota del cierre:</strong> ${escapeHtml(turno.notaCierre)}</p>` : ''}
+    <p style="color:${C.ink600};font-size:13px;">Sólo se cuenta el efectivo: lo cobrado con tarjeta, transferencia o QR no pasa por la caja.</p>`;
+
+  const text =
+`Hola ${ownerName || ''},
+
+${titulo}: ${money(Math.abs(dif))}
+Turno de ${empleado}${local ? ` en ${local}` : ''}
+
+Efectivo inicial:    ${money(desglose.montoInicial)}
+Ventas en efectivo:  ${money(desglose.efectivoVentas)}
+Ingresos:            ${money(desglose.ingresos)}
+Egresos:            -${money(desglose.egresos)}
+Retiros:            -${money(desglose.retiros)}
+Debería haber:       ${money(turno.montoEsperado)}
+Contado:             ${money(turno.montoDeclarado)}
+${turno.notaCierre ? `\nNota: ${turno.notaCierre}` : ''}
+
+Sólo se cuenta efectivo.
+
+— Stocker`;
+
+  const info = await transport().sendMail({
+    from: process.env.MAIL_FROM || `"Stocker" <${process.env.MAIL_USER}>`,
+    to,
+    subject: `${titulo} de ${money(Math.abs(dif))} — ${businessName}`,
+    html: shell({ title: titulo, businessName, bodyHtml: body }),
+    text,
+    headers: { 'X-Entity-Ref-ID': `stocker-caja-${turno.id}` },
+  });
+  log.info('email', 'alerta de descuadre enviada', { a: mask.email(to), turno: turno.id });
+  return info;
+}
+
+module.exports = { sendInvoiceEmail, sendSaleReceiptToCustomer, sendSaleNotificationToBusiness, sendPasswordResetCode, sendPasswordResetAlert, sendCashDiscrepancyAlert };

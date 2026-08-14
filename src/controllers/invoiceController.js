@@ -104,8 +104,18 @@ const createInvoice = async (req, res, next) => {
       || (padronInfo?.condicionIvaId ? (padronInfo.condicionIvaId === 1 ? 'A' : 'B') : null)
       || determineInvoiceType(finalCuit);
 
-    // Totales e IVA
-    const { neto, iva } = calcularIVA(sale.total, tipo);
+    /*
+     * Se factura lo que el cliente efectivamente paga, recargo del medio de
+     * pago incluido. Si una venta de $10.000 se cobra por transferencia con
+     * 5% de recargo, entran $10.500 y ese es el importe que corresponde
+     * declarar: el comprobante tiene que reflejar el movimiento real de
+     * dinero, no el precio de lista.
+     *
+     * `totalCobrado` es 0 en las ventas anteriores a los medios de pago con
+     * ajuste, así que ahí se cae al total de siempre.
+     */
+    const totalAFacturar = Number(sale.totalCobrado) || Number(sale.total);
+    const { neto, iva } = calcularIVA(totalAFacturar, tipo);
 
     // Número de factura
     const numero = await nextInvoiceNumber(req.auth.businessId);
@@ -117,7 +127,7 @@ const createInvoice = async (req, res, next) => {
       arcaConfig = await BusinessArcaConfig.findOne({ where: { businessCuitId: emisor.id } });
     }
     const { cae, caeVencimiento, respuesta: arcaRespuesta } = await solicitarCAE({
-      tipo, total: sale.total, clienteCuit: finalCuit,
+      tipo, total: totalAFacturar, clienteCuit: finalCuit,
       clienteCondicion: condicionReceptor,
       businessCuit: emisorCuit,
       puntoVenta: arcaConfig?.puntoVenta || null,
@@ -136,7 +146,7 @@ const createInvoice = async (req, res, next) => {
       clienteEmail:  finalEmail,
       clienteDireccion: finalDireccion,
       subtotal:      Number(sale.subtotal),
-      iva, total:    Number(sale.total),
+      iva, total:    totalAFacturar,
       esMayorista:   sale.esMayorista,
       cae, caeVencimiento,
       arcaRespuesta,
@@ -161,6 +171,24 @@ const createInvoice = async (req, res, next) => {
       precioUnitario:  Number(i.precioUnitario),
       subtotal:        Number(i.subtotal),
     }));
+
+    // El recargo va como línea propia: si no, el comprobante mostraría
+    // productos por $10.000 y un total de $10.500 sin explicar la diferencia.
+    // Si el ajuste fue un descuento, la línea sale en negativo.
+    const ajuste = Number(sale.recargoPagos) || 0;
+    if (ajuste !== 0) {
+      const detalle = sale.medioPago ? ` (${sale.medioPago})` : '';
+      invoiceItems.push({
+        invoiceId:      invoice.id,
+        titulo:         ajuste > 0 ? `Recargo por medio de pago${detalle}` : `Descuento por medio de pago${detalle}`,
+        sku:            null,
+        cantidad:       1,
+        esMayorista:    false,
+        precioUnitario: ajuste,
+        subtotal:       ajuste,
+      });
+    }
+
     await InvoiceItem.bulkCreate(invoiceItems, { transaction: t });
 
     await t.commit();

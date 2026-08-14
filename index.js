@@ -140,9 +140,12 @@ async function start() {
     if (process.env.DB_AUTO_SYNC !== 'false') {
       await sequelize.sync({ alter: false, logging: false });
       // sync no agrega columnas a tablas que ya existen: eso lo cubre este paso.
-      const { ensureColumns } = require('./src/database/ensureColumns');
+      const { ensureColumns, ensureDatosIniciales } = require('./src/database/ensureColumns');
       const nuevas = await ensureColumns(sequelize);
       console.log(`✔ Esquema verificado${nuevas.length ? ` — columnas agregadas: ${nuevas.join(', ')}` : ''}.`);
+
+      const sembrados = await ensureDatosIniciales();
+      if (sembrados) console.log(`✔ Medios de pago iniciales creados en ${sembrados} negocio(s).`);
     }
 
     // La red privada de Railway es IPv6: si el server sólo escucha en 0.0.0.0,
@@ -160,7 +163,13 @@ async function start() {
       process.exit(1);
     });
   } catch (error) {
-    console.error('✖ No se pudo conectar a la base de datos:', error.message);
+    // Este catch cubre conexión, sync y ensureColumns. Decir siempre "no se
+    // pudo conectar" manda a revisar credenciales cuando el problema puede
+    // estar en el esquema. Y los errores de Sequelize suelen traer el detalle
+    // en `original`, no en `message` — que a veces viene vacío.
+    const detalle = error.original?.message || error.parent?.message || error.message || error.name;
+    console.error(`✖ Falló el arranque: ${detalle}`);
+    if (error.sql) console.error(`  Sentencia: ${String(error.sql).slice(0, 300)}`);
     process.exit(1);
   }
 }

@@ -24,6 +24,8 @@ const businessCuitCtrl = require('../controllers/businessCuitController');
 const { testSend: whatsappTestSend } = require('../controllers/whatsappTestController');
 const mlCtrl = require('../controllers/mercadolibreController');
 const metricsCtrl = require('../controllers/metricsController');
+const paymentCtrl = require('../controllers/paymentMethodController');
+const cashCtrl = require('../controllers/cashController');
 
 const r = Router();
 
@@ -62,14 +64,14 @@ r.patch ('/employees/:id/toggle',   requireAuth, requirePermission('empleados','
 r.delete('/employees/:id',          requireAuth, requirePermission('empleados','editar'), employeeCtrl.deleteEmployee);
 
 // ── Clients ───────────────────────────────────────────────────────
-r.get   ('/clients',     requireAuth, requirePermission('ventas','ver'),    getClients);
-r.post  ('/clients',     requireAuth, requirePermission('ventas','editar'), createClient);
-r.put   ('/clients/:id', requireAuth, requirePermission('ventas','editar'), updateClient);
-r.delete('/clients/:id', requireAuth, requirePermission('ventas','editar'), deleteClient);
+r.get   ('/clients',     requireAuth, requirePermission('clientes','ver'),    getClients);
+r.post  ('/clients',     requireAuth, requirePermission('clientes','editar'), createClient);
+r.put   ('/clients/:id', requireAuth, requirePermission('clientes','editar'), updateClient);
+r.delete('/clients/:id', requireAuth, requirePermission('clientes','editar'), deleteClient);
 
 // ── ARCA / CUIT lookup ───────────────────────────────────────────
 // Lo consumen la pantalla de clientes y la de CUITs del negocio.
-r.get('/arca/cuit/:cuit', requireAuth, requireAnyPermission(['ventas', 'facturacion']), lookupCuit);
+r.get('/arca/cuit/:cuit', requireAuth, requireAnyPermission(['clientes', 'facturacion']), lookupCuit);
 
 // ── ARCA / config por CUIT del negocio ───────────────────────────
 r.get ('/arca/status',                  requireAuth, requirePermission('facturacion','ver'), arcaConfigCtrl.status);
@@ -83,14 +85,14 @@ r.post('/arca/cuits/:cuitId/verify',    requireAuth, requirePermission('facturac
 // El callback es público: ML redirige al usuario ahí sin nuestro JWT,
 // el negocio se identifica por el parámetro `state`.
 r.get   ('/mercadolibre/callback',    mlCtrl.callback);
-r.get   ('/mercadolibre/status',      requireAuth, requirePermission('stock','ver'),    mlCtrl.status);
-r.get   ('/mercadolibre/auth-url',    requireAuth, requirePermission('stock','editar'), mlCtrl.authUrl);
-r.delete('/mercadolibre/disconnect',  requireAuth, requirePermission('stock','editar'), mlCtrl.disconnect);
-r.get   ('/mercadolibre/preview',     requireAuth, requirePermission('stock','ver'),    mlCtrl.preview);
-r.post  ('/mercadolibre/sync',        requireAuth, requirePermission('stock','editar'), mlCtrl.sync);
-r.get   ('/mercadolibre/links',       requireAuth, requirePermission('stock','ver'),    mlCtrl.listLinks);
-r.post  ('/mercadolibre/links',       requireAuth, requirePermission('stock','editar'), mlCtrl.upsertLink);
-r.delete('/mercadolibre/links/:id',   requireAuth, requirePermission('stock','editar'), mlCtrl.deleteLink);
+r.get   ('/mercadolibre/status',      requireAuth, requirePermission('integraciones','ver'),    mlCtrl.status);
+r.get   ('/mercadolibre/auth-url',    requireAuth, requirePermission('integraciones','editar'), mlCtrl.authUrl);
+r.delete('/mercadolibre/disconnect',  requireAuth, requirePermission('integraciones','editar'), mlCtrl.disconnect);
+r.get   ('/mercadolibre/preview',     requireAuth, requirePermission('integraciones','ver'),    mlCtrl.preview);
+r.post  ('/mercadolibre/sync',        requireAuth, requirePermission('integraciones','editar'), mlCtrl.sync);
+r.get   ('/mercadolibre/links',       requireAuth, requirePermission('integraciones','ver'),    mlCtrl.listLinks);
+r.post  ('/mercadolibre/links',       requireAuth, requirePermission('integraciones','editar'), mlCtrl.upsertLink);
+r.delete('/mercadolibre/links/:id',   requireAuth, requirePermission('integraciones','editar'), mlCtrl.deleteLink);
 
 // ── Variant types (variantes maestras del negocio) ───────────────
 r.get   ('/variant-types',      requireAuth, requirePermission('stock','ver'),    variantTypeCtrl.list);
@@ -133,7 +135,7 @@ r.get   ('/sales/:id',                  requireAuth, requirePermission('ventas',
 r.get   ('/sales/:id/ticket',           requireAuth, requirePermission('ventas','ver'),    saleCtrl.downloadTicket);
 r.post  ('/sales',                      requireAuth, requirePermission('ventas','editar'), saleCtrl.createSale);
 r.patch ('/sales/:id/estado',           requireAuth, requirePermission('ventas','editar'), saleCtrl.updateSaleStatus);
-r.post  ('/sales/cotizacion/:id/convertir', requireAuth, requirePermission('ventas','editar'), saleCtrl.convertQuoteToSale);
+r.post  ('/sales/cotizacion/:id/convertir', requireAuth, requirePermission('cotizaciones','editar'), saleCtrl.convertQuoteToSale);
 
 // ── Invoices ─────────────────────────────────────────────────────
 r.get   ('/invoices',           requireAuth, requirePermission('facturacion','ver'),    invoiceCtrl.getInvoices);
@@ -141,6 +143,21 @@ r.get   ('/invoices/:id',       requireAuth, requirePermission('facturacion','ve
 r.post  ('/invoices',           requireAuth, requirePermission('facturacion','editar'), invoiceCtrl.createInvoice);
 r.patch ('/invoices/:id/anular',requireAuth, requirePermission('facturacion','editar'), invoiceCtrl.voidInvoice);
 r.get   ('/invoices/:id/pdf',   requireAuth, requirePermission('facturacion','ver'),    invoiceCtrl.downloadPdf);
+
+// ── Métodos de pago ──────────────────────────────────────────────
+r.get   ('/payment-methods',     requireAuth, requireAnyPermission(['pagos','ventas']), paymentCtrl.list);
+r.post  ('/payment-methods',     requireAuth, requirePermission('pagos','editar'), paymentCtrl.create);
+r.put   ('/payment-methods/:id', requireAuth, requirePermission('pagos','editar'), paymentCtrl.update);
+r.delete('/payment-methods/:id', requireAuth, requirePermission('pagos','editar'), paymentCtrl.remove);
+
+// ── Caja / arqueo ────────────────────────────────────────────────
+r.get ('/cash/turno-actual',   requireAuth, requirePermission('caja','ver'),    cashCtrl.turnoActual);
+r.post('/cash/abrir',          requireAuth, requirePermission('caja','editar'), cashCtrl.abrir);
+r.post('/cash/cerrar',         requireAuth, requirePermission('caja','editar'), cashCtrl.cerrar);
+r.post('/cash/movimientos',    requireAuth, requirePermission('caja','editar'), cashCtrl.registrarMovimiento);
+r.get ('/cash/turnos',         requireAuth, requirePermission('caja','ver'),    cashCtrl.listarTurnos);
+r.get ('/cash/retiros',        requireAuth, requirePermission('caja','ver'),    cashCtrl.listarRetiros);
+r.get ('/cash/turnos/:id',     requireAuth, requirePermission('caja','ver'),    cashCtrl.detalleTurno);
 
 // ── Dashboard ─────────────────────────────────────────────────────
 r.get('/dashboard', requireAuth, requirePermission('dashboard','ver'), getDashboard);

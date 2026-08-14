@@ -1,6 +1,7 @@
 const bcrypt   = require('bcryptjs');
 const { Op }   = require('sequelize');
-const { Business, Employee, Role, EmployeeSession, BusinessCuit, PasswordResetCode } = require('../models');
+const { Business, Employee, Role, EmployeeSession, BusinessCuit, PasswordResetCode, PaymentMethod } = require('../models');
+const { PRESETS } = require('../config/permisos');
 const { crearSesion, IDLE_MIN } = require('../utils/session');
 const { setAuthCookie, clearAuthCookie } = require('../utils/authCookie');
 const { sendPasswordResetCode, sendPasswordResetAlert } = require('../services/emailService');
@@ -42,13 +43,18 @@ const register = async (req, res, next) => {
       businessId: business.id, nombre: business.nombreNegocio, cuit: business.cuit, esPrincipal: true,
     });
 
-    // Roles por defecto
-    await Role.bulkCreate([
-      { businessId: business.id, nombre: 'Administrador', permisos: { stock:'editar', ventas:'editar', facturacion:'editar', empleados:'editar', dashboard:'editar', cotizaciones:'editar' } },
-      { businessId: business.id, nombre: 'Vendedor', permisos: { stock:'ver', ventas:'editar', facturacion:'ver', empleados:'ninguno', dashboard:'ver', cotizaciones:'editar' } },
-      { businessId: business.id, nombre: 'Depósito', permisos: { stock:'editar', ventas:'ninguno', facturacion:'ninguno', empleados:'ninguno', dashboard:'ver', cotizaciones:'ninguno' } },
-      { businessId: business.id, nombre: 'Cajero', permisos: { stock:'ver', ventas:'editar', facturacion:'editar', empleados:'ninguno', dashboard:'ver', cotizaciones:'ver' } },
-    ]);
+    // Roles por defecto. Los permisos salen de config/permisos.js para que
+    // agregar un módulo nuevo no deje a los cargos preexistentes incompletos.
+    await Role.bulkCreate(
+      Object.entries(PRESETS).map(([nombre, permisos]) => ({ businessId: business.id, nombre, permisos }))
+    );
+
+    // Medios de pago iniciales, sin ajuste. El negocio los edita después.
+    await PaymentMethod.bulkCreate(
+      ['Efectivo', 'Débito', 'Crédito', 'Transferencia', 'QR / Billetera'].map((nombre, i) => ({
+        businessId: business.id, nombre, ajustePct: 0, activo: true, orden: i,
+      }))
+    );
 
     const token = crearSesion({ type: 'business', businessId: business.id });
     setAuthCookie(res, token);
@@ -113,11 +119,43 @@ const me = async (req, res, next) => {
     if (req.auth.type === 'business') {
       const b = await Business.findByPk(req.auth.businessId);
       if (!b) return res.status(404).json({ message: 'Negocio no encontrado.' });
-      return res.json({ type: 'business', data: sanitizeBusiness(b), sesion });
+      const emisorDueno = await BusinessCuit.findOne({
+        where: { businessId: b.id, esPrincipal: true },
+        attributes: ['id', 'nombre', 'cuit', 'condicionIva', 'domicilio'],
+      });
+      // Misma forma que para el empleado, así el front lee `negocio` sin
+      // preguntar de qué tipo de sesión se trata.
+      return res.json({
+        type: 'business',
+        data: sanitizeBusiness(b),
+        negocio: {
+          id: b.id, nombreNegocio: b.nombreNegocio, cuit: b.cuit, telefono: b.telefono,
+          emisor: emisorDueno?.toJSON() || null,
+        },
+        sesion,
+      });
     }
     const e = await Employee.findByPk(req.auth.employeeId, { include: [{ association: 'cargo' }, { association: 'local' }] });
     if (!e) return res.status(404).json({ message: 'Empleado no encontrado.' });
-    res.json({ type: 'employee', data: sanitizeEmployee(e), sesion });
+
+    // El empleado necesita saber en qué negocio está: el nombre aparece en la
+    // barra superior, y el CUIT y el nombre fiscal en tickets y comprobantes.
+    // Se manda sólo eso — email del dueño, teléfono personal y hash de
+    // contraseña no tienen por qué salir del lado del dueño.
+    const negocio = await Business.findByPk(req.auth.businessId, {
+      attributes: ['id', 'nombreNegocio', 'cuit', 'telefono'],
+    });
+    const emisor = await BusinessCuit.findOne({
+      where: { businessId: req.auth.businessId, esPrincipal: true },
+      attributes: ['id', 'nombre', 'cuit', 'condicionIva', 'domicilio'],
+    });
+
+    res.json({
+      type: 'employee',
+      data: sanitizeEmployee(e),
+      negocio: negocio ? { ...negocio.toJSON(), emisor: emisor?.toJSON() || null } : null,
+      sesion,
+    });
   } catch (error) { next(error); }
 };
 

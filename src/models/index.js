@@ -250,12 +250,104 @@ const Sale = db.define('Sale', {
   subtotal:     { type: DataTypes.DECIMAL(12,2), defaultValue: 0 },
   descuentoPct: { type: DataTypes.DECIMAL(5,2), defaultValue: 0 },
   descuento:    { type: DataTypes.DECIMAL(12,2), defaultValue: 0 },
+  // `total` es el neto de la mercadería. Se mantiene con ese significado
+  // porque encima se apoyan la facturación y todas las métricas: es lo que
+  // el negocio vendió, sin el costo financiero del medio de pago.
   total:        { type: DataTypes.DECIMAL(12,2), defaultValue: 0 },
+  // Texto de resumen ("Efectivo" o "Efectivo + Transferencia"). El detalle
+  // real vive en sale_payments; esto queda para listados y tickets.
   medioPago:    { type: DataTypes.STRING(60) },
+  // Suma neta de recargos y descuentos de los medios de pago usados.
+  // Positivo = recargo; negativo = descuento.
+  recargoPagos: { type: DataTypes.DECIMAL(12,2), defaultValue: 0 },
+  // Lo que efectivamente pagó el cliente: total + recargoPagos.
+  totalCobrado: { type: DataTypes.DECIMAL(12,2), defaultValue: 0 },
   notas:        { type: DataTypes.TEXT },
   cotizacionId: { type: DataTypes.INTEGER, allowNull: true },
   fecha:        { type: DataTypes.DATEONLY, allowNull: false },
 }, { tableName: 'sales' });
+
+// ─── PaymentMethod ───────────────────────────────────────────────
+// Medios de pago que ofrece cada negocio, con su ajuste por defecto.
+const PaymentMethod = db.define('PaymentMethod', {
+  id:         { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
+  businessId: { type: DataTypes.INTEGER, allowNull: false },
+  nombre:     { type: DataTypes.STRING(60), allowNull: false },
+  // Porcentaje sobre el total. Positivo recarga (ej. 5 = +5% por
+  // transferencia), negativo descuenta (ej. -10 = 10% off por efectivo).
+  ajustePct:  { type: DataTypes.DECIMAL(5,2), defaultValue: 0 },
+  activo:     { type: DataTypes.BOOLEAN, defaultValue: true },
+  orden:      { type: DataTypes.INTEGER, defaultValue: 0 },
+  notas:      { type: DataTypes.STRING(200) },
+  // Marca explícita en vez de adivinar por el nombre: es lo único que entra al
+  // arqueo, porque el resto no pasa por el cajón. Con un "Efectivo USD" o un
+  // "Contado" la deducción por texto fallaba en silencio y la caja cerraba mal.
+  esEfectivo: { type: DataTypes.BOOLEAN, defaultValue: false },
+}, { tableName: 'payment_methods' });
+
+// ─── CashShift (turno de caja) ───────────────────────────────────
+// El arqueo es del empleado que atiende la caja. El dueño no abre turno:
+// no está detrás del mostrador y no tiene efectivo que rendir.
+const CashShift = db.define('CashShift', {
+  id:            { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
+  businessId:    { type: DataTypes.INTEGER, allowNull: false },
+  employeeId:    { type: DataTypes.INTEGER, allowNull: false },
+  locationId:    { type: DataTypes.INTEGER, allowNull: true },
+  // Efectivo con el que arranca el turno (cambio inicial).
+  montoInicial:  { type: DataTypes.DECIMAL(12,2), allowNull: false, defaultValue: 0 },
+  abiertoEn:     { type: DataTypes.DATE, allowNull: false, defaultValue: DataTypes.NOW },
+  cerradoEn:     { type: DataTypes.DATE, allowNull: true },
+  // Lo que el sistema calcula que debería haber: inicial + ventas en efectivo
+  // + ingresos - egresos - retiros. Se congela al cerrar.
+  montoEsperado: { type: DataTypes.DECIMAL(12,2), allowNull: true },
+  // Lo que el empleado contó físicamente en la caja.
+  montoDeclarado:{ type: DataTypes.DECIMAL(12,2), allowNull: true },
+  // declarado - esperado. Negativo = falta plata.
+  diferencia:    { type: DataTypes.DECIMAL(12,2), allowNull: true },
+  estado:        { type: DataTypes.STRING(15), defaultValue: 'abierto' }, // abierto|cerrado
+  notaCierre:    { type: DataTypes.STRING(500) },
+}, { tableName: 'cash_shifts' });
+
+// ─── CashMovement (movimientos de caja) ──────────────────────────
+const CashMovement = db.define('CashMovement', {
+  id:          { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
+  businessId:  { type: DataTypes.INTEGER, allowNull: false },
+  // Null cuando lo registra el dueño fuera de un turno.
+  cashShiftId: { type: DataTypes.INTEGER, allowNull: true },
+  employeeId:  { type: DataTypes.INTEGER, allowNull: true },
+  // ingreso | egreso | retiro. El retiro es plata que sale de la caja hacia
+  // alguien (el dueño la lleva al banco, se paga un flete, etc).
+  tipo:        { type: DataTypes.STRING(15), allowNull: false },
+  monto:       { type: DataTypes.DECIMAL(12,2), allowNull: false },
+  motivo:      { type: DataTypes.STRING(255) },
+  // En los retiros: quién saca la plata y a quién se la entrega. Sin esto un
+  // faltante no tiene a quién atribuirse.
+  entregadoPor:{ type: DataTypes.STRING(120) },
+  recibidoPor: { type: DataTypes.STRING(120) },
+  fecha:       { type: DataTypes.DATE, allowNull: false, defaultValue: DataTypes.NOW },
+}, { tableName: 'cash_movements' });
+
+// ─── SalePayment ─────────────────────────────────────────────────
+// Una fila por medio de pago usado en la venta. Permite pagos combinados
+// (parte en efectivo, parte en transferencia) con su propio ajuste cada uno.
+const SalePayment = db.define('SalePayment', {
+  id:              { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
+  saleId:          { type: DataTypes.INTEGER, allowNull: false },
+  // Puede quedar en null si después se borra el método: el nombre se guarda
+  // aparte para que las ventas viejas no pierdan el dato.
+  paymentMethodId: { type: DataTypes.INTEGER, allowNull: true },
+  nombre:          { type: DataTypes.STRING(60), allowNull: false },
+  // Parte del total de mercadería que se cubre con este medio.
+  monto:           { type: DataTypes.DECIMAL(12,2), allowNull: false },
+  // Se precarga del método pero es editable por venta: a veces se negocia.
+  ajustePct:       { type: DataTypes.DECIMAL(5,2), defaultValue: 0 },
+  ajusteMonto:     { type: DataTypes.DECIMAL(12,2), defaultValue: 0 },
+  // monto + ajusteMonto: lo que entra por este medio.
+  montoFinal:      { type: DataTypes.DECIMAL(12,2), allowNull: false },
+  // Copia del flag al momento del cobro. Si después se edita el medio de pago,
+  // un arqueo ya cerrado no puede cambiar de resultado.
+  esEfectivo:      { type: DataTypes.BOOLEAN, defaultValue: false },
+}, { tableName: 'sale_payments' });
 
 // ─── SaleItem ────────────────────────────────────────────────────
 const SaleItem = db.define('SaleItem', {
@@ -395,6 +487,32 @@ Invoice.belongsTo(Business, { foreignKey: 'businessId' });
 Invoice.hasMany(InvoiceItem, { foreignKey: 'invoiceId', as: 'items', onDelete: 'CASCADE' });
 InvoiceItem.belongsTo(Invoice, { foreignKey: 'invoiceId' });
 
+Business.hasMany(CashShift, { foreignKey: 'businessId', as: 'turnosCaja', onDelete: 'CASCADE' });
+CashShift.belongsTo(Business,  { foreignKey: 'businessId' });
+CashShift.belongsTo(Employee,  { foreignKey: 'employeeId', as: 'empleado', onDelete: 'NO ACTION' });
+CashShift.belongsTo(BusinessLocation, { foreignKey: 'locationId', as: 'local', onDelete: 'NO ACTION' });
+// Sin CASCADE hacia el turno: SQL Server rechaza dos caminos de borrado que
+// terminen en la misma tabla, y acá businessId ya trae uno.
+CashShift.hasMany(CashMovement, { foreignKey: 'cashShiftId', as: 'movimientos', onDelete: 'NO ACTION' });
+CashMovement.belongsTo(CashShift, { foreignKey: 'cashShiftId', as: 'turno' });
+CashMovement.belongsTo(Employee,  { foreignKey: 'employeeId', as: 'empleado', onDelete: 'NO ACTION' });
+Business.hasMany(CashMovement, { foreignKey: 'businessId', as: 'movimientosCaja', onDelete: 'CASCADE' });
+CashMovement.belongsTo(Business, { foreignKey: 'businessId' });
+
+Business.hasMany(PaymentMethod, { foreignKey: 'businessId', as: 'mediosPago', onDelete: 'CASCADE' });
+PaymentMethod.belongsTo(Business, { foreignKey: 'businessId' });
+
+Sale.hasMany(SalePayment, { foreignKey: 'saleId', as: 'pagos', onDelete: 'CASCADE' });
+SalePayment.belongsTo(Sale, { foreignKey: 'saleId' });
+// NO ACTION en vez de SET NULL: sale_payments ya recibe cascada desde sales, y
+// ambas ramas terminan en businesses. SQL Server rechaza crear la tabla cuando
+// hay más de un camino de borrado en cascada hacia la misma tabla.
+//
+// No se pierde nada: el controller no deja borrar un medio de pago que tenga
+// ventas asociadas (lo desactiva), así que la base nunca queda con un
+// paymentMethodId colgado.
+SalePayment.belongsTo(PaymentMethod, { foreignKey: 'paymentMethodId', as: 'metodo', onDelete: 'NO ACTION' });
+
 module.exports = {
   db,
   Business, BusinessLocation, BusinessCuit, BusinessArcaConfig, ArcaToken, VariantType,
@@ -402,4 +520,5 @@ module.exports = {
   Role, Employee, EmployeeSession, PasswordResetCode, Client,
   Product, ProductVariant, StockMovement,
   Sale, SaleItem, Invoice, InvoiceItem,
+  PaymentMethod, SalePayment, CashShift, CashMovement,
 };

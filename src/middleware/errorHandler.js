@@ -46,7 +46,16 @@ const errorHandler = (err, req, res, next) => { // eslint-disable-line no-unused
     ? (err.message || 'Error en la operación')
     : 'Error interno del servidor';
 
-  res.status(status).json({ message: paraElUsuario });
+  // `detalles` deja que un error deliberado acompañe datos que la pantalla
+  // necesita para ofrecer una salida — por ejemplo, el turno de caja que quedó
+  // abierto, para poder cerrarlo desde el mismo aviso. Sólo viaja en errores
+  // con status explícito: nunca en un fallo inesperado.
+  const cuerpo = { message: paraElUsuario };
+  if (err.status && err.detalles && typeof err.detalles === 'object') {
+    Object.assign(cuerpo, err.detalles);
+  }
+
+  res.status(status).json(cuerpo);
 };
 
 const notFound = (req, res) => {
