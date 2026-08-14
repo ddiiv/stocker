@@ -12,7 +12,15 @@ const Business = db.define('Business', {
   ownerNombre:   { type: DataTypes.STRING(100), allowNull: false },
   ownerApellido: { type: DataTypes.STRING(100), allowNull: false },
   ownerTelefono: { type: DataTypes.STRING(30) },
+  // El CUIT identifica fiscalmente a la cuenta: se fija al registrarse y no
+  // se edita. Cambiarlo sería otra cuenta, y arrastraría facturas ya emitidas
+  // a nombre del CUIT anterior.
   cuit:          { type: DataTypes.STRING(20),  allowNull: false },
+  // Condición frente a ARCA (Responsable Inscripto, Monotributo, Exento…).
+  // Se trae del padrón, no la escribe el usuario.
+  condicionIva:  { type: DataTypes.STRING(60) },
+  // Cuándo se sincronizaron por última vez los datos del padrón.
+  arcaSyncEn:    { type: DataTypes.DATE },
   telefono:      { type: DataTypes.STRING(30) },
   email:         { type: DataTypes.STRING(150), allowNull: false },
   passwordHash:  { type: DataTypes.STRING(255), allowNull: false },
@@ -112,6 +120,31 @@ const PasswordResetCode = db.define('PasswordResetCode', {
   usedAt:       { type: DataTypes.DATE },
   alertSentAt:  { type: DataTypes.DATE },
 }, { tableName: 'password_reset_codes' });
+
+// ─── AccountChangeCode ──────────────────────────────────────────
+// Códigos para confirmar cambios sensibles de la cuenta del dueño: email y
+// contraseña. Se separa de PasswordResetCode porque aquél es para recuperar
+// el acceso desde afuera (sin sesión) y éste para modificar datos desde
+// adentro, con la sesión ya iniciada — distinto flujo y distinto destinatario.
+//
+// `canal` queda preparado para sumar SMS/WhatsApp más adelante sin migrar.
+const AccountChangeCode = db.define('AccountChangeCode', {
+  id:           { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
+  businessId:   { type: DataTypes.INTEGER, allowNull: false },
+  // email | password
+  tipo:         { type: DataTypes.STRING(20), allowNull: false },
+  // email | sms | whatsapp — hoy siempre email.
+  canal:        { type: DataTypes.STRING(20), allowNull: false, defaultValue: 'email' },
+  // A dónde se mandó el código. En el cambio de email es la casilla NUEVA:
+  // así se prueba que el dueño realmente la controla.
+  destino:      { type: DataTypes.STRING(150), allowNull: false },
+  code:         { type: DataTypes.STRING(10), allowNull: false },
+  // Datos del cambio pendiente (ej. el email nuevo), en JSON.
+  payload:      { type: DataTypes.TEXT },
+  attemptsLeft: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 4 },
+  expiresAt:    { type: DataTypes.DATE, allowNull: false },
+  usedAt:       { type: DataTypes.DATE },
+}, { tableName: 'account_change_codes' });
 
 // ─── EmployeeSession (tracking) ──────────────────────────────────
 const EmployeeSession = db.define('EmployeeSession', {
@@ -435,6 +468,8 @@ Employee.hasMany(EmployeeSession, { foreignKey: 'employeeId', as: 'sesiones', on
 EmployeeSession.belongsTo(Employee, { foreignKey: 'employeeId' });
 
 Business.hasMany(PasswordResetCode, { foreignKey: 'businessId', as: 'resetCodes', onDelete: 'CASCADE' });
+Business.hasMany(AccountChangeCode, { foreignKey: 'businessId', as: 'codigosCuenta', onDelete: 'CASCADE' });
+AccountChangeCode.belongsTo(Business, { foreignKey: 'businessId' });
 PasswordResetCode.belongsTo(Business, { foreignKey: 'businessId' });
 
 Business.hasMany(Role,     { foreignKey: 'businessId', as: 'roles',     onDelete: 'CASCADE' });
@@ -517,7 +552,7 @@ module.exports = {
   db,
   Business, BusinessLocation, BusinessCuit, BusinessArcaConfig, ArcaToken, VariantType,
   MercadoLibreAccount, MercadoLibreLink,
-  Role, Employee, EmployeeSession, PasswordResetCode, Client,
+  Role, Employee, EmployeeSession, PasswordResetCode, AccountChangeCode, Client,
   Product, ProductVariant, StockMovement,
   Sale, SaleItem, Invoice, InvoiceItem,
   PaymentMethod, SalePayment, CashShift, CashMovement,

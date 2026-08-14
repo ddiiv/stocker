@@ -358,4 +358,51 @@ Sólo se cuenta efectivo.
   return info;
 }
 
-module.exports = { sendInvoiceEmail, sendSaleReceiptToCustomer, sendSaleNotificationToBusiness, sendPasswordResetCode, sendPasswordResetAlert, sendCashDiscrepancyAlert };
+/*
+ * Código para confirmar un cambio de email o de contraseña desde la cuenta.
+ *
+ * Distinto del de recuperación: acá el dueño ya está adentro y está cambiando
+ * una credencial. En el cambio de email este mensaje va a la casilla NUEVA,
+ * así que el texto no puede dar por hecho que quien lo lee ya usa Stocker.
+ */
+async function sendAccountChangeCode({ to, ownerName, code, businessName, expiresInMinutes = 15 }) {
+  if (!mailReady() || !to) return;
+  const body = `
+    <p>Hola <strong>${escapeHtml(ownerName || '')}</strong>,</p>
+    <p>Pediste confirmar un cambio en los datos de acceso de tu cuenta de <strong>${escapeHtml(businessName)}</strong>.</p>
+    <p>Ingresá este código en Stocker para completarlo:</p>
+    <div style="margin:20px auto;padding:18px;background:${C.paper100};border:2px dashed ${C.brass500};border-radius:8px;text-align:center;">
+      <div style="font-family:monospace;font-size:34px;font-weight:700;letter-spacing:8px;color:${C.ink950};">${escapeHtml(code)}</div>
+    </div>
+    <p style="color:${C.ink600};font-size:12px;">El código vence en ${expiresInMinutes} minutos. Si vos no pediste este cambio, ignorá este mensaje y revisá tu contraseña.</p>`;
+  const text =
+`Hola ${ownerName || ''},
+
+Pediste confirmar un cambio en los datos de acceso de tu cuenta de ${businessName}.
+Ingresá este código en Stocker para completarlo:
+
+    ${code}
+
+El código vence en ${expiresInMinutes} minutos.
+Si vos no pediste este cambio, ignoralo y revisá tu contraseña.
+
+— Stocker`;
+
+  const info = await transport().sendMail({
+    from: process.env.MAIL_FROM || `"Stocker" <${process.env.MAIL_USER}>`,
+    to,
+    replyTo: process.env.MAIL_FROM || process.env.MAIL_USER,
+    subject: `[Stocker] Confirmar cambio en tu cuenta de ${businessName}`,
+    html: shell({ title: 'Confirmar cambio', businessName: businessName || 'Stocker', bodyHtml: body }),
+    text,
+    headers: {
+      'X-Entity-Ref-ID': `stocker-account-${Date.now()}`,
+      'X-Auto-Response-Suppress': 'OOF, AutoReply',
+      'Auto-Submitted': 'auto-generated',
+    },
+  });
+  log.info('email', 'código de cambio de cuenta enviado', { a: mask.email(to) });
+  return info;
+}
+
+module.exports = { sendInvoiceEmail, sendSaleReceiptToCustomer, sendSaleNotificationToBusiness, sendPasswordResetCode, sendPasswordResetAlert, sendCashDiscrepancyAlert, sendAccountChangeCode };

@@ -26,6 +26,7 @@ const mlCtrl = require('../controllers/mercadolibreController');
 const metricsCtrl = require('../controllers/metricsController');
 const paymentCtrl = require('../controllers/paymentMethodController');
 const cashCtrl = require('../controllers/cashController');
+const accountCtrl = require('../controllers/accountController');
 
 const r = Router();
 
@@ -38,6 +39,18 @@ r.get ('/auth/me',                    requireAuth, me);
 r.post('/auth/forgot-password',       passwordResetLimiter, forgotPassword);
 r.post('/auth/verify-reset-code',     passwordResetLimiter, verifyResetCode);
 r.post('/auth/reset-password',        passwordResetLimiter, validatePasswordBody('newPassword'), resetPassword);
+
+// ── Cuenta del dueño ─────────────────────────────────────────────
+// requireOwner en todas: un empleado no toca las credenciales del negocio.
+// Los cambios de email y contraseña pasan por el limitador de recuperación,
+// que ya acota los pedidos que disparan un mail.
+r.get ('/account',                   requireAuth, requireOwner, accountCtrl.obtener);
+r.put ('/account',                   requireAuth, requireOwner, accountCtrl.actualizar);
+r.post('/account/sincronizar-arca',  requireAuth, requireOwner, accountCtrl.sincronizarConArca);
+r.post('/account/email/solicitar',   requireAuth, requireOwner, passwordResetLimiter, accountCtrl.solicitarCambioEmail);
+r.post('/account/email/confirmar',   requireAuth, requireOwner, accountCtrl.confirmarCambioEmail);
+r.post('/account/password/solicitar', requireAuth, requireOwner, passwordResetLimiter, accountCtrl.solicitarCambioPassword);
+r.post('/account/password/confirmar', requireAuth, requireOwner, validatePasswordBody('passwordNueva'), accountCtrl.confirmarCambioPassword);
 
 // ── Locations ─────────────────────────────────────────────────────
 // El listado queda con requireAuth solo: lo necesitan casi todas las pantallas
