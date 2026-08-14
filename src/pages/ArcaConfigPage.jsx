@@ -247,17 +247,45 @@ export default function ArcaConfigPage() {
         </button>
         {!config?.puntoVenta && <p className="mt-2 text-xs text-ink-500">Primero completá y guardá el punto de venta.</p>}
 
+        {/* Delegación OK y punto de venta dado de alta son dos cosas: con la
+            primera sola AFIP contesta, pero facturar todavía falla. */}
         {verifyResult && (
-          <div className={`mt-4 rounded-md border px-4 py-3 text-sm ${verifyResult.ok ? "border-teal-500 bg-teal-50" : "border-brick-500 bg-brick-50"}`}>
+          <div className={`mt-4 rounded-md border px-4 py-3 text-sm ${
+            !verifyResult.ok ? "border-brick-500 bg-brick-50"
+            : verifyResult.listoParaFacturar === false ? "border-brass-500 bg-brass-50"
+            : "border-teal-500 bg-teal-50"
+          }`}>
             {verifyResult.ok ? (
               <>
-                <div className="flex items-start gap-2 text-teal-600">
-                  <CheckCircle2 size={16} className="mt-0.5" />
+                <div className={`flex items-start gap-2 ${verifyResult.listoParaFacturar === false ? "text-brass-700" : "text-teal-600"}`}>
+                  {verifyResult.listoParaFacturar === false
+                    ? <AlertCircle size={16} className="mt-0.5" />
+                    : <CheckCircle2 size={16} className="mt-0.5" />}
                   <div>
-                    <p className="font-medium">Delegación verificada ✓</p>
-                    <p className="text-xs mt-1">ARCA confirma que Stocker puede facturar en nombre de {cuit.cuit}. Ambiente: <strong>{verifyResult.ambiente}</strong>.</p>
+                    <p className="font-medium">
+                      {verifyResult.listoParaFacturar === false
+                        ? "Falta dar de alta el punto de venta"
+                        : "Todo listo para facturar ✓"}
+                    </p>
+                    <p className="text-xs mt-1">
+                      {verifyResult.advertencia
+                        || `ARCA confirma que Stocker puede facturar en nombre de ${cuit.cuit}.`} Ambiente: <strong>{verifyResult.ambiente}</strong>.
+                    </p>
                   </div>
                 </div>
+
+                {/* Los pasos exactos del alta en AFIP: es el trámite que más
+                    consultas genera y sin él la facturación no arranca. */}
+                {verifyResult.pasos?.length > 0 && (
+                  <ol className="mt-3 space-y-1 rounded-md border border-line bg-paper-50 px-3 py-2 text-xs text-ink-700">
+                    {verifyResult.pasos.map((paso, i) => (
+                      <li key={i} className="flex gap-2">
+                        <span className="font-mono text-ink-400">{i + 1}.</span>
+                        <span>{paso}</span>
+                      </li>
+                    ))}
+                  </ol>
+                )}
                 {verifyResult.puntosVenta?.length > 0 && (
                   <div className="mt-3 rounded-md bg-paper-50 border border-line px-3 py-2 text-ink-700">
                     <p className="text-xs uppercase tracking-wide text-ink-600 mb-1">Puntos de venta electrónicos que AFIP ve en tu CUIT:</p>

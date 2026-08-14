@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Plus, Building2, PencilLine, Trash2, Star, ShieldCheck } from "lucide-react";
+import { Plus, Building2, PencilLine, Trash2, Star, ShieldCheck, Lock } from "lucide-react";
 import { Link } from "react-router-dom";
 import { fetchBusinessCuits, createBusinessCuit, updateBusinessCuit, deleteBusinessCuit } from "../services/businessCuitService";
 import { lookupCuit } from "../services/clientService";
@@ -36,10 +36,6 @@ export default function BusinessCuitsPage() {
     if (!confirm(`¿Eliminar el CUIT "${c.nombre}"? Las facturas ya emitidas con él no se modifican.`)) return;
     try { await deleteBusinessCuit(c.id); await load(); }
     catch (e) { alert(e.response?.data?.message || "Error al eliminar"); }
-  }
-  async function handleSetPrincipal(c) {
-    try { await updateBusinessCuit(c.id, { esPrincipal: true }); await load(); }
-    catch (e) { alert(e.response?.data?.message || "Error"); }
   }
 
   return (
@@ -89,11 +85,6 @@ export default function BusinessCuitsPage() {
                 <Link to={`/facturacion/cuits/${c.id}/arca`} className="btn-ghost px-2 py-1.5 text-xs" title="Configurar facturación ARCA">
                   <ShieldCheck size={13} /> ARCA
                 </Link>
-                {!c.esPrincipal && (
-                  <button className="btn-ghost px-2 py-1.5 text-xs" onClick={() => handleSetPrincipal(c)} title="Marcar como principal">
-                    <Star size={13} /> Principal
-                  </button>
-                )}
                 <button className="btn-ghost px-2 py-1.5 text-xs" onClick={() => { setEditing(c); setModal(true); }}><PencilLine size={13} /> Editar</button>
                 <button className="btn-ghost px-2 py-1.5 text-xs" onClick={() => handleDelete(c)}><Trash2 size={13} /> Eliminar</button>
               </div>
@@ -109,6 +100,7 @@ export default function BusinessCuitsPage() {
 
 function CuitFormModal({ open, onClose, onSaved, cuit }) {
   const [form, setForm] = useState({ nombre: "", cuit: "", condicionIva: "", domicilio: "", esPrincipal: false });
+  const esPrincipal = !!cuit?.esPrincipal;
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [cuitStatus, setCuitStatus] = useState(null);
@@ -157,13 +149,24 @@ function CuitFormModal({ open, onClose, onSaved, cuit }) {
         <div>
           <label className="label">CUIT</label>
           <input
-            className="input font-mono"
+            className={`input font-mono ${esPrincipal ? "cursor-not-allowed bg-paper-200 text-ink-600" : ""}`}
             value={form.cuit}
             onChange={(e) => handleCuitChange(e.target.value.replace(/[^0-9-]/g, "").slice(0, 13))}
             placeholder="30-70308853-4"
             inputMode="numeric"
             maxLength={13}
+            readOnly={esPrincipal}
           />
+          {/* El principal es el CUIT con el que se registró la cuenta: si se
+              pudiera cambiar acá, las facturas ya emitidas quedarían a nombre
+              de un CUIT que la cuenta ya no tiene. */}
+          {esPrincipal && (
+            <p className="mt-1 flex items-start gap-1 text-xs text-ink-500">
+              <Lock size={11} className="mt-0.5 shrink-0" />
+              Es el CUIT de la cuenta y no se puede cambiar. Para facturar con otro,
+              agregalo como CUIT adicional.
+            </p>
+          )}
           {cuitStatus?.loading && <p className="mt-1 text-xs text-ink-500">Consultando ARCA…</p>}
           {cuitStatus?.error && <p className="mt-1 text-xs text-brick-500">{cuitStatus.error}</p>}
           {cuitStatus?.data && <p className="mt-1 text-xs text-teal-600">CUIT válido · {cuitStatus.data.tipoPersona}</p>}
@@ -183,10 +186,16 @@ function CuitFormModal({ open, onClose, onSaved, cuit }) {
           <label className="label">Domicilio fiscal</label>
           <input className="input" value={form.domicilio || ""} onChange={(e) => setForm({ ...form, domicilio: e.target.value })} />
         </div>
-        <label className="flex items-center gap-2 text-sm">
-          <input type="checkbox" checked={!!form.esPrincipal} onChange={(e) => setForm({ ...form, esPrincipal: e.target.checked })} />
-          Marcar como CUIT principal (se usa por defecto al facturar)
-        </label>
+        {esPrincipal ? (
+          <p className="flex items-center gap-2 rounded-md bg-paper-100 px-3 py-2 text-sm text-ink-700">
+            <Star size={13} className="shrink-0 text-brass-500" />
+            Este es el CUIT principal del negocio, el que se usa por defecto al facturar.
+          </p>
+        ) : (
+          <p className="text-xs text-ink-500">
+            El CUIT principal lo define el registro de la cuenta y no se reasigna desde acá.
+          </p>
+        )}
         <div className="flex justify-end gap-2">
           <button type="button" className="btn-ghost" onClick={onClose}>Cancelar</button>
           <button type="submit" className="btn-accent" disabled={saving}>{saving ? "Guardando…" : (cuit ? "Guardar cambios" : "Agregar CUIT")}</button>
