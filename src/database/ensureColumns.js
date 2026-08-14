@@ -26,6 +26,11 @@ const COLUMNAS_ESPERADAS = {
   sale_payments: {
     esEfectivo: { type: DataTypes.BOOLEAN, allowNull: true, defaultValue: false },
   },
+  businesses: {
+    // Datos que ahora se traen del padrón de ARCA.
+    condicionIva: { type: DataTypes.STRING(60), allowNull: true },
+    arcaSyncEn:   { type: DataTypes.DATE, allowNull: true },
+  },
   sales: {
     // Recargos/descuentos por medio de pago. `total` sigue siendo el neto de
     // mercadería, así que las ventas anteriores quedan con 0 y totalCobrado
