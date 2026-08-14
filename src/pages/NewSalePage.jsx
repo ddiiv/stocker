@@ -1,11 +1,13 @@
 import { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, Link } from "react-router-dom";
 import { Trash2, UserPlus, UserCircle2, Check } from "lucide-react";
 import ProductPicker from "../components/sales/ProductPicker";
 import { fetchEmployees, fetchPos, fetchClients, createClient } from "../services/employeeService";
 import { createSale } from "../services/salesService";
 import { formatCurrency } from "../utils/formatters";
 import { PageHeader, Card } from "../components/ui/Layout";
+import { useAuth } from "../context/AuthContext";
+import { esAdministradorTotal } from "../utils/permissions";
 
 const today = () => new Date().toISOString().slice(0, 10);
 
@@ -28,12 +30,21 @@ export default function NewSalePage() {
   const [notas, setNotas] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
+  const [faltaTurno, setFaltaTurno] = useState(false);
+  const { user } = useAuth();
+  const puedeElegirVendedor = esAdministradorTotal(user);
 
   useEffect(() => {
-    fetchEmployees().then((emps) => { setEmployees(emps.filter((e) => e.activo)); if (emps[0]) setEmployeeId(emps[0].id); });
-    fetchPos().then((pos) => { setLocations(pos); if (pos[0]) setLocationId(pos[0].id); });
+    // El listado de empleados exige permiso de "empleados", que un vendedor no
+    // tiene. Pedirlo igual devolvía 403 y disparaba el modal de permisos al
+    // entrar, bloqueando una venta que la persona sí puede hacer.
+    // El servidor asigna el vendedor y el local desde la sesión de todos modos.
+    if (puedeElegirVendedor) {
+      fetchEmployees().then((emps) => { setEmployees(emps.filter((e) => e.activo)); if (emps[0]) setEmployeeId(emps[0].id); });
+      fetchPos().then((pos) => { setLocations(pos); if (pos[0]) setLocationId(pos[0].id); });
+    }
     fetchClients().then(setClients);
-  }, []);
+  }, [puedeElegirVendedor]);
 
   useEffect(() => {
     const t = setTimeout(() => { if (clientSearch) fetchClients(clientSearch).then(setClients); }, 300);
@@ -68,7 +79,7 @@ export default function NewSalePage() {
     e.preventDefault();
     setError("");
     if (!items.length) return setError("Agregá al menos un producto.");
-    if (!employeeId)   return setError("Seleccioná el empleado que realiza la venta.");
+    if (puedeElegirVendedor && !employeeId) return setError("Seleccioná el empleado que realiza la venta.");
     setSubmitting(true);
     try {
       const sale = await createSale({
@@ -83,14 +94,27 @@ export default function NewSalePage() {
       });
       navigate(`/ventas/${sale.id}`);
     } catch (err) {
-      setError(err.response?.data?.message || "No se pudo registrar la venta.");
+      // 409 con este texto = no hay turno de caja abierto. En vez de un error
+      // suelto se ofrece el atajo para abrirlo, que es lo único que destraba.
+      const msg = err.response?.data?.message || "No se pudo registrar la venta.";
+      setFaltaTurno(err.response?.status === 409 && /turno de caja/i.test(msg));
+      setError(msg);
     } finally { setSubmitting(false); }
   }
 
   return (
     <form onSubmit={handleSubmit}>
       <PageHeader title="Nueva venta / cotización" subtitle="Seleccioná los productos, el cliente y el empleado" />
-      {error && <p className="mb-4 rounded-md bg-brick-50 px-3 py-2 text-sm text-brick-500">{error}</p>}
+      {error && (
+        <div className="mb-4 rounded-md bg-brick-50 px-3 py-2 text-sm text-brick-500">
+          <p>{error}</p>
+          {faltaTurno && (
+            <Link to="/caja" className="mt-1 inline-block font-medium underline">
+              Abrir mi turno de caja
+            </Link>
+          )}
+        </div>
+      )}
 
       <div className="grid gap-5 lg:grid-cols-3">
         <div className="space-y-5 lg:col-span-2">

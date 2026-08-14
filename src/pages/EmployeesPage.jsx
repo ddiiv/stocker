@@ -1,11 +1,13 @@
 import { useEffect, useState } from "react";
 import { Plus, Users, PencilLine, Power, MapPin, ShieldCheck, Activity, Monitor } from "lucide-react";
-import { fetchEmployees, fetchPos, fetchRoles, createEmployee, updateEmployee, toggleEmployeeActive, createLocation, createRole, fetchEmployeeSessions } from "../services/employeeService";
+import { fetchEmployees, fetchPos, fetchRoles, createEmployee, updateEmployee, toggleEmployeeActive, createLocation, createRole, updateRole, fetchEmployeeSessions } from "../services/employeeService";
 import { initials, formatDateTime } from "../utils/formatters";
 import { PageHeader, EmptyState, Card } from "../components/ui/Layout";
 import EmployeeFormModal from "../components/employees/EmployeeFormModal";
 import Modal from "../components/ui/Modal";
 import { useForm } from "react-hook-form";
+import { permisosVacios, PERM_MODULES } from "../utils/permissions";
+import PermissionsMatrix from "../components/employees/PermissionsMatrix";
 
 export default function EmployeesPage() {
   const [employees, setEmployees] = useState([]);
@@ -16,6 +18,7 @@ export default function EmployeesPage() {
   const [editing, setEditing] = useState(null);
   const [locationModal, setLocationModal] = useState(false);
   const [roleModal, setRoleModal] = useState(false);
+  const [roleEditando, setRoleEditando] = useState(null);
   const [sessionsFor, setSessionsFor] = useState(null);
 
   async function load() {
@@ -45,7 +48,7 @@ export default function EmployeesPage() {
         actions={
           <div className="flex items-center gap-2">
             <button className="btn-ghost" onClick={() => setLocationModal(true)}><MapPin size={15} /> Nuevo local</button>
-            <button className="btn-ghost" onClick={() => setRoleModal(true)}><ShieldCheck size={15} /> Nuevo cargo</button>
+            <button className="btn-ghost" onClick={() => { setRoleEditando(null); setRoleModal(true); }}><ShieldCheck size={15} /> Nuevo cargo</button>
             <button className="btn-accent" onClick={() => { setEditing(null); setModalOpen(true); }}><Plus size={15} /> Nuevo empleado</button>
           </div>
         }
@@ -99,9 +102,69 @@ export default function EmployeesPage() {
         </div>
       )}
 
+      {/* Cargos: sin esto los permisos sólo se podían definir al crear el cargo
+          y no había forma de corregirlos después desde la aplicación. */}
+      {roles.length > 0 && (
+        <div className="mt-8">
+          <h3 className="mb-1 font-display text-lg font-semibold text-ink-950">Cargos y permisos</h3>
+          <p className="mb-3 text-sm text-ink-600">
+            Definen qué puede ver y hacer cada empleado. Tocá un cargo para ajustarlo.
+          </p>
+          <Card className="p-0">
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[560px] text-sm">
+                <thead>
+                  <tr className="border-b border-line bg-paper-100 text-left text-xs uppercase tracking-wide text-ink-600">
+                    <th className="px-4 py-2 font-medium">Cargo</th>
+                    <th className="px-4 py-2 font-medium">Empleados</th>
+                    <th className="px-4 py-2 font-medium">Secciones con acceso</th>
+                    <th className="px-4 py-2" />
+                  </tr>
+                </thead>
+                <tbody>
+                  {roles.map((r) => {
+                    const conAcceso = PERM_MODULES.filter((m) => {
+                      const nivel = r.permisos?.[m.key];
+                      return nivel === "ver" || nivel === "editar";
+                    });
+                    const cuantos = employees.filter((e) => e.roleId === r.id).length;
+                    return (
+                      <tr
+                        key={r.id}
+                        className="cursor-pointer border-b border-line last:border-0 hover:bg-paper-100/70"
+                        onClick={() => { setRoleEditando(r); setRoleModal(true); }}
+                      >
+                        <td className="px-4 py-3 font-medium text-ink-900">{r.nombre}</td>
+                        <td className="px-4 py-3 text-ink-700">{cuantos}</td>
+                        <td className="px-4 py-3">
+                          {conAcceso.length === 0 ? (
+                            <span className="text-xs text-ink-400">Sin acceso a ninguna sección</span>
+                          ) : (
+                            <span className="flex flex-wrap gap-1">
+                              {conAcceso.map((m) => (
+                                <span key={m.key} className={`badge ${r.permisos[m.key] === "editar" ? "badge-ok" : "badge-low"}`}>
+                                  {m.label}
+                                </span>
+                              ))}
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-4 py-3 text-right">
+                          <span className="btn-ghost text-xs"><PencilLine size={13} /> Editar</span>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+        </div>
+      )}
+
       <EmployeeFormModal open={modalOpen} onClose={() => setModalOpen(false)} onSave={handleSave} posList={locations} roleList={roles} employee={editing} />
       <NewLocationModal open={locationModal} onClose={() => { setLocationModal(false); load(); }} />
-      <NewRoleModal open={roleModal} onClose={() => { setRoleModal(false); load(); }} />
+      <RoleModal open={roleModal} role={roleEditando} onClose={() => { setRoleModal(false); setRoleEditando(null); load(); }} />
       <SessionsModal employee={sessionsFor} onClose={() => setSessionsFor(null)} />
     </div>
   );
@@ -201,53 +264,64 @@ function NewLocationModal({ open, onClose }) {
   );
 }
 
-const PERM_MODULES = [
-  { key: "stock", label: "Stock" }, { key: "ventas", label: "Ventas" },
-  { key: "facturacion", label: "Facturación" }, { key: "empleados", label: "Empleados" },
-  { key: "dashboard", label: "Dashboard" }, { key: "cotizaciones", label: "Cotizaciones" },
-];
-const LEVELS = ["ninguno", "ver", "editar"];
 
-function NewRoleModal({ open, onClose }) {
+/*
+ * Alta y edición de un cargo.
+ *
+ * Sirve para los dos casos: con `role` edita ese cargo, sin él crea uno nuevo.
+ * Antes sólo existía el alta, así que cambiar los permisos de un cargo ya
+ * creado no tenía por dónde hacerse desde la aplicación.
+ */
+function RoleModal({ open, onClose, role }) {
   const [nombre, setNombre] = useState("");
-  const [permisos, setPermisos] = useState(Object.fromEntries(PERM_MODULES.map((m) => [m.key, "ninguno"])));
+  const [permisos, setPermisos] = useState(permisosVacios());
   const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const editando = Boolean(role);
+
+  // Al abrir se cargan los valores del cargo elegido; al cerrar y volver a
+  // abrir en "nuevo", se limpian.
+  useEffect(() => {
+    if (!open) return;
+    setError("");
+    setNombre(role?.nombre || "");
+    setPermisos({ ...permisosVacios(), ...(role?.permisos || {}) });
+  }, [open, role]);
+
   async function handleSave() {
-    if (!nombre.trim()) return;
-    setSaving(true);
-    await createRole({ nombre, permisos });
-    setSaving(false);
-    onClose();
+    if (!nombre.trim()) return setError("Poné un nombre al cargo.");
+    setSaving(true); setError("");
+    try {
+      if (editando) await updateRole(role.id, { nombre, permisos });
+      else await createRole({ nombre, permisos });
+      onClose();
+    } catch (e) {
+      setError(e.response?.data?.message || "No se pudo guardar el cargo.");
+    } finally { setSaving(false); }
   }
+
   return (
-    <Modal open={open} onClose={onClose} title="Nuevo cargo / rol" width="max-w-2xl">
+    <Modal open={open} onClose={onClose} title={editando ? `Editar cargo: ${role.nombre}` : "Nuevo cargo / rol"} width="max-w-2xl">
       <div className="space-y-4">
+        {error && <p className="rounded-md bg-brick-50 px-3 py-2 text-sm text-brick-500">{error}</p>}
         <div>
           <label className="label">Nombre del cargo *</label>
           <input className="input" required minLength={2} maxLength={80} value={nombre} onChange={(e) => setNombre(e.target.value)} />
         </div>
         <p className="text-xs font-medium uppercase tracking-wide text-ink-600">Permisos</p>
-        <div className="rounded-md border border-line overflow-hidden">
-          <table className="w-full text-sm">
-            <thead><tr className="bg-paper-100 border-b border-line text-xs uppercase tracking-wide text-ink-600">
-              <th className="px-3 py-2 text-left font-medium">Módulo</th>
-              {LEVELS.map((l) => <th key={l} className="px-3 py-2 text-center font-medium capitalize">{l}</th>)}
-            </tr></thead>
-            <tbody>
-              {PERM_MODULES.map((m) => (
-                <tr key={m.key} className="border-b border-line last:border-0">
-                  <td className="px-3 py-2 text-ink-900">{m.label}</td>
-                  {LEVELS.map((l) => (
-                    <td key={l} className="px-3 py-2 text-center">
-                      <input type="radio" name={`perm-${m.key}`} checked={permisos[m.key] === l} onChange={() => setPermisos({ ...permisos, [m.key]: l })} className="accent-brass-500" />
-                    </td>
-                  ))}
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        <PermissionsMatrix permisos={permisos} onChange={(k, v) => setPermisos({ ...permisos, [k]: v })} />
+        {editando && (
+          <p className="text-xs text-ink-500">
+            Los cambios afectan a todos los empleados con este cargo. Tienen efecto
+            la próxima vez que inicien sesión.
+          </p>
+        )}
+        <div className="flex justify-end gap-2">
+          <button className="btn-ghost" onClick={onClose}>Cancelar</button>
+          <button className="btn-accent" onClick={handleSave} disabled={saving}>
+            {saving ? "Guardando…" : editando ? "Guardar cambios" : "Guardar cargo"}
+          </button>
         </div>
-        <div className="flex justify-end gap-2"><button className="btn-ghost" onClick={onClose}>Cancelar</button><button className="btn-accent" onClick={handleSave} disabled={saving}>{saving ? "Guardando…" : "Guardar cargo"}</button></div>
       </div>
     </Modal>
   );

@@ -3,14 +3,10 @@ import Modal from "../ui/Modal";
 import PhoneInput from "../ui/PhoneInput";
 import PasswordStrength from "../ui/PasswordStrength";
 import { evaluatePassword } from "../../utils/passwordPolicy";
+import { permisosVacios } from "../../utils/permissions";
+import PermissionsMatrix from "./PermissionsMatrix";
 
-const PERM_MODULES = [
-  { key: "stock", label: "Stock" }, { key: "ventas", label: "Ventas" },
-  { key: "facturacion", label: "Facturación" }, { key: "empleados", label: "Empleados" },
-  { key: "dashboard", label: "Dashboard" }, { key: "cotizaciones", label: "Cotizaciones" },
-];
-const LEVELS = ["ninguno", "ver", "editar"];
-const emptyPermisos = () => Object.fromEntries(PERM_MODULES.map((m) => [m.key, "ninguno"]));
+const emptyPermisos = permisosVacios;
 
 const emptyForm = { nombre: "", apellido: "", email: "", telefono: "", dni: "", roleId: "", locationId: "", password: "" };
 
@@ -97,26 +93,7 @@ export default function EmployeeFormModal({ open, onClose, onSave, posList = [],
 
         <div>
           <p className="label mb-2">Permisos personalizados (sobreescriben los del cargo)</p>
-          <div className="rounded-md border border-line overflow-hidden">
-            <table className="w-full text-sm">
-              <thead><tr className="bg-paper-100 border-b border-line text-xs uppercase tracking-wide text-ink-600">
-                <th className="px-3 py-2 text-left font-medium">Módulo</th>
-                {LEVELS.map((l) => <th key={l} className="px-3 py-2 text-center font-medium capitalize">{l}</th>)}
-              </tr></thead>
-              <tbody>
-                {PERM_MODULES.map((m) => (
-                  <tr key={m.key} className="border-b border-line last:border-0">
-                    <td className="px-3 py-2 text-ink-900">{m.label}</td>
-                    {LEVELS.map((l) => (
-                      <td key={l} className="px-3 py-2 text-center">
-                        <input type="radio" name={`perm-${m.key}`} checked={permisos[m.key] === l} onChange={() => setPermisos({ ...permisos, [m.key]: l })} className="accent-brass-500" />
-                      </td>
-                    ))}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <PermissionsMatrix permisos={permisos} onChange={(k, v) => setPermisos({ ...permisos, [k]: v })} />
         </div>
 
         <div className="flex justify-end gap-2 pt-1">

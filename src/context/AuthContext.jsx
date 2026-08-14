@@ -4,17 +4,20 @@ import { useIdleLogout } from "../hooks/useIdleLogout";
 
 const AuthContext = createContext(null);
 
-// Normaliza la sesión que devuelve /auth/me → { type, ...datos, permisos }
-// Para business, permisos siempre implícito (todo editar); para employee viene del cargo.
+// Normaliza la sesión que devuelve /auth/me → { type, ...datos, permisos, negocio }
+//
+// `permisos` sólo aplica a empleados: el dueño tiene acceso total por serlo, no
+// por una lista de permisos (ver esAdministradorTotal en utils/permissions).
 function normalize(me) {
   if (!me) return null;
   const data = me.data || {};
   return {
     type: me.type,
     ...data,
-    permisos: me.type === "business"
-      ? { stock:"editar", ventas:"editar", facturacion:"editar", empleados:"editar", dashboard:"editar", cotizaciones:"editar" }
-      : (data.cargo?.permisos || {}),
+    permisos: me.type === "business" ? null : (data.cargo?.permisos || {}),
+    // Datos del negocio para toda la app: el empleado también los necesita
+    // (el encabezado mostraba "Mi negocio" porque sólo los tenía el dueño).
+    negocio: me.negocio || null,
   };
 }
 
@@ -90,6 +93,8 @@ export function AuthProvider({ children }) {
       user: session,                          // alias para claridad en canView(user,...)
       business: session?.type === "business" ? session : null,
       employee: session?.type === "employee" ? session : null,
+      // Nombre y CUIT del negocio, sin importar con qué rol se entró.
+      negocio: session?.negocio || null,
       login, employeeLogin, register, logout,
       avisoInactividad,               // segundos restantes, o null
     }}>

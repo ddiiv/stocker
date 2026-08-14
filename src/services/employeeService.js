@@ -44,6 +44,13 @@ export async function createLocation(payload) {
   return data;
 }
 
+export async function updateRole(id, payload) {
+  const { data } = await http.put(`/roles/${id}`, payload);
+  return data;
+}
+export async function deleteRole(id) {
+  await http.delete(`/roles/${id}`);
+}
 export async function createRole(payload) {
   const { data } = await http.post("/roles", payload);
   return data;

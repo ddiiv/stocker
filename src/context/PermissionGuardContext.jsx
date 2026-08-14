@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useState } from "react";
 import { ShieldAlert, X } from "lucide-react";
 import { useAuth } from "./AuthContext";
-import { canView, canEdit } from "../utils/permissions";
+import { canView, canEdit, nivelDe, PERM_MODULES } from "../utils/permissions";
 import { registerForbiddenHandler } from "../lib/http";
 
 /**
@@ -19,14 +19,11 @@ import { registerForbiddenHandler } from "../lib/http";
 
 const PermissionGuardContext = createContext(null);
 
-const MODULE_LABEL = {
-  stock:        "Stock",
-  ventas:       "Ventas",
-  facturacion:  "Facturación",
-  empleados:    "Empleados",
-  dashboard:    "Dashboard",
-  cotizaciones: "Cotizaciones",
-};
+// Sale del catálogo central: escrito a mano quedaba viejo cada vez que se
+// sumaba un módulo, y el modal terminaba mostrando la clave cruda ("pagos").
+const MODULE_LABEL = Object.fromEntries(PERM_MODULES.map((m) => [m.key, m.label]));
+
+const NIVEL_LABEL = { ninguno: "sin acceso", ver: "sólo ver", editar: "ver y editar" };
 
 export function PermissionGuardProvider({ children }) {
   const { user } = useAuth();
@@ -35,8 +32,7 @@ export function PermissionGuardProvider({ children }) {
   // Registrar handler para 403 del backend
   useEffect(() => {
     registerForbiddenHandler(({ permission, level }) => {
-      const currentLevel = user?.permisos?.[permission] || "ninguno";
-      setDenied({ permission, level, currentLevel });
+      setDenied({ permission, level, currentLevel: nivelDe(user, permission) });
     });
     return () => registerForbiddenHandler(null);
   }, [user]);
@@ -52,14 +48,22 @@ export function PermissionGuardProvider({ children }) {
   const guard = useCallback(
     (permission, level, action) => (...args) => {
       if (check(permission, level)) return action?.(...args);
-      const currentLevel = user?.permisos?.[permission] || "ninguno";
-      setDenied({ permission, level, currentLevel });
+      setDenied({ permission, level, currentLevel: nivelDe(user, permission) });
     },
     [check, user]
   );
 
+  /*
+   * Dispara el aviso sin ejecutar ninguna acción. Lo usa PermissionRoute
+   * cuando alguien entra a una sección que no le corresponde: antes redirigía
+   * en silencio y la persona no entendía por qué había vuelto al inicio.
+   */
+  const denegar = useCallback((permission, level = "ver") => {
+    setDenied({ permission, level, currentLevel: nivelDe(user, permission) });
+  }, [user]);
+
   return (
-    <PermissionGuardContext.Provider value={{ guard, check }}>
+    <PermissionGuardContext.Provider value={{ guard, check, denegar }}>
       {children}
       {denied && (
         <div className="fixed inset-0 z-[100] flex items-start justify-center overflow-y-auto bg-ink-950/60 p-4 py-10 backdrop-blur-sm">
@@ -73,8 +77,9 @@ export function PermissionGuardProvider({ children }) {
                   No tenés permisos para esta acción
                 </h3>
                 <p className="mt-1 text-sm text-ink-600">
-                  Necesitás <strong>{denied.level}</strong> en <strong>{MODULE_LABEL[denied.permission] || denied.permission}</strong>{" "}
-                  y actualmente tenés <strong>{denied.currentLevel}</strong>.
+                  Para <strong>{MODULE_LABEL[denied.permission] || denied.permission}</strong> necesitás{" "}
+                  <strong>{NIVEL_LABEL[denied.level] || denied.level}</strong>, y tu cargo tiene{" "}
+                  <strong>{NIVEL_LABEL[denied.currentLevel] || denied.currentLevel}</strong>.
                 </p>
               </div>
               <button className="rounded-md p-1 text-ink-600 hover:bg-paper-200" onClick={() => setDenied(null)}>
@@ -98,6 +103,12 @@ export function useGuard() {
   const ctx = useContext(PermissionGuardContext);
   if (!ctx) throw new Error("useGuard debe usarse dentro de <PermissionGuardProvider>");
   return ctx.guard;
+}
+
+export function useDenegar() {
+  const ctx = useContext(PermissionGuardContext);
+  if (!ctx) throw new Error("useDenegar debe usarse dentro de <PermissionGuardProvider>");
+  return ctx.denegar;
 }
 
 export function usePermissionCheck() {

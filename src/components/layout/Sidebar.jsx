@@ -9,6 +9,8 @@ import {
   UserCircle2,
   Store,
   ScanLine,
+  Wallet,
+  CreditCard,
 } from "lucide-react";
 import { useAuth } from "../../context/AuthContext";
 import { canView } from "../../utils/permissions";
@@ -19,9 +21,11 @@ const ALL_LINKS = [
   { to: "/ventas/pos",  label: "Punto de venta",        icon: ScanLine,        permission: "ventas" },
   { to: "/ventas",      label: "Ventas y cotizaciones", icon: ShoppingCart,    permission: "ventas" },
   { to: "/facturacion", label: "Facturación",           icon: Receipt,         permission: "facturacion" },
-  { to: "/clientes",    label: "Clientes",              icon: UserCircle2,     permission: "ventas" }, // clientes cae bajo ventas
+  { to: "/clientes",    label: "Clientes",              icon: UserCircle2,     permission: "clientes" },
+  { to: "/caja",        label: "Caja",                  icon: Wallet,          permission: "caja" },
+  { to: "/pagos",       label: "Métodos de pago",       icon: CreditCard,      permission: "pagos" },
   { to: "/empleados",   label: "Empleados",             icon: Users,           permission: "empleados" },
-  { to: "/integraciones/mercadolibre", label: "MercadoLibre", icon: Store, permission: "stock" },
+  { to: "/integraciones/mercadolibre", label: "MercadoLibre", icon: Store, permission: "integraciones" },
 ];
 
 export default function Sidebar({ open, onClose }) {

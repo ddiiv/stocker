@@ -5,6 +5,7 @@ import { fetchSales, updateSaleStatus } from "../services/salesService";
 import { formatCurrency, formatDate } from "../utils/formatters";
 import { PageHeader, EmptyState } from "../components/ui/Layout";
 import Modal from "../components/ui/Modal";
+import { medioPagoBadge } from "../utils/paymentBadge";
 
 const FILTERS = [
   { value: "", label: "Todas" },
@@ -93,6 +94,7 @@ export default function SalesPage() {
                 <th className="px-4 py-3 font-medium">Empleado</th>
                 <th className="px-4 py-3 font-medium">Ítems</th>
                 <th className="px-4 py-3 font-medium">Total</th>
+                <th className="px-4 py-3 font-medium">Pago</th>
                 <th className="px-4 py-3 font-medium">Estado</th>
                 <th className="px-4 py-3 font-medium" />
               </tr>
@@ -109,7 +111,28 @@ export default function SalesPage() {
                   <td className="px-4 py-3 text-ink-900">{s.cliente ? `${s.cliente.nombre} ${s.cliente.apellido || ""}`.trim() : "—"}</td>
                   <td className="px-4 py-3 text-ink-700">{s.empleado ? `${s.empleado.nombre} ${s.empleado.apellido || ""}`.trim() : "—"}</td>
                   <td className="px-4 py-3 text-ink-700">{s.items?.length ?? 0}</td>
-                  <td className="px-4 py-3 font-medium text-ink-900">{formatCurrency(s.total)}</td>
+                  <td className="px-4 py-3 font-medium text-ink-900">
+                    {/* Con recargo, lo cobrado difiere del neto: se muestran los
+                        dos para que el número no parezca un error de cálculo. */}
+                    {formatCurrency(s.totalCobrado || s.total)}
+                    {Number(s.recargoPagos) !== 0 && (
+                      <span className="ml-1 block text-xs font-normal text-ink-500">
+                        neto {formatCurrency(s.total)}
+                      </span>
+                    )}
+                  </td>
+                  <td className="px-4 py-3">
+                    {s.medioPago ? (
+                      <span className={`badge ${medioPagoBadge(s.medioPago)}`}>{s.medioPago}</span>
+                    ) : (
+                      <span className="text-ink-400">—</span>
+                    )}
+                    {Number(s.recargoPagos) !== 0 && (
+                      <span className={`ml-1 block text-xs ${Number(s.recargoPagos) > 0 ? "text-brick-500" : "text-teal-600"}`}>
+                        {Number(s.recargoPagos) > 0 ? "+" : "−"}{formatCurrency(Math.abs(Number(s.recargoPagos)))}
+                      </span>
+                    )}
+                  </td>
                   <td className="px-4 py-3">
                     <span className={`badge ${ESTADO_BADGE[s.estado] || "badge-low"}`}>{s.estado}</span>
                   </td>

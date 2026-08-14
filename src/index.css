@@ -29,6 +29,14 @@
   --color-brick-500: #b3432d;
   --color-brick-50: #f8e9e4;
 
+  /* Tonos extra sólo para distinguir medios de pago entre sí. Mismo nivel de
+     saturación que el resto: la idea es diferenciar de un vistazo, no llamar
+     la atención. */
+  --color-slate-600: #3d4f66;
+  --color-slate-50:  #e8edf3;
+  --color-plum-600:  #5c4364;
+  --color-plum-50:   #efe9f1;
+
   --font-display: "Space Grotesk", "Inter", sans-serif;
   --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "IBM Plex Mono", ui-monospace, monospace;
@@ -115,4 +123,12 @@
   .badge-ok { @apply bg-teal-50 text-teal-600; }
   .badge-low { @apply bg-brass-50 text-brass-700; }
   .badge-out { @apply bg-brick-50 text-brick-500; }
+
+  /* Medios de pago */
+  .badge-efectivo { @apply bg-teal-50 text-teal-600; }
+  .badge-debito   { background: var(--color-slate-50); color: var(--color-slate-600); }
+  .badge-credito  { background: var(--color-plum-50);  color: var(--color-plum-600); }
+  .badge-transfer { @apply bg-brass-50 text-brass-700; }
+  .badge-digital  { @apply bg-paper-200 text-ink-700; }
+  .badge-mixto    { @apply border border-dashed border-ink-400/40 bg-paper-100 text-ink-700; }
 }

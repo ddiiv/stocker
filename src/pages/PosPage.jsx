@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, Link } from "react-router-dom";
 import {
   ScanLine, Trash2, Plus, Minus, XCircle, ShoppingCart,
   Receipt, Loader2, UserCircle2,
@@ -7,25 +7,39 @@ import {
 import { scanProduct } from "../services/productService";
 import { createSale, printSaleTicket } from "../services/salesService";
 import { fetchEmployees, fetchPos } from "../services/employeeService";
+import { fetchClients } from "../services/clientService";
+import { fetchPaymentMethods } from "../services/paymentMethodService";
 import { useBarcodeScanner } from "../hooks/useBarcodeScanner";
 import { formatCurrency } from "../utils/formatters";
 import { PageHeader, Card } from "../components/ui/Layout";
-
-const MEDIOS_PAGO = ["Efectivo", "Débito", "Crédito", "Transferencia", "QR / Billetera"];
+import { useAuth } from "../context/AuthContext";
+import { esAdministradorTotal } from "../utils/permissions";
+import PaymentSplit, { lineasParaApi, calcularTotales } from "../components/sales/PaymentSplit";
 // Mismo criterio que el backend: 3 o más unidades es precio mayorista.
 const UMBRAL_MAYORISTA = 3;
 
 export default function PosPage() {
   const navigate = useNavigate();
+  const { user } = useAuth();
+  // El dueño elige vendedor y local; el empleado vende siempre como él mismo
+  // y en su local. El backend lo impone igual, esto sólo evita mostrar
+  // controles que no van a tener efecto.
+  const puedeElegirVendedor = esAdministradorTotal(user);
+
   const [items, setItems] = useState([]);
   const [error, setError] = useState("");
-  const [medioPago, setMedioPago] = useState("Efectivo");
+  const [metodos, setMetodos] = useState([]);
+  const [pagos, setPagos] = useState([]);
   const [employeeId, setEmployeeId] = useState("");
   const [locationId, setLocationId] = useState("");
   const [employees, setEmployees] = useState([]);
   const [locations, setLocations] = useState([]);
+  const [clientes, setClientes] = useState([]);
+  const [clientId, setClientId] = useState("");
+  const [buscarCliente, setBuscarCliente] = useState("");
   const [cobrando, setCobrando] = useState(false);
   const [ultimaVenta, setUltimaVenta] = useState(null);
+  const [faltaTurno, setFaltaTurno] = useState(false);
   const [resaltado, setResaltado] = useState(null);
   const inputRef = useRef(null);
   const resaltadoTimer = useRef(null);
@@ -33,15 +47,36 @@ export default function PosPage() {
   useEffect(() => () => clearTimeout(resaltadoTimer.current), []);
 
   useEffect(() => {
-    fetchEmployees().then(setEmployees).catch(() => {});
-    fetchPos().then(setLocations).catch(() => {});
+    // Un empleado no tiene permiso de ver el padrón de empleados ni la lista
+    // de locales para elegir, así que esas dos sólo se piden si va a usarlas.
+    if (puedeElegirVendedor) {
+      fetchEmployees().then(setEmployees).catch(() => {});
+      fetchPos().then(setLocations).catch(() => {});
+    }
+    fetchClients().then((c) => setClientes(c.data || c)).catch(() => {});
+    fetchPaymentMethods({ soloActivos: true })
+      .then((m) => {
+        setMetodos(m);
+        // Arranca con una sola línea: el medio por defecto cubre todo.
+        if (m.length) setPagos([{ paymentMethodId: m[0].id, monto: 0, ajusteManual: "" }]);
+      })
+      .catch(() => {});
     inputRef.current?.focus();
-  }, []);
+  }, [puedeElegirVendedor]);
 
   const totalUnidades = items.reduce((s, i) => s + i.cantidad, 0);
   const esMayorista = totalUnidades >= UMBRAL_MAYORISTA;
   const precioDe = (i) => (esMayorista ? i.precioMayorista : i.precioMinorista);
   const total = items.reduce((s, i) => s + precioDe(i) * i.cantidad, 0);
+
+  // El backend rechaza el cobro si los importes no suman el total. Chequearlo
+  // acá evita mandar una venta que ya se sabe que va a fallar.
+  const sumaPagos = pagos.reduce((s, p) => s + (Number(p.monto) || 0), 0);
+  const pagosCuadran = pagos.length === 1 || Math.abs(total - sumaPagos) < 0.02;
+  const puedeCobrar = items.length > 0 && metodos.length > 0 && pagosCuadran && !cobrando;
+
+  // El botón muestra lo que hay que pedirle al cliente, recargo incluido.
+  const { totalCobro } = calcularTotales(pagos, metodos, total);
 
   async function procesarCodigo(codigo) {
     setError("");
@@ -95,18 +130,26 @@ export default function PosPage() {
       const venta = await createSale({
         tipo: "venta",
         fecha: new Date().toISOString().slice(0, 10),
-        clientId: null,          // consumidor final
+        // Sin cliente elegido la venta es a consumidor final.
+        clientId: clientId ? Number(clientId) : null,
         locationId: locationId || null,
         employeeId: employeeId || null,
         estado: "pagado",        // en mostrador se cobra en el acto
-        medioPago,
+        pagos: lineasParaApi(pagos, metodos, total),
         items: items.map((i) => ({ productVariantId: i.id, cantidad: i.cantidad })),
       });
       setUltimaVenta(venta);
       setItems([]);
+      setClientId("");
+      setBuscarCliente("");
+      if (metodos.length) setPagos([{ paymentMethodId: metodos[0].id, monto: 0, ajusteManual: "" }]);
       inputRef.current?.focus();
     } catch (e) {
-      setError(e.response?.data?.message || "No se pudo registrar la venta");
+      const msg = e.response?.data?.message || "No se pudo registrar la venta";
+      // Sin turno abierto el backend responde 409: se ofrece el atajo para
+      // abrirlo en vez de dejar al cajero adivinando qué falta.
+      setFaltaTurno(e.response?.status === 409 && /turno de caja/i.test(msg));
+      setError(msg);
     } finally {
       setCobrando(false);
     }
@@ -118,8 +161,19 @@ export default function PosPage() {
       <div>
         <PageHeader title="Venta registrada" subtitle={`Comprobante ${ultimaVenta.numero}`} />
         <Card className="mx-auto max-w-md text-center">
-          <p className="font-display text-4xl font-semibold text-teal-600">{formatCurrency(ultimaVenta.total)}</p>
+          {/* Lo cobrado, no el neto: con recargo son importes distintos y el
+              cajero necesita ver el que le pidió al cliente. */}
+          <p className="font-display text-4xl font-semibold text-teal-600">
+            {formatCurrency(ultimaVenta.totalCobrado || ultimaVenta.total)}
+          </p>
           <p className="mt-1 text-sm text-ink-600">{ultimaVenta.medioPago}</p>
+          {Number(ultimaVenta.recargoPagos) !== 0 && (
+            <p className="mt-1 text-xs text-ink-500">
+              Mercadería {formatCurrency(ultimaVenta.total)}
+              {Number(ultimaVenta.recargoPagos) > 0 ? " + recargo " : " − descuento "}
+              {formatCurrency(Math.abs(Number(ultimaVenta.recargoPagos)))}
+            </p>
+          )}
           <div className="mt-6 flex flex-col gap-2">
             <button className="btn-accent justify-center" onClick={() => printSaleTicket(ultimaVenta)}>
               <Receipt size={15} /> Imprimir ticket
@@ -164,7 +218,14 @@ export default function PosPage() {
               </div>
             </form>
             {error && (
-              <p className="mt-2 flex items-center gap-1.5 text-sm text-brick-500"><XCircle size={14} /> {error}</p>
+              <div className="mt-2 text-sm text-brick-500">
+                <p className="flex items-center gap-1.5"><XCircle size={14} /> {error}</p>
+                {faltaTurno && (
+                  <Link to="/caja" className="ml-5 mt-1 inline-block font-medium underline">
+                    Abrir mi turno de caja
+                  </Link>
+                )}
+              </div>
             )}
           </Card>
 
@@ -233,43 +294,99 @@ export default function PosPage() {
           </Card>
 
           <Card>
-            <label className="label">Medio de pago</label>
-            <div className="grid grid-cols-2 gap-2">
-              {MEDIOS_PAGO.map((m) => (
-                <button
-                  key={m} type="button" onClick={() => setMedioPago(m)}
-                  className={`rounded-md border px-2 py-2 text-xs font-medium transition ${
-                    medioPago === m ? "border-ink-950 bg-ink-950 text-paper-50" : "border-line bg-paper-50 hover:bg-paper-100"
-                  }`}
-                >
-                  {m}
-                </button>
-              ))}
-            </div>
+            <label className="label">Cómo paga</label>
+            {metodos.length === 0 ? (
+              <p className="text-xs text-ink-500">
+                No hay medios de pago cargados. Pedile al dueño que configure al menos uno.
+              </p>
+            ) : (
+              <PaymentSplit metodos={metodos} total={total} lineas={pagos} onChange={setPagos} />
+            )}
           </Card>
 
           <Card>
-            <p className="mb-2 flex items-center gap-1.5 text-xs text-ink-500">
-              <UserCircle2 size={13} /> Se registra como consumidor final
-            </p>
-            <label className="label">Vendedor</label>
-            <select className="input mb-3" value={employeeId} onChange={(e) => setEmployeeId(e.target.value)}>
-              <option value="">Sin asignar</option>
-              {employees.map((e) => <option key={e.id} value={e.id}>{e.nombre} {e.apellido || ""}</option>)}
-            </select>
-            <label className="label">Local</label>
-            <select className="input" value={locationId} onChange={(e) => setLocationId(e.target.value)}>
-              <option value="">Sin asignar</option>
-              {locations.map((l) => <option key={l.id} value={l.id}>{l.nombre}</option>)}
-            </select>
+            <label className="label">Cliente</label>
+            {clientId ? (
+              <div className="flex items-center justify-between rounded-md border border-line bg-paper-100 px-3 py-2">
+                <span className="text-sm text-ink-900">
+                  {(() => {
+                    const c = clientes.find((x) => String(x.id) === String(clientId));
+                    return c ? `${c.nombre} ${c.apellido || ""}`.trim() : "Cliente";
+                  })()}
+                </span>
+                <button type="button" className="btn-ghost px-2 py-1 text-xs" onClick={() => { setClientId(""); setBuscarCliente(""); }}>
+                  Quitar
+                </button>
+              </div>
+            ) : (
+              <>
+                <input
+                  className="input"
+                  placeholder="Buscar cliente por nombre…"
+                  value={buscarCliente}
+                  onChange={(e) => setBuscarCliente(e.target.value)}
+                />
+                {buscarCliente.trim().length >= 2 && (
+                  <div className="mt-1 max-h-40 overflow-y-auto rounded-md border border-line">
+                    {clientes
+                      .filter((c) => `${c.nombre} ${c.apellido || ""}`.toLowerCase().includes(buscarCliente.toLowerCase()))
+                      .slice(0, 8)
+                      .map((c) => (
+                        <button
+                          key={c.id} type="button"
+                          className="block w-full px-3 py-2 text-left text-sm hover:bg-paper-100"
+                          onClick={() => { setClientId(c.id); setBuscarCliente(""); }}
+                        >
+                          {c.nombre} {c.apellido || ""}
+                        </button>
+                      ))}
+                  </div>
+                )}
+                <p className="mt-2 flex items-center gap-1.5 text-xs text-ink-500">
+                  <UserCircle2 size={13} /> Sin elegir cliente se registra como consumidor final.
+                </p>
+              </>
+            )}
           </Card>
+
+          {/* El empleado vende siempre como él mismo y en su local: el backend
+              ignora lo que llegue en el request, así que no se muestran los
+              desplegables para no sugerir una elección que no existe. */}
+          {puedeElegirVendedor ? (
+            <Card>
+              <label className="label">Vendedor</label>
+              <select className="input mb-3" value={employeeId} onChange={(e) => setEmployeeId(e.target.value)}>
+                <option value="">Sin asignar</option>
+                {employees.map((e) => <option key={e.id} value={e.id}>{e.nombre} {e.apellido || ""}</option>)}
+              </select>
+              <label className="label">Local</label>
+              <select className="input" value={locationId} onChange={(e) => setLocationId(e.target.value)}>
+                <option value="">Sin asignar</option>
+                {locations.map((l) => <option key={l.id} value={l.id}>{l.nombre}</option>)}
+              </select>
+            </Card>
+          ) : (
+            <Card className="bg-paper-100">
+              <p className="text-xs uppercase tracking-wide text-ink-600">Vendedor</p>
+              <p className="font-medium text-ink-900">{user?.nombre} {user?.apellido || ""}</p>
+              {user?.local?.nombre && (
+                <>
+                  <p className="mt-2 text-xs uppercase tracking-wide text-ink-600">Local</p>
+                  <p className="font-medium text-ink-900">{user.local.nombre}</p>
+                </>
+              )}
+              <p className="mt-2 text-xs text-ink-500">Se registran automáticamente con tu sesión.</p>
+            </Card>
+          )}
 
           <button
             className="btn-accent w-full justify-center py-3 text-base"
-            disabled={!items.length || cobrando}
+            disabled={!puedeCobrar}
             onClick={cobrar}
           >
-            {cobrando ? <><Loader2 size={16} className="animate-spin" /> Registrando…</> : <>Cobrar {formatCurrency(total)}</>}
+            {cobrando
+              ? <><Loader2 size={16} className="animate-spin" /> Registrando…</>
+              : <>Cobrar {formatCurrency(totalCobro)}</>}
           </button>
           {items.length > 0 && (
             <button className="btn-ghost w-full justify-center text-xs text-brick-500" onClick={() => setItems([])}>

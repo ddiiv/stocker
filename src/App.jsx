@@ -2,6 +2,8 @@ import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { AuthProvider } from "./context/AuthContext";
 import { PermissionGuardProvider } from "./context/PermissionGuardContext";
 import ProtectedRoute from "./components/layout/ProtectedRoute";
+import PaymentMethodsPage from "./pages/PaymentMethodsPage";
+import CashPage from "./pages/CashPage";
 import PermissionRoute from "./components/layout/PermissionRoute";
 import AppLayout from "./components/layout/AppLayout";
 
@@ -57,9 +59,11 @@ export default function App() {
             <Route path="/facturacion"                  element={<PermissionRoute permission="facturacion"><BillingPage /></PermissionRoute>} />
             <Route path="/facturacion/cuits"            element={<PermissionRoute permission="facturacion" level="editar"><BusinessCuitsPage /></PermissionRoute>} />
             <Route path="/facturacion/cuits/:cuitId/arca" element={<PermissionRoute permission="facturacion" level="editar"><ArcaConfigPage /></PermissionRoute>} />
-            <Route path="/clientes"                     element={<PermissionRoute permission="ventas"><ClientsPage /></PermissionRoute>} />
+            <Route path="/clientes"                     element={<PermissionRoute permission="clientes"><ClientsPage /></PermissionRoute>} />
+            <Route path="/pagos"                        element={<PermissionRoute permission="pagos"><PaymentMethodsPage /></PermissionRoute>} />
+            <Route path="/caja"                         element={<PermissionRoute permission="caja"><CashPage /></PermissionRoute>} />
             <Route path="/empleados"                    element={<PermissionRoute permission="empleados"><EmployeesPage /></PermissionRoute>} />
-            <Route path="/integraciones/mercadolibre"   element={<PermissionRoute permission="stock"><MercadoLibrePage /></PermissionRoute>} />
+            <Route path="/integraciones/mercadolibre"   element={<PermissionRoute permission="integraciones"><MercadoLibrePage /></PermissionRoute>} />
           </Route>
 
           <Route path="/" element={<Navigate to="/dashboard" replace />} />
