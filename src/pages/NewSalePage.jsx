@@ -4,6 +4,8 @@ import { Trash2, UserPlus, UserCircle2, Check } from "lucide-react";
 import ProductPicker from "../components/sales/ProductPicker";
 import { fetchEmployees, fetchPos, fetchClients, createClient } from "../services/employeeService";
 import { createSale } from "../services/salesService";
+import { fetchPaymentMethods } from "../services/paymentMethodService";
+import PaymentSplit, { lineasParaApi, calcularTotales } from "../components/sales/PaymentSplit";
 import { formatCurrency } from "../utils/formatters";
 import { PageHeader, Card } from "../components/ui/Layout";
 import { useAuth } from "../context/AuthContext";
@@ -25,7 +27,8 @@ export default function NewSalePage() {
   const [employeeId, setEmployeeId] = useState("");
   const [locationId, setLocationId] = useState("");
   const [descuentoPct, setDescuentoPct] = useState(0);
-  const [medioPago, setMedioPago] = useState("Transferencia");
+  const [metodos, setMetodos] = useState([]);
+  const [pagos, setPagos] = useState([]);
   const [marcarPagada, setMarcarPagada] = useState(false);
   const [notas, setNotas] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -44,6 +47,12 @@ export default function NewSalePage() {
       fetchPos().then((pos) => { setLocations(pos); if (pos[0]) setLocationId(pos[0].id); });
     }
     fetchClients().then(setClients);
+    fetchPaymentMethods({ soloActivos: true })
+      .then((m) => {
+        setMetodos(m);
+        if (m.length) setPagos([{ paymentMethodId: m[0].id, monto: 0, ajusteManual: "" }]);
+      })
+      .catch(() => {});
   }, [puedeElegirVendedor]);
 
   useEffect(() => {
@@ -74,6 +83,10 @@ export default function NewSalePage() {
   const subtotal = items.reduce((s, i) => s + i.cantidad * (esMayorista ? i.precioMayorista : i.precioUnitario), 0);
   const descuento = Math.round(subtotal * descuentoPct / 100);
   const total     = subtotal - descuento;
+  // Con recargo por medio de pago, lo que se le cobra al cliente difiere del
+  // neto de mercadería. El resumen tiene que mostrar el importe real.
+  const { ajusteTotal, totalCobro } = calcularTotales(pagos, metodos, total);
+  const cobraAhora = tipo === "venta" && marcarPagada && metodos.length > 0;
 
   async function handleSubmit(e) {
     e.preventDefault();
@@ -89,7 +102,7 @@ export default function NewSalePage() {
         items: items.map((i) => ({ productVariantId: i.productVariantId, cantidad: i.cantidad })),
         descuentoPct,
         estado: tipo === "venta" && marcarPagada ? "pagado" : "pendiente",
-        medioPago: tipo === "venta" && marcarPagada ? medioPago : null,
+        pagos: tipo === "venta" && marcarPagada ? lineasParaApi(pagos, metodos, total) : undefined,
         notas,
       });
       navigate(`/ventas/${sale.id}`);
@@ -244,6 +257,17 @@ export default function NewSalePage() {
               <div className="flex items-center justify-between border-t border-line pt-3 font-display text-base font-semibold text-ink-950">
                 <span>Total</span><span>{formatCurrency(total)}</span>
               </div>
+              {cobraAhora && ajusteTotal !== 0 && (
+                <div className="mt-1 space-y-0.5 border-t border-line pt-1 text-sm">
+                  <div className={`flex justify-between ${ajusteTotal > 0 ? "text-brick-500" : "text-teal-600"}`}>
+                    <span>{ajusteTotal > 0 ? "Recargo" : "Descuento"} por medio de pago</span>
+                    <span>{ajusteTotal > 0 ? "+" : "−"}{formatCurrency(Math.abs(ajusteTotal))}</span>
+                  </div>
+                  <div className="flex justify-between font-display font-semibold text-ink-950">
+                    <span>A cobrar</span><span>{formatCurrency(totalCobro)}</span>
+                  </div>
+                </div>
+              )}
             </div>
 
             {tipo === "venta" && (
@@ -252,13 +276,17 @@ export default function NewSalePage() {
                   <input type="checkbox" checked={marcarPagada} onChange={(e) => setMarcarPagada(e.target.checked)} />
                   Marcar como cobrada ahora
                 </label>
+                {/* Mismo componente que el punto de venta: antes esta pantalla
+                    tenía una lista de medios escrita a mano, así que sus ventas
+                    no llevaban recargo ni se discriminaban en la factura. */}
                 {marcarPagada && (
-                  <div>
-                    <label className="label">Medio de pago</label>
-                    <select className="input" value={medioPago} onChange={(e) => setMedioPago(e.target.value)}>
-                      {["Efectivo","Transferencia","Tarjeta de débito","Tarjeta de crédito","Mercado Pago","Cheque"].map((m) => <option key={m} value={m}>{m}</option>)}
-                    </select>
-                  </div>
+                  metodos.length === 0 ? (
+                    <p className="text-xs text-ink-500">
+                      No hay medios de pago cargados. Pedile al dueño que configure al menos uno.
+                    </p>
+                  ) : (
+                    <PaymentSplit metodos={metodos} total={total} lineas={pagos} onChange={setPagos} />
+                  )
                 )}
               </div>
             )}

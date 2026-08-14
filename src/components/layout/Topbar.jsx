@@ -1,4 +1,5 @@
-import { Menu, LogOut } from "lucide-react";
+import { Link } from "react-router-dom";
+import { Menu, LogOut, UserCog } from "lucide-react";
 import { useAuth } from "../../context/AuthContext";
 import { initials } from "../../utils/formatters";
 
@@ -32,6 +33,11 @@ export default function Topbar({ title, onMenuClick }) {
         <div className="flex h-9 w-9 items-center justify-center rounded-full bg-ink-950 text-xs font-semibold text-paper-50">
           {initials(nombre, apellido)}
         </div>
+        {user?.type === "business" && (
+          <Link to="/cuenta" className="rounded-md p-2 text-ink-600 hover:bg-paper-200" title="Mi cuenta">
+            <UserCog size={17} />
+          </Link>
+        )}
         <button onClick={logout} className="rounded-md p-2 text-ink-600 hover:bg-paper-200 hover:text-brick-500" title="Cerrar sesión">
           <LogOut size={17} />
         </button>

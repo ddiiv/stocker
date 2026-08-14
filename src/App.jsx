@@ -4,6 +4,7 @@ import { PermissionGuardProvider } from "./context/PermissionGuardContext";
 import ProtectedRoute from "./components/layout/ProtectedRoute";
 import PaymentMethodsPage from "./pages/PaymentMethodsPage";
 import CashPage from "./pages/CashPage";
+import AccountPage from "./pages/AccountPage";
 import PermissionRoute from "./components/layout/PermissionRoute";
 import AppLayout from "./components/layout/AppLayout";
 
@@ -60,6 +61,7 @@ export default function App() {
             <Route path="/facturacion/cuits"            element={<PermissionRoute permission="facturacion" level="editar"><BusinessCuitsPage /></PermissionRoute>} />
             <Route path="/facturacion/cuits/:cuitId/arca" element={<PermissionRoute permission="facturacion" level="editar"><ArcaConfigPage /></PermissionRoute>} />
             <Route path="/clientes"                     element={<PermissionRoute permission="clientes"><ClientsPage /></PermissionRoute>} />
+            <Route path="/cuenta"                       element={<AccountPage />} />
             <Route path="/pagos"                        element={<PermissionRoute permission="pagos"><PaymentMethodsPage /></PermissionRoute>} />
             <Route path="/caja"                         element={<PermissionRoute permission="caja"><CashPage /></PermissionRoute>} />
             <Route path="/empleados"                    element={<PermissionRoute permission="empleados"><EmployeesPage /></PermissionRoute>} />
