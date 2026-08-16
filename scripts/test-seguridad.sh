@@ -27,6 +27,14 @@ contiene() { # contiene <descripción> <substring> <texto>
   esac
 }
 code() { curl -s -o /dev/null -w '%{http_code}' --max-time 30 "$@"; }
+# Igual que `code` pero guardando el cuerpo. No sirve pasarle -o a `code`: ya
+# trae el suyo apuntando a /dev/null, curl empareja cada -o con una URL y el
+# segundo se descarta en silencio, dejando el archivo sin crear.
+codeGuardando() { local salida="$1"; shift; curl -s -o "$salida" -w '%{http_code}' --max-time 30 "$@"; }
+# Para comprobaciones que el entorno impide verificar en este momento (por
+# ejemplo, un rate limit todavía activo de una corrida anterior). No cuenta
+# como fallo, pero queda visible para que nadie lo lea como "pasó".
+saltar() { printf "  \033[33m—\033[0m %-52s %s\n" "$1" "$2"; }
 
 # Espera a que la ventana del rate limiter deje pasar el login del dueño.
 login_duenio() {
@@ -102,6 +110,124 @@ check "no se puede editar stock ajeno"      "404" "$(code -b "$TMP/duenio.txt" -
     "$API/api/products/variants/1/stock" -H 'Content-Type: application/json' \
     -d '{"tipo":"ingreso","cantidad":999}')"
 check "no se puede borrar variante ajena"   "404" "$(code -b "$TMP/duenio.txt" -X DELETE "$API/api/products/variants/1")"
+
+titulo "2.b MASS ASSIGNMENT ENTRE NEGOCIOS (informe QA F-01/F-02)"
+# El empleado de prueba tiene "empleados: editar", que es el permiso que hacía
+# falta para la escalada original: editarse a sí mismo con otro businessId.
+node -e "
+require('dotenv').config();
+const { Role } = require('./src/models');
+(async () => {
+  const r = await Role.findOne({ where: { nombre: 'QA-Deposito' } });
+  const p = { ...r.permisos, empleados: 'editar' };
+  await r.update({ permisos: p });
+  process.exit(0);
+})();
+" >/dev/null 2>&1
+curl -s -c "$TMP/qa2.txt" -X POST "$API/api/auth/employee-login" -H 'Content-Type: application/json'   -d '{"email":"qa.deposito@stocker.test","password":"QaTest2026!"}' -o /dev/null
+EMPID=$(node -e "
+require('dotenv').config();
+const { Employee } = require('./src/models');
+(async () => {
+  const e = await Employee.findOne({ where: { email: 'qa.deposito@stocker.test' } });
+  console.log(e ? e.id : '');
+  process.exit(0);
+})();
+" 2>/dev/null | tail -1)
+AJENO=$(node -e "
+require('dotenv').config();
+const { Op } = require('sequelize');
+const { Business } = require('./src/models');
+(async () => {
+  const b = await Business.findOne({ where: { email: { [Op.ne]: 'demo@stocker.app' } } });
+  console.log(b ? b.id : '');
+  process.exit(0);
+})();
+" 2>/dev/null | tail -1)
+
+if [ -n "$EMPID" ] && [ -n "$AJENO" ]; then
+  curl -s -b "$TMP/qa2.txt" -X PUT "$API/api/employees/$EMPID" -H 'Content-Type: application/json' \
+    -d "{\"nombre\":\"QA\",\"businessId\":$AJENO}" -o "$TMP/mass.json"
+  QUEDO=$(node -e "
+    require('dotenv').config();
+    const { Employee } = require('./src/models');
+    (async () => { const e = await Employee.findByPk($EMPID); console.log(e.businessId); process.exit(0); })();
+  " 2>/dev/null | tail -1)
+  check "businessId enviado por el cliente se ignora" "35" "$QUEDO"
+
+  # Volver a loguear: si el businessId hubiera cambiado, la sesión sería de otro negocio.
+  curl -s -c "$TMP/qa3.txt" -X POST "$API/api/auth/employee-login" -H 'Content-Type: application/json' \
+    -d '{"email":"qa.deposito@stocker.test","password":"QaTest2026!"}' -o /dev/null
+  NEG=$(curl -s -b "$TMP/qa3.txt" "$API/api/auth/me" | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{console.log(JSON.parse(d).negocio.id)}catch{console.log('')}})")
+  check "tras re-loguear la sesión sigue en su negocio" "35" "$NEG"
+
+  # Claves foráneas de otro negocio
+  check "no acepta un cargo de otro negocio"  "400" "$(code -b "$TMP/qa2.txt" -X PUT "$API/api/employees/$EMPID" \
+      -H 'Content-Type: application/json' -d '{"roleId":1}')"
+  check "no acepta un local de otro negocio"  "400" "$(code -b "$TMP/qa2.txt" -X PUT "$API/api/employees/$EMPID" \
+      -H 'Content-Type: application/json' -d '{"locationId":1}')"
+fi
+
+# Devolver el cargo a su estado original: el bloque de arriba le dio
+# "empleados: editar" para poder reproducir la escalada, y la sección de RBAC
+# que viene después verifica justamente que ese permiso esté denegado.
+node -e "
+require('dotenv').config();
+const { Role } = require('./src/models');
+(async () => {
+  const r = await Role.findOne({ where: { nombre: 'QA-Deposito' } });
+  if (r) await r.update({ permisos: { ...r.permisos, empleados: 'ninguno' } });
+  process.exit(0);
+})();
+" >/dev/null 2>&1
+
+# El resto de los controladores hacía update(req.body) directo, así que
+# aceptaban un businessId del cliente igual que empleados. Se prueba con el
+# dueño porque el objetivo no es el permiso sino el campo: aunque tenga
+# derecho a editar el registro, no lo tiene a moverlo de negocio.
+if [ -n "$AJENO" ]; then
+  NUEVO=$(curl -s -b "$TMP/duenio.txt" -X POST "$API/api/clients" -H 'Content-Type: application/json' \
+    -d "{\"nombre\":\"QA MassAssign\",\"businessId\":$AJENO}" \
+    | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{const r=JSON.parse(d);console.log(r.id+'|'+r.businessId)}catch{console.log('|')}})")
+  check "alta de cliente: ignora el businessId del cliente" "35" "${NUEVO#*|}"
+
+  CLI_ID="${NUEVO%%|*}"
+  if [ -n "$CLI_ID" ]; then
+    QUEDO=$(curl -s -b "$TMP/duenio.txt" -X PUT "$API/api/clients/$CLI_ID" -H 'Content-Type: application/json' \
+      -d "{\"nombre\":\"QA MassAssign\",\"businessId\":$AJENO}" \
+      | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{console.log(JSON.parse(d).businessId)}catch{console.log('')}})")
+    check "edición de cliente: ignora el businessId del cliente" "35" "$QUEDO"
+
+    # El saldo sólo se mueve con cargos y pagos, que dejan rastro en el
+    # extracto. Si se pudiera escribir a mano, el límite de crédito no valdría.
+    SALDO=$(curl -s -b "$TMP/duenio.txt" -X PUT "$API/api/clients/$CLI_ID/cuenta" -H 'Content-Type: application/json' \
+      -d '{"cuentaHabilitada":true,"limiteCredito":1000,"saldoCuenta":-99999}' \
+      | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{console.log(JSON.parse(d).saldoCuenta)}catch{console.log('')}})")
+    check "cuenta corriente: el saldo no se puede escribir a mano" "0" "$SALDO"
+
+    curl -s -b "$TMP/duenio.txt" -X DELETE "$API/api/clients/$CLI_ID" -o /dev/null
+  fi
+fi
+
+titulo "2.c RECUPERACIÓN DE CONTRASEÑA: SIN ENUMERACIÓN (F-06)"
+# El limitador permite 5 pedidos cada 15 minutos, y esta comparación gasta dos.
+# Hay que mirar el código de LAS DOS: si sólo se controla la primera, una
+# corrida anterior que dejó el contador en 4 hace que la segunda vuelva 429 y
+# la comparación reporte "distintas" — un falso negativo que parece una fuga.
+R1=$(codeGuardando "$TMP/r1.json" -X POST "$API/api/auth/forgot-password" -H 'Content-Type: application/json' \
+  -d '{"email":"demo@stocker.app","cuit":"20345678901"}')
+R2=$(codeGuardando "$TMP/r2.json" -X POST "$API/api/auth/forgot-password" -H 'Content-Type: application/json' \
+  -d '{"email":"no-existe@ningunlado.test","cuit":"20345678901"}')
+if [ "$R1" = "429" ] || [ "$R2" = "429" ]; then
+  saltar "enumeración en recuperación" "rate limit activo — reintentar en 15 min"
+else
+  if cmp -s "$TMP/r1.json" "$TMP/r2.json"; then
+    check "cuenta real e inexistente responden igual" "iguales" "iguales"
+  else
+    check "cuenta real e inexistente responden igual" "iguales" "distintas"
+  fi
+  contiene "la respuesta no filtra el email registrado" "coinciden" "$(cat "$TMP/r1.json")"
+fi
 
 titulo "3. CONTROL DE ACCESO POR ROL (RBAC)"
 curl -s -c "$TMP/qa.txt" -X POST "$API/api/auth/employee-login" -H 'Content-Type: application/json' \

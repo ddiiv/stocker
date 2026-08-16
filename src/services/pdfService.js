@@ -455,7 +455,52 @@ async function generateSaleTicketPdf(sale, items, business, { cliente, emisor } 
       doc.font('Helvetica').fontSize(8).text(`Descuento (${sale.descuentoPct || 0}%): ${money(sale.descuento)}`, 8, doc.y, { width: innerW, align: 'right' });
     }
 
-    if (sale.medioPago) {
+    /*
+     * Desglose del cobro.
+     *
+     * Con pago combinado, "Forma de pago: Efectivo + Transferencia" no dice
+     * cuánto entró por cada uno, que es justo lo que el cliente necesita ver
+     * y lo que hace falta para cuadrar la caja. Se lista una línea por medio,
+     * con su recargo si lo tuvo.
+     */
+    const pagos = Array.isArray(sale.pagos) ? sale.pagos : [];
+    if (pagos.length) {
+      doc.moveDown(0.3);
+      doc.font('Helvetica-Bold').fontSize(8.5).text('Formas de pago', 8, doc.y, { width: innerW });
+      doc.moveDown(0.15);
+      for (const pago of pagos) {
+        const ajuste = Number(pago.ajusteMonto) || 0;
+        doc.font('Helvetica').fontSize(8)
+           .text(`${pago.nombre}`, 8, doc.y, { width: innerW * 0.55, continued: true })
+           .text(money(pago.montoFinal), { width: innerW * 0.45, align: 'right' });
+        if (ajuste !== 0) {
+          const etiqueta = ajuste > 0 ? 'recargo' : 'descuento';
+          doc.font('Helvetica').fontSize(6.5).fillColor('#666')
+             .text(`   ${money(pago.monto)} + ${etiqueta} ${pago.ajustePct}% (${money(Math.abs(ajuste))})`,
+                   8, doc.y, { width: innerW });
+          doc.fillColor('#000');
+        }
+      }
+      const totalCobrado = Number(sale.totalCobrado) || Number(sale.total);
+      if (Number(sale.recargoPagos)) {
+        doc.moveDown(0.15);
+        doc.font('Helvetica-Bold').fontSize(9)
+           .text('TOTAL COBRADO', 8, doc.y, { width: innerW * 0.55, continued: true })
+           .text(money(totalCobrado), { width: innerW * 0.45, align: 'right' });
+      }
+    } else if (sale.condicionPago === 'cuenta_corriente' && Number(sale.saldoPendiente) > 0) {
+      /*
+       * Venta fiada todavía sin cobrar: no hay medio de pago que imprimir
+       * porque se elige al cobrarla. Lo que el cliente tiene que llevarse por
+       * escrito es cuánto quedó debiendo.
+       */
+      doc.moveDown(0.3);
+      doc.font('Helvetica-Bold').fontSize(9).text('VENTA EN CUENTA CORRIENTE', 8, doc.y, { width: innerW });
+      doc.moveDown(0.15);
+      doc.font('Helvetica-Bold').fontSize(9)
+         .text('SALDO ADEUDADO', 8, doc.y, { width: innerW * 0.55, continued: true })
+         .text(money(sale.saldoPendiente), { width: innerW * 0.45, align: 'right' });
+    } else if (sale.medioPago) {
       doc.moveDown(0.3);
       doc.font('Helvetica-Bold').fontSize(9).text(`Forma de pago: ${sale.medioPago}`, 8, doc.y, { width: innerW });
     }

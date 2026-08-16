@@ -4,6 +4,27 @@ const bcrypt = require('bcryptjs');
 const { BusinessLocation, Role, Client, Sale, SaleItem, Invoice, ProductVariant, Product, StockMovement } = require('../models');
 const { ilikeOperator } = require('../utils/sqlHelpers');
 
+/*
+ * Toma del body sólo los campos permitidos.
+ *
+ * Los `update(req.body)` y los spreads `{ ...req.body }` dejan que el cliente
+ * escriba cualquier columna del modelo, incluida businessId. Con eso, alguien
+ * con permiso de edición puede mover un registro a otro negocio o pisar el
+ * businessId que el servidor acababa de fijar. Ver informe QA F-02.
+ */
+function soloCampos(body, permitidos) {
+  const patch = {};
+  for (const campo of permitidos) {
+    if (body?.[campo] !== undefined) patch[campo] = body[campo];
+  }
+  return patch;
+}
+
+const CAMPOS_LOCAL   = ['nombre', 'direccion', 'telefono', 'activo'];
+const CAMPOS_CLIENTE = ['nombre', 'apellido', 'email', 'telefono', 'whatsapp',
+  'cuit', 'dni', 'direccion', 'tipo', 'notas'];
+
+
 // ─── LOCATIONS ────────────────────────────────────────────────────
 const getLocations = async (req, res, next) => {
   try {
@@ -23,7 +44,7 @@ const updateLocation = async (req, res, next) => {
   try {
     const loc = await BusinessLocation.findOne({ where: { id: req.params.id, businessId: req.auth.businessId } });
     if (!loc) return res.status(404).json({ message: 'Local no encontrado.' });
-    await loc.update(req.body);
+    await loc.update(soloCampos(req.body, CAMPOS_LOCAL));
     res.json(loc);
   } catch (e) { next(e); }
 };
@@ -102,7 +123,13 @@ const createClient = async (req, res, next) => {
   try {
     const { nombre } = req.body;
     if (!nombre) return res.status(400).json({ message: 'El nombre es obligatorio.' });
-    const client = await Client.create({ businessId: req.auth.businessId, ...req.body });
+    // El businessId va DESPUÉS del spread a propósito: al revés, un businessId
+    // enviado por el cliente pisaba el de la sesión y el cliente nacía en otro
+    // negocio.
+    const client = await Client.create({
+      ...soloCampos(req.body, CAMPOS_CLIENTE),
+      businessId: req.auth.businessId,
+    });
     res.status(201).json(client);
   } catch (e) { next(e); }
 };
@@ -110,7 +137,7 @@ const updateClient = async (req, res, next) => {
   try {
     const client = await Client.findOne({ where: { id: req.params.id, businessId: req.auth.businessId } });
     if (!client) return res.status(404).json({ message: 'Cliente no encontrado.' });
-    await client.update(req.body);
+    await client.update(soloCampos(req.body, CAMPOS_CLIENTE));
     res.json(client);
   } catch (e) { next(e); }
 };

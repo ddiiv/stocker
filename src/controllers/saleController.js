@@ -1,8 +1,10 @@
 const path = require('path');
 const sequelize = require('../config/database');
-const { Sale, SaleItem, SalePayment, ProductVariant, Product, Client, Employee, BusinessLocation, StockMovement, Business, BusinessCuit } = require('../models');
+const { Sale, SaleItem, SalePayment, ProductVariant, Product, Employee, BusinessLocation, Business, BusinessCuit } = require('../models');
 const { nextSaleNumber } = require('../services/invoiceNumberService');
 const { calcularPagos } = require('../services/paymentService');
+const { cargarVenta, registrarMovimiento, redondear } = require('../services/creditService');
+const { descontarStockVenta, devolverStockVenta } = require('../services/saleStockService');
 const { generateSalePdf, generateSaleTicketPdf } = require('../services/pdfService');
 const { sendSaleReceiptToCustomer, sendSaleNotificationToBusiness } = require('../services/emailService');
 const { sendSaleWhatsapp } = require('../services/whatsappService');
@@ -80,12 +82,14 @@ function calcPrecio(variant, esMayorista) {
 // GET /api/sales
 const getSales = async (req, res, next) => {
   try {
-    const { tipo, estado, desde, hasta, clientId, page = 1, limit = 30 } = req.query;
+    const { tipo, estado, condicionPago, desde, hasta, clientId, page = 1, limit = 30 } = req.query;
     const { Op } = require('sequelize');
     const where = { businessId: req.auth.businessId };
     if (tipo)     where.tipo   = tipo;
     if (estado)   where.estado = estado;
     if (clientId) where.clientId = clientId;
+    // Permite listar sólo lo fiado sin traerse todas las ventas al frontend.
+    if (condicionPago) where.condicionPago = condicionPago;
     if (desde || hasta) {
       where.fecha = {};
       if (desde) where.fecha[Op.gte] = desde;
@@ -116,6 +120,7 @@ const getSale = async (req, res, next) => {
       where: { id: req.params.id, businessId: req.auth.businessId },
       include: [
         { model: SaleItem, as: 'items' },
+        { association: 'pagos' },
         { association: 'cliente' },
         { association: 'empleado', attributes: ['id', 'nombre', 'apellido'] },
         { association: 'local', attributes: ['id', 'nombre', 'direccion'] },
@@ -136,11 +141,51 @@ const createSale = async (req, res, next) => {
       descuentoPct = 0, estado, medioPago, notas, cotizacionId,
       // Detalle de cobro: una línea por medio de pago usado.
       pagos,
+      // 'contado' (se cobra ahora) o 'cuenta_corriente' (se fía).
+      condicionPago: condicionPedida,
+      // Sólo para las fiadas: si el cliente se lleva la mercadería ahora.
+      descontarStock,
       // Si no hay clientId registrado, datos ad-hoc del cliente
       clienteAdHoc,
     } = req.body;
 
     if (!items.length) throw Object.assign(new Error('La venta necesita al menos un ítem.'), { status: 400 });
+
+    /*
+     * Venta fiada.
+     *
+     * Fiar es una condición de la venta, no un medio de pago: al registrarla
+     * todavía no se sabe con qué va a pagar el cliente, así que no se pide
+     * medio de pago. Queda pendiente, con el total anotado como deuda suya, y
+     * al cobrarla recién ahí entran los medios y sus combinaciones.
+     *
+     * Una cotización no fía nada: todavía no hay venta.
+     */
+    const condicionPago = condicionPedida === 'cuenta_corriente' && tipo !== 'cotizacion'
+      ? 'cuenta_corriente'
+      : 'contado';
+    const esFiado = condicionPago === 'cuenta_corriente';
+
+    if (esFiado && !clientId) {
+      throw Object.assign(
+        new Error('Para fiar hay que elegir un cliente: no se puede vender en cuenta corriente a consumidor final.'),
+        { status: 400 }
+      );
+    }
+
+    /*
+     * Estado y salida de mercadería, que dejaron de ir juntos.
+     *
+     *   contado pagado   → cobrada y entregada en el acto (mostrador).
+     *   contado pendiente→ ni cobrada ni entregada; sale al cobrarla.
+     *   fiada            → pendiente, pero la mercadería sale ahora salvo que
+     *                      el vendedor destilde "se la lleva": una seña que
+     *                      queda en el local no puede descontar stock.
+     */
+    const finalEstado = tipo === 'cotizacion' || esFiado ? 'pendiente' : (estado || 'pendiente');
+    const sacaMercaderia = tipo === 'cotizacion'
+      ? false
+      : (esFiado ? descontarStock !== false : finalEstado === 'pagado');
 
     // El vendedor es siempre quien está logueado: un empleado no puede
     // registrar una venta a nombre de otro. El dueño no tiene employeeId, así
@@ -205,9 +250,10 @@ const createSale = async (req, res, next) => {
        * stock en 0, sin que nadie se enterara. A partir de ahí el inventario
        * miente y la diferencia sólo aparece al contar a mano.
        *
-       * Sólo se exige en ventas que se cobran: una cotización no mueve stock.
+       * Se exige cuando la mercadería sale ahora, esté cobrada o fiada: lo que
+       * importa es que salga del depósito, no que haya entrado la plata.
        */
-      if (tipo !== 'cotizacion' && estado === 'pagado') {
+      if (sacaMercaderia) {
         const disponible = Number(variant.stock) || 0;
         if (disponible < item.cantidad) {
           const nombre = [variant.producto.titulo, variant.variante1Valor, variant.variante2Valor]
@@ -246,14 +292,17 @@ const createSale = async (req, res, next) => {
     const descuento = Math.round(subtotal * Number(descuentoPct) / 100 * 100) / 100;
     const total     = subtotal - descuento;
 
-    const finalEstado = tipo === 'cotizacion' ? 'pendiente' : (estado || 'pendiente');
     const numero = await nextSaleNumber(req.auth.businessId, tipo);
 
     // Los recargos y descuentos por medio de pago se calculan sobre el total
     // de mercadería. `total` no se toca: sobre él se apoyan la facturación y
     // las métricas, y el costo financiero del medio de pago no es venta.
+    //
+    // En una venta fiada no hay medios que calcular: se ignora lo que llegue
+    // en `pagos` para que el frontend no pueda dejar un cobro anotado sobre
+    // plata que todavía no entró.
     const { lineas, recargoPagos, totalCobrado, resumen } =
-      await calcularPagos(pagos, total, req.auth.businessId);
+      await calcularPagos(esFiado ? null : pagos, total, req.auth.businessId);
 
     const sale = await Sale.create({
       businessId:  req.auth.businessId,
@@ -262,11 +311,21 @@ const createSale = async (req, res, next) => {
       clientId:    clientId || null,
       numero, tipo,
       estado:      finalEstado,
+      condicionPago,
       esMayorista,
       subtotal, descuentoPct, descuento, total,
       medioPago:   finalEstado === 'pagado' ? (resumen || medioPago || null) : null,
-      recargoPagos,
-      totalCobrado,
+      recargoPagos: finalEstado === 'pagado' ? recargoPagos : 0,
+      // Lo cobrado sólo tiene sentido cuando efectivamente se cobró. Una venta
+      // pendiente con `totalCobrado` cargado hacía figurar plata que no entró.
+      totalCobrado: finalEstado === 'pagado' ? totalCobrado : 0,
+      // Lo que falta cobrar: nada si se cobró en el acto, todo si quedó abierta.
+      saldoPendiente: tipo === 'cotizacion' || finalEstado === 'pagado' ? 0 : total,
+      // Lo pone `descontarStockVenta` unas líneas más abajo; arranca en false
+      // para que el helper sepa que todavía no salió.
+      stockDescontado: false,
+      cobradoEn:            finalEstado === 'pagado' ? new Date() : null,
+      cobradoPorEmployeeId: finalEstado === 'pagado' ? employeeId : null,
       notas,
       cotizacionId: cotizacionId || null,
       fecha:       fecha || new Date().toISOString().slice(0, 10),
@@ -281,36 +340,30 @@ const createSale = async (req, res, next) => {
       );
     }
 
-    // Si se paga, descuentar stock
-    if (finalEstado === 'pagado') {
-      for (const item of enrichedItems) {
-        const variant = await ProductVariant.findByPk(item.productVariantId, { transaction: t, lock: t.LOCK.UPDATE });
-        const stockAnterior = Number(variant.stock) || 0;
+    /*
+     * Deuda de la venta fiada.
+     *
+     * Va dentro de la misma transacción que la venta para que no pueda existir
+     * una sin la otra, y el servicio valida ahí adentro que el cliente tenga
+     * cuenta habilitada y crédito disponible: si no lo tiene, la venta entera
+     * se cae antes de descontar stock.
+     */
+    if (esFiado) {
+      await cargarVenta({
+        saleId:     sale.id,
+        clientId,
+        businessId: req.auth.businessId,
+        employeeId,
+        monto:      total,
+        numero,
+      }, t);
+    }
 
-        // Segunda comprobación, ahora con la fila bloqueada. La de más arriba
-        // corre sin lock y da un error temprano y claro; ésta es la que
-        // garantiza que dos cajas vendiendo la última unidad a la vez no la
-        // vendan las dos.
-        if (stockAnterior < item.cantidad) {
-          throw Object.assign(
-            new Error(
-              `Se quedó sin stock ${item.titulo} (${item.sku}) mientras se registraba la venta: ` +
-              `quedan ${stockAnterior} y se piden ${item.cantidad}.`
-            ),
-            { status: 409 }
-          );
-        }
-
-        const stockNuevo = stockAnterior - item.cantidad;
-        await variant.update({ stock: stockNuevo }, { transaction: t });
-        await StockMovement.create({
-          productVariantId: variant.id,
-          locationId: locationId || null,
-          employeeId, tipo: 'egreso',
-          cantidad: item.cantidad, stockAnterior, stockNuevo,
-          motivo: `Venta ${numero}`, fechaMovimiento: new Date(),
-        }, { transaction: t });
-      }
+    // La segunda comprobación de stock, ya con la fila bloqueada, la hace el
+    // helper: es la que garantiza que dos cajas vendiendo la última unidad a
+    // la vez no la vendan las dos.
+    if (sacaMercaderia) {
+      await descontarStockVenta(sale, t, { employeeId, motivo: `Venta ${numero}` });
     }
 
     await t.commit();
@@ -328,58 +381,159 @@ const createSale = async (req, res, next) => {
   } catch (error) { await t.rollback(); next(error); }
 };
 
-// PATCH /api/sales/:id/estado
-const updateSaleStatus = async (req, res, next) => {
+/*
+ * POST /api/sales/:id/cobrar
+ *
+ * Cobra una venta que quedó abierta — fiada o simplemente pendiente. Es acá
+ * donde aparecen los medios de pago y sus combinaciones: al registrarla no se
+ * sabía con qué iba a pagar el cliente.
+ *
+ * Hace, en una sola transacción: guarda el detalle del cobro, saca la
+ * mercadería si todavía no había salido, y cancela la deuda del cliente si la
+ * venta era fiada.
+ */
+const cobrarSale = async (req, res, next) => {
   const t = await sequelize.transaction();
   try {
+    // Sin `include`: el lock de fila no se lleva bien con el LEFT JOIN de los
+    // ítems. El helper de stock los busca por su cuenta dentro de la misma
+    // transacción.
     const sale = await Sale.findOne({
       where: { id: req.params.id, businessId: req.auth.businessId },
-      include: [{ model: SaleItem, as: 'items' }],
-      transaction: t,
+      transaction: t, lock: t.LOCK.UPDATE,
     });
-    if (!sale) { await t.rollback(); return res.status(404).json({ message: 'Venta no encontrada.' }); }
+    if (!sale) throw Object.assign(new Error('Venta no encontrada.'), { status: 404 });
+    if (sale.tipo === 'cotizacion') {
+      throw Object.assign(new Error('Una cotización no se cobra: convertila en venta primero.'), { status: 400 });
+    }
+    if (sale.estado === 'pagado')    throw Object.assign(new Error('Esta venta ya está cobrada.'), { status: 409 });
+    if (sale.estado === 'cancelado') throw Object.assign(new Error('Esta venta está cancelada.'), { status: 400 });
 
-    const { estado, medioPago } = req.body;
-    const wasUnpaid = sale.estado !== 'pagado';
+    // Lo que falta cobrar, que no siempre es el total: el cliente pudo haber
+    // pagado una parte a cuenta desde su ficha.
+    const aCobrar = redondear(Number(sale.saldoPendiente) || Number(sale.total));
+    if (aCobrar <= 0) throw Object.assign(new Error('Esta venta no tiene saldo pendiente.'), { status: 409 });
 
-    await sale.update({ estado, medioPago: medioPago || sale.medioPago }, { transaction: t });
-
-    if (estado === 'pagado' && wasUnpaid) {
-      for (const item of sale.items) {
-        const variant = await ProductVariant.findByPk(item.productVariantId, { transaction: t, lock: t.LOCK.UPDATE });
-        if (!variant) continue;
-        const stockAnterior = Number(variant.stock) || 0;
-
-        // Entre que se registró la venta pendiente y este cobro pudo haberse
-        // vendido la misma mercadería. Cobrar igual dejaría el stock en cero
-        // sin aviso, que es lo que hacía el Math.max(0, …) de antes.
-        if (stockAnterior < item.cantidad) {
-          throw Object.assign(
-            new Error(
-              `No hay stock suficiente de ${item.titulo} (${item.sku}): quedan ${stockAnterior} ` +
-              `y la venta pide ${item.cantidad}. Ajustá el stock o modificá la venta antes de cobrarla.`
-            ),
-            { status: 409 }
-          );
-        }
-
-        const stockNuevo = stockAnterior - item.cantidad;
-        await variant.update({ stock: stockNuevo }, { transaction: t });
-        await StockMovement.create({
-          productVariantId: variant.id,
-          locationId: sale.locationId, employeeId: req.auth.employeeId || null,
-          tipo: 'egreso', cantidad: item.cantidad, stockAnterior, stockNuevo,
-          motivo: `Cobro venta ${sale.numero}`, fechaMovimiento: new Date(),
-        }, { transaction: t });
+    // Mismo criterio que al vender: si cobra un empleado, la plata entra a su
+    // caja, y sin turno abierto no hay caja contra la cual rendirla.
+    if (req.auth.employeeId) {
+      const { turnoAbierto } = require('../services/cashService');
+      const turno = await turnoAbierto(req.auth.employeeId, req.auth.businessId, t);
+      if (!turno) {
+        throw Object.assign(new Error('Necesitás abrir tu turno de caja antes de cobrar.'), { status: 409 });
       }
     }
 
-    await t.commit();
-    const full = await Sale.findByPk(sale.id, { include: [{ model: SaleItem, as: 'items' }, { association: 'empleado', attributes: ['id', 'nombre', 'apellido'] }] });
-    // Si pasó a pagado, disparar aviso de venta al cliente/negocio (idempotente porque el PDF se sobreescribe)
-    if (estado === 'pagado' && wasUnpaid) {
-      notifySaleAsync(sale.id, req.auth.businessId);
+    const { lineas, recargoPagos, resumen } =
+      await calcularPagos(req.body?.pagos, aCobrar, req.auth.businessId);
+
+    if (lineas.length) {
+      await SalePayment.bulkCreate(lineas.map((l) => ({ ...l, saleId: sale.id })), { transaction: t });
     }
+
+    await sale.update({
+      estado: 'pagado',
+      saldoPendiente: 0,
+      medioPago: resumen || req.body?.medioPago || sale.medioPago,
+      recargoPagos,
+      // El recargo del medio de pago se suma al neto de mercadería; `total`
+      // sigue siendo lo vendido, que es de donde salen métricas y facturación.
+      totalCobrado: redondear(Number(sale.total) + recargoPagos),
+      cobradoEn: new Date(),
+      // Quién lo cobró, que no siempre es quien vendió: lo fiado lo puede
+      // cobrar otro empleado, y el efectivo va a la caja de ese otro.
+      cobradoPorEmployeeId: req.auth.employeeId || null,
+    }, { transaction: t });
+
+    // Si la mercadería quedó en el local (una seña, por ejemplo), sale recién
+    // ahora. Si ya se la había llevado, el helper no vuelve a descontarla.
+    await descontarStockVenta(sale, t, {
+      employeeId: req.auth.employeeId || null,
+      motivo: `Cobro venta ${sale.numero}`,
+    });
+
+    // Venta fiada: cobrarla cancela la deuda que había nacido con ella.
+    if (sale.condicionPago === 'cuenta_corriente' && sale.clientId) {
+      await registrarMovimiento({
+        businessId: req.auth.businessId,
+        clientId:   sale.clientId,
+        saleId:     sale.id,
+        employeeId: req.auth.employeeId || null,
+        tipo:       'pago',
+        monto:      aCobrar,
+        paymentMethodId: lineas.length === 1 ? lineas[0].paymentMethodId : null,
+        medioPago:  resumen || null,
+        notas:      `Cobro venta ${sale.numero}`,
+      }, t);
+    }
+
+    await t.commit();
+
+    const full = await Sale.findByPk(sale.id, {
+      include: [
+        { model: SaleItem, as: 'items' },
+        { association: 'pagos' },
+        { association: 'cliente' },
+        { association: 'empleado', attributes: ['id', 'nombre', 'apellido'] },
+      ],
+    });
+    notifySaleAsync(sale.id, req.auth.businessId);
+    res.json(full);
+  } catch (error) { await t.rollback(); next(error); }
+};
+
+/*
+ * PATCH /api/sales/:id/estado
+ *
+ * Cambios de estado que no son el cobro. Marcar "pagado" desde acá quedaría
+ * sin detalle de medios de pago y sin cancelar la deuda del cliente, así que
+ * ese camino es sólo el de arriba.
+ */
+const updateSaleStatus = async (req, res, next) => {
+  const t = await sequelize.transaction();
+  try {
+    const { estado } = req.body;
+    if (estado === 'pagado') {
+      throw Object.assign(
+        new Error('Para cobrar una venta usá el cobro, que registra con qué se pagó.'),
+        { status: 400 }
+      );
+    }
+
+    const sale = await Sale.findOne({
+      where: { id: req.params.id, businessId: req.auth.businessId },
+      transaction: t, lock: t.LOCK.UPDATE,
+    });
+    if (!sale) throw Object.assign(new Error('Venta no encontrada.'), { status: 404 });
+
+    /*
+     * Cancelar una venta fiada tiene que borrar la deuda que dejó: si no, el
+     * cliente sigue debiendo por mercadería que nunca se llevó. Y si el stock
+     * había salido, vuelve al inventario.
+     */
+    if (estado === 'cancelado' && sale.estado !== 'cancelado') {
+      const pendiente = redondear(sale.saldoPendiente);
+      if (sale.condicionPago === 'cuenta_corriente' && sale.clientId && pendiente > 0) {
+        await registrarMovimiento({
+          businessId: req.auth.businessId,
+          clientId:   sale.clientId,
+          saleId:     sale.id,
+          employeeId: req.auth.employeeId || null,
+          tipo:       'pago',
+          monto:      pendiente,
+          notas:      `Anulación venta ${sale.numero}`,
+        }, t);
+      }
+      await devolverStockVenta(sale, t, { employeeId: req.auth.employeeId || null });
+      await sale.update({ saldoPendiente: 0 }, { transaction: t });
+    }
+
+    await sale.update({ estado }, { transaction: t });
+    await t.commit();
+
+    const full = await Sale.findByPk(sale.id, {
+      include: [{ model: SaleItem, as: 'items' }, { association: 'empleado', attributes: ['id', 'nombre', 'apellido'] }],
+    });
     res.json(full);
   } catch (error) { await t.rollback(); next(error); }
 };
@@ -392,7 +546,8 @@ const convertQuoteToSale = async (req, res, next) => {
     if (!quote) return res.status(404).json({ message: 'Cotización no encontrada.' });
 
     const numero = await nextSaleNumber(req.auth.businessId, 'venta');
-    await quote.update({ tipo: 'venta', estado: 'pendiente', numero });
+    // Nace como venta abierta: se debe entera hasta que se cobre.
+    await quote.update({ tipo: 'venta', estado: 'pendiente', numero, saldoPendiente: quote.total });
     res.json(quote);
   } catch (error) { next(error); }
 };
@@ -402,7 +557,8 @@ const downloadTicket = async (req, res, next) => {
   try {
     const sale = await Sale.findOne({
       where: { id: req.params.id, businessId: req.auth.businessId },
-      include: [{ model: SaleItem, as: 'items' }, { association: 'cliente' }],
+      // `pagos` alimenta el desglose por medio de pago del ticket.
+      include: [{ model: SaleItem, as: 'items' }, { association: 'cliente' }, { association: 'pagos' }],
     });
     if (!sale) return res.status(404).json({ message: 'Venta no encontrada.' });
 
@@ -419,4 +575,4 @@ const downloadTicket = async (req, res, next) => {
   } catch (error) { next(error); }
 };
 
-module.exports = { getSales, getSale, createSale, updateSaleStatus, convertQuoteToSale, downloadTicket };
+module.exports = { getSales, getSale, createSale, cobrarSale, updateSaleStatus, convertQuoteToSale, downloadTicket };

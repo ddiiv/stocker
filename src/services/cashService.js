@@ -37,10 +37,13 @@ class ErrorCaja extends Error {
 }
 
 /** Turno abierto del empleado, o null. */
-async function turnoAbierto(employeeId, businessId) {
+// La transacción es opcional: quien registra un movimiento dentro de una
+// transacción necesita leer el turno con la misma vista de la base.
+async function turnoAbierto(employeeId, businessId, transaction = null) {
   return CashShift.findOne({
     where: { employeeId, businessId, estado: 'abierto' },
     order: [['abiertoEn', 'DESC']],
+    ...(transaction ? { transaction } : {}),
   });
 }
 
@@ -50,15 +53,20 @@ async function turnoAbierto(employeeId, businessId) {
  * Se mira el detalle de pagos y no `medioPago`, porque en una venta combinada
  * sólo una parte entró en efectivo y es esa la que llega a la caja. Se toma
  * `montoFinal` (con el ajuste aplicado): es la plata que realmente se recibió.
+ *
+ * El filtro es por CUÁNDO SE COBRÓ y por QUIÉN COBRÓ, no por cuándo se hizo la
+ * venta. Con las ventas fiadas los dos momentos se separaron: una venta de la
+ * semana pasada que se cobra hoy entra a la caja de hoy, y la puede cobrar un
+ * empleado distinto del que vendió.
  */
 async function efectivoCobrado(turno) {
   const hasta = turno.cerradoEn || new Date();
   const ventas = await Sale.findAll({
     where: {
       businessId: turno.businessId,
-      employeeId: turno.employeeId,
+      cobradoPorEmployeeId: turno.employeeId,
       estado: 'pagado',
-      createdAt: { [Op.gte]: turno.abiertoEn, [Op.lte]: hasta },
+      cobradoEn: { [Op.gte]: turno.abiertoEn, [Op.lte]: hasta },
     },
     include: [{ model: SalePayment, as: 'pagos' }],
   });

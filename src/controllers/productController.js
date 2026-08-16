@@ -4,6 +4,29 @@ const { Product, ProductVariant, StockMovement } = require('../models');
 const { ilikeOperator } = require('../utils/sqlHelpers');
 const { exportProductsXlsx, importProductsXlsx } = require('../services/productExcelService');
 
+/*
+ * Toma del body sólo los campos permitidos.
+ *
+ * Los `update(req.body)` y los spreads `{ ...req.body }` dejan que el cliente
+ * escriba cualquier columna del modelo, incluida businessId. Con eso, alguien
+ * con permiso de edición puede mover un registro a otro negocio o pisar el
+ * businessId que el servidor acababa de fijar. Ver informe QA F-02.
+ */
+function soloCampos(body, permitidos) {
+  const patch = {};
+  for (const campo of permitidos) {
+    if (body?.[campo] !== undefined) patch[campo] = body[campo];
+  }
+  return patch;
+}
+
+// productId nunca: movería la variante a otro producto, incluso de otro negocio.
+const CAMPOS_PRODUCTO = ['sku', 'skuAgrupador', 'titulo', 'descripcion', 'precioMinorista',
+  'precioMayorista', 'costo', 'variantes', 'modelo', 'categoria', 'genero', 'activo'];
+const CAMPOS_VARIANTE = ['sku', 'codigoBarras', 'variante1Nombre', 'variante1Valor',
+  'variante2Nombre', 'variante2Valor', 'stock', 'stockMinimo', 'activo'];
+
+
 // ── Helpers ────────────────────────────────────────────────────────
 function validateVariantes(variantes) {
   if (!variantes || typeof variantes !== 'object') return null;
@@ -111,7 +134,10 @@ const updateProduct = async (req, res, next) => {
       if (err) return res.status(400).json({ message: err });
     }
 
-    await product.update({ ...req.body, fechaActualizacion: new Date() });
+    await product.update({
+      ...soloCampos(req.body, CAMPOS_PRODUCTO),
+      fechaActualizacion: new Date(),
+    });
     const full = await Product.findByPk(product.id, { include: [{ model: ProductVariant, as: 'productVariants' }] });
     res.json(full);
   } catch (error) { next(error); }
@@ -256,7 +282,7 @@ const updateVariant = async (req, res, next) => {
     const variant = await ProductVariant.findByPk(req.params.variantId, { include: [{ model: Product, as: 'producto' }] });
     if (!variant || variant.producto.businessId !== req.auth.businessId)
       return res.status(404).json({ message: 'Variante no encontrada.' });
-    await variant.update(req.body);
+    await variant.update(soloCampos(req.body, CAMPOS_VARIANTE));
     res.json(variant);
   } catch (error) { next(error); }
 };

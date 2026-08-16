@@ -26,6 +26,13 @@ const COLUMNAS_ESPERADAS = {
   sale_payments: {
     esEfectivo: { type: DataTypes.BOOLEAN, allowNull: true, defaultValue: false },
   },
+  clients: {
+    // Cuenta corriente. Arrancan todos deshabilitados: habilitar el crédito es
+    // una decisión del negocio cliente por cliente, no un default.
+    cuentaHabilitada: { type: DataTypes.BOOLEAN, allowNull: true, defaultValue: false },
+    limiteCredito:    { type: DataTypes.DECIMAL(12, 2), allowNull: true, defaultValue: 0 },
+    saldoCuenta:      { type: DataTypes.DECIMAL(12, 2), allowNull: true, defaultValue: 0 },
+  },
   businesses: {
     // Datos que ahora se traen del padrón de ARCA.
     condicionIva: { type: DataTypes.STRING(60), allowNull: true },
@@ -37,6 +44,14 @@ const COLUMNAS_ESPERADAS = {
     // se rellena abajo con el total que ya tenían.
     recargoPagos: { type: DataTypes.DECIMAL(12, 2), allowNull: true, defaultValue: 0 },
     totalCobrado: { type: DataTypes.DECIMAL(12, 2), allowNull: true, defaultValue: 0 },
+    // Ventas fiadas: la condición de pago, lo que falta cobrar y si la
+    // mercadería ya salió. Ver los rellenos: las ventas viejas son todas al
+    // contado y su stock ya se descontó si estaban pagadas.
+    condicionPago:        { type: DataTypes.STRING(20), allowNull: true, defaultValue: 'contado' },
+    saldoPendiente:       { type: DataTypes.DECIMAL(12, 2), allowNull: true, defaultValue: 0 },
+    stockDescontado:      { type: DataTypes.BOOLEAN, allowNull: true, defaultValue: false },
+    cobradoEn:            { type: DataTypes.DATE, allowNull: true },
+    cobradoPorEmployeeId: { type: DataTypes.INTEGER, allowNull: true },
   },
 };
 
@@ -69,11 +84,71 @@ const RELLENOS = [
     sqlMssql: 'UPDATE sales SET totalCobrado = total WHERE totalCobrado IS NULL OR totalCobrado = 0',
   },
   {
+    descripcion: 'clientes anteriores: cuenta corriente en cero',
+    cuandoSeAgrega: 'clients.saldoCuenta',
+    sql: 'UPDATE clients SET "saldoCuenta" = 0, "limiteCredito" = 0, "cuentaHabilitada" = false WHERE "saldoCuenta" IS NULL',
+    sqlMssql: 'UPDATE clients SET saldoCuenta = 0, limiteCredito = 0, cuentaHabilitada = 0 WHERE saldoCuenta IS NULL',
+  },
+  {
     // addColumn no aplica el defaultValue a las filas que ya estaban.
     descripcion: 'ventas anteriores: recargoPagos = 0',
     cuandoSeAgrega: 'sales.recargoPagos',
     sql: 'UPDATE sales SET "recargoPagos" = 0 WHERE "recargoPagos" IS NULL',
     sqlMssql: 'UPDATE sales SET recargoPagos = 0 WHERE recargoPagos IS NULL',
+  },
+  /*
+   * Los cinco de abajo son `reintentable`: corren en cada arranque, no sólo
+   * cuando la columna se acaba de crear.
+   *
+   * Es la lección de una migración a medias: la columna llegó a la base pero
+   * el relleno no, y las ventas viejas quedaron con la condición de pago y el
+   * saldo pendiente en NULL. Sin reintento eso no se arregla nunca, porque la
+   * columna ya existe y el relleno no vuelve a mirarla.
+   *
+   * Por eso cada uno filtra por `IS NULL`: sólo tocan filas sin completar, así
+   * que repetirlos no pisa el saldo de una venta que ya se cobró en parte.
+   */
+  {
+    // Todo lo anterior a las ventas fiadas se cobró al contado.
+    descripcion: 'ventas anteriores: condición de pago contado',
+    cuandoSeAgrega: 'sales.condicionPago',
+    reintentable: true,
+    sql: `UPDATE sales SET "condicionPago" = 'contado' WHERE "condicionPago" IS NULL`,
+    sqlMssql: `UPDATE sales SET condicionPago = 'contado' WHERE condicionPago IS NULL`,
+  },
+  {
+    // Una venta pendiente sigue debiéndose entera; una pagada no debe nada.
+    descripcion: 'ventas anteriores: saldo pendiente según estado',
+    cuandoSeAgrega: 'sales.saldoPendiente',
+    reintentable: true,
+    sql: `UPDATE sales SET "saldoPendiente" = CASE WHEN estado = 'pendiente' AND tipo = 'venta' THEN total ELSE 0 END WHERE "saldoPendiente" IS NULL`,
+    sqlMssql: `UPDATE sales SET saldoPendiente = CASE WHEN estado = 'pendiente' AND tipo = 'venta' THEN total ELSE 0 END WHERE saldoPendiente IS NULL`,
+  },
+  {
+    // Antes el stock se descontaba exactamente cuando la venta pasaba a pagada.
+    descripcion: 'ventas anteriores: stock descontado si estaban pagadas',
+    cuandoSeAgrega: 'sales.stockDescontado',
+    reintentable: true,
+    sql: `UPDATE sales SET "stockDescontado" = (estado = 'pagado') WHERE "stockDescontado" IS NULL`,
+    sqlMssql: `UPDATE sales SET stockDescontado = CASE WHEN estado = 'pagado' THEN 1 ELSE 0 END WHERE stockDescontado IS NULL`,
+  },
+  {
+    // El arqueo pasa a mirar cuándo se cobró. Para las viejas, cobrar y
+    // registrar fue el mismo acto, así que la fecha de alta es la del cobro.
+    descripcion: 'ventas anteriores: fecha de cobro = fecha de alta',
+    cuandoSeAgrega: 'sales.cobradoEn',
+    reintentable: true,
+    sql: `UPDATE sales SET "cobradoEn" = "createdAt" WHERE estado = 'pagado' AND "cobradoEn" IS NULL`,
+    sqlMssql: `UPDATE sales SET cobradoEn = createdAt WHERE estado = 'pagado' AND cobradoEn IS NULL`,
+  },
+  {
+    descripcion: 'ventas anteriores: cobrador = vendedor',
+    cuandoSeAgrega: 'sales.cobradoPorEmployeeId',
+    reintentable: true,
+    // `employeeId IS NOT NULL` evita reescribir en cada arranque las ventas del
+    // dueño, que no tienen vendedor y quedarían siempre "sin completar".
+    sql: `UPDATE sales SET "cobradoPorEmployeeId" = "employeeId" WHERE estado = 'pagado' AND "cobradoPorEmployeeId" IS NULL AND "employeeId" IS NOT NULL`,
+    sqlMssql: `UPDATE sales SET cobradoPorEmployeeId = employeeId WHERE estado = 'pagado' AND cobradoPorEmployeeId IS NULL AND employeeId IS NOT NULL`,
   },
 ];
 
@@ -101,11 +176,12 @@ async function ensureColumns(sequelize) {
     }
   }
 
-  // Rellenos: sólo corren para las columnas que se acaban de crear, así que
-  // volver a arrancar el servidor no los repite.
+  // Rellenos: corren para las columnas que se acaban de crear. Los marcados
+  // como `reintentable` corren siempre — filtran por IS NULL, así que sólo
+  // completan filas que quedaron a medias y repetirlos no cambia nada.
   const esPostgres = sequelize.getDialect() === 'postgres';
   for (const relleno of RELLENOS) {
-    if (!agregadas.includes(relleno.cuandoSeAgrega)) continue;
+    if (!relleno.reintentable && !agregadas.includes(relleno.cuandoSeAgrega)) continue;
     try {
       await sequelize.query(esPostgres ? relleno.sql : relleno.sqlMssql);
       console.log(`[schema] ${relleno.descripcion}`);

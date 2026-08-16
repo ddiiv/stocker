@@ -1,4 +1,5 @@
 const bcrypt   = require('bcryptjs');
+const crypto   = require('node:crypto');
 const { Op }   = require('sequelize');
 const { Business, Employee, Role, EmployeeSession, BusinessCuit, PasswordResetCode, PaymentMethod } = require('../models');
 const { PRESETS } = require('../config/permisos');
@@ -6,6 +7,7 @@ const { exigirLibre, normalizar } = require('../services/cuitRegistry');
 const { crearSesion, IDLE_MIN } = require('../utils/session');
 const { setAuthCookie, clearAuthCookie } = require('../utils/authCookie');
 const { sendPasswordResetCode, sendPasswordResetAlert } = require('../services/emailService');
+const { log, mask } = require('../utils/logger');
 
 function clientIp(req) {
   const xff = req.headers['x-forwarded-for'];
@@ -187,8 +189,13 @@ const me = async (req, res, next) => {
 const CODE_EXPIRATION_MIN = 15;
 const MAX_ATTEMPTS = 4;
 
+/*
+ * Math.random no es criptográficamente seguro: su secuencia es predecible a
+ * partir de suficientes salidas, y esto es un secreto temporal que da acceso a
+ * cambiar una contraseña. randomInt usa el generador del sistema.
+ */
 function genCode() {
-  return String(Math.floor(100000 + Math.random() * 900000)); // 6 dígitos
+  return String(crypto.randomInt(100000, 1000000)); // 6 dígitos
 }
 
 const forgotPassword = async (req, res, next) => {
@@ -202,11 +209,29 @@ const forgotPassword = async (req, res, next) => {
       return res.status(400).json({ message: 'El CUIT debe tener 11 dígitos.' });
     }
 
+    /*
+     * Respuesta neutra, siempre la misma.
+     *
+     * Antes se devolvía 404 cuando el par email/CUIT no coincidía. Era más
+     * cómodo para el dueño que se equivoca, pero convertía este endpoint en un
+     * oráculo: probando pares se puede averiguar qué cuentas existen y con qué
+     * CUIT operan. Los CUIT de empresas son públicos, así que la lista de
+     * clientes de Stocker quedaba enumerable desde afuera.
+     *
+     * Ahora la respuesta no distingue los casos. Si los datos son correctos se
+     * manda el código; si no, no se manda nada, y el mensaje es idéntico.
+     */
+    const RESPUESTA_NEUTRA = {
+      ok: true,
+      message: 'Si los datos coinciden con una cuenta, te enviamos un código al email registrado. Revisá tu casilla y la carpeta de spam.',
+    };
+
     const business = await Business.findOne({ where: { email } });
-    // Corroborar en el momento: si no coincide, devolvemos 404 explícito.
-    // Tradeoff: pierde algo de seguridad (enumeration) pero mejora UX del dueño.
     if (!business || String(business.cuit).replace(/[^0-9]/g, '') !== cuit) {
-      return res.status(404).json({ message: 'Email o CUIT incorrectos. Verificá que ambos coincidan con los del registro.' });
+      // Se registra del lado del servidor para poder detectar barridos, con el
+      // email enmascarado.
+      log.warn('auth', 'pedido de recuperación con datos que no coinciden', { email: mask.email(email) });
+      return res.json(RESPUESTA_NEUTRA);
     }
 
     // Invalidar códigos previos no usados del mismo business
@@ -245,15 +270,19 @@ const forgotPassword = async (req, res, next) => {
     const timedOut = raced === timeoutSentinel;
     const mailError = raced && raced._error;
 
-    res.json({
-      ok: true,
-      email: business.email,
-      message: mailError
-        ? 'Registramos tu pedido pero el envío del mail falló. Revisá la configuración o pedí un nuevo código en un momento.'
-        : timedOut
-          ? `Te enviamos un código a ${maskEmail(business.email)}. Puede tardar hasta 1 minuto en llegar — revisá también la carpeta Spam.`
-          : `Te enviamos un código a ${maskEmail(business.email)}. Revisá también la carpeta Spam.`,
-    });
+    /*
+     * Misma respuesta que cuando los datos no coinciden, sin excepción.
+     *
+     * Antes se devolvía el email completo y un mensaje distinto según si el
+     * envío salió, tardó o falló. Cualquiera de esas diferencias alcanza para
+     * distinguir un par válido de uno inválido, que es justo lo que la
+     * respuesta neutra evita. El problema de envío se registra del lado del
+     * servidor, donde sirve para diagnosticar sin filtrar nada.
+     */
+    if (mailError) log.error('auth', 'falló el envío del código de recuperación', { detalle: mailError });
+    else if (timedOut) log.warn('auth', 'el envío del código superó los 15s; sigue en segundo plano');
+
+    res.json(RESPUESTA_NEUTRA);
   } catch (error) { next(error); }
 };
 

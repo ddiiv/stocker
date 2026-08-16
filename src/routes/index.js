@@ -24,6 +24,7 @@ const businessCuitCtrl = require('../controllers/businessCuitController');
 const { testSend: whatsappTestSend } = require('../controllers/whatsappTestController');
 const mlCtrl = require('../controllers/mercadolibreController');
 const metricsCtrl = require('../controllers/metricsController');
+const creditCtrl = require('../controllers/creditController');
 const paymentCtrl = require('../controllers/paymentMethodController');
 const cashCtrl = require('../controllers/cashController');
 const accountCtrl = require('../controllers/accountController');
@@ -77,6 +78,19 @@ r.patch ('/employees/:id/toggle',   requireAuth, requirePermission('empleados','
 r.delete('/employees/:id',          requireAuth, requirePermission('empleados','editar'), employeeCtrl.deleteEmployee);
 
 // ── Clients ───────────────────────────────────────────────────────
+/*
+ * Cuentas corrientes. Va antes de '/clients/:id' — si no, Express toma
+ * "cuentas" como un id y la ruta nunca se alcanza.
+ *
+ * Consultar y cobrar entra con permiso de clientes: es tarea de mostrador.
+ * Fijar el límite exige permiso de pagos, porque decidir a quién se le fía y
+ * por cuánto es una decisión de plata, no de carga de datos.
+ */
+r.get   ('/clients/cuentas',       requireAuth, requirePermission('clientes','ver'),    creditCtrl.getCuentas);
+r.get   ('/clients/:id/cuenta',    requireAuth, requirePermission('clientes','ver'),    creditCtrl.getCuenta);
+r.put   ('/clients/:id/cuenta',    requireAuth, requirePermission('pagos','editar'),    creditCtrl.updateCuentaConfig);
+r.post  ('/clients/:id/cuenta/pagos', requireAuth, requirePermission('clientes','editar'), creditCtrl.registrarPago);
+
 r.get   ('/clients',     requireAuth, requirePermission('clientes','ver'),    getClients);
 r.post  ('/clients',     requireAuth, requirePermission('clientes','editar'), createClient);
 r.put   ('/clients/:id', requireAuth, requirePermission('clientes','editar'), updateClient);
@@ -147,6 +161,9 @@ r.get   ('/sales',                      requireAuth, requirePermission('ventas',
 r.get   ('/sales/:id',                  requireAuth, requirePermission('ventas','ver'),    saleCtrl.getSale);
 r.get   ('/sales/:id/ticket',           requireAuth, requirePermission('ventas','ver'),    saleCtrl.downloadTicket);
 r.post  ('/sales',                      requireAuth, requirePermission('ventas','editar'), saleCtrl.createSale);
+// Mismo permiso que vender: quien atiende el mostrador es quien cobra lo que
+// quedó fiado. Fijar los límites de crédito, en cambio, sigue siendo de pagos.
+r.post  ('/sales/:id/cobrar',           requireAuth, requirePermission('ventas','editar'), saleCtrl.cobrarSale);
 r.patch ('/sales/:id/estado',           requireAuth, requirePermission('ventas','editar'), saleCtrl.updateSaleStatus);
 r.post  ('/sales/cotizacion/:id/convertir', requireAuth, requirePermission('cotizaciones','editar'), saleCtrl.convertQuoteToSale);
 

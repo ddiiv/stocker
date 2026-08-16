@@ -211,7 +211,47 @@ const Client = db.define('Client', {
   direccion:  { type: DataTypes.STRING(255) },
   tipo:       { type: DataTypes.STRING(20), defaultValue: 'minorista' }, // minorista|mayorista|empresa
   notas:      { type: DataTypes.TEXT },
+  /*
+   * Cuenta corriente.
+   *
+   * `saldoCuenta` es lo que el cliente debe: positivo = nos debe. Está
+   * desnormalizado a propósito — la alternativa es sumar todos los movimientos
+   * en cada validación de límite, y esa suma corre en medio de cada venta a
+   * crédito. Se actualiza siempre dentro de la misma transacción que crea el
+   * movimiento, así no puede quedar desfasado.
+   *
+   * `limiteCredito` en 0 con `cuentaHabilitada` en false es el estado normal:
+   * el cliente paga al contado y no puede comprar fiado.
+   */
+  cuentaHabilitada: { type: DataTypes.BOOLEAN, defaultValue: false },
+  limiteCredito:    { type: DataTypes.DECIMAL(12,2), defaultValue: 0 },
+  saldoCuenta:      { type: DataTypes.DECIMAL(12,2), defaultValue: 0 },
 }, { tableName: 'clients' });
+
+// ─── ClientAccountEntry (movimiento de cuenta corriente) ─────────
+// Libro mayor del cliente: cada fila es una deuda que nace (cargo) o que se
+// cancela (pago). El saldo del cliente sale de acá; la columna `saldoCuenta`
+// es sólo la caché.
+const ClientAccountEntry = db.define('ClientAccountEntry', {
+  id:         { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
+  businessId: { type: DataTypes.INTEGER, allowNull: false },
+  clientId:   { type: DataTypes.INTEGER, allowNull: false },
+  // Venta que originó el cargo. Null en ajustes manuales y en los pagos.
+  saleId:     { type: DataTypes.INTEGER, allowNull: true },
+  employeeId: { type: DataTypes.INTEGER, allowNull: true },
+  // cargo = el cliente se lleva mercadería y queda debiendo.
+  // pago  = trae plata y baja la deuda.
+  tipo:       { type: DataTypes.STRING(10), allowNull: false },
+  monto:      { type: DataTypes.DECIMAL(12,2), allowNull: false },
+  // Saldo que quedó después de este movimiento. Congelado: sirve para leer el
+  // extracto sin recalcular, y para detectar si la caché se desincronizó.
+  saldoPosterior: { type: DataTypes.DECIMAL(12,2), allowNull: true },
+  // Con qué pagó (sólo en los pagos).
+  paymentMethodId: { type: DataTypes.INTEGER, allowNull: true },
+  medioPago:  { type: DataTypes.STRING(60) },
+  notas:      { type: DataTypes.STRING(255) },
+  fecha:      { type: DataTypes.DATE, allowNull: false, defaultValue: DataTypes.NOW },
+}, { tableName: 'client_account_entries' });
 
 // ─── Product ──────────────────────────────────────────────────────
 const Product = db.define('Product', {
@@ -279,6 +319,36 @@ const Sale = db.define('Sale', {
   numero:       { type: DataTypes.STRING(25), allowNull: false },
   tipo:         { type: DataTypes.STRING(15), defaultValue: 'venta' },    // venta|cotizacion
   estado:       { type: DataTypes.STRING(15), defaultValue: 'pendiente' }, // pendiente|pagado|cancelado|vencida
+  /*
+   * Cómo se acordó cobrar la venta, no con qué medio.
+   *
+   *   contado          → se cobra en el acto, con uno o varios medios de pago.
+   *   cuenta_corriente → se fía. No se elige medio de pago ahora, porque
+   *                      todavía no se sabe con qué va a pagar el cliente.
+   *                      Exige cliente identificado y nace como deuda suya.
+   *
+   * Fiar dejó de ser un medio de pago: el medio recién se define al cobrar,
+   * y ahí valen todas las combinaciones y ajustes de siempre.
+   */
+  condicionPago:   { type: DataTypes.STRING(20), defaultValue: 'contado' },
+  // Lo que falta cobrar de ESTA venta. Cero cuando está saldada. Es lo que
+  // permite cobrar una venta fiada en partes sin perder de vista cuál quedó.
+  saldoPendiente:  { type: DataTypes.DECIMAL(12,2), defaultValue: 0 },
+  /*
+   * Si la mercadería ya salió del inventario.
+   *
+   * Antes se deducía de `estado === 'pagado'`, pero con las ventas fiadas se
+   * separan los dos momentos: el cliente puede llevarse la ropa hoy y pagar la
+   * semana que viene, o dejarla señada sin llevársela. Guardarlo explícito es
+   * lo que evita descontar dos veces el mismo stock al cobrar.
+   */
+  stockDescontado: { type: DataTypes.BOOLEAN, defaultValue: false },
+  // Cuándo y en la caja de quién entró la plata. En una venta de mostrador es
+  // el mismo momento y el mismo empleado que la registró; en una fiada, no.
+  // El arqueo se apoya en estos dos: el efectivo se rinde en el turno en que
+  // se cobró, no en aquel en que se hizo la venta.
+  cobradoEn:            { type: DataTypes.DATE, allowNull: true },
+  cobradoPorEmployeeId: { type: DataTypes.INTEGER, allowNull: true },
   esMayorista:  { type: DataTypes.BOOLEAN, defaultValue: false },
   subtotal:     { type: DataTypes.DECIMAL(12,2), defaultValue: 0 },
   descuentoPct: { type: DataTypes.DECIMAL(5,2), defaultValue: 0 },
@@ -316,6 +386,8 @@ const PaymentMethod = db.define('PaymentMethod', {
   // arqueo, porque el resto no pasa por el cajón. Con un "Efectivo USD" o un
   // "Contado" la deducción por texto fallaba en silencio y la caja cerraba mal.
   esEfectivo: { type: DataTypes.BOOLEAN, defaultValue: false },
+  // Fiar no es un medio de pago: es una condición de la venta (`Sale.condicionPago`).
+  // Cualquiera de estos medios sirve después para cobrar lo fiado.
 }, { tableName: 'payment_methods' });
 
 // ─── CashShift (turno de caja) ───────────────────────────────────
@@ -487,6 +559,14 @@ Employee.belongsTo(Role, { foreignKey: 'roleId', as: 'cargo' });
 Business.hasMany(Client,  { foreignKey: 'businessId', as: 'clientes',  onDelete: 'CASCADE' });
 Client.belongsTo(Business, { foreignKey: 'businessId' });
 
+Client.hasMany(ClientAccountEntry, { foreignKey: 'clientId', as: 'movimientosCuenta', onDelete: 'CASCADE' });
+ClientAccountEntry.belongsTo(Client, { foreignKey: 'clientId', as: 'cliente' });
+// NO ACTION: SQL Server rechaza varios caminos de borrado en cascada hacia la
+// misma tabla, y el movimiento tiene que sobrevivir igual — la deuda no
+// desaparece porque se borre la venta que la originó.
+ClientAccountEntry.belongsTo(Sale, { foreignKey: 'saleId', as: 'venta', onDelete: 'NO ACTION' });
+ClientAccountEntry.belongsTo(Employee, { foreignKey: 'employeeId', as: 'empleado', onDelete: 'NO ACTION' });
+
 Business.hasMany(Product, { foreignKey: 'businessId', as: 'productos', onDelete: 'CASCADE' });
 Product.belongsTo(Business, { foreignKey: 'businessId' });
 
@@ -556,4 +636,5 @@ module.exports = {
   Product, ProductVariant, StockMovement,
   Sale, SaleItem, Invoice, InvoiceItem,
   PaymentMethod, SalePayment, CashShift, CashMovement,
+  ClientAccountEntry,
 };
