@@ -20,6 +20,7 @@ import SaleDetailPage from "./pages/SaleDetailPage";
 import BillingPage from "./pages/BillingPage";
 import EmployeesPage from "./pages/EmployeesPage";
 import ClientsPage from "./pages/ClientsPage";
+import ClientAccountsPage from "./pages/ClientAccountsPage";
 import VariantTypesPage from "./pages/VariantTypesPage";
 import MercadoLibrePage from "./pages/MercadoLibrePage";
 import SalesTimelinePage from "./pages/SalesTimelinePage";
@@ -61,6 +62,7 @@ export default function App() {
             <Route path="/facturacion/cuits"            element={<PermissionRoute permission="facturacion" level="editar"><BusinessCuitsPage /></PermissionRoute>} />
             <Route path="/facturacion/cuits/:cuitId/arca" element={<PermissionRoute permission="facturacion" level="editar"><ArcaConfigPage /></PermissionRoute>} />
             <Route path="/clientes"                     element={<PermissionRoute permission="clientes"><ClientsPage /></PermissionRoute>} />
+            <Route path="/clientes/cuentas"             element={<PermissionRoute permission="clientes"><ClientAccountsPage /></PermissionRoute>} />
             <Route path="/cuenta"                       element={<AccountPage />} />
             <Route path="/pagos"                        element={<PermissionRoute permission="pagos"><PaymentMethodsPage /></PermissionRoute>} />
             <Route path="/caja"                         element={<PermissionRoute permission="caja"><CashPage /></PermissionRoute>} />

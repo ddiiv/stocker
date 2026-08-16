@@ -1,9 +1,12 @@
 import { useEffect, useState } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
-import { ArrowLeft, ReceiptText, CheckCircle2, RefreshCw, Printer } from "lucide-react";
-import { getSale, updateSaleStatus, convertQuote, printSaleTicket } from "../services/salesService";
+import { ArrowLeft, ReceiptText, CheckCircle2, RefreshCw, Printer, NotebookPen } from "lucide-react";
+import { getSale, cobrarSale, convertQuote, printSaleTicket } from "../services/salesService";
 import { generateInvoiceFromSale } from "../services/invoiceService";
 import { fetchBusinessCuits } from "../services/businessCuitService";
+import { fetchPaymentMethods } from "../services/paymentMethodService";
+import PaymentSplit, { lineasParaApi, calcularTotales } from "../components/sales/PaymentSplit";
+import { medioPagoBadge } from "../utils/paymentBadge";
 import { formatCurrency, formatDate } from "../utils/formatters";
 import { Card, PageHeader } from "../components/ui/Layout";
 import Modal from "../components/ui/Modal";
@@ -21,7 +24,9 @@ export default function SaleDetailPage() {
   const [invoiceError, setInvoiceError] = useState("");
   const [businessCuits, setBusinessCuits] = useState([]);
   const [payModal, setPayModal] = useState(false);
-  const [medioPago, setMedioPago] = useState("efectivo");
+  const [payError, setPayError] = useState("");
+  const [metodos, setMetodos] = useState([]);
+  const [pagos, setPagos] = useState([]);
 
   async function load() {
     setLoading(true);
@@ -45,12 +50,37 @@ export default function SaleDetailPage() {
     }
   }, [invoiceModal]);
 
-  async function markAsPaid() {
-    setBusy(true);
+  /*
+   * Cobro de una venta abierta.
+   *
+   * El importe es el saldo pendiente y no el total: si el cliente ya pagó algo
+   * a cuenta desde su ficha, cobrarle el total de nuevo le sacaría plata de
+   * más. El backend calcula lo mismo, esto es para que el cajero vea el número
+   * correcto antes de pedirlo.
+   */
+  const aCobrar = Number(sale?.saldoPendiente) || Number(sale?.total) || 0;
+
+  async function abrirCobro() {
+    setPayError("");
     try {
-      await updateSaleStatus(id, "pagado", medioPago);
+      const m = await fetchPaymentMethods({ soloActivos: true });
+      setMetodos(m);
+      setPagos(m.length ? [{ paymentMethodId: m[0].id, monto: aCobrar, ajusteManual: "" }] : []);
+      setPayModal(true);
+    } catch {
+      setPayError("No se pudieron cargar los medios de pago.");
+      setPayModal(true);
+    }
+  }
+
+  async function confirmarCobro() {
+    setBusy(true); setPayError("");
+    try {
+      await cobrarSale(id, lineasParaApi(pagos, metodos, aCobrar));
       setPayModal(false);
       await load();
+    } catch (e) {
+      setPayError(e.response?.data?.message || "No se pudo cobrar la venta.");
     } finally {
       setBusy(false);
     }
@@ -92,8 +122,14 @@ export default function SaleDetailPage() {
           <div className="flex items-center gap-2 flex-wrap">
             <span className={`badge ${ESTADO_BADGE[sale.estado]}`}>{sale.estado}</span>
             {sale.esMayorista && <span className="badge badge-ok">Mayorista</span>}
+            {/* Fiada: hay un cliente que debe esta venta hasta que se cobre. */}
+            {sale.condicionPago === "cuenta_corriente" && (
+              <span className="badge badge-low"><NotebookPen size={12} /> Fiada</span>
+            )}
             {sale.tipo === "venta" && sale.estado === "pendiente" && (
-              <button className="btn-accent" onClick={() => setPayModal(true)} disabled={busy}><CheckCircle2 size={15} /> Marcar cobrada</button>
+              <button className="btn-accent" onClick={abrirCobro} disabled={busy}>
+                <CheckCircle2 size={15} /> Cobrar {formatCurrency(aCobrar)}
+              </button>
             )}
             {sale.tipo === "cotizacion" && (
               <button className="btn-ghost" onClick={handleConvertQuote} disabled={busy}><RefreshCw size={15} /> Convertir a venta</button>
@@ -134,6 +170,12 @@ export default function SaleDetailPage() {
             <div className="flex justify-between"><span className="text-ink-600">Subtotal</span><span>{formatCurrency(sale.subtotal)}</span></div>
             {sale.descuentoPct > 0 && <div className="flex justify-between"><span className="text-ink-600">Descuento ({sale.descuentoPct}%)</span><span>-{formatCurrency(sale.descuento)}</span></div>}
             <div className="flex justify-between font-display text-base font-semibold text-ink-950"><span>Total</span><span>{formatCurrency(sale.total)}</span></div>
+            {Number(sale.saldoPendiente) > 0 && (
+              <div className="flex justify-between text-brick-500">
+                <span>Pendiente de cobro</span>
+                <span className="font-medium">{formatCurrency(sale.saldoPendiente)}</span>
+              </div>
+            )}
           </div>
         </Card>
 
@@ -152,32 +194,90 @@ export default function SaleDetailPage() {
             <dl className="space-y-2 text-sm">
               <Field label="Empleado" value={sale.empleado ? `${sale.empleado.nombre} ${sale.empleado.apellido}` : "—"} />
               <Field label="Local" value={sale.local?.nombre || "—"} />
-              <Field label="Medio de pago" value={sale.medioPago || "—"} />
               <Field label="Notas" value={sale.notas || "—"} />
             </dl>
+
+            {/*
+              Desglose del cobro. Con pago combinado el campo `medioPago` sólo
+              dice "Efectivo + Transferencia", que no alcanza para saber cuánto
+              entró por cada uno ni para cuadrar la caja.
+            */}
+            <p className="mb-2 mt-4 font-display text-sm font-semibold text-ink-950">Cobro</p>
+            {sale.pagos?.length ? (
+              <div className="space-y-2 text-sm">
+                {sale.pagos.map((p) => (
+                  <div key={p.id} className="flex items-baseline justify-between gap-3">
+                    <span className="flex items-center gap-2">
+                      <span className={`badge ${medioPagoBadge(p.nombre)}`}>{p.nombre}</span>
+                      {Number(p.ajusteMonto) !== 0 && (
+                        <span className="text-xs text-ink-500">
+                          {formatCurrency(p.monto)} {Number(p.ajusteMonto) > 0 ? "+" : "−"} {p.ajustePct}%
+                        </span>
+                      )}
+                    </span>
+                    <span className="font-medium tabular-nums text-ink-950">{formatCurrency(p.montoFinal)}</span>
+                  </div>
+                ))}
+                {Number(sale.recargoPagos) !== 0 && (
+                  <div className="flex items-baseline justify-between gap-3 border-t border-ink-100 pt-2">
+                    <span className="text-ink-600">Total cobrado</span>
+                    <span className="font-semibold tabular-nums text-ink-950">
+                      {formatCurrency(sale.totalCobrado || sale.total)}
+                    </span>
+                  </div>
+                )}
+              </div>
+            ) : sale.condicionPago === "cuenta_corriente" && sale.estado === "pendiente" ? (
+              /* Fiada sin cobrar: todavía no hay medio de pago que mostrar,
+                 porque se elige recién al cobrarla. */
+              <p className="text-sm text-ink-600">
+                Fiada — sin cobrar. El medio de pago se define al cobrarla.
+              </p>
+            ) : (
+              <p className="text-sm text-ink-600">
+                {sale.medioPago ? (
+                  <span className={`badge ${medioPagoBadge(sale.medioPago)}`}>{sale.medioPago}</span>
+                ) : "—"}
+              </p>
+            )}
+            {!sale.stockDescontado && sale.tipo === "venta" && sale.estado !== "cancelado" && (
+              <p className="mt-3 rounded-md bg-paper-100 px-3 py-2 text-xs text-ink-600">
+                La mercadería todavía no salió del stock: sale al cobrar la venta.
+              </p>
+            )}
           </Card>
         </div>
       </div>
 
       <Modal open={payModal} onClose={() => setPayModal(false)} title={`Cobrar venta ${sale.numero}`}>
         <div className="space-y-4">
+          {payError && <p className="rounded-md bg-brick-50 px-3 py-2 text-sm text-brick-500">{payError}</p>}
+
           <p className="text-sm text-ink-600">
-            Total a cobrar: <span className="font-medium text-ink-950">{formatCurrency(sale.total)}</span>. Al confirmar se descuenta el stock de los productos vendidos.
+            A cobrar: <span className="font-medium text-ink-950">{formatCurrency(aCobrar)}</span>
+            {aCobrar < Number(sale.total) && (
+              <span className="text-ink-500"> · ya pagó {formatCurrency(Number(sale.total) - aCobrar)} a cuenta</span>
+            )}
+            {!sale.stockDescontado && ". Al confirmar sale el stock de los productos vendidos."}
           </p>
-          <div>
-            <label className="label">Medio de pago</label>
-            <select className="input" value={medioPago} onChange={(e) => setMedioPago(e.target.value)}>
-              <option value="efectivo">Efectivo</option>
-              <option value="transferencia">Transferencia</option>
-              <option value="débito">Débito</option>
-              <option value="crédito">Crédito</option>
-              <option value="mercadopago">MercadoPago</option>
-              <option value="cheque">Cheque</option>
-            </select>
-          </div>
+
+          {sale.condicionPago === "cuenta_corriente" && sale.cliente && (
+            <p className="rounded-md bg-paper-100 px-3 py-2 text-xs text-ink-700">
+              Cobrar esta venta cancela la deuda de {sale.cliente.nombre} {sale.cliente.apellido || ""}.
+            </p>
+          )}
+
+          {metodos.length === 0 ? (
+            <p className="text-sm text-ink-500">No hay medios de pago cargados.</p>
+          ) : (
+            <PaymentSplit metodos={metodos} total={aCobrar} lineas={pagos} onChange={setPagos} />
+          )}
+
           <div className="flex justify-end gap-2">
             <button className="btn-ghost" onClick={() => setPayModal(false)}>Cancelar</button>
-            <button className="btn-accent" onClick={markAsPaid} disabled={busy}>{busy ? "Cobrando…" : "Confirmar cobro"}</button>
+            <button className="btn-accent" onClick={confirmarCobro} disabled={busy || metodos.length === 0}>
+              {busy ? "Cobrando…" : `Cobrar ${formatCurrency(calcularTotales(pagos, metodos, aCobrar).totalCobro)}`}
+            </button>
           </div>
         </div>
       </Modal>

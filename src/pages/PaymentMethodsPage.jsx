@@ -88,6 +88,10 @@ export default function PaymentMethodsPage() {
           Si el cliente reparte el pago entre varios, no se aplica ninguno automáticamente —
           aunque el cajero puede cargarlo a mano en el momento del cobro.
         </p>
+        <p className="mt-2 text-sm text-ink-700">
+          Fiar no es un medio de pago: es una condición de la venta que se elige en el punto
+          de venta. Cualquiera de estos medios sirve después para cobrar lo fiado.
+        </p>
       </Card>
 
       {error && <p className="mb-4 rounded-md bg-brick-50 px-3 py-2 text-sm text-brick-500">{error}</p>}

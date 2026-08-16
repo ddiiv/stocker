@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import {
   ScanLine, Trash2, Plus, Minus, XCircle, ShoppingCart,
-  Receipt, Loader2, UserCircle2,
+  Receipt, Loader2, UserCircle2, NotebookPen,
 } from "lucide-react";
 import { scanProduct } from "../services/productService";
 import { createSale, printSaleTicket } from "../services/salesService";
@@ -15,6 +15,7 @@ import { PageHeader, Card } from "../components/ui/Layout";
 import { useAuth } from "../context/AuthContext";
 import { esAdministradorTotal } from "../utils/permissions";
 import PaymentSplit, { lineasParaApi, calcularTotales } from "../components/sales/PaymentSplit";
+import AvisoCredito from "../components/sales/AvisoCredito";
 // Mismo criterio que el backend: 3 o más unidades es precio mayorista.
 const UMBRAL_MAYORISTA = 3;
 
@@ -37,6 +38,10 @@ export default function PosPage() {
   const [clientes, setClientes] = useState([]);
   const [clientId, setClientId] = useState("");
   const [buscarCliente, setBuscarCliente] = useState("");
+  // "contado" se cobra ahora; "cuenta_corriente" se fía y se cobra después.
+  const [condicionPago, setCondicionPago] = useState("contado");
+  // Fiar no obliga a entregar: se puede dejar la mercadería señada en el local.
+  const [seLoLleva, setSeLoLleva] = useState(true);
   const [cobrando, setCobrando] = useState(false);
   const [ultimaVenta, setUltimaVenta] = useState(null);
   const [faltaTurno, setFaltaTurno] = useState(false);
@@ -69,14 +74,23 @@ export default function PosPage() {
   const precioDe = (i) => (esMayorista ? i.precioMayorista : i.precioMinorista);
   const total = items.reduce((s, i) => s + precioDe(i) * i.cantidad, 0);
 
+  const esFiado = condicionPago === "cuenta_corriente";
+  const clienteElegido = clientes.find((c) => String(c.id) === String(clientId)) || null;
+
   // El backend rechaza el cobro si los importes no suman el total. Chequearlo
   // acá evita mandar una venta que ya se sabe que va a fallar.
   const sumaPagos = pagos.reduce((s, p) => s + (Number(p.monto) || 0), 0);
   const pagosCuadran = pagos.length === 1 || Math.abs(total - sumaPagos) < 0.02;
-  const puedeCobrar = items.length > 0 && metodos.length > 0 && pagosCuadran && !cobrando;
+  // Fiando no hay medios de pago que cuadrar todavía, pero sí hace falta un
+  // cliente: sin saber quién debe, la deuda no existe.
+  const puedeCobrar = items.length > 0 && !cobrando && (
+    esFiado ? Boolean(clientId) : (metodos.length > 0 && pagosCuadran)
+  );
 
   // El botón muestra lo que hay que pedirle al cliente, recargo incluido.
+  // Fiando no se cobra nada ahora: lo que se anota es el neto de mercadería.
   const { totalCobro } = calcularTotales(pagos, metodos, total);
+  const totalBoton = esFiado ? total : totalCobro;
 
   async function procesarCodigo(codigo) {
     setError("");
@@ -130,18 +144,24 @@ export default function PosPage() {
       const venta = await createSale({
         tipo: "venta",
         fecha: new Date().toISOString().slice(0, 10),
-        // Sin cliente elegido la venta es a consumidor final.
+        // Sin cliente elegido la venta es a consumidor final. Fiando el
+        // backend la rechaza, porque la deuda necesita dueño.
         clientId: clientId ? Number(clientId) : null,
         locationId: locationId || null,
         employeeId: employeeId || null,
-        estado: "pagado",        // en mostrador se cobra en el acto
-        pagos: lineasParaApi(pagos, metodos, total),
+        condicionPago,
+        // Fiada queda pendiente y sin medio de pago: se elige al cobrarla.
+        ...(esFiado
+          ? { descontarStock: seLoLleva }
+          : { estado: "pagado", pagos: lineasParaApi(pagos, metodos, total) }),
         items: items.map((i) => ({ productVariantId: i.id, cantidad: i.cantidad })),
       });
       setUltimaVenta(venta);
       setItems([]);
       setClientId("");
       setBuscarCliente("");
+      setCondicionPago("contado");
+      setSeLoLleva(true);
       if (metodos.length) setPagos([{ paymentMethodId: metodos[0].id, monto: 0, ajusteManual: "" }]);
       inputRef.current?.focus();
     } catch (e) {
@@ -157,16 +177,28 @@ export default function PosPage() {
 
   // ── Pantalla de venta cerrada ───────────────────────────────────
   if (ultimaVenta) {
+    const ventaFiada = ultimaVenta.condicionPago === "cuenta_corriente";
     return (
       <div>
-        <PageHeader title="Venta registrada" subtitle={`Comprobante ${ultimaVenta.numero}`} />
+        <PageHeader
+          title={ventaFiada ? "Venta fiada" : "Venta registrada"}
+          subtitle={`Comprobante ${ultimaVenta.numero}`}
+        />
         <Card className="mx-auto max-w-md text-center">
           {/* Lo cobrado, no el neto: con recargo son importes distintos y el
-              cajero necesita ver el que le pidió al cliente. */}
-          <p className="font-display text-4xl font-semibold text-teal-600">
-            {formatCurrency(ultimaVenta.totalCobrado || ultimaVenta.total)}
+              cajero necesita ver el que le pidió al cliente. Fiando no entró
+              nada, así que se muestra lo que quedó anotado como deuda. */}
+          <p className={`font-display text-4xl font-semibold ${ventaFiada ? "text-brass-700" : "text-teal-600"}`}>
+            {formatCurrency(ventaFiada ? ultimaVenta.total : (ultimaVenta.totalCobrado || ultimaVenta.total))}
           </p>
-          <p className="mt-1 text-sm text-ink-600">{ultimaVenta.medioPago}</p>
+          {ventaFiada ? (
+            <p className="mt-1 text-sm text-ink-600">
+              Queda en la cuenta de {ultimaVenta.cliente?.nombre} {ultimaVenta.cliente?.apellido || ""}.
+              El medio de pago se elige al cobrarla.
+            </p>
+          ) : (
+            <p className="mt-1 text-sm text-ink-600">{ultimaVenta.medioPago}</p>
+          )}
           {Number(ultimaVenta.recargoPagos) !== 0 && (
             <p className="mt-1 text-xs text-ink-500">
               Mercadería {formatCurrency(ultimaVenta.total)}
@@ -294,8 +326,58 @@ export default function PosPage() {
           </Card>
 
           <Card>
-            <label className="label">Cómo paga</label>
-            {metodos.length === 0 ? (
+            <label className="label">Condición</label>
+            <div className="mb-3 grid grid-cols-2 gap-1 rounded-md bg-paper-100 p-1">
+              {[
+                { valor: "contado", texto: "Cobra ahora" },
+                { valor: "cuenta_corriente", texto: "Fiado" },
+              ].map((op) => (
+                <button
+                  key={op.valor}
+                  type="button"
+                  onClick={() => setCondicionPago(op.valor)}
+                  className={`rounded px-3 py-1.5 text-sm font-medium transition-colors ${
+                    condicionPago === op.valor
+                      ? "bg-paper-50 text-ink-950 shadow-sm"
+                      : "text-ink-600 hover:text-ink-900"
+                  }`}
+                >
+                  {op.texto}
+                </button>
+              ))}
+            </div>
+
+            {/*
+              Fiando no se elige medio de pago: todavía no se sabe con qué va a
+              pagar el cliente. Se elige al cobrar la venta, con las mismas
+              combinaciones y recargos de siempre.
+            */}
+            {esFiado ? (
+              <div className="space-y-3">
+                <AvisoCredito cliente={clienteElegido} monto={total} />
+
+                <label className="flex items-start gap-2 text-sm text-ink-700">
+                  <input
+                    type="checkbox" className="mt-0.5"
+                    checked={seLoLleva}
+                    onChange={(e) => setSeLoLleva(e.target.checked)}
+                  />
+                  <span>
+                    Se lleva la mercadería ahora
+                    <span className="block text-xs text-ink-500">
+                      Descuenta el stock al registrar la venta. Destildalo si queda
+                      señada en el local: el stock sale recién al cobrarla.
+                    </span>
+                  </span>
+                </label>
+
+                <p className="flex items-start gap-1.5 text-xs text-ink-500">
+                  <NotebookPen size={13} className="mt-0.5 shrink-0" />
+                  El medio de pago se elige al cobrarla, desde el detalle de la venta
+                  o desde la cuenta corriente del cliente.
+                </p>
+              </div>
+            ) : metodos.length === 0 ? (
               <p className="text-xs text-ink-500">
                 No hay medios de pago cargados. Pedile al dueño que configure al menos uno.
               </p>
@@ -304,8 +386,10 @@ export default function PosPage() {
             )}
           </Card>
 
-          <Card>
-            <label className="label">Cliente</label>
+          <Card className={esFiado && !clientId ? "border-brick-300" : ""}>
+            <label className="label">
+              Cliente {esFiado && <span className="text-brick-500">· obligatorio para fiar</span>}
+            </label>
             {clientId ? (
               <div className="flex items-center justify-between rounded-md border border-line bg-paper-100 px-3 py-2">
                 <span className="text-sm text-ink-900">
@@ -343,7 +427,10 @@ export default function PosPage() {
                   </div>
                 )}
                 <p className="mt-2 flex items-center gap-1.5 text-xs text-ink-500">
-                  <UserCircle2 size={13} /> Sin elegir cliente se registra como consumidor final.
+                  <UserCircle2 size={13} />
+                  {esFiado
+                    ? "No se puede fiar sin saber quién debe."
+                    : "Sin elegir cliente se registra como consumidor final."}
                 </p>
               </>
             )}
@@ -386,7 +473,9 @@ export default function PosPage() {
           >
             {cobrando
               ? <><Loader2 size={16} className="animate-spin" /> Registrando…</>
-              : <>Cobrar {formatCurrency(totalCobro)}</>}
+              : esFiado
+                ? <><NotebookPen size={16} /> Fiar {formatCurrency(totalBoton)}</>
+                : <>Cobrar {formatCurrency(totalBoton)}</>}
           </button>
           {items.length > 0 && (
             <button className="btn-ghost w-full justify-center text-xs text-brick-500" onClick={() => setItems([])}>

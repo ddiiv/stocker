@@ -31,3 +31,24 @@ export async function lookupCuit(cuit) {
     return null;
   }
 }
+
+// ─── Cuenta corriente ────────────────────────────────────────────
+export async function fetchCuentas(soloDeudores = true) {
+  const { data } = await http.get("/clients/cuentas", { params: { soloDeudores } });
+  return data;
+}
+
+export async function fetchCuenta(clientId) {
+  const { data } = await http.get(`/clients/${clientId}/cuenta`);
+  return data;
+}
+
+export async function updateCuentaConfig(clientId, payload) {
+  const { data } = await http.put(`/clients/${clientId}/cuenta`, payload);
+  return data;
+}
+
+export async function registrarPagoCuenta(clientId, payload) {
+  const { data } = await http.post(`/clients/${clientId}/cuenta/pagos`, payload);
+  return data;
+}

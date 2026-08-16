@@ -43,17 +43,19 @@ export default function ForgotPasswordPage() {
     setReqLoading(true);
     try {
       const res = await forgotPassword({ email: emailNorm, cuit: cuitDigits });
-      // El backend nos confirma con qué email quedó registrado (útil para el paso 2)
-      if (res?.email) setEmail(res.email);
-      setSentInfo(res?.message || "Código enviado. Revisá tu email.");
+      /*
+       * El backend contesta lo mismo coincidan o no los datos: si distinguiera
+       * los casos, cualquiera podría averiguar qué cuentas existen probando
+       * pares email/CUIT. Por eso ya no devuelve el email registrado ni un
+       * mensaje distinto, y acá se avanza siempre al paso del código.
+       *
+       * Quien se equivocó de datos no va a recibir nada y lo va a notar al no
+       * llegarle el mail, con la opción de volver atrás y reintentar.
+       */
+      setSentInfo(res?.message || "Si los datos coinciden, te enviamos un código al email registrado.");
       setStep("code");
     } catch (err) {
-      const status = err.response?.status;
-      if (status === 404) {
-        setReqError("Email o CUIT incorrectos. Verificá que coincidan con los del registro.");
-      } else {
-        setReqError(err.response?.data?.message || "No se pudo procesar la solicitud.");
-      }
+      setReqError(err.response?.data?.message || "No se pudo procesar la solicitud.");
     } finally { setReqLoading(false); }
   }
 

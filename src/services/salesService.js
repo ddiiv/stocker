@@ -23,6 +23,18 @@ export async function updateSaleStatus(id, estado, medioPago) {
   return data;
 }
 
+/**
+ * Cobra una venta que quedó abierta (fiada o pendiente).
+ *
+ * Va por su propio endpoint y no por el cambio de estado porque acá sí se
+ * registra con qué se pagó: el reparto entre medios, sus recargos, y la
+ * cancelación de la deuda si la venta era fiada.
+ */
+export async function cobrarSale(id, pagos) {
+  const { data } = await http.post(`/sales/${id}/cobrar`, { pagos });
+  return data;
+}
+
 export async function convertQuote(id) {
   const { data } = await http.post(`/sales/cotizacion/${id}/convertir`);
   return data;

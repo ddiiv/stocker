@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Plus, Search, UserCircle2, Trash2, PencilLine, RefreshCw, BadgeCheck, AlertCircle } from "lucide-react";
 import { fetchClients, createClient, updateClient, deleteClient, lookupCuit } from "../services/clientService";
+import ClientTabs from "../components/clients/ClientTabs";
 import { PageHeader, EmptyState, Card } from "../components/ui/Layout";
 import Modal from "../components/ui/Modal";
 import PhoneInput from "../components/ui/PhoneInput";
@@ -58,6 +59,7 @@ export default function ClientsPage() {
           </button>
         }
       />
+      <ClientTabs />
 
       <div className="mb-5 grid gap-4 sm:grid-cols-3">
         <Card><p className="text-xs uppercase tracking-wide text-ink-600">Total clientes</p><p className="mt-2 font-display text-2xl font-semibold">{clients.length}</p></Card>

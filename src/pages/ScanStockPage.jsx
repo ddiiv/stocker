@@ -7,6 +7,7 @@ import { useBarcodeScanner } from "../hooks/useBarcodeScanner";
 import { PageHeader, Card } from "../components/ui/Layout";
 import StockTabs from "../components/stock/StockTabs";
 import ScannerStatus from "../components/scanner/ScannerStatus";
+import CameraScanner, { camaraDisponible } from "../components/scanner/CameraScanner";
 
 const MODOS = [
   { value: "agregar", label: "Agregar",  icon: Plus,  desc: "Suma al stock actual. Para recepción de mercadería.", color: "teal" },
@@ -128,6 +129,14 @@ export default function ScanStockPage() {
               </strong>
               {procesando && <span className="ml-2 text-xs text-ink-500">procesando…</span>}
             </p>
+
+            {/* Alternativa para el depósito: ahí no hay PC con lector USB,
+                pero el celular sirve de lector con su propia cámara. */}
+            {camaraDisponible() && (
+              <div className="mt-3 border-t border-ink-100 pt-3">
+                <CameraScanner onScan={procesarCodigo} activo={!procesando} />
+              </div>
+            )}
 
             <form onSubmit={submitManual} className="mt-3">
               <label className="label">O ingresá el código a mano</label>

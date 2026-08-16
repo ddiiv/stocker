@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { Plus, ShoppingCart, CheckCircle2 } from "lucide-react";
-import { fetchSales, updateSaleStatus } from "../services/salesService";
+import { Plus, ShoppingCart, CheckCircle2, NotebookPen } from "lucide-react";
+import { fetchSales, cobrarSale } from "../services/salesService";
+import { fetchPaymentMethods } from "../services/paymentMethodService";
+import PaymentSplit, { lineasParaApi, calcularTotales } from "../components/sales/PaymentSplit";
 import { formatCurrency, formatDate } from "../utils/formatters";
 import { PageHeader, EmptyState } from "../components/ui/Layout";
 import Modal from "../components/ui/Modal";
@@ -25,8 +27,14 @@ export default function SalesPage() {
   const [loading, setLoading] = useState(true);
   const [tipo, setTipo] = useState("");
   const [payingSale, setPayingSale] = useState(null);
-  const [medioPago, setMedioPago] = useState("efectivo");
+  const [metodos, setMetodos] = useState([]);
+  const [pagos, setPagos] = useState([]);
+  const [payError, setPayError] = useState("");
   const [busy, setBusy] = useState(false);
+
+  // Lo que falta cobrar de la venta abierta, que no siempre es su total: el
+  // cliente pudo haber pagado una parte a cuenta desde su ficha.
+  const aCobrar = Number(payingSale?.saldoPendiente) || Number(payingSale?.total) || 0;
 
   async function load() {
     setLoading(true);
@@ -37,13 +45,28 @@ export default function SalesPage() {
 
   useEffect(() => { load(); }, [tipo]);
 
-  async function handleMarkPaid() {
-    if (!payingSale) return;
-    setBusy(true);
+  async function abrirCobro(venta) {
+    setPayError("");
+    setPayingSale(venta);
+    const pendiente = Number(venta.saldoPendiente) || Number(venta.total) || 0;
     try {
-      await updateSaleStatus(payingSale.id, "pagado", medioPago);
+      const m = await fetchPaymentMethods({ soloActivos: true });
+      setMetodos(m);
+      setPagos(m.length ? [{ paymentMethodId: m[0].id, monto: pendiente, ajusteManual: "" }] : []);
+    } catch {
+      setPayError("No se pudieron cargar los medios de pago.");
+    }
+  }
+
+  async function handleCobro() {
+    if (!payingSale) return;
+    setBusy(true); setPayError("");
+    try {
+      await cobrarSale(payingSale.id, lineasParaApi(pagos, metodos, aCobrar));
       setPayingSale(null);
       await load();
+    } catch (e) {
+      setPayError(e.response?.data?.message || "No se pudo cobrar la venta.");
     } finally {
       setBusy(false);
     }
@@ -124,6 +147,9 @@ export default function SalesPage() {
                   <td className="px-4 py-3">
                     {s.medioPago ? (
                       <span className={`badge ${medioPagoBadge(s.medioPago)}`}>{s.medioPago}</span>
+                    ) : s.condicionPago === "cuenta_corriente" ? (
+                      /* Fiada: todavía no hay medio, pero sí hay alguien que debe. */
+                      <span className="badge badge-low"><NotebookPen size={12} /> Fiada</span>
                     ) : (
                       <span className="text-ink-400">—</span>
                     )}
@@ -141,7 +167,7 @@ export default function SalesPage() {
                       <button
                         className="btn-ghost px-2 py-1.5 text-xs"
                         title="Marcar como cobrada"
-                        onClick={() => { setPayingSale(s); setMedioPago("efectivo"); }}
+                        onClick={() => abrirCobro(s)}
                       >
                         <CheckCircle2 size={14} /> Cobrar
                       </button>
@@ -156,23 +182,30 @@ export default function SalesPage() {
 
       <Modal open={!!payingSale} onClose={() => setPayingSale(null)} title={`Cobrar venta ${payingSale?.numero || ""}`}>
         <div className="space-y-4">
+          {payError && <p className="rounded-md bg-brick-50 px-3 py-2 text-sm text-brick-500">{payError}</p>}
+
           <p className="text-sm text-ink-600">
-            Total a cobrar: <span className="font-medium text-ink-950">{formatCurrency(payingSale?.total || 0)}</span>. Al confirmar se descuenta el stock de los productos vendidos.
+            A cobrar: <span className="font-medium text-ink-950">{formatCurrency(aCobrar)}</span>
+            {!payingSale?.stockDescontado && ". Al confirmar sale el stock de los productos vendidos."}
           </p>
-          <div>
-            <label className="label">Medio de pago</label>
-            <select className="input" value={medioPago} onChange={(e) => setMedioPago(e.target.value)}>
-              <option value="efectivo">Efectivo</option>
-              <option value="transferencia">Transferencia</option>
-              <option value="débito">Débito</option>
-              <option value="crédito">Crédito</option>
-              <option value="mercadopago">MercadoPago</option>
-              <option value="cheque">Cheque</option>
-            </select>
-          </div>
+
+          {payingSale?.condicionPago === "cuenta_corriente" && payingSale?.cliente && (
+            <p className="rounded-md bg-paper-100 px-3 py-2 text-xs text-ink-700">
+              Cancela la deuda de {payingSale.cliente.nombre} {payingSale.cliente.apellido || ""}.
+            </p>
+          )}
+
+          {metodos.length === 0 ? (
+            <p className="text-sm text-ink-500">No hay medios de pago cargados.</p>
+          ) : (
+            <PaymentSplit metodos={metodos} total={aCobrar} lineas={pagos} onChange={setPagos} />
+          )}
+
           <div className="flex justify-end gap-2">
             <button className="btn-ghost" onClick={() => setPayingSale(null)}>Cancelar</button>
-            <button className="btn-accent" onClick={handleMarkPaid} disabled={busy}>{busy ? "Cobrando…" : "Confirmar cobro"}</button>
+            <button className="btn-accent" onClick={handleCobro} disabled={busy || metodos.length === 0}>
+              {busy ? "Cobrando…" : `Cobrar ${formatCurrency(calcularTotales(pagos, metodos, aCobrar).totalCobro)}`}
+            </button>
           </div>
         </div>
       </Modal>
