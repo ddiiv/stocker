@@ -26,7 +26,7 @@ const VARIABLES = [
   {
     clave: "MP_WEBHOOK_URL",
     que: "A dónde avisa Mercado Pago que un pago se acreditó. Sin esto hay que aprobar cada cobro a mano.",
-    donde: "Es tu backend: https://TU-BACKEND/api/billing/webhook/mercadopago",
+    donde: "El dominio PÚBLICO de tu app: https://tu-app.up.railway.app/api/billing/webhook/mercadopago",
   },
   {
     clave: "MP_WEBHOOK_SECRET",
@@ -35,8 +35,8 @@ const VARIABLES = [
   },
   {
     clave: "MP_BACK_URL",
-    que: "A dónde vuelve el cliente después de pagar.",
-    donde: "https://TU-APP/cuenta/suscripcion",
+    que: "A dónde vuelve el cliente después de pagar. Con localhost ve un error de conexión.",
+    donde: "https://tu-app.up.railway.app/cuenta/suscripcion",
   },
 ];
 
@@ -136,11 +136,22 @@ export default function CobrosPage() {
 
             {mp.advertencias?.length > 0 && (
               <div className="mt-4 space-y-1.5 border-t border-line pt-4">
-                {mp.advertencias.map((a, i) => (
-                  <p key={i} className="flex items-start gap-2 text-xs text-warn">
-                    <AlertTriangle size={13} className="mt-0.5 shrink-0" /> {a}
-                  </p>
-                ))}
+                {mp.advertencias.map((a, i) => {
+                  /*
+                   * Una URL a localhost no es una advertencia: el pago entra y
+                   * la cuenta no se activa, sin ningún error en el medio. Se
+                   * pinta como problema para que no se lea como un detalle.
+                   */
+                  const grave = /localhost|vacía|https en producción/i.test(a);
+                  return (
+                    <p key={i} className={`flex items-start gap-2 text-xs ${grave ? "text-crit" : "text-warn"}`}>
+                      {grave
+                        ? <XCircle size={13} className="mt-0.5 shrink-0" />
+                        : <AlertTriangle size={13} className="mt-0.5 shrink-0" />}
+                      {a}
+                    </p>
+                  );
+                })}
               </div>
             )}
           </Card>
