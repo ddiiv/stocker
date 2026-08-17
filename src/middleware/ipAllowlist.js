@@ -75,9 +75,20 @@ const restringirBackoffice = (req, res, next) => {
 
   if (permitida) return next();
 
-  // Se registra la IP para poder agregarla si es la del operador que se mudó,
-  // que es el motivo real de casi todos estos rechazos.
-  log.warn('backoffice', 'acceso rechazado por IP', { ip, ruta: req.originalUrl });
+  /*
+   * Se registra la IP rechazada: el motivo real de casi todos estos rechazos es
+   * que el operador cambió de dirección, y para agregarla hay que verla.
+   *
+   * Si además parece una IP interna, el problema no es la lista sino
+   * TRUST_PROXY_HOPS: el backend está leyendo el salto equivocado de la cadena
+   * y ninguna lista va a coincidir nunca. Se dice, porque desde afuera esto se
+   * ve igual que "mi IP no está autorizada" y se pierde mucho tiempo ahí.
+   */
+  const pareceInterna = /^(10\.|127\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|fd|fe80:|::1$)/i.test(ip);
+  log.warn('backoffice', 'acceso rechazado por IP', {
+    ip, ruta: req.originalUrl,
+    ...(pareceInterna ? { aviso: 'la IP resuelta es interna: revisá TRUST_PROXY_HOPS, se está leyendo el salto equivocado' } : {}),
+  });
   return res.status(404).json({ message: 'No encontrado.' });
 };
 

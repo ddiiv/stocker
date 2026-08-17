@@ -44,10 +44,36 @@ Son **exactos**. Antes se aceptaba cualquier subdominio de `railway.app` y
 hacerle pedidos con credenciales a esta API. Ya no: lo que no está en estas
 variables no entra.
 
+### Cuántos proxies hay delante
+
+```bash
+TRUST_PROXY_HOPS=2
+```
+
+**Ponelo antes que `BACKOFFICE_IPS`, o la lista te deja afuera.**
+
+Express usa este número para saber cuál de las direcciones de `X-Forwarded-For`
+es el cliente. El armado de este proyecto tiene dos saltos —edge de Railway →
+servicio del front → backend— así que con el valor por defecto de 1 el backend
+lee la IP del edge en vez de la tuya, y ninguna lista de IPs coincide nunca.
+El resultado sería un 404 permanente sin forma de entrar a arreglarlo.
+
+Para comprobarlo, desde tu navegador:
+
+```
+https://TU-BACKOFFICE/api/mi-ip
+```
+
+Si devuelve tu IP pública, el número está bien. Si devuelve algo que empieza en
+`fd`, `10.`, `100.64.` o `192.168.`, está leyendo un salto interno: subí el
+número. El backend además lo avisa en los logs cuando rechaza una IP que parece
+interna, porque desde afuera eso se ve igual que "mi IP no está autorizada" y se
+pierde mucho tiempo ahí.
+
 ### Acceso al backoffice
 
 ```bash
-BACKOFFICE_IPS=200.45.12.34, 2803:9800:1234::/48
+BACKOFFICE_IPS=2800:2141:e000::/48
 ```
 
 Direcciones sueltas o CIDR, separadas por coma, IPv4 e IPv6.
@@ -56,10 +82,21 @@ Direcciones sueltas o CIDR, separadas por coma, IPv4 e IPv6.
 dejar a nadie afuera de su propio panel en el primer deploy, pero el arranque lo
 grita en los logs y la pantalla de Seguridad lo muestra en rojo.
 
-Para saber qué IP cargar: entrá al panel sin la variable y mirá los logs, o
-`curl ifconfig.me`. Una IP doméstica cambia — si se te corta el acceso, es lo
-primero a revisar. Por eso el segundo factor sigue siendo obligatorio: la IP es
-una capa, no la única.
+Para saber qué IP cargar, abrí `https://TU-BACKOFFICE/api/mi-ip` desde el
+navegador con el que vas a entrar.
+
+**Cargá un prefijo, no una dirección suelta.** Una IPv6 doméstica completa
+(`/128`) cambia cada vez que el router renegocia, y cada cambio te deja afuera.
+El prefijo que te asigna el proveedor es estable: de
+`2800:2141:e000:88f:8118:6819:ae53:3b89` conviene cargar
+`2800:2141:e000::/48`, que cubre todo el bloque.
+
+Aun así una IP doméstica se puede mover. Si se te corta el acceso, es lo primero
+a revisar — y es la razón de que el segundo factor siga siendo obligatorio: la
+IP es una capa, no la única.
+
+`BACKOFFICE_IPS` se lee en el **backend**, que es donde corre el control.
+Cargarla en el servicio del backoffice no hace nada.
 
 Cuando una IP queda afuera, la API responde **404 y no 403**. Un 403 le confirma
 a quien está escaneando que el backoffice está en esa URL y que sólo le falta
@@ -120,16 +157,30 @@ Los `.pem` van en base64 en la variable, nunca como archivo en el repo:
 
 ## Variables de los frontends
 
-Los tres iguales, cambiando el puerto:
+Cada front necesita saber a dónde reenviar `/api`. La forma más corta y la que
+no depende de que nada resuelva:
 
 ```bash
-BACKEND_DOMAIN=backend.railway.internal
-BACKEND_PORT=3000
+API_INTERNAL_URL=http://<servicio-backend>.railway.internal:3000
 ```
 
-`BACKEND_PORT` es la misma variable que usa el backend para elegir su puerto,
-así que los dos coinciden solos. Es lo que evita el desencuentro clásico de
-"escucha en un puerto y le hablo a otro".
+La alternativa es `BACKEND_DOMAIN` + `BACKEND_PORT`, que se arman solos si
+apuntan al servicio del backend.
+
+**Cuidado con las referencias anidadas de Railway.** Una variable compartida que
+a su vez referencia a otro servicio —`shared.BACKEND_DOMAIN` definida como
+`${{svc.RAILWAY_PRIVATE_DOMAIN}}`, y el servicio usando `${{shared.BACKEND_DOMAIN}}`—
+son dos niveles de indirección y puede llegar vacía. Cuando pasa, el front no
+tiene a dónde reenviar. Antes caía a `localhost:3000` en silencio y el síntoma
+era un `ECONNREFUSED` que no decía nada sobre la causa; ahora el servicio no
+arranca y el log dice qué miró y qué encontró.
+
+Si tenés dudas, referenciá el servicio directo en vez de pasar por `shared`:
+
+```bash
+BACKEND_DOMAIN=${{stockerback.RAILWAY_PRIVATE_DOMAIN}}
+BACKEND_PORT=${{stockerback.PORT}}
+```
 
 El backoffice acepta además `BACKOFFICE_PORT` si querés fijar el suyo.
 

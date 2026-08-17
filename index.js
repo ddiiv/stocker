@@ -105,9 +105,26 @@ app.use(cors({
   maxAge: 86400,
 }));
 
-// Detrás del proxy de Railway: sin esto, req.ip devuelve la IP del proxy y
-// las cookies Secure no se emiten porque Express cree que la conexión es http.
-app.set('trust proxy', 1);
+/*
+ * Cuántos proxies hay delante.
+ *
+ * Express usa este número para saber cuál de las direcciones de X-Forwarded-For
+ * es el cliente: descarta las N de la derecha y toma la siguiente. Si el número
+ * no coincide con la realidad, `req.ip` devuelve la IP de un proxy — y con eso
+ * la restricción por IP del backoffice deja afuera al operador correcto y deja
+ * entrar a cualquiera que la comparta.
+ *
+ * Cuántos hay depende del despliegue:
+ *
+ *   1 → el navegador le pega directo al backend (edge de Railway solamente).
+ *   2 → el navegador le pega a un frontend que reenvía /api al backend, que es
+ *       como está armado esto: edge → servicio del front → backend.
+ *
+ * Se deja configurable porque no se puede adivinar desde acá, y se puede
+ * comprobar con GET /api/mi-ip: si devuelve tu IP pública, el número está bien.
+ */
+const HOPS = Number(process.env.TRUST_PROXY_HOPS || 1);
+app.set('trust proxy', Number.isFinite(HOPS) && HOPS >= 0 ? HOPS : 1);
 // No anunciar el framework: le ahorra a un atacante saber contra qué apuntar.
 app.disable('x-powered-by');
 
@@ -169,6 +186,31 @@ app.use('/storage/pdfs', express.static(pdfDir));
 
 // ── Rutas ─────────────────────────────────────────────────────────
 app.get('/', (req, res) => res.json({ message: 'Stocker API v2 ✔', status: 'ok' }));
+
+/*
+ * GET /api/mi-ip — qué IP ve el backend del que pregunta.
+ *
+ * Existe por una razón concreta: la restricción por IP del backoffice se
+ * configura a ciegas, y si el número de proxies no está bien, la lista deja
+ * afuera al operador con un 404 y sin forma de entrar a arreglarlo. Esto
+ * permite verificar el valor ANTES de cargarlo.
+ *
+ * Público a propósito: sólo le cuenta a cada uno su propia IP, que ya conoce.
+ * La cadena completa —que incluye direcciones internas— sólo se muestra con
+ * MOSTRAR_CADENA_IP=1, para no publicar detalle de infraestructura de rutina.
+ */
+app.get('/api/mi-ip', (req, res) => {
+  const cadena = String(req.headers['x-forwarded-for'] || '')
+    .split(',').map((s) => s.trim()).filter(Boolean);
+
+  res.json({
+    ip: req.ip,
+    hops: app.get('trust proxy'),
+    saltos: cadena.length,
+    ...(process.env.MOSTRAR_CADENA_IP === '1' ? { cadena } : {}),
+    ayuda: 'Si esta no es tu IP pública, ajustá TRUST_PROXY_HOPS en el backend (1 si el navegador le pega directo, 2 si pasa por el front).',
+  });
+});
 
 /*
  * La superficie sin sesión lleva un cupo más ajustado que el resto.
