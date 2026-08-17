@@ -125,24 +125,44 @@ app.use(cors({
 /*
  * Cuántos proxies hay delante.
  *
- * Express usa este número para saber cuál de las direcciones de X-Forwarded-For
- * es el cliente: descarta las N de la derecha y toma la siguiente. Si el número
- * no coincide con la realidad, `req.ip` devuelve la IP de un proxy — y con eso
- * la restricción por IP del backoffice deja afuera al operador correcto y deja
- * entrar a cualquiera que la comparta.
+ * Express usa este número para elegir cuál de las direcciones de
+ * X-Forwarded-For es el cliente: descarta las N de la derecha y toma la
+ * siguiente. De eso dependen tres cosas: la restricción por IP del backoffice,
+ * el contador de ráfagas y el bloqueo por intentos fallidos.
  *
- * Cuántos hay depende del despliegue:
+ * El número tiene que ser EXACTO, y equivocarse para abajo es mucho menos grave
+ * que para arriba:
  *
- *   1 → el navegador le pega directo al backend (edge de Railway solamente).
- *   2 → el navegador le pega a un frontend que reenvía /api al backend, que es
- *       como está armado esto: edge → servicio del front → backend.
+ *   Demasiado bajo  → se lee la IP de un proxy. La lista de IPs nunca coincide
+ *                     y todos los usuarios comparten un solo contador, así que
+ *                     un atacante puede dejar afuera a todo el mundo. Molesto,
+ *                     pero no abre nada.
  *
- * Se deja configurable porque no se puede adivinar desde acá, y se puede
- * comprobar con GET /api/mi-ip: si devuelve tu IP pública, el número está bien.
+ *   Demasiado alto  → se lee lo que el atacante escribió en la cabecera. Con
+ *                     eso se saltea la lista de IPs y los límites de ráfaga
+ *                     poniendo una dirección inventada. Ese sí es un agujero.
+ *
+ * Por eso NUNCA hay que poner `true` ni un número grande: `trust proxy: true`
+ * toma la primera dirección de la cadena, que es exactamente la que cualquiera
+ * puede inventar. Con un número exacto, las direcciones falsas quedan a la
+ * izquierda de la real y se descartan solas.
+ *
+ * En este proyecto son 2: el edge de Railway y el servicio del front que
+ * reenvía /api. Se puede comprobar en GET /api/mi-ip.
  */
-const HOPS = Number(process.env.TRUST_PROXY_HOPS || 1);
-app.set('trust proxy', Number.isFinite(HOPS) && HOPS >= 0 ? HOPS : 1);
-// No anunciar el framework: le ahorra a un atacante saber contra qué apuntar.
+const TOPE_HOPS = 4;   // más que esto no es un despliegue, es un error de tipeo
+const HOPS_PEDIDOS = Number(process.env.TRUST_PROXY_HOPS || 1);
+
+let HOPS = Number.isInteger(HOPS_PEDIDOS) && HOPS_PEDIDOS >= 0 ? HOPS_PEDIDOS : 1;
+if (HOPS > TOPE_HOPS) {
+  // Se recorta en vez de obedecer: un valor alto por error convierte la
+  // cabecera del cliente en la fuente de la verdad, y eso no puede pasar por
+  // un tipeo. Queda avisado en el arranque.
+  console.warn(`[proxy] TRUST_PROXY_HOPS=${HOPS_PEDIDOS} es demasiado alto y dejaría que el cliente elija su propia IP. Se usa ${TOPE_HOPS}.`);
+  HOPS = TOPE_HOPS;
+}
+app.set('trust proxy', HOPS);
+
 app.disable('x-powered-by');
 
 /*
@@ -337,6 +357,10 @@ async function start() {
       console.log('    Ráfagas .. 60 pedidos cada 2 s por IP');
       console.log(`    Cuerpo máximo .. 1 MB`);
       console.log(`    Proxies delante .. ${app.get('trust proxy')} (TRUST_PROXY_HOPS) · comprobalo en GET /api/mi-ip`);
+      if (!process.env.TRUST_PROXY_HOPS) {
+        console.log('      ↳ sin definir, se usa 1. Si el front reenvía /api al backend son 2,');
+        console.log('        y con 1 la restricción por IP y los límites leen la IP equivocada.');
+      }
 
       /*
        * La lista de CORS efectiva, en el arranque.

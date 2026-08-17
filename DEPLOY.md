@@ -52,11 +52,33 @@ TRUST_PROXY_HOPS=2
 
 **Ponelo antes que `BACKOFFICE_IPS`, o la lista te deja afuera.**
 
-Express usa este número para saber cuál de las direcciones de `X-Forwarded-For`
-es el cliente. El armado de este proyecto tiene dos saltos —edge de Railway →
-servicio del front → backend— así que con el valor por defecto de 1 el backend
-lee la IP del edge en vez de la tuya, y ninguna lista de IPs coincide nunca.
-El resultado sería un 404 permanente sin forma de entrar a arreglarlo.
+Express usa este número para elegir cuál de las direcciones de `X-Forwarded-For`
+es el cliente: descarta las N de la derecha y toma la siguiente. El armado de
+este proyecto tiene dos saltos —edge de Railway → servicio del front → backend—
+así que **2** es el valor correcto.
+
+**Nunca pongas `true` ni un número más alto que la cantidad real de proxies.**
+Cualquiera puede mandar un `X-Forwarded-For` inventado; el edge le agrega la IP
+verdadera detrás. Con el número exacto, la dirección falsa queda a la izquierda
+de la real y se descarta sola. Con un número alto, se la lee a ella. Medido
+sobre la cadena `1.2.3.4(falsa), 152.233.23.193(real), 100.64.0.7(edge)`:
+
+| `trust proxy` | `req.ip` | Resultado |
+|---|---|---|
+| 1 | `100.64.0.7` | lee un proxy — la lista nunca coincide |
+| **2** | `152.233.23.193` | **correcto** |
+| 3 | `1.2.3.4` | ✖ lee lo que inventó el atacante |
+| `true` | `1.2.3.4` | ✖ lee lo que inventó el atacante |
+
+Equivocarse **para abajo** rompe cosas pero no abre nada: la lista de IPs no
+coincide y todos los usuarios comparten un contador de límites. Equivocarse
+**para arriba** deja saltear la lista y los límites con una cabecera inventada.
+Por eso el código recorta cualquier valor mayor a 4 y lo avisa en el arranque:
+un tipeo no puede convertir la cabecera del cliente en la fuente de la verdad.
+
+Lo que hace que esto sea seguro de entrada es que **el backend no tiene dominio
+público**. Sólo lo alcanzan los servicios del front por la red privada, así que
+los saltos de la derecha —los que se descartan— son siempre los nuestros.
 
 Para comprobarlo, desde tu navegador:
 
