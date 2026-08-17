@@ -1,0 +1,1091 @@
+<!doctype html>
+<html lang="es-AR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stocker — Stock, ventas y facturación ARCA para comercios argentinos</title>
+<meta name="description" content="Sistema de gestión para comercios y mayoristas: punto de venta, stock con variantes, facturación electrónica ARCA, cuentas corrientes y arqueo de caja. 14 días gratis sin tarjeta.">
+<meta name="theme-color" content="#12171a">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%2312171a'/%3E%3Ctext x='16' y='23' font-family='monospace' font-size='19' font-weight='700' fill='%23c8973c' text-anchor='middle'%3ES%3C/text%3E%3C/svg%3E">
+<style>
+/* ─────────────────────────────────────────────────────────────
+   Stocker — página de presentación
+
+   Un archivo, sin dependencias externas: se sirve como estático
+   desde cualquier hosting gratuito y no tiene nada que mantener.
+
+   El sistema es oscuro por defecto — es el fondo contra el que
+   mejor lee el papel del ticket, que es la pieza central de la
+   página. El tema claro se define completo más abajo.
+   ───────────────────────────────────────────────────────────── */
+
+:root {
+  /* Grafito con sesgo verde-azulado: no es gris puro, acompaña al latón. */
+  --ground:      #12171a;
+  --ground-deep: #0d1214;
+  --surface:     #191f23;
+  --surface-2:   #212a2f;
+  --line:        #2c363c;
+  --line-soft:   #232c31;
+
+  --text:        #e7e4dd;
+  --text-dim:    #9aa5a9;
+  --text-faint:  #6b767b;
+
+  /* Latón: el color del sistema y el del papel térmico al calentarse. */
+  --brass:       #c8973c;
+  --brass-soft:  #e0b866;
+  --brass-ghost: rgba(200, 151, 60, .12);
+
+  --teal:        #58a89a;
+  --brick:       #c4634a;
+
+  /* El ticket conserva su propio papel en los dos temas: un ticket
+     no cambia de color según quién lo mire. */
+  --paper:       #f3f0e7;
+  --paper-line:  #d8d3c4;
+  --paper-ink:   #1d2124;
+  --paper-dim:   #6d6a60;
+
+  --display: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --body:    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono:    ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "DejaVu Sans Mono", monospace;
+
+  --measure: 62ch;
+  --gutter: clamp(1.25rem, 5vw, 3rem);
+  --max: 1120px;
+}
+
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --ground:      #f6f6f4;
+    --ground-deep: #ececeA;
+    --surface:     #ffffff;
+    --surface-2:   #f0f0ed;
+    --line:        #dcdcd6;
+    --line-soft:   #e7e7e2;
+
+    --text:        #1b2124;
+    --text-dim:    #59636a;
+    --text-faint:  #8a949a;
+
+    --brass:       #966d18;
+    --brass-soft:  #7d5a10;
+    --brass-ghost: rgba(150, 109, 24, .10);
+
+    --teal:        #2f7568;
+    --brick:       #a94328;
+  }
+}
+
+:root[data-theme="light"] {
+  --ground:      #f6f6f4;
+  --ground-deep: #ececea;
+  --surface:     #ffffff;
+  --surface-2:   #f0f0ed;
+  --line:        #dcdcd6;
+  --line-soft:   #e7e7e2;
+
+  --text:        #1b2124;
+  --text-dim:    #59636a;
+  --text-faint:  #8a949a;
+
+  --brass:       #966d18;
+  --brass-soft:  #7d5a10;
+  --brass-ghost: rgba(150, 109, 24, .10);
+
+  --teal:        #2f7568;
+  --brick:       #a94328;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--ground);
+  color: var(--text);
+  font-family: var(--body);
+  font-size: 17px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+}
+
+h1, h2, h3 { font-family: var(--display); text-wrap: balance; margin: 0; }
+
+h1 {
+  font-size: clamp(2.4rem, 6.2vw, 4.1rem);
+  line-height: 1.02;
+  letter-spacing: -.035em;
+  font-weight: 700;
+}
+h2 {
+  font-size: clamp(1.6rem, 3.4vw, 2.3rem);
+  line-height: 1.12;
+  letter-spacing: -.025em;
+  font-weight: 700;
+}
+h3 { font-size: 1.02rem; line-height: 1.35; letter-spacing: -.01em; font-weight: 650; }
+
+p { margin: 0; }
+a { color: inherit; }
+
+/* Etiqueta breve. El monoespaciado es la voz de servicio del producto:
+   códigos, SKUs, importes — lo que un sistema de mostrador imprime. */
+.eyebrow {
+  font-family: var(--mono);
+  font-size: .705rem;
+  letter-spacing: .17em;
+  text-transform: uppercase;
+  color: var(--brass);
+  margin: 0;
+}
+
+.wrap {
+  max-width: var(--max);
+  margin-inline: auto;
+  padding-inline: var(--gutter);
+}
+
+section { padding-block: clamp(3.5rem, 9vw, 6.5rem); }
+
+.rule { border: 0; border-top: 1px solid var(--line-soft); margin: 0; }
+
+/* ── Barra superior ─────────────────────────────────────────── */
+header {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: var(--ground);
+  background: color-mix(in srgb, var(--ground) 88%, transparent);
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--line-soft);
+}
+.bar {
+  max-width: var(--max);
+  margin-inline: auto;
+  padding: .85rem var(--gutter);
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+.mark {
+  font-family: var(--mono);
+  font-weight: 700;
+  letter-spacing: .16em;
+  font-size: .95rem;
+  text-decoration: none;
+}
+.mark span { color: var(--brass); }
+.bar nav {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: clamp(.75rem, 2.5vw, 1.6rem);
+  font-size: .88rem;
+}
+.bar nav a { color: var(--text-dim); text-decoration: none; }
+.bar nav a:hover { color: var(--text); }
+.bar .btn { margin-left: .25rem; }
+@media (max-width: 620px) { .bar nav .hide-sm { display: none; } }
+
+/* ── Botones ────────────────────────────────────────────────── */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: .5rem;
+  padding: .62rem 1.05rem;
+  border-radius: 3px;
+  border: 1px solid transparent;
+  font: inherit;
+  font-size: .9rem;
+  font-weight: 600;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background .16s ease, border-color .16s ease, color .16s ease;
+}
+.btn-primary { background: var(--brass); color: #161104; }
+.btn-primary:hover { background: var(--brass-soft); }
+.btn-ghost { border-color: var(--line); color: var(--text); }
+.btn-ghost:hover { border-color: var(--brass); color: var(--brass); }
+:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
+
+/* ── Portada ────────────────────────────────────────────────── */
+.hero { padding-block: clamp(3rem, 8vw, 5.5rem) clamp(3rem, 8vw, 5rem); }
+.hero-grid {
+  display: grid;
+  gap: clamp(2.5rem, 6vw, 4rem);
+  align-items: start;
+  grid-template-columns: 1fr;
+}
+@media (min-width: 900px) { .hero-grid { grid-template-columns: 1.08fr .92fr; } }
+
+.hero-copy { display: flex; flex-direction: column; gap: 1.5rem; }
+.hero-copy .lede {
+  font-size: clamp(1.02rem, 1.9vw, 1.16rem);
+  color: var(--text-dim);
+  max-width: var(--measure);
+}
+.hero h1 em {
+  font-style: normal;
+  color: var(--brass);
+}
+.cta-row { display: flex; flex-wrap: wrap; gap: .7rem; align-items: center; }
+.cta-note {
+  font-family: var(--mono);
+  font-size: .74rem;
+  color: var(--text-faint);
+  letter-spacing: .04em;
+}
+
+/* ── Ticket ──────────────────────────────────────────────────
+   La pieza central. Es lo que el sistema imprime al cerrar una
+   venta, con el desglose por medio de pago que es su rasgo más
+   propio: cuánto entró en efectivo y cuánto por transferencia. */
+.ticket-stage { display: flex; justify-content: center; perspective: 1200px; }
+.ticket {
+  width: min(340px, 100%);
+  background: var(--paper);
+  color: var(--paper-ink);
+  font-family: var(--mono);
+  font-size: .755rem;
+  line-height: 1.62;
+  padding: 1.4rem 1.15rem 1.9rem;
+  font-variant-numeric: tabular-nums;
+  box-shadow: 0 22px 44px -18px rgba(0,0,0,.55), 0 2px 6px rgba(0,0,0,.2);
+  transform: rotate(-.7deg);
+  position: relative;
+}
+/* Borde inferior dentado, como el papel al cortarse en la impresora. */
+.ticket::after {
+  content: "";
+  position: absolute;
+  left: 0; right: 0; bottom: -7px;
+  height: 7px;
+  background:
+    linear-gradient(-45deg, transparent 50%, var(--paper) 50%) 0 0 / 10px 7px repeat-x,
+    linear-gradient( 45deg, transparent 50%, var(--paper) 50%) 5px 0 / 10px 7px repeat-x;
+}
+.ticket-head { text-align: center; line-height: 1.45; }
+.ticket-head strong { display: block; letter-spacing: .3em; font-size: .92rem; }
+.ticket-head span { color: var(--paper-dim); }
+.ticket hr {
+  border: 0;
+  border-top: 1px dashed var(--paper-line);
+  margin: .7rem 0;
+}
+.t-row { display: flex; justify-content: space-between; gap: 1rem; }
+.ticket .sku { color: var(--paper-dim); }
+.t-item { margin-bottom: .45rem; }
+.t-label { font-size: .68rem; letter-spacing: .13em; color: var(--paper-dim); }
+.t-total { font-weight: 700; font-size: .86rem; letter-spacing: .04em; }
+.t-sub { color: var(--paper-dim); font-size: .68rem; padding-left: 1.1rem; }
+.t-foot { text-align: center; color: var(--paper-dim); font-size: .66rem; margin-top: .9rem; line-height: 1.5; }
+
+/* La cinta sale de la impresora. Un solo gesto, y sólo al cargar. */
+@media (prefers-reduced-motion: no-preference) {
+  .ticket { animation: feed .95s cubic-bezier(.22,.68,.3,1) both .15s; transform-origin: top center; }
+  @keyframes feed {
+    from { clip-path: inset(0 0 100% 0); transform: rotate(-.7deg) translateY(-8px); }
+    to   { clip-path: inset(0 0 0 0);    transform: rotate(-.7deg) translateY(0); }
+  }
+  .rise { animation: rise .7s cubic-bezier(.2,.7,.3,1) both; }
+  .rise-2 { animation-delay: .07s; }
+  .rise-3 { animation-delay: .14s; }
+  @keyframes rise { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
+}
+
+/* ── Franja de datos duros ──────────────────────────────────── */
+.strip {
+  border-block: 1px solid var(--line-soft);
+  background: var(--ground-deep);
+}
+.strip-grid {
+  display: grid;
+  gap: 1px;
+  background: var(--line-soft);
+  grid-template-columns: repeat(2, 1fr);
+}
+@media (min-width: 780px) { .strip-grid { grid-template-columns: repeat(4, 1fr); } }
+.stat {
+  background: var(--ground-deep);
+  padding: 1.5rem var(--gutter);
+  display: flex;
+  flex-direction: column;
+  gap: .3rem;
+}
+.stat b {
+  font-family: var(--mono);
+  font-size: 1.35rem;
+  font-weight: 700;
+  letter-spacing: -.02em;
+  color: var(--brass);
+  font-variant-numeric: tabular-nums;
+}
+.stat span { font-size: .82rem; color: var(--text-dim); line-height: 1.4; }
+
+/* ── Encabezado de sección ──────────────────────────────────── */
+.sec-head { display: flex; flex-direction: column; gap: .8rem; margin-bottom: clamp(2rem, 4vw, 3rem); }
+.sec-head p { color: var(--text-dim); max-width: var(--measure); }
+
+/* ── Módulos ─────────────────────────────────────────────────
+   Hoja de especificaciones, no tarjetas: la lista dice qué hace
+   el sistema y cada línea se lee sola. */
+.modules { display: grid; gap: 1px; background: var(--line-soft); border-block: 1px solid var(--line-soft); }
+@media (min-width: 760px) { .modules { grid-template-columns: 1fr 1fr; } }
+.module {
+  background: var(--ground);
+  padding: 1.6rem clamp(1.1rem, 2.5vw, 1.9rem);
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: .3rem 1rem;
+  align-content: start;
+}
+.module .idx {
+  font-family: var(--mono);
+  font-size: .7rem;
+  color: var(--brass);
+  letter-spacing: .1em;
+  padding-top: .22rem;
+  grid-row: span 2;
+}
+.module p { color: var(--text-dim); font-size: .93rem; }
+.module ul {
+  grid-column: 2;
+  margin: .55rem 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: .35rem;
+}
+.module li {
+  font-family: var(--mono);
+  font-size: .68rem;
+  letter-spacing: .04em;
+  color: var(--text-faint);
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  padding: .12rem .42rem;
+}
+
+/* ── Precios ─────────────────────────────────────────────────
+   Alineado como una boleta: importes tabulares, líneas punteadas
+   y el total en versales. */
+.plans { display: grid; gap: 1.15rem; grid-template-columns: 1fr; align-items: start; }
+@media (min-width: 700px)  { .plans { grid-template-columns: repeat(2, 1fr); } }
+@media (min-width: 1060px) { .plans { grid-template-columns: repeat(4, 1fr); } }
+
+/* Selector de moneda. Los precios están en pesos; el dólar es una referencia
+   para quien compara contra software de afuera, no una opción de cobro. */
+.money {
+  display: inline-flex;
+  gap: 1px;
+  padding: 2px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+}
+.money button {
+  font-family: var(--mono);
+  font-size: .7rem;
+  letter-spacing: .1em;
+  padding: .3rem .7rem;
+  border: 0;
+  border-radius: 2px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: background .15s ease, color .15s ease;
+}
+.money button[aria-pressed="true"] { background: var(--brass); color: #161104; font-weight: 700; }
+.money button:hover:not([aria-pressed="true"]) { color: var(--text); }
+.plans-head { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 1rem; }
+.fx-note { font-family: var(--mono); font-size: .68rem; color: var(--text-faint); letter-spacing: .04em; }
+
+.plan {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 1.5rem 1.4rem 1.7rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.05rem;
+  height: 100%;
+}
+.plan.featured { border-color: var(--brass); background: linear-gradient(var(--brass-ghost), transparent 42%), var(--surface); }
+.plan-top { display: flex; align-items: baseline; justify-content: space-between; gap: .75rem; }
+.plan-name { font-family: var(--mono); font-size: .78rem; letter-spacing: .15em; text-transform: uppercase; }
+.tag {
+  font-family: var(--mono);
+  font-size: .62rem;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: var(--brass);
+  border: 1px solid var(--brass);
+  border-radius: 2px;
+  padding: .1rem .38rem;
+  white-space: nowrap;
+}
+.price {
+  font-family: var(--mono);
+  font-size: 1.85rem;
+  font-weight: 700;
+  letter-spacing: -.03em;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+.price small { font-size: .74rem; font-weight: 400; color: var(--text-faint); letter-spacing: .04em; }
+.plan-for { font-size: .89rem; color: var(--text-dim); }
+
+.plan dl { margin: 0; display: flex; flex-direction: column; gap: .38rem; font-size: .84rem; }
+.plan dl > div {
+  display: flex;
+  align-items: baseline;
+  gap: .4rem;
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+.plan dt {
+  color: var(--text-dim);
+  font-size: .76rem;
+  letter-spacing: .02em;
+  white-space: nowrap;
+  flex: 1;
+  display: flex;
+  align-items: baseline;
+  gap: .45rem;
+}
+/* Línea punteada que lleva del concepto al importe, como en una boleta. */
+.plan dt::after {
+  content: "";
+  flex: 1;
+  min-width: .75rem;
+  border-bottom: 1px dotted var(--line);
+  transform: translateY(-.24em);
+}
+.plan dd { margin: 0; font-size: .8rem; white-space: nowrap; }
+
+.plan-feats { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: .4rem; font-size: .87rem; }
+.plan-feats li { display: flex; gap: .55rem; align-items: baseline; }
+.plan-feats .yes::before { content: "+"; color: var(--teal); font-family: var(--mono); font-weight: 700; }
+.plan-feats .no::before  { content: "−"; color: var(--text-faint); font-family: var(--mono); font-weight: 700; }
+.plan-feats .no { color: var(--text-faint); }
+.plan .btn { margin-top: auto; justify-content: center; }
+
+/* ── Prueba ─────────────────────────────────────────────────── */
+.trial {
+  background: var(--ground-deep);
+  border-block: 1px solid var(--line-soft);
+}
+.trial-grid { display: grid; gap: clamp(1.75rem, 4vw, 3rem); grid-template-columns: 1fr; }
+@media (min-width: 840px) { .trial-grid { grid-template-columns: .95fr 1.05fr; } }
+.days { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.days li {
+  display: grid;
+  grid-template-columns: 4.6rem 1fr;
+  gap: 1rem;
+  padding: .8rem 0;
+  border-top: 1px solid var(--line-soft);
+  font-size: .92rem;
+}
+.days li:last-child { border-bottom: 1px solid var(--line-soft); }
+.days b {
+  font-family: var(--mono);
+  font-size: .72rem;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--brass);
+  padding-top: .18rem;
+}
+.days span { color: var(--text-dim); }
+.note {
+  border-left: 2px solid var(--teal);
+  padding: .1rem 0 .1rem 1rem;
+  color: var(--text-dim);
+  font-size: .93rem;
+  max-width: var(--measure);
+}
+.note strong { color: var(--text); font-weight: 650; }
+
+/* ── Contacto ───────────────────────────────────────────────── */
+.contact-grid { display: grid; gap: clamp(1.75rem, 4vw, 3rem); grid-template-columns: 1fr; align-items: start; }
+@media (min-width: 780px) { .contact-grid { grid-template-columns: 1fr 1fr; } }
+.contact-list { display: flex; flex-direction: column; gap: 1px; background: var(--line-soft); border: 1px solid var(--line-soft); border-radius: 4px; overflow: hidden; }
+.contact-list a {
+  background: var(--surface);
+  padding: 1rem 1.15rem;
+  display: flex;
+  flex-direction: column;
+  gap: .18rem;
+  text-decoration: none;
+  transition: background .16s ease;
+}
+.contact-list a:hover { background: var(--surface-2); }
+.contact-list .k { font-family: var(--mono); font-size: .68rem; letter-spacing: .13em; text-transform: uppercase; color: var(--text-faint); }
+.contact-list .v { font-size: 1.02rem; color: var(--brass); word-break: break-word; }
+
+footer { border-top: 1px solid var(--line-soft); padding-block: 2rem; }
+.foot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .6rem 1.5rem;
+  align-items: baseline;
+  font-family: var(--mono);
+  font-size: .72rem;
+  letter-spacing: .06em;
+  color: var(--text-faint);
+}
+.foot a { color: var(--text-faint); text-decoration: none; }
+.foot a:hover { color: var(--brass); }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="bar">
+    <a class="mark" href="#top">STOCK<span>ER</span></a>
+    <nav>
+      <a class="hide-sm" href="#sistema">Sistema</a>
+      <a class="hide-sm" href="#planes">Planes</a>
+      <a class="btn btn-primary" href="#contacto">Pedir una demo</a>
+    </nav>
+  </div>
+</header>
+
+<main id="top">
+
+  <!-- ── Portada ─────────────────────────────────────────── -->
+  <section class="hero">
+    <div class="wrap hero-grid">
+      <div class="hero-copy">
+        <p class="eyebrow rise">Gestión de comercios · Argentina</p>
+        <h1 class="rise rise-2">Vendé, facturá y <em>sabé qué tenés</em>. Todo en el mismo lugar.</h1>
+        <p class="lede rise rise-3">
+          Stocker reemplaza la planilla de stock, el portal de AFIP y el cuaderno de fiados
+          por un sistema solo. Punto de venta, facturación electrónica real contra ARCA,
+          inventario por talle y color, y la caja cuadrada al cierre de cada turno.
+        </p>
+        <div class="cta-row rise rise-3">
+          <a class="btn btn-primary" href="#contacto">Empezar los 14 días gratis</a>
+          <a class="btn btn-ghost" href="#planes">Ver planes y precios</a>
+        </div>
+        <p class="cta-note rise rise-3">Sin tarjeta de crédito · Configuración en el día</p>
+      </div>
+
+      <div class="ticket-stage">
+        <!-- Ticket real de 80 mm tal como lo imprime el sistema. -->
+        <div class="ticket" role="img"
+             aria-label="Ticket de venta de ejemplo por 79.690 pesos, cobrado 40.000 en efectivo y 39.690 por transferencia con 5 por ciento de recargo.">
+          <div class="ticket-head">
+            <strong>STOCKER</strong>
+            <span>Boutique Almendra</span><br>
+            <span>CUIT 30-71234567-9</span>
+          </div>
+          <hr>
+          <div class="t-row"><span>V-2026-08-000142</span><span>17/08/26</span></div>
+          <hr>
+          <div class="t-item">
+            <div class="t-row"><span>2 &times; Jean Mom Fit T.38</span><span>49.800</span></div>
+            <div class="sku">&nbsp;&nbsp;&nbsp;BA-004-AZUL38</div>
+          </div>
+          <div class="t-item">
+            <div class="t-row"><span>1 &times; Sweater Cuello Red.</span><span>28.000</span></div>
+            <div class="sku">&nbsp;&nbsp;&nbsp;BA-003-CAMELL</div>
+          </div>
+          <hr>
+          <div class="t-row"><span>Mercadería</span><span>77.800</span></div>
+          <hr>
+          <div class="t-label">FORMAS DE PAGO</div>
+          <div class="t-row"><span>Efectivo</span><span>40.000</span></div>
+          <div class="t-row"><span>Transferencia</span><span>39.690</span></div>
+          <div class="t-sub">37.800 + recargo 5% (1.890)</div>
+          <hr>
+          <div class="t-row t-total"><span>TOTAL COBRADO</span><span>79.690</span></div>
+          <hr>
+          <div class="t-foot">
+            Factura B autorizada por ARCA<br>
+            CAE 75418293004621 · Vto. 27/08/26<br>
+            ¡Gracias por su compra!
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── Datos duros ─────────────────────────────────────── -->
+  <div class="strip">
+    <div class="strip-grid">
+      <div class="stat">
+        <b>ARCA</b>
+        <span>Facturas A, B y C con CAE real, emitidas en el momento</span>
+      </div>
+      <div class="stat">
+        <b>SKU</b>
+        <span>Un código une el stock del local, el depósito y Mercado Libre</span>
+      </div>
+      <div class="stat">
+        <b>14 días</b>
+        <span>De prueba con todo habilitado y sin tarjeta</span>
+      </div>
+      <div class="stat">
+        <b>$0</b>
+        <span>De instalación: corre en el navegador y en el celular</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Módulos ─────────────────────────────────────────── -->
+  <section id="sistema">
+    <div class="wrap sec-head">
+      <p class="eyebrow">Qué incluye</p>
+      <h2>Siete módulos que ya funcionan</h2>
+      <p>
+        Nada de esto es una promesa de hoja de ruta. Es lo que el sistema hace hoy,
+        en comercios que venden todos los días.
+      </p>
+    </div>
+
+    <div class="modules">
+      <article class="module">
+        <span class="idx">01</span>
+        <h3>Punto de venta</h3>
+        <p>
+          Escaneás con el lector de mano y cobrás. Un mismo ticket puede pagarse
+          en partes: efectivo y transferencia, con el recargo o el descuento de
+          cada medio calculado y discriminado en el comprobante.
+        </p>
+        <ul>
+          <li>lector de códigos</li><li>pago combinado</li><li>ticket 80&nbsp;mm</li><li>cotizaciones</li>
+        </ul>
+      </article>
+
+      <article class="module">
+        <span class="idx">02</span>
+        <h3>Facturación electrónica</h3>
+        <p>
+          Conexión directa con ARCA: la factura sale con CAE en el momento y se
+          manda por mail y WhatsApp. Cargás el CUIT del cliente y los datos del
+          padrón se completan solos. Un negocio puede facturar con varias razones
+          sociales.
+        </p>
+        <ul>
+          <li>factura A / B / C</li><li>notas de crédito</li><li>multi-CUIT</li><li>padrón ARCA</li>
+        </ul>
+      </article>
+
+      <article class="module">
+        <span class="idx">03</span>
+        <h3>Stock con variantes</h3>
+        <p>
+          Un producto, muchas variantes: talle, color, lo que uses. Precio
+          minorista y mayorista, con el mayorista aplicándose solo al pasar las
+          tres unidades. Cada movimiento queda registrado con motivo y quién lo hizo.
+        </p>
+        <ul>
+          <li>talle y color</li><li>stock mínimo</li><li>alta por Excel</li><li>historial</li>
+        </ul>
+      </article>
+
+      <article class="module">
+        <span class="idx">04</span>
+        <h3>Depósito desde el celular</h3>
+        <p>
+          La cámara del teléfono lee el código de barras y actualiza el inventario
+          ahí mismo, entre los estantes. Sin comprar lectores para el depósito y sin
+          anotar en un papel para cargar después.
+        </p>
+        <ul>
+          <li>cámara como lector</li><li>ingreso y egreso</li><li>ajuste de conteo</li>
+        </ul>
+      </article>
+
+      <article class="module">
+        <span class="idx">05</span>
+        <h3>Cuenta corriente</h3>
+        <p>
+          El cuaderno de fiados, pero que no se pierde. Fiás con el cliente
+          identificado y su límite de crédito controlado; el medio de pago se
+          elige al cobrar, no antes. Cada cliente tiene su saldo y su historial.
+        </p>
+        <ul>
+          <li>límite de crédito</li><li>saldo por cliente</li><li>cobro parcial</li>
+        </ul>
+      </article>
+
+      <article class="module">
+        <span class="idx">06</span>
+        <h3>Caja y empleados</h3>
+        <p>
+          Cada empleado abre y cierra su propio turno, y el sistema le dice cuánto
+          debería haber en el cajón. Los permisos se arman por cargo: quien atiende
+          el mostrador no ve los márgenes ni toca la facturación.
+        </p>
+        <ul>
+          <li>arqueo por turno</li><li>retiros con motivo</li><li>permisos por cargo</li>
+        </ul>
+      </article>
+
+      <article class="module">
+        <span class="idx">07</span>
+        <h3>Mercado Libre</h3>
+        <p>
+          El stock del local y el de tus publicaciones son el mismo número, unidos
+          por el SKU. Vendés en el mostrador y la publicación baja sola: se terminan
+          las ventas de lo que ya no tenés.
+        </p>
+        <ul>
+          <li>sincronía por SKU</li><li>tiempo real</li><li>sin quiebres</li>
+        </ul>
+      </article>
+
+      <article class="module">
+        <span class="idx">08</span>
+        <h3>Números del negocio</h3>
+        <p>
+          Ventas por día, semana, mes y año. Margen bruto sobre lo facturado,
+          ticket promedio, qué variantes salen y cuáles están quietas. Todo sobre
+          el período que elijas.
+        </p>
+        <ul>
+          <li>ventas por jornada</li><li>margen bruto</li><li>ranking de variantes</li>
+        </ul>
+      </article>
+    </div>
+  </section>
+
+  <!-- ── Planes ──────────────────────────────────────────── -->
+  <section id="planes">
+    <div class="wrap">
+      <div class="plans-head sec-head" style="flex-direction:row">
+        <div style="display:flex;flex-direction:column;gap:.8rem">
+          <p class="eyebrow">Planes</p>
+          <h2>Precios claros, sin costo de alta</h2>
+          <p>Valores mensuales con IVA incluido. Se paga por Mercado Pago o transferencia.</p>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:.4rem;align-items:flex-end">
+          <div class="money" role="group" aria-label="Moneda">
+            <button type="button" data-moneda="ARS" aria-pressed="true">ARS</button>
+            <button type="button" data-moneda="USD" aria-pressed="false">USD</button>
+          </div>
+          <span class="fx-note" id="fx-note" hidden></span>
+        </div>
+      </div>
+
+      <div class="plans">
+
+        <article class="plan" data-plan="inicial">
+          <div class="plan-top"><span class="plan-name">Inicial</span></div>
+          <div>
+            <div class="price"><span data-ars="48400">$48.400</span><small> /mes</small></div>
+            <p class="plan-for">Un local, un CUIT, hasta dos personas atendiendo.</p>
+          </div>
+          <dl>
+            <div><dt>Comprobantes</dt><dd>2.000/mes</dd></div>
+            <div><dt>SKUs</dt><dd>5.000</dd></div>
+            <div><dt>CUITs</dt><dd>1</dd></div>
+            <div><dt>Usuarios</dt><dd>2</dd></div>
+            <div><dt>Locales</dt><dd>2</dd></div>
+            <div><dt>Soporte</dt><dd>Mail y chat</dd></div>
+          </dl>
+          <ul class="plan-feats">
+            <li class="yes">Facturación ARCA</li>
+            <li class="yes">Punto de venta y stock</li>
+            <li class="yes">Carga por planilla</li>
+            <li class="no">Integración con Mercado Libre</li>
+            <li class="no">Compras y proveedores</li>
+          </ul>
+          <a class="btn btn-ghost" href="#contacto">Probar gratis</a>
+        </article>
+
+        <article class="plan featured" data-plan="pro">
+          <div class="plan-top">
+            <span class="plan-name">Pro</span>
+            <span class="tag">El más elegido</span>
+          </div>
+          <div>
+            <div class="price"><span data-ars="97800">$97.800</span><small> /mes</small></div>
+            <p class="plan-for">Vendés por varios canales y necesitás facturar en volumen.</p>
+          </div>
+          <dl>
+            <div><dt>Comprobantes</dt><dd>5.000/mes</dd></div>
+            <div><dt>SKUs</dt><dd>10.000</dd></div>
+            <div><dt>CUITs</dt><dd>2</dd></div>
+            <div><dt>Usuarios</dt><dd>10</dd></div>
+            <div><dt>Locales</dt><dd>4</dd></div>
+            <div><dt>Soporte</dt><dd>Chat prioritario</dd></div>
+          </dl>
+          <ul class="plan-feats">
+            <li class="yes">Todo lo del Inicial</li>
+            <li class="yes">Facturación masiva por lote</li>
+            <li class="yes">Integración con Mercado Libre</li>
+            <li class="yes">Compras y proveedores</li>
+            <li class="yes">Cuentas corrientes y fiado</li>
+          </ul>
+          <a class="btn btn-primary" href="#contacto">Probar gratis</a>
+        </article>
+
+        <article class="plan" data-plan="superior">
+          <div class="plan-top">
+            <span class="plan-name">Superior</span>
+          </div>
+          <div>
+            <div class="price"><span data-ars="178000">$178.000</span><small> /mes</small></div>
+            <p class="plan-for">Varias sucursales y razones sociales, con todo abierto.</p>
+          </div>
+          <dl>
+            <div><dt>Comprobantes</dt><dd>10.000/mes</dd></div>
+            <div><dt>SKUs</dt><dd>20.000</dd></div>
+            <div><dt>CUITs</dt><dd>3</dd></div>
+            <div><dt>Usuarios</dt><dd>40</dd></div>
+            <div><dt>Locales</dt><dd>20</dd></div>
+            <div><dt>Soporte</dt><dd>Chat y teléfono</dd></div>
+          </dl>
+          <ul class="plan-feats">
+            <li class="yes">Todo lo del Pro</li>
+            <li class="yes">Multi-depósito y listas de precios</li>
+            <li class="yes">API para integraciones propias</li>
+            <li class="yes">Facturación masiva ilimitada</li>
+            <li class="yes">Importación y exportación completa</li>
+          </ul>
+          <a class="btn btn-ghost" href="#contacto">Probar gratis</a>
+        </article>
+
+        <article class="plan" data-plan="enterprise">
+          <div class="plan-top">
+            <span class="plan-name">Enterprise</span>
+            <span class="tag">A cotizar</span>
+          </div>
+          <div>
+            <div class="price"><span>A medida</span><small> /mensual</small></div>
+            <p class="plan-for">Mayoristas y distribuidores con varias razones sociales.</p>
+          </div>
+          <dl>
+            <div><dt>Comprobantes</dt><dd>Sin tope</dd></div>
+            <div><dt>SKUs</dt><dd>Sin tope</dd></div>
+            <div><dt>CUITs</dt><dd>Sin tope</dd></div>
+            <div><dt>Usuarios</dt><dd>Sin tope</dd></div>
+            <div><dt>Locales</dt><dd>Sin tope</dd></div>
+            <div><dt>Soporte</dt><dd>Ejecutivo</dd></div>
+          </dl>
+          <ul class="plan-feats">
+            <li class="yes">Todo lo del Pro</li>
+            <li class="yes">Cuentas corrientes y cobranzas</li>
+            <li class="yes">Multi-depósito y listas de precios</li>
+            <li class="yes">API para integraciones propias</li>
+            <li class="yes">Migración de datos asistida</li>
+          </ul>
+          <a class="btn btn-ghost" href="#contacto">Pedir cotización</a>
+        </article>
+
+      </div>
+    </div>
+  </section>
+
+  <!-- ── Prueba ──────────────────────────────────────────── -->
+  <section class="trial">
+    <div class="wrap trial-grid">
+      <div class="sec-head" style="margin-bottom:0">
+        <p class="eyebrow">Cómo es la prueba</p>
+        <h2>Catorce días con todo abierto</h2>
+        <p>
+          No pedimos tarjeta para empezar. Si al final no seguís, no pagás nada
+          y tus datos siguen ahí.
+        </p>
+        <p class="note">
+          <strong>Nunca borramos tu información.</strong> Si se termina la prueba
+          sin activar, la cuenta pasa a modo lectura: seguís viendo y exportando
+          todo lo cargado, y en el momento en que pagás volvés a operar donde
+          habías quedado.
+        </p>
+      </div>
+
+      <ul class="days">
+        <li><b>Día 1</b><span>Te ayudamos a cargar el CUIT y el catálogo inicial.</span></li>
+        <li><b>Día 7</b><span>Te mandamos un resumen de lo que el sistema ya te ordenó.</span></li>
+        <li><b>Día 12</b><span>Aviso de que quedan 48 horas, sin sorpresas.</span></li>
+        <li><b>Día 14</b><span>Activás con Mercado Pago o transferencia, y seguís.</span></li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- ── Contacto ────────────────────────────────────────── -->
+  <section id="contacto">
+    <div class="wrap contact-grid">
+      <div class="sec-head" style="margin-bottom:0">
+        <p class="eyebrow">Contacto</p>
+        <h2>Escribinos y lo vemos juntos</h2>
+        <p>
+          Contame qué vendés y cómo lo llevás hoy. Te muestro el sistema andando
+          con tus propios productos y te digo si te sirve — y si no, también.
+        </p>
+      </div>
+
+      <div class="contact-list">
+        <a href="mailto:danteinsauviola@gmail.com?subject=Quiero%20probar%20Stocker">
+          <span class="k">Email</span>
+          <span class="v">danteinsauviola@gmail.com</span>
+        </a>
+        <a href="https://wa.me/5491151180090?text=Hola%20Dante,%20quiero%20probar%20Stocker">
+          <span class="k">WhatsApp</span>
+          <span class="v">+54 9 11 5118-0090</span>
+        </a>
+        <a href="tel:+5491151180090">
+          <span class="k">Teléfono</span>
+          <span class="v">+54 9 11 5118-0090</span>
+        </a>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  <div class="wrap foot">
+    <span>STOCKER · Sistema de gestión y facturación</span>
+    <span>Buenos Aires, Argentina</span>
+    <a href="mailto:danteinsauviola@gmail.com">danteinsauviola@gmail.com</a>
+  </div>
+</footer>
+
+
+<script>
+/* ─────────────────────────────────────────────────────────────
+   Dos cosas, ninguna imprescindible.
+
+   1) Selector de moneda. Los precios están en pesos y así se cobra;
+      el dólar es una referencia para quien compara contra software
+      de afuera. Por eso ARS es lo predeterminado y el aviso de
+      cotización sólo aparece cuando se pasa a USD.
+
+   2) Datos en vivo. Si hay una API configurada, se traen de ahí el
+      contacto, la cotización y los precios, para poder actualizarlos
+      desde el backoffice sin volver a publicar la página.
+
+   El HTML ya trae los valores correctos escritos. Si la API no
+   responde —o no existe todavía— no pasa nada: la página queda tal
+   cual. Una página comercial que muestra "cargando…" porque se cayó
+   un backend es peor que una desactualizada.
+   ───────────────────────────────────────────────────────────── */
+(function () {
+  "use strict";
+
+  // Origen de la API. Vacío = la página funciona sola, sin backend.
+  var API = window.STOCKER_API || "";
+
+  var estado = { moneda: "ARS", cotizacion: 1450 };
+
+  var fmtArs = new Intl.NumberFormat("es-AR", {
+    style: "currency", currency: "ARS", maximumFractionDigits: 0
+  });
+  var fmtUsd = new Intl.NumberFormat("en-US", {
+    style: "currency", currency: "USD", maximumFractionDigits: 0
+  });
+
+  function pintarPrecios() {
+    var nodos = document.querySelectorAll("[data-ars]");
+    for (var i = 0; i < nodos.length; i++) {
+      var pesos = Number(nodos[i].getAttribute("data-ars"));
+      if (!isFinite(pesos)) continue;
+      nodos[i].textContent = estado.moneda === "USD"
+        ? fmtUsd.format(Math.round(pesos / estado.cotizacion))
+        : fmtArs.format(pesos);
+    }
+
+    var nota = document.getElementById("fx-note");
+    if (nota) {
+      nota.hidden = estado.moneda !== "USD";
+      nota.textContent = "Referencia a $" + estado.cotizacion + " por dólar · se cobra en pesos";
+    }
+  }
+
+  var botones = document.querySelectorAll(".money button");
+  for (var b = 0; b < botones.length; b++) {
+    botones[b].addEventListener("click", function () {
+      estado.moneda = this.getAttribute("data-moneda");
+      for (var j = 0; j < botones.length; j++) {
+        botones[j].setAttribute("aria-pressed", String(botones[j] === this));
+      }
+      pintarPrecios();
+    });
+  }
+
+  if (!API) return;
+
+  fetch(API.replace(/\/$/, "") + "/api/public/landing")
+    .then(function (r) { return r.ok ? r.json() : null; })
+    .then(function (d) {
+      if (!d) return;
+
+      if (d.cotizacionUsd) estado.cotizacion = d.cotizacionUsd;
+
+      // Precios y topes: se actualizan por código de plan. Si el backoffice
+      // cambia un tope, la página lo refleja sin volver a publicarse.
+      var miles = new Intl.NumberFormat("es-AR");
+      var sinTope = function (v, sufijo) {
+        return v == null ? "Sin tope" : miles.format(v) + (sufijo || "");
+      };
+
+      (d.planes || []).forEach(function (plan) {
+        var card = document.querySelector('[data-plan="' + plan.codigo + '"]');
+        if (!card) return;
+
+        if (plan.precioMensual != null) {
+          var precio = card.querySelector("[data-ars]");
+          if (precio) precio.setAttribute("data-ars", String(plan.precioMensual));
+        }
+
+        var topes = {
+          "Comprobantes": sinTope(plan.maxComprobantes, "/mes"),
+          "SKUs":         sinTope(plan.maxSkus),
+          "CUITs":        sinTope(plan.maxCuits),
+          "Usuarios":     sinTope(plan.maxEmpleados),
+          "Locales":      sinTope(plan.maxLocales),
+          "Soporte":      plan.soporte || null,
+        };
+        card.querySelectorAll("dl > div").forEach(function (fila) {
+          var dt = fila.querySelector("dt");
+          var dd = fila.querySelector("dd");
+          if (!dt || !dd) return;
+          var valor = topes[dt.textContent.trim()];
+          if (valor) dd.textContent = valor;
+        });
+      });
+
+      // Contacto.
+      if (d.contacto) {
+        var mail = d.contacto.email;
+        if (mail) {
+          document.querySelectorAll('a[href^="mailto:"]').forEach(function (a) {
+            var q = a.getAttribute("href").split("?")[1];
+            a.setAttribute("href", "mailto:" + mail + (q ? "?" + q : ""));
+            if (a.querySelector(".v")) a.querySelector(".v").textContent = mail;
+            else if (a.closest(".foot")) a.textContent = mail;
+          });
+        }
+        if (d.contacto.whatsapp) {
+          document.querySelectorAll('a[href^="https://wa.me/"]').forEach(function (a) {
+            var q = a.getAttribute("href").split("?")[1];
+            a.setAttribute("href", "https://wa.me/" + d.contacto.whatsapp + (q ? "?" + q : ""));
+          });
+        }
+        if (d.contacto.telefono) {
+          document.querySelectorAll('a[href^="tel:"]').forEach(function (a) {
+            a.setAttribute("href", "tel:" + d.contacto.telefono.replace(/[^+\d]/g, ""));
+          });
+          document.querySelectorAll(".contact-list .v").forEach(function (v) {
+            if (/^\+?[\d\s()-]+$/.test(v.textContent.trim())) v.textContent = d.contacto.telefono;
+          });
+        }
+      }
+
+      pintarPrecios();
+    })
+    .catch(function () { /* sin API la página ya está completa */ });
+
+  pintarPrecios();
+})();
+</script>
+
+</body>
+</html>
