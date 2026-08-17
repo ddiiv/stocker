@@ -4,6 +4,9 @@ const { Op }   = require('sequelize');
 const { Business, Employee, Role, EmployeeSession, BusinessCuit, PasswordResetCode, PaymentMethod } = require('../models');
 const { PRESETS } = require('../config/permisos');
 const { exigirLibre, normalizar } = require('../services/cuitRegistry');
+const identidad = require('../services/identityRegistry');
+const { iniciarTrial } = require('../services/planService');
+const bloqueo = require('../services/bloqueoService');
 const { crearSesion, IDLE_MIN } = require('../utils/session');
 const { setAuthCookie, clearAuthCookie } = require('../utils/authCookie');
 const { sendPasswordResetCode, sendPasswordResetAlert } = require('../services/emailService');
@@ -32,8 +35,11 @@ const register = async (req, res, next) => {
     if (!nombreNegocio || !ownerNombre || !ownerApellido || !cuit || !email || !password)
       return res.status(400).json({ message: 'Faltan campos obligatorios.' });
 
-    if (await Business.findOne({ where: { email } }))
-      return res.status(409).json({ message: 'Ya existe una cuenta con ese email.' });
+    // El email no puede estar en uso en NINGUNA de las tres tablas con login
+    // (dueños, empleados, operadores). Antes sólo se miraba `businesses`, así
+    // que el empleado de un negocio podía abrir su propia cuenta con el mismo
+    // email y el login no sabía a cuál entrar.
+    await identidad.exigirLibre(email);
 
     // El CUIT no puede estar en uso en ninguna otra cuenta, ni como cuenta ni
     // como CUIT de facturación: dos negocios facturando con el mismo CUIT se
@@ -68,19 +74,37 @@ const register = async (req, res, next) => {
       }))
     );
 
+    // Prueba de 14 días con el plan completo, sin pedir tarjeta. La fricción
+    // en el alta es lo que decide si el negocio llega a probar el sistema.
+    await iniciarTrial(business.id);
+
     const token = crearSesion({ type: 'business', businessId: business.id });
     setAuthCookie(res, token);
     res.status(201).json({ business: sanitizeBusiness(business) });
   } catch (error) { next(error); }
 };
 
-// POST /api/auth/login
+/*
+ * POST /api/auth/login
+ *
+ * Cada intento queda registrado: es lo que alimenta el bloqueo por fuerza bruta
+ * (bloqueoService). El middleware que va delante ya rechazó a quien está
+ * bloqueado, así que acá sólo hay que anotar el resultado.
+ *
+ * Entrar bien borra los fallos previos de esa cuenta desde esa IP. Quien
+ * finalmente se acordó la contraseña no tiene que seguir arrastrándolos.
+ */
 const login = async (req, res, next) => {
   try {
     const { email, password } = req.body;
     const business = await Business.findOne({ where: { email } });
-    if (!business || !(await bcrypt.compare(password, business.passwordHash)))
+    if (!business || !(await bcrypt.compare(password, business.passwordHash))) {
+      await bloqueo.registrar({ req, tipo: 'business', identificador: email, exito: false });
       return res.status(401).json({ message: 'Email o contraseña incorrectos.' });
+    }
+
+    await bloqueo.registrar({ req, tipo: 'business', identificador: email, exito: true });
+    await bloqueo.limpiar({ req, identificador: email });
 
     const token = crearSesion({ type: 'business', businessId: business.id });
     setAuthCookie(res, token);
@@ -93,10 +117,17 @@ const employeeLogin = async (req, res, next) => {
   try {
     const { email, password } = req.body;
     const employee = await Employee.findOne({ where: { email, activo: true }, include: [{ association: 'cargo' }] });
-    if (!employee || !employee.passwordHash)
+    if (!employee || !employee.passwordHash) {
+      await bloqueo.registrar({ req, tipo: 'employee', identificador: email, exito: false });
       return res.status(401).json({ message: 'Email o contraseña incorrectos.' });
-    if (!(await bcrypt.compare(password, employee.passwordHash)))
+    }
+    if (!(await bcrypt.compare(password, employee.passwordHash))) {
+      await bloqueo.registrar({ req, tipo: 'employee', identificador: email, exito: false });
       return res.status(401).json({ message: 'Email o contraseña incorrectos.' });
+    }
+
+    await bloqueo.registrar({ req, tipo: 'employee', identificador: email, exito: true });
+    await bloqueo.limpiar({ req, identificador: email });
 
     const permisos = employee.cargo?.permisos || {};
     const token = crearSesion({

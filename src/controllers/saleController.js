@@ -166,6 +166,19 @@ const createSale = async (req, res, next) => {
       : 'contado';
     const esFiado = condicionPago === 'cuenta_corriente';
 
+    // Fiar es la función que separa al Enterprise: se controla acá y no en la
+    // ruta porque POST /sales sirve para los dos tipos de venta.
+    if (esFiado) {
+      const { tieneFeature } = require('../services/planService');
+      const { FEATURES } = require('../config/planes');
+      if (!(await tieneFeature(req.auth.businessId, FEATURES.CUENTAS_CORRIENTES))) {
+        throw Object.assign(
+          new Error('Las ventas en cuenta corriente están incluidas en el Plan Enterprise.'),
+          { status: 402, motivo: 'plan', feature: FEATURES.CUENTAS_CORRIENTES }
+        );
+      }
+    }
+
     if (esFiado && !clientId) {
       throw Object.assign(
         new Error('Para fiar hay que elegir un cliente: no se puede vender en cuenta corriente a consumidor final.'),

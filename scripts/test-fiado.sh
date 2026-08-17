@@ -11,7 +11,23 @@
 # Requiere el backend corriendo y el negocio demo (scripts/seed-demo-business.js).
 # Deja el negocio como lo encontró salvo por las ventas de prueba.
 API="${API:-http://localhost:3000/api}"
-T=$(mktemp -d); trap 'rm -rf $T' EXIT
+T=$(mktemp -d)
+# Al salir se devuelve el plan del demo a Pro, pase lo que pase: la suite lo
+# eleva a Enterprise para poder fiar, y dejarlo elevado falsea todo lo que se
+# mire después.
+restaurar_plan() {
+  node -e "
+    require('dotenv').config();
+    const { Business, Subscription, Plan } = require('./src/models');
+    (async () => {
+      const b = await Business.findOne({ where: { email: 'demo@stocker.app' } });
+      const pro = await Plan.findOne({ where: { codigo: 'pro' } });
+      if (b && pro) await Subscription.update({ planId: pro.id }, { where: { businessId: b.id } });
+      process.exit(0);
+    })();
+  " >/dev/null 2>&1
+}
+trap 'restaurar_plan; rm -rf $T' EXIT
 J() { node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{console.log(eval('('+d+')')$1)}catch(e){console.log('ERR:'+d.slice(0,160))}})"; }
 ok=0; ko=0
 chk() { if [ "$2" = "$3" ]; then printf "  \033[32m✓\033[0m %-46s %s\n" "$1" "$3"; ok=$((ok+1));
@@ -21,6 +37,20 @@ tit() { printf "\n\033[1m%s\033[0m\n" "$1"; }
 until [ "$(curl -s -o /dev/null -w '%{http_code}' -c $T/o.txt -X POST $API/auth/login \
   -H 'Content-Type: application/json' -d '{"email":"demo@stocker.app","password":"Demo2026!!"}')" = "200" ]; do sleep 5; done
 C() { curl -s -b $T/o.txt -H 'Content-Type: application/json' "$@"; }
+
+# Las cuentas corrientes son función del Plan Enterprise. La cuenta demo nace
+# en Pro, así que se la sube acá: si no, todo lo de abajo devuelve 402 y el
+# fallo parecería del flujo de fiado en vez de una condición del entorno.
+node -e "
+require('dotenv').config();
+const { Business, Subscription, Plan } = require('./src/models');
+(async () => {
+  const b = await Business.findOne({ where: { email: 'demo@stocker.app' } });
+  const plan = await Plan.findOne({ where: { codigo: 'enterprise' } });
+  await Subscription.update({ planId: plan.id }, { where: { businessId: b.id } });
+  process.exit(0);
+})();
+" > /dev/null 2>&1
 
 # Variante con stock de sobra para no chocar con validaciones de inventario.
 PROD=$(C "$API/products?limit=50")

@@ -7,6 +7,7 @@ const { lookupCuit } = require('../services/arcaLookupService');
 const { generateInvoicePdf, generateInvoicePdfBuffer } = require('../services/pdfService');
 const { sendInvoiceEmail } = require('../services/emailService');
 const { sendInvoiceWhatsapp } = require('../services/whatsappService');
+const { exigirCupo } = require('../services/planService');
 
 // GET /api/invoices
 const getInvoices = async (req, res, next) => {
@@ -65,6 +66,15 @@ const createInvoice = async (req, res, next) => {
 
     const existingInvoice = await Invoice.findOne({ where: { saleId, businessId: req.auth.businessId } });
     if (existingInvoice)   throw Object.assign(new Error('Esta venta ya tiene una factura generada.'), { status: 409 });
+
+    /*
+     * Tope de comprobantes del mes.
+     *
+     * Va después de las validaciones de la venta y antes de pedirle el CAE a
+     * ARCA: cortar acá evita quemar un número de comprobante que después
+     * habría que anular. Se cuenta el mes corriente y arranca de cero el día 1.
+     */
+    await exigirCupo(req.auth.businessId, 'comprobantes');
 
     const business = await Business.findByPk(req.auth.businessId);
 

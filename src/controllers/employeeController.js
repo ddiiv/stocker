@@ -1,5 +1,7 @@
 const bcrypt = require('bcryptjs');
 const { Employee, BusinessLocation, Role, EmployeeSession } = require('../models');
+const identidad = require('../services/identityRegistry');
+const { exigirCupo } = require('../services/planService');
 
 const sanitize = (e) => { const { passwordHash, ...s } = e.toJSON(); return s; };
 
@@ -33,6 +35,14 @@ const createEmployee = async (req, res, next) => {
     const { nombre, apellido, email, telefono, dni, roleId, locationId, password } = req.body;
     if (!nombre || !apellido || !email || !dni)
       return res.status(400).json({ message: 'Nombre, apellido, email y DNI son obligatorios.' });
+
+    // El tope de usuarios es lo que se vende en cada plan, así que se controla
+    // antes de crear nada. Se cuentan los activos: dar de baja libera el lugar.
+    await exigirCupo(req.auth.businessId, 'empleados');
+    // Un email pertenece a una sola persona en todo Stocker, sea dueño,
+    // empleado de otro negocio u operador de la plataforma.
+    await identidad.exigirLibre(email);
+
     const passwordHash = password ? await bcrypt.hash(password, 10) : null;
     // Mismo control que en la edición: el cargo y el local tienen que ser de
     // este negocio. Acá el riesgo es heredar los permisos de un cargo ajeno.
@@ -102,6 +112,11 @@ const updateEmployee = async (req, res, next) => {
     Object.assign(patch, await resolverRelaciones(req.body || {}, req.auth.businessId));
 
     if (req.body?.password) patch.passwordHash = await bcrypt.hash(req.body.password, 10);
+    // Cambiar el email también tiene que respetar la unicidad global; sin esto
+    // se podía esquivar la validación del alta editando después.
+    if (patch.email && patch.email !== e.email) {
+      await identidad.exigirLibre(patch.email, { employeeId: e.id });
+    }
 
     await e.update(patch);
     const full = await Employee.findByPk(e.id, { include: [{ association: 'cargo' }, { association: 'local' }] });
@@ -114,6 +129,9 @@ const toggleActive = async (req, res, next) => {
   try {
     const e = await Employee.findOne({ where: { id: req.params.id, businessId: req.auth.businessId } });
     if (!e) return res.status(404).json({ message: 'Empleado no encontrado.' });
+    // Reactivar ocupa un lugar igual que dar de alta: si no, bastaría con
+    // desactivar y reactivar para pasarse del tope del plan.
+    if (!e.activo) await exigirCupo(req.auth.businessId, 'empleados');
     await e.update({ activo: !e.activo });
     res.json(sanitize(e));
   } catch (error) { next(error); }

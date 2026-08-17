@@ -28,20 +28,98 @@ const creditCtrl = require('../controllers/creditController');
 const paymentCtrl = require('../controllers/paymentMethodController');
 const cashCtrl = require('../controllers/cashController');
 const accountCtrl = require('../controllers/accountController');
+const billingCtrl = require('../controllers/billingController');
+const { exigirOperativa, requireFeature } = require('../middleware/plan');
+const backofficeCtrl = require('../controllers/backofficeController');
+const { requirePlatformAdmin } = require('../middleware/backoffice');
+const { restringirBackoffice } = require('../middleware/ipAllowlist');
+const { frenarSiBloqueado } = require('../services/bloqueoService');
+const publicCtrl = require('../controllers/publicController');
+const { FEATURES } = require('../config/planes');
 
 const r = Router();
 
 // ── Auth ──────────────────────────────────────────────────────────
 r.post('/auth/register',              registerLimiter, validatePasswordBody(), register);
-r.post('/auth/login',                 loginLimiter, login);
-r.post('/auth/employee-login',        loginLimiter, employeeLogin);
+r.post('/auth/login',                 loginLimiter, frenarSiBloqueado('business'), login);
+r.post('/auth/employee-login',        loginLimiter, frenarSiBloqueado('employee'), employeeLogin);
 r.post('/auth/logout',                logout);
 r.get ('/auth/me',                    requireAuth, me);
-r.post('/auth/forgot-password',       passwordResetLimiter, forgotPassword);
+r.post('/auth/forgot-password',       passwordResetLimiter, frenarSiBloqueado('reset'), forgotPassword);
 r.post('/auth/verify-reset-code',     passwordResetLimiter, verifyResetCode);
 r.post('/auth/reset-password',        passwordResetLimiter, validatePasswordBody('newPassword'), resetPassword);
 
 // ── Cuenta del dueño ─────────────────────────────────────────────
+/*
+ * Suscripción a Stocker.
+ *
+ * El catálogo de planes es público: lo consume la pantalla de precios, y quien
+ * está en modo lectura tiene que poder ver a qué plan pasarse.
+ *
+ * El resto pide requireOwner: un empleado no decide qué plan paga el negocio.
+ * Ninguna de estas rutas lleva `exigirOperativa` — sería encerrar al cliente
+ * fuera de la única pantalla que le permite volver a operar.
+ *
+ * El webhook queda sin auth porque lo llama Mercado Pago; se defiende
+ * validando la firma y consultando el pago contra la API de MP.
+ */
+r.get ('/billing/planes',          billingCtrl.getPlanes);
+r.post('/billing/webhook/mercadopago', billingCtrl.webhookMercadoPago);
+r.get ('/billing/suscripcion',     requireAuth, requireOwner, billingCtrl.getSuscripcion);
+r.get ('/billing/pagos',           requireAuth, requireOwner, billingCtrl.getPagos);
+r.post('/billing/checkout',        requireAuth, requireOwner, billingCtrl.crearCheckout);
+r.get ('/billing/transferencia',   requireAuth, requireOwner, billingCtrl.getDatosTransferencia);
+r.post('/billing/transferencia',   requireAuth, requireOwner, billingCtrl.informarTransferencia);
+r.post('/billing/verificar',       requireAuth, requireOwner, billingCtrl.verificarPagos);
+r.post('/billing/renovacion',      requireAuth, requireOwner, billingCtrl.cambiarRenovacion);
+r.post('/billing/baja',            requireAuth, requireOwner, billingCtrl.solicitarBaja);
+r.delete('/billing/baja',          requireAuth, requireOwner, billingCtrl.cancelarBaja);
+r.get ('/billing/pagos/:id/recibo', requireAuth, requireOwner, billingCtrl.descargarRecibo);
+
+/*
+ * Datos que consume la página pública (contacto, precios, cotización).
+ *
+ * Abierto a propósito: lo lee un sitio estático sin sesión. Sólo devuelve lo
+ * que ya está publicado en la página de precios.
+ */
+r.get ('/public/landing',          publicCtrl.datosLanding);
+
+/*
+ * Backoffice de Stocker — administración de la plataforma.
+ *
+ * Sesión propia (`type: platform`), separada de la de los negocios: un token
+ * de dueño no abre estas rutas ni con el id correcto. El login exige segundo
+ * factor porque es la única cuenta que ve los datos de todos los clientes.
+ */
+/*
+ * Restricción por IP para TODO el backoffice, incluido el login.
+ *
+ * Va como un `use` sobre el prefijo y no ruta por ruta: una ruta nueva que
+ * alguien olvide anotar quedaría abierta a internet, y ese olvido no se nota
+ * hasta que ya pasó algo.
+ *
+ * Se aplica antes del login a propósito. Si sólo cubriera las rutas con sesión,
+ * cualquiera podría seguir probando contraseñas contra el login desde afuera.
+ */
+r.use('/backoffice', restringirBackoffice);
+
+r.post('/backoffice/login',          loginLimiter, frenarSiBloqueado('platform'), backofficeCtrl.login);
+r.post('/backoffice/logout',         backofficeCtrl.logout);
+r.post('/backoffice/totp/activar',   loginLimiter, backofficeCtrl.activarTotp);
+r.get ('/backoffice/me',             requirePlatformAdmin, backofficeCtrl.yo);
+r.get ('/backoffice/resumen',        requirePlatformAdmin, backofficeCtrl.resumen);
+r.get ('/backoffice/cuentas',        requirePlatformAdmin, backofficeCtrl.listarCuentas);
+r.get ('/backoffice/cuentas/:id',    requirePlatformAdmin, backofficeCtrl.verCuenta);
+r.put ('/backoffice/cuentas/:id/suscripcion', requirePlatformAdmin, backofficeCtrl.editarSuscripcion);
+r.post('/backoffice/pagos/:id/aprobar',   requirePlatformAdmin, backofficeCtrl.aprobarPago);
+r.post('/backoffice/pagos/:id/rechazar',  requirePlatformAdmin, backofficeCtrl.rechazarPago);
+r.get ('/backoffice/planes',         requirePlatformAdmin, backofficeCtrl.listarPlanes);
+r.put ('/backoffice/planes/:codigo', requirePlatformAdmin, backofficeCtrl.editarPlan);
+r.get ('/backoffice/mercadopago',    requirePlatformAdmin, backofficeCtrl.estadoMercadoPago);
+r.get ('/backoffice/seguridad',      requirePlatformAdmin, backofficeCtrl.estadoSeguridad);
+r.get ('/backoffice/ajustes',        requirePlatformAdmin, backofficeCtrl.getAjustes);
+r.put ('/backoffice/ajustes',        requirePlatformAdmin, backofficeCtrl.editarAjustes);
+
 // requireOwner en todas: un empleado no toca las credenciales del negocio.
 // Los cambios de email y contraseña pasan por el limitador de recuperación,
 // que ya acota los pedidos que disparan un mail.
@@ -52,6 +130,18 @@ r.post('/account/email/solicitar',   requireAuth, requireOwner, passwordResetLim
 r.post('/account/email/confirmar',   requireAuth, requireOwner, accountCtrl.confirmarCambioEmail);
 r.post('/account/password/solicitar', requireAuth, requireOwner, passwordResetLimiter, accountCtrl.solicitarCambioPassword);
 r.post('/account/password/confirmar', requireAuth, requireOwner, validatePasswordBody('passwordNueva'), accountCtrl.confirmarCambioPassword);
+
+/*
+ * A partir de acá, todo lo que ESCRIBE exige la cuenta al día.
+ *
+ * Va como un `use` y no repetido ruta por ruta: una ruta nueva que alguien
+ * olvide anotar quedaría cobrando gratis, y ese olvido no se nota nunca.
+ *
+ * Sólo afecta a métodos de escritura y sólo a sesiones ya autenticadas: los
+ * GET siguen abiertos aunque la cuenta esté impaga. Es la regla del modo
+ * lectura — el cliente nunca pierde el acceso a sus propios datos.
+ */
+r.use((req, res, next) => (req.auth?.businessId ? exigirOperativa(req, res, next) : next()));
 
 // ── Locations ─────────────────────────────────────────────────────
 // El listado queda con requireAuth solo: lo necesitan casi todas las pantallas
@@ -88,8 +178,8 @@ r.delete('/employees/:id',          requireAuth, requirePermission('empleados','
  */
 r.get   ('/clients/cuentas',       requireAuth, requirePermission('clientes','ver'),    creditCtrl.getCuentas);
 r.get   ('/clients/:id/cuenta',    requireAuth, requirePermission('clientes','ver'),    creditCtrl.getCuenta);
-r.put   ('/clients/:id/cuenta',    requireAuth, requirePermission('pagos','editar'),    creditCtrl.updateCuentaConfig);
-r.post  ('/clients/:id/cuenta/pagos', requireAuth, requirePermission('clientes','editar'), creditCtrl.registrarPago);
+r.put   ('/clients/:id/cuenta',    requireAuth, requirePermission('pagos','editar'),    requireFeature(FEATURES.CUENTAS_CORRIENTES), creditCtrl.updateCuentaConfig);
+r.post  ('/clients/:id/cuenta/pagos', requireAuth, requirePermission('clientes','editar'), requireFeature(FEATURES.CUENTAS_CORRIENTES), creditCtrl.registrarPago);
 
 r.get   ('/clients',     requireAuth, requirePermission('clientes','ver'),    getClients);
 r.post  ('/clients',     requireAuth, requirePermission('clientes','editar'), createClient);
@@ -113,12 +203,12 @@ r.post('/arca/cuits/:cuitId/verify',    requireAuth, requirePermission('facturac
 // el negocio se identifica por el parámetro `state`.
 r.get   ('/mercadolibre/callback',    mlCtrl.callback);
 r.get   ('/mercadolibre/status',      requireAuth, requirePermission('integraciones','ver'),    mlCtrl.status);
-r.get   ('/mercadolibre/auth-url',    requireAuth, requirePermission('integraciones','editar'), mlCtrl.authUrl);
+r.get   ('/mercadolibre/auth-url',    requireAuth, requirePermission('integraciones','editar'), requireFeature(FEATURES.ECOMMERCE), mlCtrl.authUrl);
 r.delete('/mercadolibre/disconnect',  requireAuth, requirePermission('integraciones','editar'), mlCtrl.disconnect);
 r.get   ('/mercadolibre/preview',     requireAuth, requirePermission('integraciones','ver'),    mlCtrl.preview);
-r.post  ('/mercadolibre/sync',        requireAuth, requirePermission('integraciones','editar'), mlCtrl.sync);
+r.post  ('/mercadolibre/sync',        requireAuth, requirePermission('integraciones','editar'), requireFeature(FEATURES.ECOMMERCE), mlCtrl.sync);
 r.get   ('/mercadolibre/links',       requireAuth, requirePermission('integraciones','ver'),    mlCtrl.listLinks);
-r.post  ('/mercadolibre/links',       requireAuth, requirePermission('integraciones','editar'), mlCtrl.upsertLink);
+r.post  ('/mercadolibre/links',       requireAuth, requirePermission('integraciones','editar'), requireFeature(FEATURES.ECOMMERCE), mlCtrl.upsertLink);
 r.delete('/mercadolibre/links/:id',   requireAuth, requirePermission('integraciones','editar'), mlCtrl.deleteLink);
 
 // ── Variant types (variantes maestras del negocio) ───────────────
@@ -142,7 +232,7 @@ r.delete('/business-cuits/:id', requireAuth, requirePermission('facturacion','ed
 // ── Products ──────────────────────────────────────────────────────
 r.get   ('/products',                                     requireAuth, requirePermission('stock','ver'),    productCtrl.getProducts);
 r.get   ('/products/export',                              requireAuth, requirePermission('stock','ver'),    productCtrl.exportProducts);
-r.post  ('/products/import',    requireAuth, requirePermission('stock','editar'), upload.single('file'),    productCtrl.importProducts);
+r.post  ('/products/import',    requireAuth, requirePermission('stock','editar'), requireFeature(FEATURES.IMPORTACION_MASIVA), upload.single('file'),    productCtrl.importProducts);
 // Escaneo con lector de barras — antes de /products/:id para que no lo capture
 r.get   ('/products/scan/:codigo',                        requireAuth, requirePermission('stock','ver'),    productCtrl.scanLookup);
 r.post  ('/products/scan/stock',                          requireAuth, requirePermission('stock','editar'), productCtrl.scanAdjustStock);
@@ -170,7 +260,7 @@ r.post  ('/sales/cotizacion/:id/convertir', requireAuth, requirePermission('coti
 // ── Invoices ─────────────────────────────────────────────────────
 r.get   ('/invoices',           requireAuth, requirePermission('facturacion','ver'),    invoiceCtrl.getInvoices);
 r.get   ('/invoices/:id',       requireAuth, requirePermission('facturacion','ver'),    invoiceCtrl.getInvoice);
-r.post  ('/invoices',           requireAuth, requirePermission('facturacion','editar'), invoiceCtrl.createInvoice);
+r.post  ('/invoices',           requireAuth, requirePermission('facturacion','editar'), requireFeature(FEATURES.FACTURACION), invoiceCtrl.createInvoice);
 r.patch ('/invoices/:id/anular',requireAuth, requirePermission('facturacion','editar'), invoiceCtrl.voidInvoice);
 r.get   ('/invoices/:id/pdf',   requireAuth, requirePermission('facturacion','ver'),    invoiceCtrl.downloadPdf);
 

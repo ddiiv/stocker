@@ -54,31 +54,55 @@ const FRONT_URL = comoUrl(process.env.FRONTEND_URL) || comoUrl(process.env.FRONT
 // Railway, el login en producción moriría con 500 antes de llegar al handler.
 // Admite varias separadas por coma en FRONTEND_URL, más la que salga de
 // FRONTEND_DOMAIN (la variable compartida del proyecto).
-const CORS_STATIC_ORIGINS = [
-  ...(process.env.FRONTEND_URL || '').split(',').map((s) => comoUrl(s)),
+/*
+ * Orígenes permitidos.
+ *
+ * Antes esto aceptaba cualquier subdominio de railway.app, vercel.app y ngrok
+ * por patrón. O sea: cualquiera que levantara un sitio en Railway podía hacerle
+ * pedidos con credenciales a esta API. La cookie SameSite=Strict tapaba buena
+ * parte del agujero, pero la lista no tenía por qué estar abierta.
+ *
+ * Ahora son exactos y salen de la configuración. Los tres servicios del
+ * proyecto —app, backoffice y página pública— se declaran por variable.
+ *
+ * localhost sólo fuera de producción: en producción, un origen de localhost no
+ * es un desarrollador, es alguien apuntando su navegador a nuestra API.
+ */
+const CORS_ORIGENES = [
+  ...(process.env.FRONTEND_URL || '').split(',').map(comoUrl),
   comoUrl(process.env.FRONTEND_DOMAIN),
+  comoUrl(process.env.BACKOFFICE_DOMAIN),
+  comoUrl(process.env.LANDING_DOMAIN),
 ].filter(Boolean);
-const CORS_ORIGIN_PATTERNS = [
+
+const ES_PRODUCCION = process.env.NODE_ENV === 'production';
+const CORS_LOCALES = [
   /^https?:\/\/localhost(:\d+)?$/,
   /^https?:\/\/127\.0\.0\.1(:\d+)?$/,
-  // Cubre tanto proyecto.railway.app como proyecto.up.railway.app.
-  /^https:\/\/[a-z0-9-]+(\.[a-z0-9-]+)*\.railway\.app$/i,
-  /^https:\/\/[a-z0-9-]+\.vercel\.app$/i,
-  /^https:\/\/[a-z0-9-]+\.ngrok-free\.app$/i,
-  /^https:\/\/[a-z0-9-]+\.ngrok\.app$/i,
-  /^https:\/\/[a-z0-9-]+\.ngrok\.io$/i,
 ];
+
+function origenPermitido(origin) {
+  if (CORS_ORIGENES.includes(origin)) return true;
+  if (!ES_PRODUCCION && CORS_LOCALES.some((rx) => rx.test(origin))) return true;
+  return false;
+}
+
 app.use(cors({
   origin(origin, cb) {
-    if (!origin) return cb(null, true); // curl / same-origin / health checks
-    if (CORS_STATIC_ORIGINS.includes(origin)) return cb(null, true);
-    if (CORS_ORIGIN_PATTERNS.some((rx) => rx.test(origin))) return cb(null, true);
+    // Sin Origin: curl, mismo origen, healthchecks. No es un navegador cruzando
+    // dominios, así que no hay nada que autorizar.
+    if (!origin) return cb(null, true);
+    if (origenPermitido(origin)) return cb(null, true);
+
     console.warn(`[cors] Origen rechazado: ${origin}`);
-    cb(new Error(`CORS: origen no permitido (${origin})`));
+    // Se responde sin permiso en vez de lanzar: un throw acá termina en un 500
+    // y en el log del servidor como si fuera un error nuestro.
+    cb(null, false);
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'ngrok-skip-browser-warning'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+  maxAge: 86400,
 }));
 
 // Detrás del proxy de Railway: sin esto, req.ip devuelve la IP del proxy y
@@ -87,9 +111,56 @@ app.set('trust proxy', 1);
 // No anunciar el framework: le ahorra a un atacante saber contra qué apuntar.
 app.disable('x-powered-by');
 
+/*
+ * Orden de los middlewares: importa, y esta es la razón de cada paso.
+ *
+ * Las ráfagas y los filtros de forma van ANTES del parser de JSON. Si fueran
+ * después, un atacante mandando cuerpos de 10 MB haría que el servidor los lea
+ * enteros en memoria para recién entonces rechazarlos — el límite terminaría
+ * siendo la palanca del ataque en vez de la defensa.
+ */
+const { burstLimiter, apiLimiter, publicLimiter } = require('./src/middleware/rateLimit');
+const { filtrarPeticion, filtrarCuerpo } = require('./src/middleware/hardening');
+
+app.use(burstLimiter);
+app.use(filtrarPeticion);
+
 app.use(cookieParser());
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true }));
+/*
+ * Cuerpo máximo: 1 MB.
+ *
+ * Estaba en 10 MB, que es diez veces más de lo que necesita el pedido más
+ * grande de la API — una venta con cien ítems no pasa de unos pocos KB. Un
+ * límite holgado no agrega ninguna función y sí multiplica por diez lo que se
+ * puede hacer con una conexión.
+ *
+ * Las subidas de archivo no pasan por acá: van por multer, que tiene su propio
+ * tope de 10 MB para las planillas de Excel.
+ */
+app.use(express.json({ limit: '1mb' }));
+app.use(express.urlencoded({ extended: true, limit: '1mb' }));
+app.use(filtrarCuerpo);
+
+/*
+ * Cabeceras de seguridad.
+ *
+ * La API devuelve JSON, así que la CSP puede ser cerrada del todo: no hay
+ * script ni estilo legítimo que cargar desde una respuesta de la API. Si algún
+ * día un navegador termina renderizando una respuesta —por un error de
+ * content-type, por ejemplo— no va a ejecutar nada.
+ */
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('Content-Security-Policy', "default-src 'none'; frame-ancestors 'none'; base-uri 'none'");
+  res.setHeader('Cross-Origin-Resource-Policy', 'same-site');
+  res.setHeader('Permissions-Policy', 'geolocation=(), microphone=(), camera=()');
+  if (req.secure) {
+    res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  }
+  next();
+});
 
 // Carpeta de PDFs accesible estáticamente
 const pdfDir = process.env.PDF_STORAGE_PATH || path.join(__dirname, 'storage/pdfs');
@@ -98,7 +169,15 @@ app.use('/storage/pdfs', express.static(pdfDir));
 
 // ── Rutas ─────────────────────────────────────────────────────────
 app.get('/', (req, res) => res.json({ message: 'Stocker API v2 ✔', status: 'ok' }));
-const { apiLimiter } = require('./src/middleware/rateLimit');
+
+/*
+ * La superficie sin sesión lleva un cupo más ajustado que el resto.
+ *
+ * El cupo holgado existe para el punto de venta, que con un lector de barras
+ * dispara muchas peticiones seguidas. Nada de eso pasa por login ni por
+ * registro, así que ahí no hay razón para ser generoso.
+ */
+app.use(['/api/auth', '/api/backoffice/login', '/api/backoffice/totp'], publicLimiter);
 app.use('/api', apiLimiter, routes);
 
 // ── 404 y errores ─────────────────────────────────────────────────
@@ -146,6 +225,11 @@ async function start() {
 
       const sembrados = await ensureDatosIniciales();
       if (sembrados) console.log(`✔ Medios de pago iniciales creados en ${sembrados} negocio(s).`);
+
+      // El historial de intentos crece con cada login del sistema; se recorta
+      // acá y no con un cron para no depender de otra pieza que puede no correr.
+      const { purgar } = require('./src/services/bloqueoService');
+      await purgar();
     }
 
     // La red privada de Railway es IPv6: si el server sólo escucha en 0.0.0.0,
@@ -156,6 +240,25 @@ async function start() {
       console.log(`✔ Stocker API escuchando en ${dir.address}:${dir.port} (IPv4 + IPv6)`);
       console.log(`  El servicio del front debe apuntar a: http://<nombre-de-este-servicio>.railway.internal:${dir.port}`);
       console.log(`  PDFs en: ${pdfDir}`);
+
+      /*
+       * Estado de las defensas, en el arranque.
+       *
+       * Se imprime porque el modo más común de fallar en esto es silencioso:
+       * la variable quedó sin cargar, el panel siguió abierto a internet, y
+       * nadie se enteró hasta que pasó algo. Verlo en cada deploy es la forma
+       * más barata de que no pase inadvertido.
+       */
+      const { estado: estadoIps, VARIABLE } = require('./src/middleware/ipAllowlist');
+      const ips = estadoIps();
+      console.log('  ── Seguridad ──');
+      console.log(`    Backoffice por IP .. ${ips.activa
+        ? `restringido (${ips.cantidad} regla${ips.cantidad === 1 ? '' : 's'})`
+        : `✖ ABIERTO — cargá ${VARIABLE}`}`);
+        const bloq = require('./src/services/bloqueoService');
+      console.log(`    Bloqueo por fuerza bruta .. ${bloq.TOPE_POR_CUENTA} fallos por cuenta · ${bloq.TOPE_POR_IP} por IP, en ${bloq.VENTANA_MIN} min`);
+      console.log('    Ráfagas .. 60 pedidos cada 2 s por IP');
+      console.log(`    Cuerpo máximo .. 1 MB`);
     });
 
     server.on('error', (err) => {

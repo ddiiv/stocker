@@ -1,6 +1,7 @@
 const { exigirLibre } = require('../services/cuitRegistry');
 const { BusinessCuit, sequelize } = require('../models');
 const seq = require('../config/database');
+const { exigirCupo } = require('../services/planService');
 
 const MAX_CUITS = 3;
 
@@ -24,6 +25,10 @@ const create = async (req, res, next) => {
       await t.rollback();
       return res.status(400).json({ message: `Máximo ${MAX_CUITS} CUITs por negocio.` });
     }
+    // Multi-CUIT es parte de lo que separa un plan del otro: Inicial 1,
+    // Pro 2, Enterprise sin tope.
+    await exigirCupo(req.auth.businessId, 'cuits');
+
     const { nombre, cuit, condicionIva, domicilio, esPrincipal } = req.body;
     if (!nombre?.trim() || !cuit?.trim()) {
       await t.rollback();

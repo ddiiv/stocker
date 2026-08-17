@@ -53,6 +53,23 @@ const COLUMNAS_ESPERADAS = {
     cobradoEn:            { type: DataTypes.DATE, allowNull: true },
     cobradoPorEmployeeId: { type: DataTypes.INTEGER, allowNull: true },
   },
+  plans: {
+    editadoEn:       { type: DataTypes.DATE, allowNull: true },
+    maxSkus:         { type: DataTypes.INTEGER, allowNull: true },
+    maxComprobantes: { type: DataTypes.INTEGER, allowNull: true },
+  },
+  subscriptions: {
+    renovacionAutomatica: { type: DataTypes.BOOLEAN, allowNull: true, defaultValue: true },
+    descuentoPct:         { type: DataTypes.DECIMAL(5, 2), allowNull: true, defaultValue: 0 },
+    descuentoNota:        { type: DataTypes.STRING(200), allowNull: true },
+    bajaSolicitadaEn:     { type: DataTypes.DATE, allowNull: true },
+    bajaMotivo:           { type: DataTypes.STRING(500), allowNull: true },
+  },
+  platform_admins: {
+    totpSecret:     { type: DataTypes.STRING(64), allowNull: true },
+    totpActivadoEn: { type: DataTypes.DATE, allowNull: true },
+    ultimaIp:       { type: DataTypes.STRING(60), allowNull: true },
+  },
 };
 
 /*
@@ -150,6 +167,21 @@ const RELLENOS = [
     sql: `UPDATE sales SET "cobradoPorEmployeeId" = "employeeId" WHERE estado = 'pagado' AND "cobradoPorEmployeeId" IS NULL AND "employeeId" IS NOT NULL`,
     sqlMssql: `UPDATE sales SET cobradoPorEmployeeId = employeeId WHERE estado = 'pagado' AND cobradoPorEmployeeId IS NULL AND employeeId IS NOT NULL`,
   },
+  {
+    // Las suscripciones que ya existían renuevan salvo que pidan lo contrario.
+    descripcion: 'suscripciones anteriores: renovación automática y sin descuento',
+    cuandoSeAgrega: 'subscriptions.renovacionAutomatica',
+    reintentable: true,
+    sql: `UPDATE subscriptions SET "renovacionAutomatica" = true WHERE "renovacionAutomatica" IS NULL`,
+    sqlMssql: `UPDATE subscriptions SET renovacionAutomatica = 1 WHERE renovacionAutomatica IS NULL`,
+  },
+  {
+    descripcion: 'suscripciones anteriores: descuento en cero',
+    cuandoSeAgrega: 'subscriptions.descuentoPct',
+    reintentable: true,
+    sql: `UPDATE subscriptions SET "descuentoPct" = 0 WHERE "descuentoPct" IS NULL`,
+    sqlMssql: `UPDATE subscriptions SET descuentoPct = 0 WHERE descuentoPct IS NULL`,
+  },
 ];
 
 async function ensureColumns(sequelize) {
@@ -207,7 +239,13 @@ const MEDIOS_INICIALES = ['Efectivo', 'Débito', 'Crédito', 'Transferencia', 'Q
 
 async function ensureDatosIniciales() {
   const { Business, PaymentMethod } = require('../models');
+  const { sembrarPlanes, iniciarTrial } = require('../services/planService');
+  const { Subscription } = require('../models');
   let sembrados = 0;
+
+  // Catálogo comercial. Copia config/planes.js a la tabla si falta; de ahí en
+  // más manda la base, para poder retocar precios y topes sin deploy.
+  await sembrarPlanes();
 
   const negocios = await Business.findAll({ attributes: ['id'] });
   for (const negocio of negocios) {
@@ -219,6 +257,16 @@ async function ensureDatosIniciales() {
       }))
     );
     sembrados++;
+  }
+
+  /*
+   * Cuentas anteriores a los planes: se les abre la prueba de 14 días en vez
+   * de dejarlas sin suscripción. Sin esto quedarían bloqueadas de golpe por
+   * una función que ellas no pidieron.
+   */
+  for (const negocio of negocios) {
+    const tiene = await Subscription.count({ where: { businessId: negocio.id } });
+    if (!tiene) await iniciarTrial(negocio.id);
   }
 
   return sembrados;

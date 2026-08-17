@@ -26,6 +26,214 @@ const Business = db.define('Business', {
   passwordHash:  { type: DataTypes.STRING(255), allowNull: false },
 }, { tableName: 'businesses' });
 
+/* ─── Plan (catálogo comercial) ────────────────────────────────────
+ *
+ * Los límites viven en la base y no en el código porque son la palanca
+ * comercial: subir el Pro de 5 a 8 empleados, o cotizarle a un Enterprise
+ * puntual, no puede exigir un deploy.
+ *
+ * `null` en un límite significa "sin tope" — es Enterprise. Cero no sirve:
+ * cero es un tope real y válido.
+ */
+const Plan = db.define('Plan', {
+  id:            { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
+  codigo:        { type: DataTypes.STRING(20), allowNull: false, unique: true }, // inicial|pro|enterprise
+  nombre:        { type: DataTypes.STRING(60), allowNull: false },
+  descripcion:   { type: DataTypes.STRING(255) },
+  // Null = "a cotizar". Enterprise se cierra a mano con cada cliente, así que
+  // el precio real de esa cuenta vive en Subscription.precioAcordado.
+  precioMensual: { type: DataTypes.DECIMAL(12,2), allowNull: true },
+  moneda:        { type: DataTypes.STRING(3), defaultValue: 'ARS' },
+  // Topes. Null = ilimitado.
+  maxCuits:      { type: DataTypes.INTEGER, allowNull: true },
+  maxEmpleados:  { type: DataTypes.INTEGER, allowNull: true },
+  maxLocales:    { type: DataTypes.INTEGER, allowNull: true },
+  // Cuántas variantes distintas puede tener cargadas. Es el tope de
+  // almacenamiento: cada SKU es una fila más de inventario, de movimientos y
+  // de historial.
+  maxSkus:       { type: DataTypes.INTEGER, allowNull: true },
+  // Comprobantes electrónicos por MES. A diferencia de los otros topes, éste
+  // se reinicia el día 1: mide consumo, no capacidad.
+  maxComprobantes: { type: DataTypes.INTEGER, allowNull: true },
+  /*
+   * Funciones habilitadas, como JSON y no como una columna por función: cada
+   * módulo nuevo agregaría una migración, y los planes cambian más seguido que
+   * el esquema. Las claves las define config/planes.js.
+   */
+  // Mismo criterio que Role.permisos: SQL Server no tiene tipo JSON, se guarda
+  // como texto y se serializa acá para que el resto del código vea un objeto.
+  features: {
+    type: DataTypes.TEXT,
+    allowNull: false,
+    defaultValue: '{}',
+    get() { try { return JSON.parse(this.getDataValue('features')); } catch { return {}; } },
+    set(val) { this.setDataValue('features', typeof val === 'string' ? val : JSON.stringify(val)); },
+  },
+  soporte:       { type: DataTypes.STRING(60) },
+  // Enterprise no se contrata solo: se pide demo y se cotiza.
+  requiereCotizacion: { type: DataTypes.BOOLEAN, defaultValue: false },
+  activo:        { type: DataTypes.BOOLEAN, defaultValue: true },
+  orden:         { type: DataTypes.INTEGER, defaultValue: 0 },
+  // Cuándo lo tocó un operador desde el backoffice. Mientras sea null, la
+  // semilla de config/planes.js puede seguir actualizándolo; en cuanto alguien
+  // edita el precio a mano, el código deja de pisarlo.
+  editadoEn:     { type: DataTypes.DATE, allowNull: true },
+}, { tableName: 'plans' });
+
+/* ─── Subscription (una por negocio) ───────────────────────────────
+ *
+ * Estados:
+ *   trial     → 14 días con todo el plan habilitado, sin tarjeta.
+ *   activa    → pago al día.
+ *   morosa    → venció el período y todavía hay margen de gracia.
+ *   lectura   → sin pago: se puede consultar todo pero no facturar, vender ni
+ *               sincronizar. Los datos nunca se borran ni se ocultan.
+ *   cancelada → baja pedida por el cliente.
+ */
+const Subscription = db.define('Subscription', {
+  id:          { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
+  businessId:  { type: DataTypes.INTEGER, allowNull: false, unique: true },
+  planId:      { type: DataTypes.INTEGER, allowNull: false },
+  estado:      { type: DataTypes.STRING(15), allowNull: false, defaultValue: 'trial' },
+  trialInicio: { type: DataTypes.DATE, allowNull: true },
+  trialFin:    { type: DataTypes.DATE, allowNull: true },
+  // Período pago vigente. Fuera de él la cuenta cae a lectura.
+  periodoInicio: { type: DataTypes.DATE, allowNull: true },
+  periodoFin:    { type: DataTypes.DATE, allowNull: true },
+  // Precio cerrado con este cliente. Manda sobre el del plan: es lo que
+  // permite cotizar Enterprise o dejar un precio viejo a quien ya estaba.
+  precioAcordado: { type: DataTypes.DECIMAL(12,2), allowNull: true },
+  // mercadopago | transferencia | manual
+  metodoPago:     { type: DataTypes.STRING(20), allowNull: true },
+  // Id de la suscripción automática en el proveedor (preapproval de Mercado
+  // Pago). Con esto se consulta o se da de baja el débito recurrente.
+  proveedorRef:   { type: DataTypes.STRING(120), allowNull: true },
+  ultimoPagoEn:   { type: DataTypes.DATE, allowNull: true },
+  proximoCobroEn: { type: DataTypes.DATE, allowNull: true },
+  canceladaEn:    { type: DataTypes.DATE, allowNull: true },
+  /*
+   * Renovación automática. Cancelar la suscripción NO corta el servicio en el
+   * acto: apaga esta bandera y la cuenta sigue andando hasta que termine el
+   * período ya pagado. Cobrar un mes y quitarlo el mismo día sería quedarse
+   * con plata por un servicio no prestado.
+   */
+  renovacionAutomatica: { type: DataTypes.BOOLEAN, defaultValue: true },
+  // Descuento comercial sobre el precio de lista, otorgado desde el backoffice.
+  descuentoPct:   { type: DataTypes.DECIMAL(5,2), defaultValue: 0 },
+  descuentoNota:  { type: DataTypes.STRING(200), allowNull: true },
+  // Baja de cuenta pedida por el titular. Queda anotado el pedido; el borrado
+  // efectivo lo hace una persona, nunca el sistema solo.
+  bajaSolicitadaEn: { type: DataTypes.DATE, allowNull: true },
+  bajaMotivo:     { type: DataTypes.STRING(500), allowNull: true },
+  notas:          { type: DataTypes.STRING(500) },
+}, { tableName: 'subscriptions' });
+
+/* ─── SubscriptionPayment (historial de cobros) ───────────────────
+ *
+ * Una fila por intento de cobro, aprobado o no. Los rechazos quedan: sin
+ * ellos no hay forma de explicarle a un cliente por qué se le cortó el
+ * servicio, ni de detectar una tarjeta que viene fallando.
+ */
+const SubscriptionPayment = db.define('SubscriptionPayment', {
+  id:             { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
+  businessId:     { type: DataTypes.INTEGER, allowNull: false },
+  subscriptionId: { type: DataTypes.INTEGER, allowNull: false },
+  planId:         { type: DataTypes.INTEGER, allowNull: true },
+  monto:          { type: DataTypes.DECIMAL(12,2), allowNull: false },
+  moneda:         { type: DataTypes.STRING(3), defaultValue: 'ARS' },
+  // pendiente | aprobado | rechazado | reintegrado
+  estado:         { type: DataTypes.STRING(15), allowNull: false, defaultValue: 'pendiente' },
+  // mercadopago | transferencia | manual
+  metodo:         { type: DataTypes.STRING(20), allowNull: false },
+  // Id del pago en el proveedor. Único: es la defensa contra el webhook
+  // repetido, que Mercado Pago manda de rutina y si no acreditaría dos veces.
+  proveedorRef:   { type: DataTypes.STRING(120), allowNull: true, unique: true },
+  linkPago:       { type: DataTypes.STRING(500), allowNull: true },
+  periodoDesde:   { type: DataTypes.DATE, allowNull: true },
+  periodoHasta:   { type: DataTypes.DATE, allowNull: true },
+  // Transferencia bancaria: comprobante que sube el cliente y quién lo validó
+  // desde el backoffice. Una transferencia no se acredita sola.
+  comprobanteUrl: { type: DataTypes.STRING(500), allowNull: true },
+  verificadoPor:  { type: DataTypes.STRING(150), allowNull: true },
+  verificadoEn:   { type: DataTypes.DATE, allowNull: true },
+  detalle:        { type: DataTypes.STRING(500), allowNull: true },
+  fecha:          { type: DataTypes.DATE, allowNull: false, defaultValue: DataTypes.NOW },
+}, { tableName: 'subscription_payments' });
+
+/* ─── PlatformAdmin (backoffice de Stocker) ───────────────────────
+ *
+ * Operadores de Stocker, no de los negocios clientes. Tabla aparte a
+ * propósito: un admin de plataforma no pertenece a ningún businessId, y
+ * meterlo en `employees` habilitaría que un negocio se lo encuentre entre su
+ * gente. Acá viven los que aprueban transferencias y cotizan Enterprise.
+ */
+const PlatformAdmin = db.define('PlatformAdmin', {
+  id:            { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
+  nombre:        { type: DataTypes.STRING(120), allowNull: false },
+  email:         { type: DataTypes.STRING(150), allowNull: false, unique: true },
+  passwordHash:  { type: DataTypes.STRING(255), allowNull: false },
+  // soporte  → lee cuentas y responde. owner → además cobra y cotiza.
+  // soporte | owner | superuser. El superuser es uno solo y no se crea desde
+  // la aplicación: se siembra con scripts/crear-superuser.js.
+  rol:           { type: DataTypes.STRING(20), allowNull: false, defaultValue: 'soporte' },
+  /*
+   * Segundo factor obligatorio (TOTP, el código de Google Authenticator).
+   *
+   * La contraseña sola no alcanza para una cuenta que ve todas las cuentas de
+   * todos los negocios: si se filtra, se filtra el sistema entero. El secreto
+   * se guarda en base32 y el código se valida contra el reloj.
+   */
+  totpSecret:    { type: DataTypes.STRING(64), allowNull: true },
+  totpActivadoEn:{ type: DataTypes.DATE, allowNull: true },
+  activo:        { type: DataTypes.BOOLEAN, defaultValue: true },
+  ultimaConexion:{ type: DataTypes.DATE, allowNull: true },
+  ultimaIp:      { type: DataTypes.STRING(60), allowNull: true },
+}, { tableName: 'platform_admins' });
+
+/* ─── AuthAttempt (intentos de autenticación) ─────────────────────
+ *
+ * Una fila por intento, exitoso o no. Es lo que permite bloquear a quien está
+ * probando contraseñas sin castigar a quien se equivocó dos veces.
+ *
+ * Los bloqueos NO se guardan: se deducen contando estas filas. Una tabla de
+ * bloqueos se llena de registros vencidos que hay que limpiar, y un bloqueo mal
+ * borrado deja a alguien afuera sin motivo. Contando, el bloqueo se vence solo
+ * cuando las filas salen de la ventana.
+ */
+const AuthAttempt = db.define('AuthAttempt', {
+  id:     { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
+  ip:     { type: DataTypes.STRING(60), allowNull: true },
+  // El email que se intentó. Se guarda para poder frenar un ataque repartido
+  // entre muchas IPs contra una sola cuenta.
+  identificador: { type: DataTypes.STRING(150), allowNull: true },
+  // business | employee | platform | reset
+  tipo:   { type: DataTypes.STRING(20), allowNull: false },
+  exito:  { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
+  // Se recorta: un User-Agent puede venir con cientos de caracteres y acá sólo
+  // interesa para distinguir un navegador de un script.
+  userAgent: { type: DataTypes.STRING(200), allowNull: true },
+  fecha:  { type: DataTypes.DATE, allowNull: false, defaultValue: DataTypes.NOW },
+}, {
+  tableName: 'auth_attempts',
+  indexes: [
+    { fields: ['ip', 'fecha'] },
+    { fields: ['identificador', 'fecha'] },
+  ],
+});
+
+/* ─── PlatformSetting (parámetros editables de la plataforma) ─────
+ *
+ * Clave-valor para lo que un operador cambia sin tocar código: el contacto y
+ * los precios que muestra la página pública, la cotización del dólar. Vive en
+ * la base para que actualizar un teléfono no sea un deploy.
+ */
+const PlatformSetting = db.define('PlatformSetting', {
+  clave:        { type: DataTypes.STRING(60), primaryKey: true },
+  valor:        { type: DataTypes.TEXT, allowNull: true },
+  descripcion:  { type: DataTypes.STRING(200), allowNull: true },
+  actualizadoPor: { type: DataTypes.STRING(150), allowNull: true },
+}, { tableName: 'platform_settings' });
+
 // ─── BusinessCuit (multi-CUIT por negocio) ───────────────────────
 const BusinessCuit = db.define('BusinessCuit', {
   id:           { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
@@ -628,8 +836,21 @@ SalePayment.belongsTo(Sale, { foreignKey: 'saleId' });
 // paymentMethodId colgado.
 SalePayment.belongsTo(PaymentMethod, { foreignKey: 'paymentMethodId', as: 'metodo', onDelete: 'NO ACTION' });
 
+// ─── Suscripciones ───────────────────────────────────────────────
+Business.hasOne(Subscription, { foreignKey: 'businessId', as: 'suscripcion', onDelete: 'CASCADE' });
+Subscription.belongsTo(Business, { foreignKey: 'businessId' });
+Subscription.belongsTo(Plan,     { foreignKey: 'planId', as: 'plan', onDelete: 'NO ACTION' });
+Plan.hasMany(Subscription,       { foreignKey: 'planId', as: 'suscripciones' });
+
+Subscription.hasMany(SubscriptionPayment, { foreignKey: 'subscriptionId', as: 'pagos', onDelete: 'NO ACTION' });
+SubscriptionPayment.belongsTo(Subscription, { foreignKey: 'subscriptionId', as: 'suscripcion' });
+Business.hasMany(SubscriptionPayment, { foreignKey: 'businessId', as: 'pagosSuscripcion', onDelete: 'CASCADE' });
+SubscriptionPayment.belongsTo(Business, { foreignKey: 'businessId' });
+SubscriptionPayment.belongsTo(Plan, { foreignKey: 'planId', as: 'plan', onDelete: 'NO ACTION' });
+
 module.exports = {
   db,
+  Plan, Subscription, SubscriptionPayment, PlatformAdmin, PlatformSetting, AuthAttempt,
   Business, BusinessLocation, BusinessCuit, BusinessArcaConfig, ArcaToken, VariantType,
   MercadoLibreAccount, MercadoLibreLink,
   Role, Employee, EmployeeSession, PasswordResetCode, AccountChangeCode, Client,

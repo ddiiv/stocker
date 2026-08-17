@@ -69,7 +69,46 @@ const apiLimiter = rateLimit({
   limit: 600,
   standardHeaders: 'draft-7',
   legacyHeaders: false,
+  keyGenerator: (req) => ipKeyGenerator(req.ip),
   handler: respuesta('Demasiadas peticiones. Bajá el ritmo un momento.'),
 });
 
-module.exports = { loginLimiter, passwordResetLimiter, registerLimiter, apiLimiter };
+/*
+ * Ráfagas.
+ *
+ * El limitador de arriba mira un minuto entero, así que 600 pedidos en dos
+ * segundos lo pasan sin problema y saturan igual. Esto mira una ventana corta:
+ * es la diferencia entre "usa mucho el sistema" y "algo se soltó".
+ *
+ * El caso real que hay que no romper es una PC de la oficina con un script o un
+ * virus disparando miles de pedidos por segundo. Ese patrón se corta acá en dos
+ * segundos, mientras el cajero escaneando —que llega a diez o quince por
+ * segundo en el peor caso— queda muy por debajo.
+ */
+const burstLimiter = rateLimit({
+  windowMs: 2 * 1000,
+  limit: 60,
+  standardHeaders: false,
+  legacyHeaders: false,
+  keyGenerator: (req) => ipKeyGenerator(req.ip),
+  handler: respuesta('Detectamos una ráfaga de pedidos desde tu conexión y la frenamos unos segundos.'),
+});
+
+/*
+ * Superficie pública sin sesión: login, registro, recuperación, webhooks y el
+ * catálogo de planes. Es donde pega un ataque que no tiene credenciales, y no
+ * necesita el cupo holgado que sí necesita el punto de venta.
+ */
+const publicLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 60,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  keyGenerator: (req) => ipKeyGenerator(req.ip),
+  handler: respuesta('Demasiadas peticiones. Probá de nuevo en un momento.'),
+});
+
+module.exports = {
+  loginLimiter, passwordResetLimiter, registerLimiter,
+  apiLimiter, burstLimiter, publicLimiter,
+};

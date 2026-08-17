@@ -405,4 +405,67 @@ Si vos no pediste este cambio, ignoralo y revisá tu contraseña.
   return info;
 }
 
-module.exports = { sendInvoiceEmail, sendSaleReceiptToCustomer, sendSaleNotificationToBusiness, sendPasswordResetCode, sendPasswordResetAlert, sendCashDiscrepancyAlert, sendAccountChangeCode };
+/*
+ * Aviso interno: un cliente pidió dar de baja su cuenta.
+ *
+ * Va a la casilla de operaciones de Stocker, no al cliente. Es un pedido para
+ * que lo procese una persona: borrar el historial de facturación de un negocio
+ * no puede dispararlo un clic, y una vez borrado no se recupera.
+ *
+ * La casilla se toma de BACKOFFICE_EMAIL para poder mudarla al dominio propio
+ * sin tocar el código.
+ */
+const CASILLA_BACKOFFICE = process.env.BACKOFFICE_EMAIL || 'stockerbackofficenoreply@gmail.com';
+
+async function sendAccountDeletionRequest({ negocio, plan, motivo }) {
+  if (!mailReady()) return;
+
+  const filas = [
+    ['Negocio',   negocio.nombreNegocio],
+    ['Titular',   `${negocio.ownerNombre || ''} ${negocio.ownerApellido || ''}`.trim()],
+    ['Email',     negocio.email],
+    ['Teléfono',  negocio.ownerTelefono || negocio.telefono || '—'],
+    ['CUIT',      negocio.cuit],
+    ['ID interno', String(negocio.id)],
+    ['Plan',      plan || '—'],
+    ['Pedido el', new Date().toLocaleString('es-AR')],
+  ];
+
+  const body = `
+    <p>El titular de <strong>${escapeHtml(negocio.nombreNegocio)}</strong> solicitó la baja de su cuenta.</p>
+    <table style="width:100%;border-collapse:collapse;margin:16px 0;font-size:14px;">
+      ${filas.map(([k, v]) => `
+        <tr>
+          <td style="padding:6px 10px;color:${C.ink600};border-bottom:1px solid ${C.line};width:130px;">${escapeHtml(k)}</td>
+          <td style="padding:6px 10px;color:${C.ink950};border-bottom:1px solid ${C.line};">${escapeHtml(String(v))}</td>
+        </tr>`).join('')}
+    </table>
+    ${motivo ? `<p style="color:${C.ink600};"><strong>Motivo que dejó:</strong><br>${escapeHtml(motivo)}</p>` : ''}
+    <p style="color:${C.brick500};font-size:13px;">
+      No se borró nada. La cuenta sigue operativa hasta que alguien procese la baja a mano.
+    </p>`;
+
+  const text =
+`Solicitud de baja de cuenta
+
+${filas.map(([k, v]) => `${k}: ${v}`).join('\n')}
+${motivo ? `\nMotivo: ${motivo}` : ''}
+
+No se borró nada: la cuenta sigue operativa hasta que se procese la baja a mano.
+
+— Stocker`;
+
+  const info = await transport().sendMail({
+    from: process.env.MAIL_FROM || `"Stocker" <${process.env.MAIL_USER}>`,
+    to: CASILLA_BACKOFFICE,
+    replyTo: negocio.email,
+    subject: `[Stocker] Baja de cuenta — ${negocio.nombreNegocio} (${negocio.cuit})`,
+    html: shell({ title: 'Solicitud de baja', businessName: 'Stocker', bodyHtml: body }),
+    text,
+    headers: { 'X-Entity-Ref-ID': `stocker-baja-${negocio.id}-${Date.now()}` },
+  });
+  log.info('email', 'solicitud de baja de cuenta enviada al backoffice', { negocio: negocio.id });
+  return info;
+}
+
+module.exports = { sendInvoiceEmail, sendSaleReceiptToCustomer, sendSaleNotificationToBusiness, sendPasswordResetCode, sendPasswordResetAlert, sendCashDiscrepancyAlert, sendAccountChangeCode, sendAccountDeletionRequest, CASILLA_BACKOFFICE };

@@ -4,6 +4,7 @@ const { Business, BusinessCuit, AccountChangeCode } = require('../models');
 const { lookupCuit } = require('../services/arcaLookupService');
 const { sendAccountChangeCode } = require('../services/emailService');
 const { log, mask } = require('../utils/logger');
+const identidad = require('../services/identityRegistry');
 
 /*
  * Cuenta del dueño.
@@ -166,9 +167,9 @@ const solicitarCambioEmail = async (req, res, next) => {
     if (emailNuevo === String(b.email).toLowerCase()) {
       return res.status(400).json({ message: 'Ese ya es tu email actual.' });
     }
-    if (await Business.findOne({ where: { email: emailNuevo } })) {
-      return res.status(409).json({ message: 'Ya hay una cuenta registrada con ese email.' });
-    }
+    // No alcanza con mirar `businesses`: el email tampoco puede ser el de un
+    // empleado de cualquier negocio ni el de un operador de la plataforma.
+    await identidad.exigirLibre(emailNuevo, { businessId: b.id });
 
     const { destino } = await emitirCodigo({ business: b, tipo: 'email', datos: { emailNuevo } });
     res.json({
@@ -189,9 +190,9 @@ const confirmarCambioEmail = async (req, res, next) => {
       return res.status(400).json({ message: 'El pedido perdió el email nuevo. Empezá de nuevo.' });
     }
     // Puede haberse registrado esa casilla entre el pedido y la confirmación.
-    if (await Business.findOne({ where: { email: emailNuevo } })) {
-      return res.status(409).json({ message: 'Ya hay una cuenta registrada con ese email.' });
-    }
+    // No alcanza con mirar `businesses`: el email tampoco puede ser el de un
+    // empleado de cualquier negocio ni el de un operador de la plataforma.
+    await identidad.exigirLibre(emailNuevo, { businessId: b.id });
 
     const b = await Business.findByPk(req.auth.businessId);
     await b.update({ email: emailNuevo });

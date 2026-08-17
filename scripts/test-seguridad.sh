@@ -71,10 +71,14 @@ const { Business, Role, Employee, BusinessLocation } = require('./src/models');
 limpiar_qa() {
   node -e "
     require('dotenv').config();
-    const { Employee, Role } = require('./src/models');
+    const { Employee, Role, Business, Subscription, Plan } = require('./src/models');
     (async () => {
       await Employee.destroy({ where: { email: 'qa.deposito@stocker.test' } });
       await Role.destroy({ where: { nombre: 'QA-Deposito' } });
+      // El plan vuelve a Pro: la suite lo eleva a Enterprise sólo mientras corre.
+      const b = await Business.findOne({ where: { email: 'demo@stocker.app' } });
+      const pro = await Plan.findOne({ where: { codigo: 'pro' } });
+      if (b && pro) await Subscription.update({ planId: pro.id }, { where: { businessId: b.id } });
       process.exit(0);
     })();
   " >/dev/null 2>&1
@@ -110,6 +114,24 @@ check "no se puede editar stock ajeno"      "404" "$(code -b "$TMP/duenio.txt" -
     "$API/api/products/variants/1/stock" -H 'Content-Type: application/json' \
     -d '{"tipo":"ingreso","cantidad":999}')"
 check "no se puede borrar variante ajena"   "404" "$(code -b "$TMP/duenio.txt" -X DELETE "$API/api/products/variants/1")"
+
+# La cuenta corriente pide un plan que la incluya. El negocio demo se eleva a
+# Enterprise para que el chequeo de abajo llegue al controlador y no choque
+# contra el control de plan (402).
+#
+# `limpiar_qa` lo devuelve a Pro al salir: dejarlo en Enterprise hacía que todo
+# lo que se mirara después —el uso contra los topes, por ejemplo— apareciera sin
+# límites, y eso se lee como un bug del sistema y no como resaca del test.
+node -e "
+require('dotenv').config();
+const { Business, Subscription, Plan } = require('./src/models');
+(async () => {
+  const b = await Business.findOne({ where: { email: 'demo@stocker.app' } });
+  const plan = await Plan.findOne({ where: { codigo: 'enterprise' } });
+  if (b && plan) await Subscription.update({ planId: plan.id }, { where: { businessId: b.id } });
+  process.exit(0);
+})();
+" > /dev/null 2>&1
 
 titulo "2.b MASS ASSIGNMENT ENTRE NEGOCIOS (informe QA F-01/F-02)"
 # El empleado de prueba tiene "empleados: editar", que es el permiso que hacía

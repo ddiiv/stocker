@@ -3,6 +3,7 @@ const sequelize = require('../config/database');
 const { Product, ProductVariant, StockMovement } = require('../models');
 const { ilikeOperator } = require('../utils/sqlHelpers');
 const { exportProductsXlsx, importProductsXlsx } = require('../services/productExcelService');
+const { exigirCupo } = require('../services/planService');
 
 /*
  * Toma del body sólo los campos permitidos.
@@ -87,6 +88,22 @@ const createProduct = async (req, res, next) => {
 
     const err = validateVariantes(variantes);
     if (err) { await t.rollback(); return res.status(400).json({ message: err }); }
+
+    /*
+     * Tope de SKUs del plan.
+     *
+     * Se cuenta antes de crear y por el total que va a generar este producto:
+     * una matriz de 6 talles × 4 colores son 24 SKUs de una sola vez. Validando
+     * de uno en uno el negocio terminaría por encima del tope.
+     *
+     * Un producto sin combinaciones igual ocupa uno: es la fila padre y el
+     * escáner lo puede resolver por su propio SKU.
+     */
+    const claves = Object.keys(variantes);
+    const aCrear = claves.length
+      ? (variantes[claves[0]]?.length || 0) * (claves[1] ? (variantes[claves[1]]?.length || 1) : 1)
+      : 0;
+    await exigirCupo(req.auth.businessId, 'skus', Math.max(1, aCrear));
 
     const product = await Product.create({
       businessId: req.auth.businessId,
@@ -222,11 +239,29 @@ const scanAdjustStock = async (req, res, next) => {
       return res.status(404).json({ message: `Ningún producto coincide con el código "${codigo}".` });
     }
 
-    const stockAnterior = variant.stock;
+    const stockAnterior = Number(variant.stock) || 0;
     let stockNuevo;
-    if (modo === 'agregar')     stockNuevo = stockAnterior + cant;
-    else if (modo === 'quitar') stockNuevo = Math.max(0, stockAnterior - cant);
-    else                        stockNuevo = cant;
+    if (modo === 'agregar') {
+      stockNuevo = stockAnterior + cant;
+    } else if (modo === 'quitar') {
+      // Mismo criterio que el ajuste manual: no se saca más de lo que hay.
+      // Escaneando en el depósito el error es todavía más fácil de cometer,
+      // porque se sostiene el lector y se repite la lectura sin mirar.
+      if (cant > stockAnterior) {
+        await t.rollback();
+        return res.status(409).json({
+          message: stockAnterior === 0
+            ? `${variant.producto.titulo} (${variant.sku}) ya está en cero.`
+            : `Sólo hay ${stockAnterior} de ${variant.producto.titulo} (${variant.sku}) y estás quitando ${cant}.`,
+          sku: variant.sku,
+          disponible: stockAnterior,
+          solicitado: cant,
+        });
+      }
+      stockNuevo = stockAnterior - cant;
+    } else {
+      stockNuevo = cant;
+    }
 
     await variant.update({ stock: stockNuevo }, { transaction: t });
     await StockMovement.create({
@@ -270,6 +305,8 @@ const addVariant = async (req, res, next) => {
     const product = await Product.findOne({ where: { id: req.params.id, businessId: req.auth.businessId } });
     if (!product) return res.status(404).json({ message: 'Producto no encontrado.' });
 
+    await exigirCupo(req.auth.businessId, 'skus');
+
     const { sku, codigoBarras, variante1Nombre, variante1Valor, variante2Nombre, variante2Valor, stock = 0, stockMinimo = 5 } = req.body;
     const variant = await ProductVariant.create({ productId: product.id, sku, codigoBarras: codigoBarras || null, variante1Nombre, variante1Valor, variante2Nombre, variante2Valor, stock, stockMinimo });
     res.status(201).json(variant);
@@ -311,11 +348,40 @@ const adjustStock = async (req, res, next) => {
       return res.status(404).json({ message: 'Variante no encontrada.' });
     }
 
-    const stockAnterior = variant.stock;
+    const stockAnterior = Number(variant.stock) || 0;
     let stockNuevo;
-    if (tipo === 'ingreso' || tipo === 'devolucion') stockNuevo = stockAnterior + cantidad;
-    else if (tipo === 'egreso')  stockNuevo = Math.max(0, stockAnterior - cantidad);
-    else stockNuevo = cantidad; // ajuste directo
+    if (tipo === 'ingreso' || tipo === 'devolucion') {
+      stockNuevo = stockAnterior + cantidad;
+    } else if (tipo === 'egreso') {
+      /*
+       * No se puede sacar más de lo que hay.
+       *
+       * Antes esto era Math.max(0, stockAnterior - cantidad): recortaba a cero
+       * en silencio. Pedir un egreso de 10 teniendo 3 dejaba el stock en 0 y el
+       * movimiento anotando 10, así que el inventario y su propio historial
+       * quedaban contradiciéndose y la diferencia sólo aparecía al contar a
+       * mano. Si lo que se quiere es corregir el número, para eso está el
+       * ajuste, que fija el stock y queda registrado como tal.
+       */
+      if (cantidad > stockAnterior) {
+        const nombre = [variant.producto.titulo, variant.variante1Valor, variant.variante2Valor]
+          .filter(Boolean).join(' · ');
+        await t.rollback();
+        return res.status(409).json({
+          // La salida siempre nombra el camino correcto. Decir sólo "no hay
+          // stock" deja a quien está corrigiendo un conteo sin saber qué hacer.
+          message: (stockAnterior === 0
+            ? `No queda stock de ${nombre} (${variant.sku}), así que no hay nada que sacar. `
+            : `Sólo hay ${stockAnterior} de ${nombre} (${variant.sku}) y estás sacando ${cantidad}. `) +
+            `Si el número que figura está mal, usá un ajuste de inventario.`,
+          disponible: stockAnterior,
+          solicitado: cantidad,
+        });
+      }
+      stockNuevo = stockAnterior - cantidad;
+    } else {
+      stockNuevo = cantidad; // ajuste directo: fija el stock contado
+    }
 
     await variant.update({ stock: stockNuevo }, { transaction: t });
     await StockMovement.create({
@@ -365,6 +431,14 @@ const exportProducts = async (req, res, next) => {
 const importProducts = async (req, res, next) => {
   try {
     if (!req.file) return res.status(400).json({ message: 'Falta el archivo .xlsx a importar.' });
+    /*
+     * La planilla puede traer miles de filas. Acá sólo se comprueba que quede
+     * al menos un lugar libre: cuántos SKUs nuevos trae el archivo se sabe
+     * recién al parsearlo, y el servicio de importación es el que corta cuando
+     * se llena. Sin este chequeo previo, una cuenta con el cupo agotado subiría
+     * un archivo de 5 MB para que después se rechace fila por fila.
+     */
+    await exigirCupo(req.auth.businessId, 'skus');
     const summary = await importProductsXlsx(req.auth.businessId, req.file.buffer);
     res.json(summary);
   } catch (error) { next(error); }

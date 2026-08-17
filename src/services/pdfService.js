@@ -521,4 +521,90 @@ async function generateSaleTicketPdf(sale, items, business, { cliente, emisor } 
   });
 }
 
-module.exports = { generateInvoicePdf, generateInvoicePdfBuffer, generateSalePdf, generateSaleTicketPdf, PDF_DIR, COLOR };
+/*
+ * Comprobante del cobro de la suscripción a Stocker.
+ *
+ * No es una factura: Stocker emite la suya por ARCA aparte. Esto es el
+ * comprobante del pago, que es lo que el cliente necesita para su propia
+ * contabilidad y lo primero que pide cuando cierra el mes.
+ */
+async function generateSubscriptionReceiptPdf(pago, negocio, plan) {
+  await ensureDir();
+  const ruta = path.join(PDF_DIR, `recibo-suscripcion-${pago.id}.pdf`);
+  const doc = new PDFDocument({ size: 'A4', margin: 50 });
+  const stream = fs.createWriteStream(ruta);
+  doc.pipe(stream);
+
+  const anchoUtil = doc.page.width - 100;
+
+  // Encabezado
+  doc.rect(0, 0, doc.page.width, 110).fill(COLOR.ink950);
+  doc.fillColor(COLOR.paper50).font('Helvetica-Bold').fontSize(22)
+     .text('STOCKER', 50, 38);
+  doc.fillColor(COLOR.brass500).font('Helvetica-Bold').fontSize(10)
+     .text('COMPROBANTE DE PAGO', 50, 68, { characterSpacing: 1.5 });
+  doc.fillColor(COLOR.ink400).font('Helvetica').fontSize(9)
+     .text(`N.º ${String(pago.id).padStart(8, '0')}`, 50, 84);
+
+  doc.fillColor(COLOR.ink950);
+  let y = 150;
+
+  const fila = (etiqueta, valor, opciones = {}) => {
+    doc.font('Helvetica').fontSize(9).fillColor(COLOR.ink600)
+       .text(etiqueta, 50, y, { width: 160 });
+    doc.font(opciones.fuerte ? 'Helvetica-Bold' : 'Helvetica')
+       .fontSize(opciones.fuerte ? 12 : 10)
+       .fillColor(opciones.fuerte ? COLOR.ink950 : COLOR.ink800)
+       .text(String(valor ?? '—'), 210, y - (opciones.fuerte ? 2 : 0), { width: anchoUtil - 160 });
+    y += opciones.fuerte ? 26 : 20;
+  };
+
+  doc.font('Helvetica-Bold').fontSize(11).fillColor(COLOR.ink950).text('Cliente', 50, y);
+  y += 20;
+  fila('Negocio', negocio.nombreNegocio);
+  fila('CUIT', negocio.cuit);
+  fila('Email', negocio.email);
+
+  y += 10;
+  doc.moveTo(50, y).lineTo(doc.page.width - 50, y).strokeColor(COLOR.line).stroke();
+  y += 20;
+
+  doc.font('Helvetica-Bold').fontSize(11).fillColor(COLOR.ink950).text('Detalle', 50, y);
+  y += 20;
+  fila('Concepto', `Suscripción a Stocker${plan ? ` — ${plan.nombre}` : ''}`);
+  if (pago.periodoDesde && pago.periodoHasta) {
+    fila('Período', `${dateOnly(pago.periodoDesde)} al ${dateOnly(pago.periodoHasta)}`);
+  }
+  fila('Medio de pago', pago.metodo === 'mercadopago' ? 'Mercado Pago'
+                     : pago.metodo === 'transferencia' ? 'Transferencia bancaria'
+                     : 'Registrado manualmente');
+  if (pago.proveedorRef) fila('Referencia', pago.proveedorRef);
+  fila('Fecha de pago', dateOnly(pago.fecha));
+
+  y += 12;
+  doc.rect(50, y, anchoUtil, 46).fill(COLOR.paper100);
+  doc.fillColor(COLOR.ink600).font('Helvetica').fontSize(9)
+     .text('TOTAL ABONADO', 66, y + 12, { characterSpacing: 1 });
+  doc.fillColor(COLOR.ink950).font('Helvetica-Bold').fontSize(18)
+     .text(money(pago.monto), 66, y + 24, { width: anchoUtil - 32, align: 'right' });
+  y += 70;
+
+  doc.fillColor(COLOR.ink400).font('Helvetica').fontSize(8)
+     .text(
+       'Este comprobante acredita el pago de la suscripción al servicio. ' +
+       'La factura electrónica correspondiente se emite por separado.',
+       50, y, { width: anchoUtil }
+     );
+
+  doc.end();
+  // Se espera al stream y no a `doc`: el documento termina antes de que el
+  // archivo esté escrito en disco, y devolver la ruta antes deja al que la
+  // recibe leyendo un PDF a medias.
+  await new Promise((resolver, rechazar) => {
+    stream.on('finish', resolver);
+    stream.on('error', rechazar);
+  });
+  return ruta;
+}
+
+module.exports = { generateInvoicePdf, generateInvoicePdfBuffer, generateSalePdf, generateSaleTicketPdf, generateSubscriptionReceiptPdf, PDF_DIR, COLOR };
