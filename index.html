@@ -525,6 +525,29 @@ header {
 .contact-list .k { font-family: var(--mono); font-size: .68rem; letter-spacing: .13em; text-transform: uppercase; color: var(--text-faint); }
 .contact-list .v { font-size: 1.02rem; color: var(--brass); word-break: break-word; }
 
+/* ── Acceso al sistema ───────────────────────────────────────
+   Franja propia y no una tarjeta más: separa al que viene a
+   trabajar del que viene a comprar. */
+.acceso {
+  border-block: 1px solid var(--line-soft);
+  background: var(--ground-deep);
+  padding-block: clamp(2.5rem, 6vw, 4rem);
+}
+.acceso-caja {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1.5rem;
+}
+.acceso-nota {
+  margin-top: .6rem;
+  color: var(--text-dim);
+  font-size: .95rem;
+  max-width: 46ch;
+}
+.acceso-btn { padding: .8rem 1.4rem; font-size: 1rem; }
+
 footer { border-top: 1px solid var(--line-soft); padding-block: 2rem; }
 .foot {
   display: flex;
@@ -548,6 +571,9 @@ footer { border-top: 1px solid var(--line-soft); padding-block: 2rem; }
     <nav>
       <a class="hide-sm" href="#sistema">Sistema</a>
       <a class="hide-sm" href="#planes">Planes</a>
+      <!-- Para quien ya es cliente. Va antes del CTA comercial: alguien que
+           viene a trabajar no tiene que buscar por dónde entrar. -->
+      <a class="btn btn-ghost" id="entrar-nav" href="https://www.stockerbackoffice.com">Entrar</a>
       <a class="btn btn-primary" href="#contacto">Pedir una demo</a>
     </nav>
   </div>
@@ -940,10 +966,27 @@ footer { border-top: 1px solid var(--line-soft); padding-block: 2rem; }
 
 </main>
 
+  <!-- ── Acceso al sistema ─────────────────────────────── -->
+  <section class="acceso">
+    <div class="wrap acceso-caja">
+      <div>
+        <p class="eyebrow">Ya sos cliente</p>
+        <h2>Entrá a tu cuenta</h2>
+        <p class="acceso-nota">
+          El sistema corre en el navegador y en el celular. No hay nada que instalar.
+        </p>
+      </div>
+      <a class="btn btn-primary acceso-btn" id="entrar-pie" href="https://www.stockerbackoffice.com">
+        Ir al sistema &rarr;
+      </a>
+    </div>
+  </section>
+
 <footer>
   <div class="wrap foot">
     <span>STOCKER · Sistema de gestión y facturación</span>
     <span>Buenos Aires, Argentina</span>
+    <a id="entrar-footer" href="https://www.stockerbackoffice.com">Entrar al sistema</a>
     <a href="mailto:danteinsauviola@gmail.com">danteinsauviola@gmail.com</a>
   </div>
 </footer>
@@ -1028,12 +1071,31 @@ footer { border-top: 1px solid var(--line-soft); padding-block: 2rem; }
    * por qué. Si el pedido falla, la página se queda con los valores escritos en
    * el HTML — que son correctos, sólo pueden estar desactualizados.
    */
-  fetch(API.replace(/\/$/, "") + "/api/public/landing")
+  fetch(API.replace(/\/$/, "") + "/api/public/landing", {
+    /*
+     * Sin cache del navegador. La respuesta pesa un kilobyte y es lo único que
+     * hace que un cambio del backoffice se vea; reusarla convierte una edición
+     * en algo que "no se aplicó" durante minutos.
+     */
+    cache: "no-store",
+  })
     .then(function (r) { return r.ok ? r.json() : null; })
     .then(function (d) {
       if (!d) return;
 
       if (d.cotizacionUsd) estado.cotizacion = d.cotizacionUsd;
+
+      /*
+       * Enlaces al sistema. El HTML ya trae el dominio escrito, así que si la
+       * API no responde el botón sigue funcionando; esto sólo lo corrige cuando
+       * el dominio cambió en la configuración.
+       */
+      if (d.sistema) {
+        ["entrar-nav", "entrar-pie", "entrar-footer"].forEach(function (id) {
+          var a = document.getElementById(id);
+          if (a) a.setAttribute("href", d.sistema);
+        });
+      }
 
       // Precios y topes: se actualizan por código de plan. Si el backoffice
       // cambia un tope, la página lo refleja sin volver a publicarse.
