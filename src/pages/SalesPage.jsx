@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { Plus, ShoppingCart, CheckCircle2, NotebookPen } from "lucide-react";
+import { Plus, ShoppingCart, CheckCircle2, NotebookPen, Split, Filter, X } from "lucide-react";
 import { fetchSales, cobrarSale } from "../services/salesService";
 import { fetchPaymentMethods } from "../services/paymentMethodService";
 import PaymentSplit, { lineasParaApi, calcularTotales } from "../components/sales/PaymentSplit";
@@ -8,12 +8,15 @@ import { formatCurrency, formatDate } from "../utils/formatters";
 import { PageHeader, EmptyState } from "../components/ui/Layout";
 import Modal from "../components/ui/Modal";
 import { medioPagoBadge } from "../utils/paymentBadge";
+import { rangoDe } from "../utils/periodos";
+import { FiltroPeriodo, GrupoFiltro, OpcionFiltro, ResumenFiltro, DatoResumen } from "../components/ui/Filtros";
 
 const FILTERS = [
   { value: "", label: "Todas" },
   { value: "venta", label: "Ventas" },
   { value: "cotizacion", label: "Cotizaciones" },
 ];
+
 
 const ESTADO_BADGE = {
   pagado: "badge-ok",
@@ -24,8 +27,12 @@ const ESTADO_BADGE = {
 
 export default function SalesPage() {
   const [sales, setSales] = useState([]);
+  const [resumen, setResumen] = useState(null);
   const [loading, setLoading] = useState(true);
   const [tipo, setTipo] = useState("");
+  const [periodo, setPeriodo] = useState("");
+  // "" todos · un id de medio · "combinado" · "fiado"
+  const [medioPago, setMedioPago] = useState("");
   const [payingSale, setPayingSale] = useState(null);
   const [metodos, setMetodos] = useState([]);
   const [pagos, setPagos] = useState([]);
@@ -38,24 +45,37 @@ export default function SalesPage() {
 
   async function load() {
     setLoading(true);
-    const data = await fetchSales({ tipo: tipo || undefined });
-    setSales(data);
+    const { desde, hasta } = rangoDe(periodo);
+    const r = await fetchSales({
+      tipo: tipo || undefined,
+      medioPago: medioPago || undefined,
+      desde, hasta,
+    });
+    setSales(r.ventas);
+    setResumen(r.resumen);
     setLoading(false);
   }
 
-  useEffect(() => { load(); }, [tipo]);
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, [tipo, periodo, medioPago]);
 
-  async function abrirCobro(venta) {
+  // Los medios se piden una vez: alimentan el filtro y el modal de cobro.
+  useEffect(() => {
+    fetchPaymentMethods({ soloActivos: true }).then(setMetodos).catch(() => {});
+  }, []);
+
+  const hayFiltro = Boolean(periodo || medioPago || tipo);
+  const nombreMedio = medioPago === "combinado" ? "pago combinado"
+    : medioPago === "fiado" ? "fiadas"
+    : metodos.find((m) => String(m.id) === String(medioPago))?.nombre;
+
+  function abrirCobro(venta) {
     setPayError("");
     setPayingSale(venta);
     const pendiente = Number(venta.saldoPendiente) || Number(venta.total) || 0;
-    try {
-      const m = await fetchPaymentMethods({ soloActivos: true });
-      setMetodos(m);
-      setPagos(m.length ? [{ paymentMethodId: m[0].id, monto: pendiente, ajusteManual: "" }] : []);
-    } catch {
-      setPayError("No se pudieron cargar los medios de pago.");
-    }
+    // Los medios ya están cargados desde el montaje, así que el modal abre sin
+    // esperar una petición.
+    if (!metodos.length) return setPayError("No hay medios de pago cargados.");
+    setPagos([{ paymentMethodId: metodos[0].id, monto: pendiente, ajusteManual: "" }]);
   }
 
   async function handleCobro() {
@@ -84,19 +104,89 @@ export default function SalesPage() {
         }
       />
 
-      <div className="mb-5 flex rounded-md border border-line bg-paper-50 p-1 w-fit">
-        {FILTERS.map((f) => (
-          <button
-            key={f.value}
-            onClick={() => setTipo(f.value)}
-            className={`rounded px-3 py-1.5 text-xs font-medium transition-colors ${
-              tipo === f.value ? "bg-ink-950 text-paper-50" : "text-ink-600 hover:bg-paper-200"
-            }`}
+      {/* ── Filtros ──────────────────────────────────────── */}
+      <div className="mb-4 flex flex-wrap items-center gap-3">
+        <GrupoFiltro>
+          {FILTERS.map((f) => (
+            <OpcionFiltro key={f.value} activa={tipo === f.value} onClick={() => setTipo(f.value)}>
+              {f.label}
+            </OpcionFiltro>
+          ))}
+        </GrupoFiltro>
+
+        <FiltroPeriodo valor={periodo} onChange={setPeriodo} />
+
+        {/*
+          Los medios van en un desplegable y no en botones: son cinco o más y en
+          línea empujarían el resto de los filtros fuera de la pantalla.
+
+          "Pago combinado" es UNA opción a propósito. Enumerar cada combinación
+          —efectivo+transferencia, efectivo+débito, los tres juntos— serían
+          decenas de entradas para un caso que se consulta como uno solo.
+        */}
+        <div className="flex items-center gap-2">
+          <Filter size={14} className="text-ink-400" />
+          <select
+            className="input h-8 w-auto py-0 text-xs"
+            value={medioPago}
+            onChange={(e) => setMedioPago(e.target.value)}
           >
-            {f.label}
+            <option value="">Cualquier medio de pago</option>
+            {metodos.map((m) => (
+              <option key={m.id} value={m.id}>Sólo {m.nombre}</option>
+            ))}
+            <option value="combinado">Pago combinado</option>
+            <option value="fiado">Fiadas (cuenta corriente)</option>
+          </select>
+        </div>
+
+        {hayFiltro && (
+          <button
+            className="btn-ghost px-2 py-1 text-xs"
+            onClick={() => { setTipo(""); setPeriodo(""); setMedioPago(""); }}
+          >
+            <X size={12} /> Limpiar
           </button>
-        ))}
+        )}
       </div>
+
+      {/*
+        Totales del filtro completo, no de las filas visibles.
+        Es la razón de filtrar: "cuánto entró este mes en efectivo" se responde
+        acá y no sumando a mano la tabla.
+      */}
+      {resumen && (
+        <ResumenFiltro>
+          <DatoResumen rotulo="Ventas" valor={resumen.cantidad} />
+          <DatoResumen rotulo="Cobradas" valor={resumen.cobradas} />
+          <DatoResumen
+            rotulo="Cobrado"
+            valor={formatCurrency(resumen.totalCobrado)}
+            destacado
+            nota={resumen.totalCobrado !== resumen.totalNeto
+              ? `${formatCurrency(resumen.totalNeto)} de mercadería + recargos`
+              : null}
+          />
+          {/*
+            Lo que falta cobrar. Sólo aparece si hay algo pendiente, y en rojo:
+            filtrando por fiado es EL número que se está buscando, y sin él el
+            panel decía "cobrado $0" como si no hubiera nada.
+          */}
+          {resumen.pendienteDeCobro > 0 && (
+            <DatoResumen
+              rotulo="Por cobrar"
+              valor={<span className="text-brick-500">{formatCurrency(resumen.pendienteDeCobro)}</span>}
+              destacado
+              nota={`en ${resumen.porCobrar} venta${resumen.porCobrar === 1 ? "" : "s"}`}
+            />
+          )}
+          {medioPago === "combinado" && (
+            <p className="flex items-center gap-1.5 text-xs text-ink-500">
+              <Split size={13} /> Todas las combinaciones de medios, sin importar cuáles
+            </p>
+          )}
+        </ResumenFiltro>
+      )}
 
       {loading ? (
         <div className="card p-0">
@@ -105,7 +195,29 @@ export default function SalesPage() {
           ))}
         </div>
       ) : sales.length === 0 ? (
-        <EmptyState icon={ShoppingCart} title="Sin operaciones todavía" description="Registrá tu primera venta o cotización." />
+        /* El vacío dice si es "no hay nada" o "no hay nada CON ESTE FILTRO":
+           son dos situaciones distintas y la segunda tiene una salida. */
+        hayFiltro ? (
+          <EmptyState
+            icon={Filter}
+            title="Ninguna venta con estos filtros"
+            description={
+              nombreMedio
+                ? `No hay ventas de ${nombreMedio} en el período elegido.`
+                : "Probá ampliando el período."
+            }
+            action={
+              <button
+                className="btn-ghost"
+                onClick={() => { setTipo(""); setPeriodo(""); setMedioPago(""); }}
+              >
+                Ver todas
+              </button>
+            }
+          />
+        ) : (
+          <EmptyState icon={ShoppingCart} title="Sin operaciones todavía" description="Registrá tu primera venta o cotización." />
+        )
       ) : (
         <div className="card overflow-x-auto p-0">
           <table className="w-full min-w-[720px] text-sm">

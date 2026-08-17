@@ -1,8 +1,21 @@
 import { http } from "../lib/http";
 
-export async function fetchInvoices() {
-  const { data } = await http.get("/invoices", { params: { limit: 100 } });
-  return data.data || [];
+/**
+ * Facturas con filtro de fechas.
+ *
+ * Devuelve también `resumen`, con los totales de TODO el filtro. Sumar las
+ * filas visibles daría el total de la página y no del período — que es
+ * justamente lo que se quiere saber al filtrar por mes.
+ */
+export async function fetchInvoices({ desde, hasta, limit = 100 } = {}) {
+  const params = { limit };
+  if (desde) params.desde = desde;
+  if (hasta) params.hasta = hasta;
+  const { data } = await http.get("/invoices", { params });
+  return {
+    facturas: data.data || [],
+    resumen: data.resumen || { cantidad: 0, emitidas: 0, anuladas: 0, totalEmitido: 0 },
+  };
 }
 
 export async function generateInvoiceFromSale(sale, { tipo, clienteCuit, clienteEmail, clienteDireccion, enviarEmail = true, enviarWhatsapp = true, businessCuitId } = {}) {
@@ -34,8 +47,11 @@ export async function downloadInvoicePdf(invoice) {
   window.URL.revokeObjectURL(url);
 }
 
-export async function fetchReceipts() {
-  const { data } = await http.get("/invoices", { params: { limit: 200 } });
+export async function fetchReceipts({ desde, hasta } = {}) {
+  const params = { limit: 200 };
+  if (desde) params.desde = desde;
+  if (hasta) params.hasta = hasta;
+  const { data } = await http.get("/invoices", { params });
   // Receipts are derived from paid invoices in this endpoint
   return (data.data || []).map((inv) => ({
     id: `rec-${inv.id}`,

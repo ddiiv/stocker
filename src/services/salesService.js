@@ -1,11 +1,28 @@
 import { http } from "../lib/http";
 
-export async function fetchSales({ tipo, estado } = {}) {
-  const params = { limit: 100 };
-  if (tipo)   params.tipo   = tipo;
-  if (estado) params.estado = estado;
+/**
+ * Listado de ventas con filtros.
+ *
+ * Devuelve el objeto completo y no sólo el array: `resumen` trae los totales de
+ * TODO el filtro, que es el dato que se busca al filtrar. Sumar las filas
+ * visibles daría el total de la página, no del mes.
+ *
+ * @param {object} f
+ * @param {string} [f.medioPago] id de un medio, "combinado" o "fiado"
+ * @param {string} [f.desde] y [f.hasta] en formato YYYY-MM-DD
+ */
+export async function fetchSales({ tipo, estado, medioPago, desde, hasta, limit = 100 } = {}) {
+  const params = { limit };
+  if (tipo)       params.tipo       = tipo;
+  if (estado)     params.estado     = estado;
+  if (medioPago)  params.medioPago  = medioPago;
+  if (desde)      params.desde      = desde;
+  if (hasta)      params.hasta      = hasta;
   const { data } = await http.get("/sales", { params });
-  return data.data || [];
+  return {
+    ventas: data.data || [],
+    resumen: data.resumen || { cantidad: 0, cobradas: 0, totalCobrado: 0, totalNeto: 0 },
+  };
 }
 
 export async function getSale(id) {

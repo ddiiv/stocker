@@ -1,35 +1,39 @@
 import { useEffect, useState } from "react";
-import { Receipt, XCircle, Download } from "lucide-react";
+import { Receipt, XCircle, Download, Filter } from "lucide-react";
 import { fetchInvoices, fetchReceipts, voidInvoice, downloadInvoicePdf } from "../services/invoiceService";
 import { formatCurrency, formatDate } from "../utils/formatters";
-import { PageHeader, Card, EmptyState } from "../components/ui/Layout";
+import { PageHeader, EmptyState } from "../components/ui/Layout";
 import BillingTabs from "../components/billing/BillingTabs";
+import { rangoDe, etiquetaDe } from "../utils/periodos";
+import { FiltroPeriodo, ResumenFiltro, DatoResumen } from "../components/ui/Filtros";
 
 export default function BillingPage() {
   const [tab, setTab] = useState("facturas");
   const [invoices, setInvoices] = useState([]);
   const [receipts, setReceipts] = useState([]);
+  const [resumen, setResumen] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [periodo, setPeriodo] = useState("");
 
   async function load() {
     setLoading(true);
-    const [inv, rec] = await Promise.all([fetchInvoices(), fetchReceipts()]);
-    setInvoices(inv);
+    // El mismo rango para facturas y recibos: los recibos se derivan de las
+    // facturas, así que filtrarlos distinto mostraría dos verdades.
+    const rango = rangoDe(periodo);
+    const [inv, rec] = await Promise.all([fetchInvoices(rango), fetchReceipts(rango)]);
+    setInvoices(inv.facturas);
+    setResumen(inv.resumen);
     setReceipts(rec);
     setLoading(false);
   }
 
-  useEffect(() => {
-    load();
-  }, []);
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, [periodo]);
 
   async function handleVoid(id) {
     if (!confirm("¿Anular esta factura? Esta acción no se puede deshacer.")) return;
     await voidInvoice(id);
     load();
   }
-
-  const totalFacturado = invoices.filter((i) => i.estado === "emitida").reduce((s, i) => s + Number(i.total), 0);
 
   return (
     <div>
@@ -39,22 +43,39 @@ export default function BillingPage() {
       />
       <BillingTabs />
 
-      <div className="mb-5 grid gap-4 sm:grid-cols-3">
-        <Card>
-          <p className="text-xs uppercase tracking-wide text-ink-600">Facturas emitidas</p>
-          <p className="mt-2 font-display text-2xl font-semibold text-ink-950">
-            {invoices.filter((i) => i.estado === "emitida").length}
-          </p>
-        </Card>
-        <Card>
-          <p className="text-xs uppercase tracking-wide text-ink-600">Total facturado</p>
-          <p className="mt-2 font-display text-2xl font-semibold text-ink-950">{formatCurrency(totalFacturado)}</p>
-        </Card>
-        <Card>
-          <p className="text-xs uppercase tracking-wide text-ink-600">Recibos emitidos</p>
-          <p className="mt-2 font-display text-2xl font-semibold text-ink-950">{receipts.length}</p>
-        </Card>
+      <div className="mb-4 flex flex-wrap items-center gap-3">
+        <FiltroPeriodo valor={periodo} onChange={setPeriodo} />
+        {periodo && (
+          <button className="btn-ghost px-2 py-1 text-xs" onClick={() => setPeriodo("")}>
+            Ver todo
+          </button>
+        )}
       </div>
+
+      {/*
+        Los totales los calcula el backend sobre el filtro completo. Antes se
+        sumaban las filas traídas, que con más de cien facturas daba el total de
+        la primera página y no del período.
+      */}
+      {resumen && (
+        <ResumenFiltro>
+          <DatoResumen rotulo="Emitidas" valor={resumen.emitidas} />
+          <DatoResumen
+            rotulo="Facturado"
+            valor={formatCurrency(resumen.totalEmitido)}
+            destacado
+            nota={periodo ? etiquetaDe(periodo) : "desde siempre"}
+          />
+          {resumen.anuladas > 0 && (
+            <DatoResumen
+              rotulo="Anuladas"
+              valor={resumen.anuladas}
+              nota="no suman al facturado"
+            />
+          )}
+          <DatoResumen rotulo="Recibos" valor={receipts.length} />
+        </ResumenFiltro>
+      )}
 
       <div className="mb-5 flex rounded-md border border-line bg-paper-50 p-1 w-fit">
         {[
@@ -81,7 +102,16 @@ export default function BillingPage() {
         </div>
       ) : tab === "facturas" ? (
         invoices.length === 0 ? (
-          <EmptyState icon={Receipt} title="Todavía no generaste facturas" description="Se generan desde una venta ya cobrada." />
+          <EmptyState
+            icon={periodo ? Filter : Receipt}
+            title={periodo ? `Sin facturas de ${etiquetaDe(periodo)}` : "Todavía no generaste facturas"}
+            description={periodo
+              ? "Probá ampliando el período."
+              : "Se generan desde una venta ya cobrada."}
+            action={periodo && (
+              <button className="btn-ghost" onClick={() => setPeriodo("")}>Ver todo</button>
+            )}
+          />
         ) : (
           <div className="card overflow-x-auto p-0">
             <table className="w-full min-w-[760px] text-sm">
@@ -146,7 +176,13 @@ export default function BillingPage() {
           </div>
         )
       ) : receipts.length === 0 ? (
-        <EmptyState icon={Receipt} title="Todavía no hay recibos" description="Se generan junto con cada factura." />
+        <EmptyState
+          icon={periodo ? Filter : Receipt}
+          title={periodo ? `Sin recibos de ${etiquetaDe(periodo)}` : "Todavía no hay recibos"}
+          description={periodo
+            ? "Probá ampliando el período."
+            : "Se generan junto con cada factura."}
+        />
       ) : (
         <div className="card overflow-x-auto p-0">
           <table className="w-full min-w-[600px] text-sm">
