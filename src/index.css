@@ -1,0 +1,113 @@
+@import "tailwindcss";
+
+/*
+ * Backoffice — chrome oscuro, siempre.
+ *
+ * No es una preferencia estética: la app de los negocios es clara y ésta es
+ * oscura para que un operador nunca dude de en cuál está parado. Acá se ven
+ * datos de todos los clientes y se acreditan pagos; confundir una pantalla con
+ * la otra es la clase de error que no se nota hasta después.
+ *
+ * Por eso también un solo tema, sin seguir al sistema: la distinción tiene que
+ * ser constante.
+ */
+@theme {
+  /* Grafito con sesgo verde-azulado, igual que la página pública. */
+  --color-ground:   #101418;
+  --color-deep:     #0b0e11;
+  --color-surface:  #171d22;
+  --color-surface2: #1f272d;
+  --color-line:     #2a343a;
+  --color-line2:    #222b31;
+
+  --color-text:     #e6e4de;
+  --color-dim:      #97a2a7;
+  --color-faint:    #68737a;
+
+  /* Latón: el acento de la marca. */
+  --color-brass:      #c8973c;
+  --color-brass-soft: #e0b866;
+  --color-brass-deep: #8a681f;
+
+  /* Semánticos. Separados del acento a propósito: el latón señala "esto es de
+     Stocker", no "esto está bien". */
+  --color-ok:    #4fa89b;
+  --color-ok-bg: #16302d;
+  --color-warn:    #d99b2e;
+  --color-warn-bg: #33270e;
+  --color-crit:    #d1705a;
+  --color-crit-bg: #351914;
+
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "DejaVu Sans Mono", monospace;
+}
+
+@layer base {
+  html { font-family: var(--font-sans); }
+  body {
+    @apply bg-ground text-text;
+    margin: 0;
+    -webkit-font-smoothing: antialiased;
+  }
+  h1, h2, h3 { letter-spacing: -0.02em; margin: 0; }
+  /* Los números se leen en columna en casi toda la app. */
+  table, .tabular { font-variant-numeric: tabular-nums; }
+  :focus-visible { outline: 2px solid var(--color-brass); outline-offset: 2px; }
+  ::selection { background: var(--color-brass-deep); color: var(--color-text); }
+}
+
+@layer components {
+  .card { @apply rounded-md border border-line bg-surface; }
+
+  /* Cada variante repite la base en vez de componer con @apply .btn: Tailwind 4
+     no resuelve una clase propia dentro de otra, y encadenarlas falla el build. */
+  .btn-primary {
+    @apply inline-flex items-center justify-center gap-2 rounded-[3px] px-3.5 py-2 text-sm
+           font-medium transition-colors disabled:opacity-45 disabled:pointer-events-none
+           bg-brass text-deep hover:bg-brass-soft;
+  }
+  .btn-ghost {
+    @apply inline-flex items-center justify-center gap-2 rounded-[3px] px-3.5 py-2 text-sm
+           font-medium transition-colors disabled:opacity-45 disabled:pointer-events-none
+           border border-line text-text hover:border-brass hover:text-brass;
+  }
+  .btn-danger {
+    @apply inline-flex items-center justify-center gap-2 rounded-[3px] px-3.5 py-2 text-sm
+           font-medium transition-colors disabled:opacity-45 disabled:pointer-events-none
+           border border-crit/40 bg-crit-bg text-crit hover:bg-crit hover:text-deep;
+  }
+  /* Modificador: se combina con cualquiera de las de arriba. */
+  .btn-sm { @apply px-2.5 py-1 text-xs; }
+
+  .input {
+    @apply w-full rounded-[3px] border border-line bg-deep px-3 py-2 text-sm text-text
+           placeholder:text-faint focus:border-brass focus:outline-none;
+  }
+  .label {
+    @apply mb-1 block font-mono text-[11px] uppercase tracking-[0.12em] text-faint;
+  }
+
+  /* Etiqueta de estado. El color dice qué pasa; el texto, qué significa. */
+  .chip {
+    @apply inline-flex items-center gap-1.5 rounded-[3px] border px-2 py-0.5
+           font-mono text-[11px] uppercase tracking-[0.08em];
+  }
+  .chip-ok   { @apply border-ok/40 bg-ok-bg text-ok; }
+  .chip-warn { @apply border-warn/40 bg-warn-bg text-warn; }
+  .chip-crit { @apply border-crit/40 bg-crit-bg text-crit; }
+  .chip-mute { @apply border-line bg-surface2 text-dim; }
+
+  /* Franja de severidad al costado de una fila que necesita atención. */
+  .stripe-warn { box-shadow: inset 3px 0 0 var(--color-warn); }
+  .stripe-crit { box-shadow: inset 3px 0 0 var(--color-crit); }
+
+  .th {
+    @apply px-4 py-2 text-left font-mono text-[11px] font-normal uppercase
+           tracking-[0.1em] text-faint;
+  }
+  .td { @apply px-4 py-3 align-middle text-sm; }
+
+  .eyebrow {
+    @apply font-mono text-[11px] uppercase tracking-[0.14em] text-faint;
+  }
+}
