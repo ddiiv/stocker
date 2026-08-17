@@ -22,8 +22,10 @@ export default function ProductDetailPage() {
   useEffect(() => { load(); }, [skuAgrupador]);
 
   async function handleAdjustStock(variant, tipo, cantidad, motivo) {
+    // El error se propaga a propósito: la fila lo muestra al lado del campo.
+    // Antes se perdía en una promesa sin capturar y el botón quedaba trabado.
     await adjustVariantStock(variant.id, { tipo, cantidad: Number(cantidad), motivo });
-    load();
+    await load();
   }
 
   async function handleDeleteVariant(variant) {
@@ -82,12 +84,29 @@ function VariantEditRow({ variant, onAdjust, onDelete }) {
   const [form, setForm] = useState({ tipo: "ingreso", cantidad: 1, motivo: "" });
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  const disponible = Number(variant.stock) || 0;
+  const pedido = Number(form.cantidad) || 0;
+  /*
+   * Un egreso no puede superar el stock actual. El backend lo rechaza igual;
+   * avisarlo acá evita que el usuario mande un movimiento que ya se sabe que va
+   * a fallar. Para corregir un número mal cargado está el ajuste, que fija el
+   * stock en vez de descontarlo.
+   */
+  const excede = form.tipo === "egreso" && pedido > disponible;
 
   async function save() {
-    setSaving(true);
-    await onAdjust(variant, form.tipo, form.cantidad, form.motivo);
-    setSaving(false);
-    setEditing(false);
+    if (excede) return;
+    setSaving(true); setError("");
+    try {
+      await onAdjust(variant, form.tipo, form.cantidad, form.motivo);
+      setEditing(false);
+    } catch (err) {
+      setError(err.response?.data?.message || "No se pudo ajustar el stock.");
+    } finally {
+      setSaving(false);
+    }
   }
 
   const status = variant.stock === 0 ? "badge-out" : variant.stock <= variant.stockMinimo ? "badge-low" : "badge-ok";
@@ -101,6 +120,7 @@ function VariantEditRow({ variant, onAdjust, onDelete }) {
       <td className="px-4 py-3 text-ink-600">{variant.stockMinimo}</td>
       <td className="px-4 py-3">
         {editing ? (
+          <div>
           <div className="flex items-center gap-2">
             <select className="input h-8 w-28 text-xs" value={form.tipo} onChange={(e) => setForm({ ...form, tipo: e.target.value })}>
               <option value="ingreso">Ingreso</option>
@@ -108,10 +128,23 @@ function VariantEditRow({ variant, onAdjust, onDelete }) {
               <option value="ajuste">Ajuste</option>
               <option value="devolucion">Devolución</option>
             </select>
-            <input type="number" min="1" className="input h-8 w-16 text-xs" value={form.cantidad} onChange={(e) => setForm({ ...form, cantidad: e.target.value })} />
+            <input
+              type="number" min="1"
+              max={form.tipo === "egreso" ? disponible : undefined}
+              className={`input h-8 w-16 text-xs ${excede ? "border-brick-500" : ""}`}
+              value={form.cantidad}
+              onChange={(e) => setForm({ ...form, cantidad: e.target.value })}
+            />
             <input type="text" className="input h-8 w-24 text-xs" placeholder="Motivo" value={form.motivo} onChange={(e) => setForm({ ...form, motivo: e.target.value })} />
-            <button className="btn-accent px-2 py-1" onClick={save} disabled={saving}><Check size={13} /></button>
-            <button className="btn-ghost px-2 py-1 text-xs" onClick={() => setEditing(false)}>✕</button>
+            <button className="btn-accent px-2 py-1" onClick={save} disabled={saving || excede}><Check size={13} /></button>
+            <button className="btn-ghost px-2 py-1 text-xs" onClick={() => { setEditing(false); setError(""); }}>✕</button>
+          </div>
+          {excede && (
+            <p className="mt-1 text-xs text-brick-500">
+              Sólo hay {disponible}. Para corregir el número usá «Ajuste».
+            </p>
+          )}
+          {error && <p className="mt-1 text-xs text-brick-500">{error}</p>}
           </div>
         ) : (
           <div className="flex gap-1">

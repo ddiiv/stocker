@@ -11,6 +11,7 @@ import {
   ScanLine,
   Wallet,
   CreditCard,
+  BadgeCheck,
 } from "lucide-react";
 import { useAuth } from "../../context/AuthContext";
 import { canView } from "../../utils/permissions";
@@ -26,11 +27,15 @@ const ALL_LINKS = [
   { to: "/pagos",       label: "Métodos de pago",       icon: CreditCard,      permission: "pagos" },
   { to: "/empleados",   label: "Empleados",             icon: Users,           permission: "empleados" },
   { to: "/integraciones/mercadolibre", label: "MercadoLibre", icon: Store, permission: "integraciones" },
+  // La suscripción es del titular de la cuenta: un empleado no decide qué plan
+  // paga el negocio, así que se filtra por dueño y no por permiso.
+  { to: "/cuenta/suscripcion", label: "Suscripción", icon: BadgeCheck, soloDuenio: true },
 ];
 
 export default function Sidebar({ open, onClose }) {
   const { user } = useAuth();
-  const links = ALL_LINKS.filter((l) => canView(user, l.permission));
+  const esDuenio = !user?.employeeId;
+  const links = ALL_LINKS.filter((l) => (l.soloDuenio ? esDuenio : canView(user, l.permission)));
   return (
     <>
       {open && (

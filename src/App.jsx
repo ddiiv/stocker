@@ -5,6 +5,7 @@ import ProtectedRoute from "./components/layout/ProtectedRoute";
 import PaymentMethodsPage from "./pages/PaymentMethodsPage";
 import CashPage from "./pages/CashPage";
 import AccountPage from "./pages/AccountPage";
+import SubscriptionPage from "./pages/SubscriptionPage";
 import PermissionRoute from "./components/layout/PermissionRoute";
 import AppLayout from "./components/layout/AppLayout";
 
@@ -64,6 +65,8 @@ export default function App() {
             <Route path="/clientes"                     element={<PermissionRoute permission="clientes"><ClientsPage /></PermissionRoute>} />
             <Route path="/clientes/cuentas"             element={<PermissionRoute permission="clientes"><ClientAccountsPage /></PermissionRoute>} />
             <Route path="/cuenta"                       element={<AccountPage />} />
+            {/* Suscripción: la ve el dueño, no los empleados. */}
+            <Route path="/cuenta/suscripcion"           element={<SubscriptionPage />} />
             <Route path="/pagos"                        element={<PermissionRoute permission="pagos"><PaymentMethodsPage /></PermissionRoute>} />
             <Route path="/caja"                         element={<PermissionRoute permission="caja"><CashPage /></PermissionRoute>} />
             <Route path="/empleados"                    element={<PermissionRoute permission="empleados"><EmployeesPage /></PermissionRoute>} />

@@ -71,41 +71,6 @@ app.use(compression());
 // dentro de la red, y un 308 lo haría fallar.
 app.get('/healthz', (req, res) => res.json({ ok: true, apiTarget: API_TARGET }));
 
-// Diagnóstico de la red privada: intenta llegar al backend y cuenta qué pasó.
-// Sirve para distinguir de una sola vez si el problema es el nombre del
-// servicio, el puerto, o que el backend no está levantando.
-app.get('/healthz/api', async (req, res) => {
-  const inicio = Date.now();
-  try {
-    const r = await fetch(`${API_TARGET}/`, {
-      signal: AbortSignal.timeout(8000),
-    });
-    const cuerpo = await r.text();
-    res.json({
-      alcanzable: true,
-      destino: API_TARGET,
-      status: r.status,
-      ms: Date.now() - inicio,
-      respuesta: cuerpo.slice(0, 200),
-    });
-  } catch (err) {
-    const causas = {
-      ECONNREFUSED: 'El nombre resuelve pero nadie escucha en ese puerto. Casi siempre el backend se cayó al arrancar: mirá sus Deploy Logs. Otra opción es que su PORT no sea el que figura acá.',
-      ENOTFOUND:    'No resuelve el nombre del servicio. Revisá que API_INTERNAL_URL use el nombre exacto del servicio backend y que ambos estén en el mismo proyecto y environment.',
-      EAI_AGAIN:    'Falla la resolución DNS interna. Suele ser transitorio en los primeros segundos tras un deploy: reintentá.',
-      ETIMEDOUT:    'El backend no respondió a tiempo. Puede estar arrancando todavía.',
-    };
-    const codigo = err.cause?.code || err.code || err.name;
-    res.status(502).json({
-      alcanzable: false,
-      destino: API_TARGET,
-      codigo,
-      queSignifica: causas[codigo] || err.message,
-      ms: Date.now() - inicio,
-    });
-  }
-});
-
 // Railway ya redirige http→https en el edge, pero si algún día se sirve por
 // otro lado esto evita que un request en claro llegue a ver la app.
 const FORZAR_HTTPS = process.env.NODE_ENV === 'production';
@@ -192,7 +157,6 @@ const server = app.listen(PORT, '::', () => {
   console.log('─────────────────────────────────────────');
   console.log(`  Front escuchando en ${dir.address}:${dir.port}  (puerto de ${origenPuerto})`);
   console.log(`  Proxy /api → ${API_TARGET}  (de ${origenApi})`);
-  console.log(`  Diagnóstico de la red privada: GET /healthz/api`);
   console.log('─────────────────────────────────────────');
 });
 
