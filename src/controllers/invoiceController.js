@@ -35,7 +35,33 @@ const getInvoices = async (req, res, next) => {
       distinct: true,
     });
 
-    res.json({ total: count, page: Number(page), totalPages: Math.ceil(count / limit), data: rows });
+    /*
+     * Totales del filtro completo, no de la página visible. Mismo criterio que
+     * en ventas: la pregunta que se hace al filtrar por mes es "cuánto facturé",
+     * y eso no se responde sumando las treinta filas que se ven.
+     *
+     * Las anuladas se cuentan aparte y NO suman: una nota de crédito deja el
+     * comprobante sin efecto fiscal, así que incluirla infla lo facturado.
+     */
+    const emitidas = { ...where, estado: 'emitida' };
+    const [totalEmitido, cantidadEmitidas, anuladas] = await Promise.all([
+      Invoice.sum('total', { where: emitidas }),
+      Invoice.count({ where: emitidas }),
+      Invoice.count({ where: { ...where, estado: 'anulada' } }),
+    ]);
+
+    res.json({
+      total: count,
+      page: Number(page),
+      totalPages: Math.ceil(count / limit),
+      data: rows,
+      resumen: {
+        cantidad: count,
+        emitidas: cantidadEmitidas,
+        anuladas,
+        totalEmitido: Number(totalEmitido) || 0,
+      },
+    });
   } catch (error) { next(error); }
 };
 

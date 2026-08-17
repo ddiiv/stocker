@@ -123,7 +123,7 @@ async function cargarVenta({ saleId, clientId, businessId, employeeId, monto, nu
  *
  * @returns {Array} ventas que quedaron saldadas con este pago
  */
-async function imputarPago({ businessId, clientId, monto }, t) {
+async function imputarPago({ businessId, clientId, monto, medioPago = null }, t) {
   let restante = redondear(monto);
   const saldadas = [];
 
@@ -146,9 +146,25 @@ async function imputarPago({ businessId, clientId, monto }, t) {
 
     await venta.update({
       saldoPendiente: queda,
-      // Recién con la venta entera cubierta pasa a pagada: un pago parcial la
-      // deja pendiente con menos saldo, no cobrada a medias.
-      ...(queda <= 0 ? { estado: 'pagado', cobradoEn: venta.cobradoEn || new Date() } : {}),
+      /*
+       * Recién con la venta entera cubierta pasa a pagada: un pago parcial la
+       * deja pendiente con menos saldo, no cobrada a medias.
+       *
+       * Y se completa `totalCobrado`. Sin esto la venta figuraba pagada con cero
+       * cobrado, y toda métrica de facturación la contaba en $0 — un pago a
+       * cuenta desaparecía de los ingresos. Sobre un pago a cuenta no hay
+       * recargo, así que lo cobrado es el total de la venta.
+       *
+       * `cobradoPorEmployeeId` se deja SIN completar a propósito: el efectivo de
+       * este cobro ya entró al arqueo como CashMovement desde la ficha del
+       * cliente, y completarlo acá haría que el turno lo cuente dos veces.
+       */
+      ...(queda <= 0 ? {
+        estado: 'pagado',
+        cobradoEn: venta.cobradoEn || new Date(),
+        totalCobrado: redondear(venta.total),
+        medioPago: venta.medioPago || medioPago,
+      } : {}),
     }, { transaction: t });
 
     if (queda <= 0) saldadas.push(venta);

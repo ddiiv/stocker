@@ -176,6 +176,19 @@ const RELLENOS = [
     sqlMssql: `UPDATE subscriptions SET renovacionAutomatica = 1 WHERE renovacionAutomatica IS NULL`,
   },
   {
+    /*
+     * Ventas fiadas saldadas con un pago a cuenta antes del arreglo: quedaron
+     * en 'pagado' con totalCobrado en cero, así que las métricas las contaban
+     * como $0. Sobre un pago a cuenta no hay recargo, o sea que lo cobrado es
+     * el total. Reintentable y acotado a ese caso exacto.
+     */
+    descripcion: 'ventas fiadas saldadas a cuenta: completar lo cobrado',
+    cuandoSeAgrega: 'sales.totalCobrado',
+    reintentable: true,
+    sql: `UPDATE sales SET "totalCobrado" = total WHERE estado = 'pagado' AND "condicionPago" = 'cuenta_corriente' AND ("totalCobrado" IS NULL OR "totalCobrado" = 0) AND total > 0`,
+    sqlMssql: `UPDATE sales SET totalCobrado = total WHERE estado = 'pagado' AND condicionPago = 'cuenta_corriente' AND (totalCobrado IS NULL OR totalCobrado = 0) AND total > 0`,
+  },
+  {
     descripcion: 'suscripciones anteriores: descuento en cero',
     cuandoSeAgrega: 'subscriptions.descuentoPct',
     reintentable: true,

@@ -141,6 +141,8 @@ const registrarPago = async (req, res, next) => {
       businessId: req.auth.businessId,
       clientId:   cliente.id,
       monto:      movimiento.monto,
+      // Con qué se cobró, para que la venta saldada no quede sin medio de pago.
+      medioPago:  metodo?.nombre || 'Pago a cuenta',
     }, t);
 
     /*

@@ -1,13 +1,14 @@
 const path = require('path');
 const sequelize = require('../config/database');
-const { Sale, SaleItem, SalePayment, ProductVariant, Product, Employee, BusinessLocation, Business, BusinessCuit } = require('../models');
+const { Sale, SaleItem, SalePayment, PaymentMethod, ProductVariant, Product, Employee, BusinessLocation, Business, BusinessCuit } = require('../models');
+const { citar } = require('../utils/sqlHelpers');
 const { nextSaleNumber } = require('../services/invoiceNumberService');
 const { calcularPagos } = require('../services/paymentService');
 const { cargarVenta, registrarMovimiento, redondear } = require('../services/creditService');
 const { descontarStockVenta, devolverStockVenta } = require('../services/saleStockService');
 const { generateSalePdf, generateSaleTicketPdf } = require('../services/pdfService');
 const { sendSaleReceiptToCustomer, sendSaleNotificationToBusiness } = require('../services/emailService');
-const { sendSaleWhatsapp } = require('../services/whatsappService');
+const { sendSaleWhatsapp, sendSaleNotificationWhatsapp } = require('../services/whatsappService');
 
 // Genera PDF de la venta y dispara mails (cliente + negocio) sin bloquear la request.
 async function notifySaleAsync(saleId, businessId) {
@@ -17,6 +18,8 @@ async function notifySaleAsync(saleId, businessId) {
         { model: SaleItem, as: 'items' },
         { association: 'cliente' },
         { association: 'empleado', attributes: ['id', 'nombre', 'apellido'] },
+        // El aviso al negocio nombra el local, así que hace falta acá.
+        { association: 'local', attributes: ['id', 'nombre'] },
       ],
     });
     if (!sale || sale.tipo === 'cotizacion') return;
@@ -68,6 +71,23 @@ async function notifySaleAsync(saleId, businessId) {
         emisor:   emisor?.toJSON() || null,
       }).catch((err) => console.error('[whatsapp cliente]', err.message));
     }
+
+    /*
+     * WhatsApp al negocio, con el detalle de lo vendido.
+     *
+     * Va aparte del aviso al cliente porque dicen cosas distintas: el cliente
+     * recibe su comprobante, el dueño quiere ver qué salió del local sin abrir
+     * el sistema. Igual que los mails, no bloquea la respuesta de la venta.
+     */
+    sendSaleNotificationWhatsapp({
+      business: business.toJSON(),
+      sale:     sale.toJSON(),
+      items:    sale.items.map((i) => i.toJSON()),
+      cliente:  sale.cliente?.toJSON()  || null,
+      empleado: sale.empleado?.toJSON() || null,
+      local:    sale.local?.toJSON()    || null,
+      emisor:   emisor?.toJSON()        || null,
+    }).catch((err) => console.error('[whatsapp negocio]', err.message));
   } catch (err) {
     console.error('[notifySaleAsync]', err.message);
   }
@@ -79,10 +99,65 @@ function calcPrecio(variant, esMayorista) {
   return esMayorista ? Number(padre.precioMayorista) : Number(padre.precioMinorista);
 }
 
+/*
+ * Filtro por medio de pago.
+ *
+ * Devuelve la condición SQL, o null si no hay filtro. Tres formas:
+ *
+ *   <id>        → cobrada SÓLO con ese medio. Una venta mitad efectivo mitad
+ *                 transferencia no aparece en "efectivo": no fue una venta en
+ *                 efectivo, fue una venta combinada.
+ *   combinado   → dos o más medios, cualquiera sea la combinación. Una opción y
+ *                 no una por cada par posible, que serían decenas.
+ *   fiado       → sin medio todavía: se cobra después.
+ *
+ * Se escribe a mano con subconsultas en vez de un include con GROUP BY porque
+ * agrupar rompe la paginación: el count de findAndCountAll pasa a contar filas
+ * de pagos en lugar de ventas.
+ */
+async function condicionMedioPago(valor, businessId) {
+  if (!valor) return null;
+
+  const sp        = citar('sale_payments');
+  const saleId    = citar('saleId');
+  const metodoId  = citar('paymentMethodId');
+  // El alias que Sequelize le da a la tabla principal en el SELECT.
+  const venta     = `${citar('Sale')}.${citar('id')}`;
+  const cuantos   = `(SELECT COUNT(*) FROM ${sp} WHERE ${sp}.${saleId} = ${venta})`;
+
+  if (valor === 'combinado') {
+    return sequelize.literal(`${cuantos} >= 2`);
+  }
+
+  if (valor === 'fiado') {
+    // No es un medio de pago sino una condición de la venta, pero en la
+    // pantalla convive con los medios: es una respuesta más a "cómo se pagó".
+    return { condicionPago: 'cuenta_corriente' };
+  }
+
+  const id = Number(valor);
+  if (!Number.isInteger(id)) return null;
+
+  /*
+   * Las ventas anteriores al detalle de pagos no tienen filas en sale_payments:
+   * sólo el texto en `medioPago`. Se las incluye comparando por nombre, si no el
+   * filtro daría por inexistente todo el historial previo.
+   */
+  const metodo = await PaymentMethod.findOne({ where: { id, businessId }, attributes: ['nombre'] });
+  const porNombre = metodo?.nombre
+    ? ` OR (${cuantos} = 0 AND ${citar('Sale')}.${citar('medioPago')} = ${sequelize.escape(metodo.nombre)})`
+    : '';
+
+  return sequelize.literal(
+    `((${cuantos} = 1 AND EXISTS (SELECT 1 FROM ${sp} ` +
+    `WHERE ${sp}.${saleId} = ${venta} AND ${sp}.${metodoId} = ${id}))${porNombre})`
+  );
+}
+
 // GET /api/sales
 const getSales = async (req, res, next) => {
   try {
-    const { tipo, estado, condicionPago, desde, hasta, clientId, page = 1, limit = 30 } = req.query;
+    const { tipo, estado, condicionPago, medioPago, desde, hasta, clientId, page = 1, limit = 30 } = req.query;
     const { Op } = require('sequelize');
     const where = { businessId: req.auth.businessId };
     if (tipo)     where.tipo   = tipo;
@@ -96,11 +171,19 @@ const getSales = async (req, res, next) => {
       if (hasta) where.fecha[Op.lte] = hasta;
     }
 
+    const porMedio = await condicionMedioPago(medioPago, req.auth.businessId);
+    if (porMedio) {
+      // Un literal no es una clave: va en Op.and para que conviva con el resto.
+      if (porMedio.condicionPago) Object.assign(where, porMedio);
+      else where[Op.and] = [...(where[Op.and] || []), porMedio];
+    }
+
     const offset = (Math.max(1, Number(page)) - 1) * Math.min(Number(limit), 100);
     const { count, rows } = await Sale.findAndCountAll({
       where, offset, limit: Math.min(Number(limit), 100),
       include: [
         { model: SaleItem, as: 'items' },
+        { association: 'pagos' },
         { association: 'cliente', attributes: ['id', 'nombre', 'apellido', 'cuit'] },
         { association: 'empleado', attributes: ['id', 'nombre', 'apellido'] },
         { association: 'local',   attributes: ['id', 'nombre'] },
@@ -109,7 +192,49 @@ const getSales = async (req, res, next) => {
       distinct: true,
     });
 
-    res.json({ total: count, page: Number(page), totalPages: Math.ceil(count / limit), data: rows });
+    /*
+     * Totales de TODO el filtro, no de la página que se está viendo.
+     *
+     * Es el motivo de filtrar: "cuánto entró este mes en efectivo" no se
+     * responde sumando las treinta filas visibles. Se calcula aparte con el
+     * mismo where.
+     */
+    const soloCobradas = { ...where, estado: 'pagado' };
+    const [totalCobrado, totalNeto, cantidadCobradas, pendienteDeCobro, cantidadPorCobrar] = await Promise.all([
+      Sale.sum('totalCobrado', { where: soloCobradas }),
+      Sale.sum('total',        { where: soloCobradas }),
+      Sale.count({ where: soloCobradas }),
+      /*
+       * Lo que falta cobrar del filtro.
+       *
+       * Sin este número, filtrar por fiado mostraba "cobrado $0" — cierto y
+       * completamente inútil: lo que se quiere saber al mirar las fiadas es
+       * cuánto se debe, no cuánto ya entró. El $0 se leía como "acá no hay
+       * nada" aunque la tabla debajo tuviera ventas.
+       *
+       * Va sin filtrar por estado: una venta al contado que quedó pendiente
+       * también es plata por cobrar.
+       */
+      Sale.sum('saldoPendiente', { where: { ...where, saldoPendiente: { [Op.gt]: 0 } } }),
+      Sale.count({ where: { ...where, saldoPendiente: { [Op.gt]: 0 } } }),
+    ]);
+
+    res.json({
+      total: count,
+      page: Number(page),
+      totalPages: Math.ceil(count / limit),
+      data: rows,
+      resumen: {
+        cantidad: count,
+        cobradas: cantidadCobradas,
+        // Lo que entró de verdad, con recargos. `neto` es la mercadería.
+        totalCobrado: Number(totalCobrado) || 0,
+        totalNeto: Number(totalNeto) || 0,
+        // Lo que falta entrar, y en cuántas ventas.
+        pendienteDeCobro: Number(pendienteDeCobro) || 0,
+        porCobrar: cantidadPorCobrar,
+      },
+    });
   } catch (error) { next(error); }
 };
 

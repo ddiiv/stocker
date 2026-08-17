@@ -98,7 +98,23 @@ pierde mucho tiempo ahí.
 BACKOFFICE_IPS=2800:2141:e000::/48
 ```
 
-Direcciones sueltas o CIDR, separadas por coma, IPv4 e IPv6.
+Acepta tres formas, separadas por coma:
+
+| Forma | Ejemplo | Cuándo |
+|---|---|---|
+| Dirección | `181.168.42.241` | IP fija |
+| Prefijo | `181.168.42.0/24` · `2800:2141:e000::/48` | la IP se mueve dentro de un bloque |
+| **Nombre** | `mi-casa.duckdns.org` | IP dinámica: se resuelve en cada pedido |
+
+El nombre es la salida de fondo a una conexión residencial. Una IP de Fibertel,
+Telecom o cualquier ISP doméstico es dinámica: cambia cada tanto y cada cambio
+deja al operador afuera hasta que edite la variable a mano. Casi todos los
+routers traen un cliente de DNS dinámico gratis (DuckDNS, No-IP); apuntando la
+lista al nombre, sigue a la IP solo.
+
+Se resuelve con una cache de un minuto, así que no hay una consulta DNS por
+pedido. Si el DNS falla se usa el último valor conocido, y si nunca resolvió, se
+cierra: en un control de acceso, no saber es no pasar.
 
 **Sin esta variable el panel queda abierto a internet.** Se eligió así para no
 dejar a nadie afuera de su propio panel en el primer deploy, pero el arranque lo
@@ -176,6 +192,33 @@ BANCO_ALIAS=
 
 Sin esto, la pantalla de pago del cliente cae al contacto por mail.
 
+### WhatsApp
+
+```bash
+WHATSAPP_META_TOKEN=
+WHATSAPP_META_PHONE_NUMBER_ID=
+WHATSAPP_TEMPLATE_NAME=            # opcional pero importante, ver abajo
+WHATSAPP_TEMPLATE_LANG=es_AR
+WHATSAPP_AVISAR_NEGOCIO=true       # aviso de cada venta al teléfono del negocio
+```
+
+Cada venta cobrada dispara dos mensajes distintos: al cliente su comprobante, y
+al negocio el detalle de lo vendido. El del negocio va al `ownerTelefono` o, si
+no está, al `telefono` del negocio.
+
+**Dos cosas de la API de Meta que conviene saber antes de contar con esto:**
+
+Sólo se puede mandar texto libre dentro de las 24 h desde el último mensaje que
+el cliente le escribió al número. Fuera de esa ventana Meta sólo acepta
+*templates* aprobados en Business Manager. El servicio lo intenta como texto y
+reintenta con el template de `WHATSAPP_TEMPLATE_NAME` si Meta lo rechaza — sin
+ese template configurado, los mensajes a clientes que nunca escribieron
+simplemente no llegan y queda en el log.
+
+Y cada mensaje fuera de la ventana se cobra. Un local con doscientas ventas al
+día son doscientos mensajes al dueño; por eso está `WHATSAPP_AVISAR_NEGOCIO`
+para apagarlo sin desactivar los del cliente.
+
 ### Mail
 
 ```bash
@@ -231,6 +274,26 @@ BACKEND_PORT=${{stockerback.PORT}}
 El backoffice acepta además `BACKOFFICE_PORT` si querés fijar el suyo, y la
 página pública `LANDING_PORT`.
 
+### La página pública: cómo desplegarla
+
+`front/landing` es un repo aparte. Los cambios de acá no llegan solos al
+servicio: hay que commitear y pushear en **ese** repo.
+
+Y el servicio en Railway tiene que dejar de ser estático:
+
+| Ajuste | Valor |
+|---|---|
+| Start command | `npm start` |
+| `API_INTERNAL_URL` | `http://<servicio-backend>.railway.internal:3000` |
+
+Sin el start command, Railway sirve el HTML suelto y el `server.js` nunca corre
+— o sea que la página no puede preguntarle nada al backend y todo lo que se
+cambie en el backoffice queda invisible. Es exactamente el síntoma de "modifico
+y no se modifica".
+
+Para comprobar que quedó bien, `https://<landing>/api/public/landing` tiene que
+devolver JSON. Si devuelve el HTML de la página, el proxy no está andando.
+
 ### La página pública necesita el proxy
 
 Antes se servía como archivo suelto, y por eso lo que se cambiaba en el
@@ -246,6 +309,11 @@ y el backoffice, sin ninguna razón.
 Si el backend no responde, la página muestra los valores escritos en el HTML.
 Pueden estar viejos, pero se ve completa — una página comercial que dice
 "cargando…" es peor que una desactualizada.
+
+El botón «Entrar» de la página apunta a `FRONTEND_URL` (o `FRONTEND_DOMAIN`),
+que ya existen para el CORS — así el dominio del sistema no queda escrito en dos
+lugares. Se puede pisar desde el backoffice con el ajuste **«A dónde lleva el
+botón Entrar»**.
 
 `LANDING_DOMAIN` en el **backend** habilita además el acceso «Ver la página»
 desde el backoffice. Sin esa variable el enlace no aparece, en vez de apuntar a

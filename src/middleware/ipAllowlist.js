@@ -1,4 +1,5 @@
-const { parsearLista, estaEnLista, normalizar } = require('../utils/ip');
+const dns = require('node:dns').promises;
+const { parsearLista, estaEnLista, normalizar, coincide } = require('../utils/ip');
 const { log } = require('../utils/logger');
 
 /*
@@ -38,6 +39,68 @@ function reglas() {
   return parsearLista(process.env[VARIABLE]);
 }
 
+/*
+ * Reglas que son un nombre en vez de una dirección.
+ *
+ * Una IP residencial es dinámica: cambia cada tanto y cada cambio deja al
+ * operador afuera hasta que edite la variable. La salida estándar a eso es un
+ * DNS dinámico —casi todos los routers traen uno gratis— y apuntar la lista al
+ * nombre en vez de al número. El nombre se resuelve en cada pedido y sigue a la
+ * IP sola.
+ *
+ * Se distingue de una IP sin adivinar: si tiene letras que no son de una IPv6
+ * ni barra de prefijo, es un nombre.
+ */
+const esNombre = (regla) => /[a-z]/i.test(regla) && !regla.includes(':') && !regla.includes('/');
+
+/*
+ * Cache de la resolución.
+ *
+ * Sin esto habría una consulta DNS por pedido al backoffice, y una demora de
+ * red en el camino del control de acceso. Un minuto es suficiente: un DNS
+ * dinámico tarda más que eso en propagar un cambio de todas formas.
+ */
+const CACHE_MS = 60 * 1000;
+const cache = new Map();
+
+async function resolverNombre(nombre) {
+  const guardado = cache.get(nombre);
+  if (guardado && Date.now() - guardado.cuando < CACHE_MS) return guardado.ips;
+
+  try {
+    // Las dos familias: el router puede publicar A, AAAA o las dos.
+    const [v4, v6] = await Promise.all([
+      dns.resolve4(nombre).catch(() => []),
+      dns.resolve6(nombre).catch(() => []),
+    ]);
+    const ips = [...v4, ...v6];
+    cache.set(nombre, { ips, cuando: Date.now() });
+    if (!ips.length) log.warn('backoffice', `el nombre ${nombre} no resolvió a ninguna dirección`);
+    return ips;
+  } catch (e) {
+    /*
+     * Si el DNS falla se devuelve lo último que se supo, y si nunca se supo
+     * nada, nada. Fallar cerrado es lo correcto en un control de acceso — pero
+     * usar el valor viejo ante una caída momentánea de DNS evita quedar afuera
+     * por un problema que no es de seguridad.
+     */
+    log.warn('backoffice', `no se pudo resolver ${nombre}`, { error: e.message });
+    return guardado?.ips || [];
+  }
+}
+
+/** ¿La IP entra, mirando direcciones, prefijos y nombres? */
+async function autorizada(ip, lista) {
+  const directas = lista.filter((r) => !esNombre(r));
+  if (estaEnLista(ip, directas)) return true;
+
+  for (const nombre of lista.filter(esNombre)) {
+    const ips = await resolverNombre(nombre);
+    if (ips.some((candidata) => coincide(ip, candidata))) return true;
+  }
+  return false;
+}
+
 /** Estado de la restricción, para mostrarlo en el arranque y en el backoffice. */
 function estado() {
   const lista = reglas();
@@ -53,7 +116,7 @@ function estado() {
 
 const esProduccion = () => process.env.NODE_ENV === 'production';
 
-const restringirBackoffice = (req, res, next) => {
+const restringirBackoffice = async (req, res, next) => {
   const lista = reglas();
 
   if (lista.length === 0) {
@@ -71,7 +134,7 @@ const restringirBackoffice = (req, res, next) => {
   }
 
   const ip = normalizar(req.ip);
-  const permitida = estaEnLista(ip, lista) || (!esProduccion() && LOCALES.includes(ip));
+  const permitida = (!esProduccion() && LOCALES.includes(ip)) || await autorizada(ip, lista);
 
   if (permitida) return next();
 
@@ -92,4 +155,4 @@ const restringirBackoffice = (req, res, next) => {
   return res.status(404).json({ message: 'No encontrado.' });
 };
 
-module.exports = { restringirBackoffice, estado, VARIABLE };
+module.exports = { restringirBackoffice, estado, autorizada, esNombre, VARIABLE };

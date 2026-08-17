@@ -16,4 +16,13 @@ function ilikeOperator() {
   return sequelize.getDialect() === 'postgres' ? Op.iLike : Op.like;
 }
 
-module.exports = { ilikeOperator };
+/*
+ * Cita un identificador según el motor: [tabla] en SQL Server, "tabla" en
+ * Postgres. Hace falta para las subconsultas escritas a mano — sin las comillas,
+ * Postgres pasa los nombres a minúsculas y `saleId` deja de existir.
+ */
+function citar(nombre) {
+  return sequelize.getDialect() === 'postgres' ? `"${nombre}"` : `[${nombre}]`;
+}
+
+module.exports = { ilikeOperator, citar };

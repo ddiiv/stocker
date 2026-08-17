@@ -385,6 +385,7 @@ const CLAVES_PUBLICAS = {
   contactoWhatsapp: 'WhatsApp de contacto, sólo dígitos con código de país',
   contactoTelefono: 'Teléfono de contacto, como se muestra',
   cotizacionUsd:    'Pesos por dólar, para mostrar los precios en USD',
+  urlSistema:       'A dónde lleva el botón «Entrar» de la página pública',
 };
 
 /** URL pública de la landing, para poder abrirla desde el panel. */
