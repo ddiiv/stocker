@@ -36,23 +36,53 @@ const PORT = Number(process.env.PORT || process.env.FRONTEND_PORT) || 8080;
 /*
  * Destino del proxy: el backend, por la red privada.
  *
- * Se puede dar entero en API_INTERNAL_URL, o armarlo con las variables
- * compartidas del proyecto (BACKEND_DOMAIN + BACKEND_PORT). Como BACKEND_PORT
- * es la misma variable que usa el backend para elegir su puerto, los dos
- * coinciden solos y desaparece el desencuentro clásico de "escucha en un
- * puerto y le hablo a otro".
+ * Se resuelve por orden de precisión:
+ *   1. API_INTERNAL_URL — la URL entera. Es la más directa y la que conviene
+ *      cuando algo no resuelve.
+ *   2. BACKEND_DOMAIN + BACKEND_PORT.
  *
- * BACKEND_DOMAIN puede venir como host pelado o como URL. Dentro de la red
- * privada se usa http: el tráfico no sale de Railway y no hay TLS.
+ * En desarrollo cae a localhost:3000. En producción NO: antes lo hacía, y
+ * convertía una variable sin cargar en un ECONNREFUSED contra localhost que no
+ * decía nada sobre la causa real. Ahora avisa qué miró y qué encontró.
+ *
+ * Ojo con las referencias anidadas de Railway: una variable compartida que a su
+ * vez apunta a otro servicio (shared.BACKEND_DOMAIN = ${{svc.RAILWAY_PRIVATE_DOMAIN}})
+ * puede quedar sin resolver y llegar vacía. Si pasa eso, lo más corto es poner
+ * API_INTERNAL_URL a mano.
  */
 function destinoApi() {
-  if (process.env.API_INTERNAL_URL) return process.env.API_INTERNAL_URL.replace(/\/+$/, '');
+  if (process.env.API_INTERNAL_URL) {
+    return process.env.API_INTERNAL_URL.replace(/\/+$/, '');
+  }
 
   const dominio = (process.env.BACKEND_DOMAIN || '').trim().replace(/\/+$/, '');
-  if (!dominio) return 'http://localhost:3000';
-
   const puerto = process.env.BACKEND_PORT || '3000';
-  // Si ya trae protocolo, respetamos lo que puso el usuario.
+
+  if (!dominio) {
+    const enProduccion = process.env.NODE_ENV === 'production';
+    console.error('');
+    console.error('  ✖ No se pudo resolver a dónde está el backend.');
+    console.error('');
+    console.error('    API_INTERNAL_URL .. ' + (process.env.API_INTERNAL_URL || '(vacío)'));
+    console.error('    BACKEND_DOMAIN .... (vacío)');
+    console.error('    BACKEND_PORT ...... ' + (process.env.BACKEND_PORT || '(vacío)'));
+    console.error('');
+    console.error('    Si BACKEND_DOMAIN viene de una variable compartida que');
+    console.error('    referencia a otro servicio, puede no estar resolviendo.');
+    console.error('    Lo más corto es cargar en ESTE servicio:');
+    console.error('');
+    console.error('      API_INTERNAL_URL=http://<servicio-backend>.railway.internal:3000');
+    console.error('');
+    if (enProduccion) {
+      console.error('    Sin eso no hay a dónde reenviar /api, así que el servicio no arranca.');
+      console.error('');
+      process.exit(1);
+    }
+    console.error('    En desarrollo se usa http://localhost:3000.');
+    console.error('');
+    return 'http://localhost:3000';
+  }
+
   if (/^https?:\/\//i.test(dominio)) {
     return /:\d+$/.test(dominio) ? dominio : `${dominio}:${puerto}`;
   }
