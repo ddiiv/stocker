@@ -68,12 +68,29 @@ const FRONT_URL = comoUrl(process.env.FRONTEND_URL) || comoUrl(process.env.FRONT
  * localhost sólo fuera de producción: en producción, un origen de localhost no
  * es un desarrollador, es alguien apuntando su navegador a nuestra API.
  */
-const CORS_ORIGENES = [
-  ...(process.env.FRONTEND_URL || '').split(',').map(comoUrl),
-  comoUrl(process.env.FRONTEND_DOMAIN),
-  comoUrl(process.env.BACKOFFICE_DOMAIN),
-  comoUrl(process.env.LANDING_DOMAIN),
-].filter(Boolean);
+/*
+ * Un dominio interno no puede ser un origen válido.
+ *
+ * `Origin` lo pone el navegador con la dirección que el usuario tiene en la
+ * barra, así que un `*.railway.internal` —o un host privado— jamás va a
+ * aparecer ahí. Si una de estas variables quedó apuntando al dominio privado
+ * del servicio en vez de al público, la lista queda con una entrada inútil y el
+ * dominio real afuera. Se descarta y se avisa, porque el síntoma es "CORS me
+ * rechaza" y la causa está tres pasos atrás.
+ */
+const ES_INTERNO = /(\.railway\.internal|\.internal|\.local)(:\d+)?$/i;
+
+const CORS_CANDIDATOS = [
+  ...(process.env.FRONTEND_URL || '').split(',').map((v) => ['FRONTEND_URL', comoUrl(v)]),
+  ['FRONTEND_DOMAIN',   comoUrl(process.env.FRONTEND_DOMAIN)],
+  ['BACKOFFICE_DOMAIN', comoUrl(process.env.BACKOFFICE_DOMAIN)],
+  ['LANDING_DOMAIN',    comoUrl(process.env.LANDING_DOMAIN)],
+].filter(([, url]) => Boolean(url));
+
+const CORS_DESCARTADOS = CORS_CANDIDATOS.filter(([, url]) => ES_INTERNO.test(url));
+const CORS_ORIGENES = [...new Set(
+  CORS_CANDIDATOS.filter(([, url]) => !ES_INTERNO.test(url)).map(([, url]) => url)
+)];
 
 const ES_PRODUCCION = process.env.NODE_ENV === 'production';
 const CORS_LOCALES = [
@@ -301,6 +318,40 @@ async function start() {
       console.log(`    Bloqueo por fuerza bruta .. ${bloq.TOPE_POR_CUENTA} fallos por cuenta · ${bloq.TOPE_POR_IP} por IP, en ${bloq.VENTANA_MIN} min`);
       console.log('    Ráfagas .. 60 pedidos cada 2 s por IP');
       console.log(`    Cuerpo máximo .. 1 MB`);
+      console.log(`    Proxies delante .. ${app.get('trust proxy')} (TRUST_PROXY_HOPS) · comprobalo en GET /api/mi-ip`);
+
+      /*
+       * La lista de CORS efectiva, en el arranque.
+       *
+       * Sin esto, un dominio mal cargado sólo se descubre cuando un navegador
+       * empieza a recibir rechazos, y desde el otro lado eso parece un problema
+       * del front.
+       */
+      console.log('  ── CORS ──');
+      if (CORS_ORIGENES.length) {
+        for (const o of CORS_ORIGENES) console.log(`    ✔ ${o}`);
+      } else {
+        console.log('    ✖ Ningún origen configurado. Si algún front le pega por otro dominio, lo va a rechazar.');
+      }
+      for (const [variable, url] of CORS_DESCARTADOS) {
+        console.log(`    ✖ ${variable}=${url} — es un dominio interno, un navegador nunca lo manda como Origin.`);
+        console.log(`      Cargá ahí el dominio PÚBLICO del servicio.`);
+      }
+      if (process.env.NODE_ENV !== 'production') {
+        console.log('    + localhost (sólo fuera de producción)');
+      }
+
+      /*
+       * Mercado Pago: mismo criterio. Una URL a localhost está cargada y no
+       * sirve, y el cobro falla en silencio — el pago entra y la cuenta no se
+       * activa.
+       */
+      const { problemasDeUrls, estaConfigurado } = require('./src/services/mercadopagoService');
+      const problemasMp = estaConfigurado() ? problemasDeUrls() : [];
+      if (problemasMp.length) {
+        console.log('  ── Mercado Pago ──');
+        for (const p of problemasMp) console.log(`    ✖ ${p}`);
+      }
     });
 
     server.on('error', (err) => {

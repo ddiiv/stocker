@@ -61,6 +61,44 @@ const config = () => ({
 const estaConfigurado = () => Boolean(config().token);
 
 /*
+ * Revisa que las URLs sirvan de verdad.
+ *
+ * Es el error que más cuesta encontrar, porque no falla: el pago se genera, el
+ * cliente paga, y el aviso se manda a una dirección que no existe. La plata
+ * entra y la cuenta queda sin activar, sin ningún mensaje de error en el medio.
+ *
+ * Se revisa acá y no en el arranque solamente, para que la pantalla de Cobros
+ * pueda mostrarlo.
+ */
+function problemasDeUrls() {
+  const c = config();
+  const problemas = [];
+
+  const revisar = (nombre, url, queEs) => {
+    if (!url) {
+      problemas.push(`${nombre} está vacía: ${queEs}`);
+      return;
+    }
+    if (/localhost|127\.0\.0\.1|\[::1\]/i.test(url)) {
+      problemas.push(
+        `${nombre} apunta a localhost. Mercado Pago no puede alcanzar tu máquina: ${queEs}`
+      );
+      return;
+    }
+    if (process.env.NODE_ENV === 'production' && !/^https:\/\//i.test(url)) {
+      problemas.push(`${nombre} tiene que ser https en producción.`);
+    }
+  };
+
+  revisar('MP_WEBHOOK_URL', c.webhook,
+    'los pagos no se van a acreditar solos y hay que aprobarlos a mano desde el backoffice.');
+  revisar('MP_BACK_URL', c.backUrl,
+    'el cliente va a ver un error de conexión al volver de pagar.');
+
+  return problemas;
+}
+
+/*
  * Estado de la configuración, sin exponer secretos.
  *
  * Existe porque el primer intento de cobro real siempre falla por algo chico:
@@ -75,7 +113,8 @@ async function diagnostico() {
     // Los tokens de prueba de Mercado Pago empiezan con TEST-. Distinguirlo
     // importa: con uno de prueba los pagos nunca acreditan plata de verdad.
     modo: !c.token ? 'sin configurar' : c.token.startsWith('TEST-') ? 'prueba' : 'produccion',
-    webhookConfigurado: Boolean(c.webhook),
+    // "Configurada" no alcanza: una URL a localhost está cargada y no sirve.
+    webhookConfigurado: Boolean(c.webhook) && !/localhost|127\.0\.0\.1/i.test(c.webhook),
     webhookUrl: c.webhook || null,
     firmaVerificable: Boolean(c.secretoWebhook),
     urlDeRetorno: c.backUrl || null,
@@ -98,10 +137,10 @@ async function diagnostico() {
         email: yo.email || null,
         pais: yo.site_id || null,
       },
-      // Advertencias, no errores: el cobro funciona igual, pero con estas dos
+      // Advertencias, no errores: el cobro funciona igual, pero con estas
       // cosas sin resolver hay que acreditar a mano.
       advertencias: [
-        !base.webhookConfigurado && 'Sin MP_WEBHOOK_URL los pagos no se acreditan solos: hay que aprobarlos desde el backoffice.',
+        ...problemasDeUrls(),
         !base.firmaVerificable && 'Sin MP_WEBHOOK_SECRET el webhook no se puede verificar, así que se procesa igual pero queda registrado como no verificado.',
         base.modo === 'prueba' && 'El token es de prueba: los pagos no mueven plata real.',
       ].filter(Boolean),
@@ -279,7 +318,7 @@ function firmaValida({ signature, requestId, dataId }) {
 }
 
 module.exports = {
-  estaConfigurado, diagnostico, crearLinkDePago, crearSuscripcionRecurrente,
+  estaConfigurado, diagnostico, problemasDeUrls, crearLinkDePago, crearSuscripcionRecurrente,
   consultarPago, buscarPagosDe, cancelarSuscripcionRecurrente,
   firmaValida, refExterna, leerRef, ErrorMercadoPago,
 };

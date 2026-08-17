@@ -106,10 +106,16 @@ estar en la lista.
 
 ```bash
 MP_ACCESS_TOKEN=             # Access Token de producción de tu app de Mercado Pago
-MP_WEBHOOK_URL=https://TU-APP/api/billing/webhook/mercadopago
+MP_WEBHOOK_URL=https://<app-publica>/api/billing/webhook/mercadopago
 MP_WEBHOOK_SECRET=           # Webhooks → clave secreta, en la misma pantalla
-MP_BACK_URL=https://TU-APP/cuenta/suscripcion
+MP_BACK_URL=https://<app-publica>/cuenta/suscripcion
 ```
+
+Las dos URLs tienen que ser el **dominio público de la app**, el que abre el
+cliente en el navegador. Con `localhost` no falla nada visible: el pago se
+genera, el cliente paga, y el aviso se manda a una dirección que no existe — la
+plata entra y la cuenta queda sin activar. Por eso el arranque y la pantalla de
+Cobros lo marcan como error y no como detalle.
 
 Un token que empiece con `TEST-` funciona igual y no mueve plata real: sirve
 para probar el flujo entero. La pantalla de **Cobros** del backoffice avisa en
