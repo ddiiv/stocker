@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Save, ExternalLink, Lock } from "lucide-react";
+import { Save, ExternalLink, Lock, Globe } from "lucide-react";
 import * as api from "../lib/api";
 import { mensajeDe } from "../lib/http";
 import { useAdmin, puede } from "../context/AdminAuth";
@@ -19,6 +19,7 @@ export default function AjustesPage() {
 
   const [claves, setClaves] = useState([]);
   const [publico, setPublico] = useState(null);
+  const [urlPublica, setUrlPublica] = useState(null);
   const [form, setForm] = useState({});
   const [cargando, setCargando] = useState(true);
   const [guardando, setGuardando] = useState(false);
@@ -34,9 +35,13 @@ export default function AjustesPage() {
         // pena tumbar la pantalla de edición por no poder mostrar el preview.
         api.getVistaPublica().catch(() => null),
       ]);
-      setClaves(r);
+      // La respuesta pasó a ser un objeto para poder traer también la URL de la
+      // página. Se acepta el array viejo por si queda una versión sin desplegar.
+      const lista = Array.isArray(r) ? r : (r.claves || []);
+      setClaves(lista);
+      setUrlPublica(Array.isArray(r) ? null : r.paginaPublica);
       setPublico(vista);
-      setForm(Object.fromEntries(r.map((c) => [c.clave, c.valor ?? ""])));
+      setForm(Object.fromEntries(lista.map((c) => [c.clave, c.valor ?? ""])));
     } catch (e) {
       setError(mensajeDe(e, "No se pudieron cargar los ajustes."));
     } finally { setCargando(false); }
@@ -75,6 +80,11 @@ export default function AjustesPage() {
       <PageHead
         titulo="Página pública"
         bajada="Contacto y precios que ve quien todavía no es cliente"
+        acciones={urlPublica && (
+          <a className="btn-primary btn-sm" href={urlPublica} target="_blank" rel="noopener noreferrer">
+            <Globe size={13} /> Abrir la página <ExternalLink size={12} />
+          </a>
+        )}
       />
 
       <Aviso tono="error" onCerrar={() => setError("")}>{error}</Aviso>
@@ -151,15 +161,26 @@ export default function AjustesPage() {
             />
           </div>
 
-          <div className="mt-4 border-t border-line pt-3 text-xs text-dim">
+          <div className="mt-4 space-y-2 border-t border-line pt-3 text-xs text-dim">
             <p>Los precios de los planes se editan en la sección Planes: la página los lee de ahí.</p>
-            <a
-              href="https://stockerbackoffice.com"
-              target="_blank" rel="noopener noreferrer"
-              className="mt-2 inline-flex items-center gap-1 text-brass hover:underline"
-            >
-              Abrir la página <ExternalLink size={12} />
-            </a>
+            <p className="text-faint">
+              Los cambios se ven en la próxima visita a la página. No hay que volver
+              a publicarla: los lee de acá cada vez que carga.
+            </p>
+            {urlPublica ? (
+              <a
+                href={urlPublica}
+                target="_blank" rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 text-brass hover:underline"
+              >
+                {urlPublica.replace(/^https?:\/\//, "")} <ExternalLink size={12} />
+              </a>
+            ) : (
+              <p className="text-warn">
+                Cargá <span className="font-mono">LANDING_DOMAIN</span> en el backend para
+                poder abrirla desde acá.
+              </p>
+            )}
           </div>
         </Card>
       </form>

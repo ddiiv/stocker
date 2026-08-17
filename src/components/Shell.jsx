@@ -1,6 +1,7 @@
 import { NavLink, Outlet } from "react-router-dom";
-import { LayoutDashboard, Building2, Layers, SlidersHorizontal, LogOut, Menu, Wallet, ShieldCheck } from "lucide-react";
-import { useState } from "react";
+import { LayoutDashboard, Building2, Layers, SlidersHorizontal, LogOut, Menu, Wallet, ShieldCheck, Globe, ExternalLink } from "lucide-react";
+import { useEffect, useState } from "react";
+import * as api from "../lib/api";
 import { useAdmin } from "../context/AdminAuth";
 
 const LINKS = [
@@ -15,6 +16,18 @@ const LINKS = [
 export default function Shell() {
   const { admin, salir } = useAdmin();
   const [abierto, setAbierto] = useState(false);
+  const [paginaPublica, setPaginaPublica] = useState(null);
+
+  /*
+   * La URL sale de la configuración del backend (LANDING_DOMAIN), no escrita
+   * acá: el dominio cambia y un enlace fijo queda viejo sin que nadie lo note.
+   * Si no está configurada, no se muestra el acceso.
+   */
+  useEffect(() => {
+    api.getAjustes()
+      .then((r) => setPaginaPublica(Array.isArray(r) ? null : r.paginaPublica))
+      .catch(() => {});
+  }, []);
 
   return (
     <div className="flex min-h-screen">
@@ -48,6 +61,19 @@ export default function Shell() {
             </NavLink>
           ))}
         </nav>
+
+        {/* Acceso a la página pública, separado del menú: no es una sección del
+            panel, es salir a ver lo que ve un visitante. */}
+        {paginaPublica && (
+          <a
+            href={paginaPublica}
+            target="_blank" rel="noopener noreferrer"
+            className="mx-2 mb-2 flex items-center gap-2.5 rounded-[3px] px-3 py-2 text-sm text-dim transition-colors hover:bg-surface hover:text-brass"
+          >
+            <Globe size={16} /> Ver la página
+            <ExternalLink size={11} className="ml-auto opacity-60" />
+          </a>
+        )}
 
         <div className="border-t border-line p-3">
           <p className="truncate text-sm text-text">{admin?.nombre}</p>
