@@ -970,7 +970,16 @@ footer { border-top: 1px solid var(--line-soft); padding-block: 2rem; }
 (function () {
   "use strict";
 
-  // Origen de la API. Vacío = la página funciona sola, sin backend.
+  /*
+   * De dónde salen los datos en vivo.
+   *
+   * Por defecto se pregunta al mismo origen: el servidor de esta página
+   * reenvía /api al backend, así que no hay CORS ni configuración que cargar.
+   *
+   * window.STOCKER_API existe para el caso de servir este archivo en un
+   * hosting estático que no pueda hacer de proxy — ahí se apunta al dominio
+   * público de la app.
+   */
   var API = window.STOCKER_API || "";
 
   var estado = { moneda: "ARS", cotizacion: 1450 };
@@ -1010,8 +1019,15 @@ footer { border-top: 1px solid var(--line-soft); padding-block: 2rem; }
     });
   }
 
-  if (!API) return;
-
+  /*
+   * Se intenta SIEMPRE, aun sin API configurada: la ruta relativa funciona sola
+   * cuando el servidor de la página reenvía /api.
+   *
+   * Antes la página no preguntaba nada si la variable estaba vacía, así que un
+   * cambio hecho en el backoffice no se veía nunca y no había forma de saber
+   * por qué. Si el pedido falla, la página se queda con los valores escritos en
+   * el HTML — que son correctos, sólo pueden estar desactualizados.
+   */
   fetch(API.replace(/\/$/, "") + "/api/public/landing")
     .then(function (r) { return r.ok ? r.json() : null; })
     .then(function (d) {
