@@ -7,7 +7,7 @@ Cuatro servicios en el mismo proyecto y environment:
 | `backend` | `back/stocker` | **no** | `node index.js` |
 | `app` | `front/stocker` | sí | `npm start` |
 | `backoffice` | `front/backoffice` | sí | `npm start` |
-| `landing` | `front/landing` | sí | estático |
+| `landing` | `front/landing` | sí | `npm start` |
 
 El backend **no lleva dominio público**. Los tres frontends le hablan por la red
 privada (`backend.railway.internal`) y hacen de proxy en `/api`. Así el único
@@ -206,7 +206,28 @@ BACKEND_DOMAIN=${{stockerback.RAILWAY_PRIVATE_DOMAIN}}
 BACKEND_PORT=${{stockerback.PORT}}
 ```
 
-El backoffice acepta además `BACKOFFICE_PORT` si querés fijar el suyo.
+El backoffice acepta además `BACKOFFICE_PORT` si querés fijar el suyo, y la
+página pública `LANDING_PORT`.
+
+### La página pública necesita el proxy
+
+Antes se servía como archivo suelto, y por eso lo que se cambiaba en el
+backoffice no se veía nunca: la página no tenía a quién preguntarle. Ahora tiene
+su propio `server.js` que reenvía `/api/public` al backend, así que los precios y
+el contacto se leen en cada visita y los cambios aparecen sin volver a publicar
+nada.
+
+Sólo reenvía `/api/public`, que es la única parte de la API sin sesión.
+Reenviar todo `/api` convertiría a un sitio público en otra puerta hacia el login
+y el backoffice, sin ninguna razón.
+
+Si el backend no responde, la página muestra los valores escritos en el HTML.
+Pueden estar viejos, pero se ve completa — una página comercial que dice
+"cargando…" es peor que una desactualizada.
+
+`LANDING_DOMAIN` en el **backend** habilita además el acceso «Ver la página»
+desde el backoffice. Sin esa variable el enlace no aparece, en vez de apuntar a
+un dominio escrito a mano que quede viejo.
 
 ---
 

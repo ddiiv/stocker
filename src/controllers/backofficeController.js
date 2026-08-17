@@ -387,13 +387,25 @@ const CLAVES_PUBLICAS = {
   cotizacionUsd:    'Pesos por dólar, para mostrar los precios en USD',
 };
 
+/** URL pública de la landing, para poder abrirla desde el panel. */
+function urlPaginaPublica() {
+  const bruto = (process.env.LANDING_DOMAIN || '').trim().replace(/\/+$/, '');
+  if (!bruto) return null;
+  return /^https?:\/\//i.test(bruto) ? bruto : `https://${bruto}`;
+}
+
 const getAjustes = async (_req, res, next) => {
   try {
     const filas = await PlatformSetting.findAll();
     const valores = Object.fromEntries(filas.map((f) => [f.clave, f.valor]));
-    res.json(Object.entries(CLAVES_PUBLICAS).map(([clave, descripcion]) => ({
-      clave, descripcion, valor: valores[clave] ?? null,
-    })));
+    res.json({
+      claves: Object.entries(CLAVES_PUBLICAS).map(([clave, descripcion]) => ({
+        clave, descripcion, valor: valores[clave] ?? null,
+      })),
+      // Sale de LANDING_DOMAIN y no del código: el dominio cambia y el panel no
+      // tiene por qué tener uno escrito a mano que después quede viejo.
+      paginaPublica: urlPaginaPublica(),
+    });
   } catch (e) { next(e); }
 };
 
