@@ -91,9 +91,27 @@ El prefijo que te asigna el proveedor es estable: de
 `2800:2141:e000:88f:8118:6819:ae53:3b89` conviene cargar
 `2800:2141:e000::/48`, que cubre todo el bloque.
 
-Aun así una IP doméstica se puede mover. Si se te corta el acceso, es lo primero
-a revisar — y es la razón de que el segundo factor siga siendo obligatorio: la
-IP es una capa, no la única.
+**Si navegás con VPN, esto no sirve como está.** Un nodo de salida de VPN es un
+pool compartido: la dirección rota entre visitas, y el prefijo que la abarca
+abarca también a todos los demás clientes de esa VPN. Allowlistear ese rango no
+es "sólo yo", son miles de desconocidos. Para saber si te está pasando, mirá el
+reverse DNS de la IP que te devuelve `/api/mi-ip`: si resuelve a un proveedor de
+hosting o CDN en vez de a tu ISP, estás saliendo por una VPN.
+
+Tres salidas, de mejor a peor:
+
+1. Apagá la VPN para entrar al panel y allowlisteá la IP real de tu conexión.
+2. Si querés seguir con VPN, conseguí una IP dedicada y allowlisteá ésa.
+3. Dejá `BACKOFFICE_IPS` vacía y apoyate en el segundo factor y el bloqueo por
+   intentos. Es una capa menos, pero es honesto: mejor eso que una lista que
+   parece cerrada y deja pasar a un pool entero.
+
+Aun sin VPN, una IP doméstica se puede mover. Si se te corta el acceso, es lo
+primero a revisar — y es la razón de que el segundo factor siga siendo
+obligatorio: la IP es una capa, no la única.
+
+`/api/mi-ip` además te dice si la IP con la que estás entrando pasaría la lista
+actual, así podés verificar el valor antes de quedarte afuera.
 
 `BACKOFFICE_IPS` se lee en el **backend**, que es donde corre el control.
 Cargarla en el servicio del backoffice no hace nada.

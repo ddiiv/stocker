@@ -220,11 +220,29 @@ app.get('/api/mi-ip', (req, res) => {
   const cadena = String(req.headers['x-forwarded-for'] || '')
     .split(',').map((s) => s.trim()).filter(Boolean);
 
+  /*
+   * Se informa si ESTA IP entraría al backoffice con la lista actual.
+   *
+   * Es lo que cierra el círculo: sin esto, la única forma de saber si el valor
+   * quedó bien es intentar entrar, y si quedó mal el resultado es un 404 sin
+   * pistas. Acá se comprueba antes.
+   *
+   * Sólo dice sí o no. No devuelve la lista: le contaría a cualquiera desde
+   * dónde se administra la plataforma.
+   */
+  const { parsearLista, estaEnLista } = require('./src/utils/ip');
+  const reglas = parsearLista(process.env.BACKOFFICE_IPS);
+
   res.json({
     ip: req.ip,
     hops: app.get('trust proxy'),
     saltos: cadena.length,
     ...(process.env.MOSTRAR_CADENA_IP === '1' ? { cadena } : {}),
+    backoffice: reglas.length === 0
+      ? 'sin restricción: BACKOFFICE_IPS está vacía y el panel acepta cualquier IP'
+      : estaEnLista(req.ip, reglas)
+        ? 'esta IP SÍ entra al backoffice'
+        : 'esta IP NO entra al backoffice',
     ayuda: 'Si esta no es tu IP pública, ajustá TRUST_PROXY_HOPS en el backend (1 si el navegador le pega directo, 2 si pasa por el front).',
   });
 });

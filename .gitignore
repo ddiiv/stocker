@@ -9,9 +9,9 @@ npm-debug.log*
 .env
 .env.local
 .env.*.local
-
 a.sql
-*.md
+
+
 # Respaldos que deja scripts/arca-cert.js: contienen el .env entero.
 .env.bak-*
 .env.bak
