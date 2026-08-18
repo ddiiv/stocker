@@ -226,9 +226,33 @@ async function verifyDelegation({ businessCuit, ambiente = 'homologacion' }) {
         ok: false,
         listoParaFacturar: false,
         error: errores.map((x) => `[${x.codigo}] ${x.mensaje}`).join(' · '),
+        /*
+         * El 600 nombra las dos puntas y el ambiente.
+         *
+         * "No apareció CUIT en lista de relaciones" no dice de quién a quién
+         * falta la relación, y sin eso el mensaje no se puede accionar: hay que
+         * saber que el token es de un CUIT y que se está pidiendo facturar por
+         * otro. El ambiente va incluido porque las delegaciones de homologación
+         * y de producción son dos listas distintas, y hacer el trámite en una y
+         * consultar la otra da exactamente este error.
+         */
         hint: errores.some((x) => [600, 601].includes(x.codigo))
-          ? 'AFIP rechazó las credenciales o la delegación. Revisá que el CUIT te haya delegado wsfe y que el ambiente (homologación / producción) sea el mismo donde hiciste el trámite.'
+          ? `AFIP no reconoce que ${process.env.ARCA_STOCKER_CUIT} pueda facturar por ${String(businessCuit).replace(/\D/g, '')} en ${ambiente}.`
           : null,
+        /*
+         * Las tres causas, en orden de probabilidad.
+         *
+         * La primera es la que más cuesta encontrar: la delegación CUIT a CUIT
+         * se ve aceptada en el Administrador de Relaciones y aun así falla,
+         * porque el token lo firma el certificado y la relación no lo nombra.
+         * Mientras el mensaje decía sólo "revisá la delegación", el trámite ya
+         * hecho parecía el problema y nadie miraba el paso que faltaba.
+         */
+        causas: errores.some((x) => [600, 601].includes(x.codigo)) ? [
+          'El certificado no está asignado a esa delegación. Aunque el cliente ya delegó "Facturación Electrónica" y figure Aceptada, falta crear la relación que nombra al Computador Fiscal como representante. Es el paso que habilita el "Delegable: SI".',
+          'El servicio delegado es otro: "Comprobantes en línea" es para facturar a mano desde el sitio de AFIP; para Stocker tiene que ser "Facturación Electrónica" (webservice wsfe).',
+          `El trámite se hizo en el otro ambiente: las relaciones de homologación y de producción son listas separadas, y acá se consultó ${ambiente}.`,
+        ] : undefined,
         erroresAfip: errores,
       };
     }
