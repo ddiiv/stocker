@@ -26,6 +26,8 @@ import VariantTypesPage from "./pages/VariantTypesPage";
 import MercadoLibrePage from "./pages/MercadoLibrePage";
 import SalesTimelinePage from "./pages/SalesTimelinePage";
 import ProductMetricsPage from "./pages/ProductMetricsPage";
+import StockMovementsPage from "./pages/StockMovementsPage";
+import SkuBuilderPage from "./pages/SkuBuilderPage";
 import ScanStockPage from "./pages/ScanStockPage";
 import PosPage from "./pages/PosPage";
 import BusinessCuitsPage from "./pages/BusinessCuitsPage";
@@ -54,6 +56,10 @@ export default function App() {
             <Route path="/stock"                        element={<PermissionRoute permission="stock"><StockPage /></PermissionRoute>} />
             <Route path="/stock/variantes"              element={<PermissionRoute permission="stock" level="editar"><VariantTypesPage /></PermissionRoute>} />
             <Route path="/stock/escanear"               element={<PermissionRoute permission="stock" level="editar"><ScanStockPage /></PermissionRoute>} />
+            {/* Antes de la ruta con parámetro: si no, "movimientos" se lee
+                como un skuAgrupador y cae en el detalle de producto. */}
+            <Route path="/stock/movimientos"            element={<PermissionRoute permission="stock"><StockMovementsPage /></PermissionRoute>} />
+            <Route path="/stock/sku"                    element={<PermissionRoute permission="stock"><SkuBuilderPage /></PermissionRoute>} />
             <Route path="/stock/:skuAgrupador"          element={<PermissionRoute permission="stock"><ProductDetailPage /></PermissionRoute>} />
             <Route path="/ventas"                       element={<PermissionRoute permission="ventas"><SalesPage /></PermissionRoute>} />
             <Route path="/ventas/nueva"                 element={<PermissionRoute permission="ventas" level="editar"><NewSalePage /></PermissionRoute>} />

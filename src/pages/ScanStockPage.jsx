@@ -1,13 +1,15 @@
 import { useEffect, useRef, useState } from "react";
 import {
-  Plus, Minus, Hash, Trash2, CheckCircle2, XCircle,
+  Plus, Minus, Hash, Trash2, CheckCircle2, XCircle, Camera, Smartphone,
 } from "lucide-react";
 import { scanAdjustStock } from "../services/productService";
 import { useBarcodeScanner } from "../hooks/useBarcodeScanner";
 import { PageHeader, Card } from "../components/ui/Layout";
 import StockTabs from "../components/stock/StockTabs";
 import ScannerStatus from "../components/scanner/ScannerStatus";
-import CameraScanner, { camaraDisponible } from "../components/scanner/CameraScanner";
+import { camaraDisponible } from "../components/scanner/CameraScanner";
+import ScannerCamara from "../components/scanner/ScannerCamara";
+import ResumenEscaneo from "../components/scanner/ResumenEscaneo";
 
 const MODOS = [
   { value: "agregar", label: "Agregar",  icon: Plus,  desc: "Suma al stock actual. Para recepción de mercadería.", color: "teal" },
@@ -22,6 +24,8 @@ export default function ScanStockPage() {
   const [historial, setHistorial] = useState([]);
   const [error, setError] = useState("");
   const [procesando, setProcesando] = useState(false);
+  const [conCamara, setConCamara] = useState(false);
+  const [vista, setVista] = useState("producto");   // producto | cronologico
   const inputRef = useRef(null);
   // El modo y la cantidad se leen dentro del callback del scanner, que vive en
   // una ref: sin esto tomaría los valores del primer render.
@@ -130,13 +134,22 @@ export default function ScanStockPage() {
               {procesando && <span className="ml-2 text-xs text-ink-500">procesando…</span>}
             </p>
 
-            {/* Alternativa para el depósito: ahí no hay PC con lector USB,
-                pero el celular sirve de lector con su propia cámara. */}
-            {camaraDisponible() && (
-              <div className="mt-3 border-t border-ink-100 pt-3">
-                <CameraScanner onScan={procesarCodigo} activo={!procesando} />
-              </div>
-            )}
+            {/* Alternativa para recorrer la tienda: en el pasillo no hay PC con
+                lector USB, pero el celular sirve de lector con su cámara. Abre
+                a pantalla completa porque es ahí donde se usa. */}
+            <div className="mt-3 border-t border-ink-100 pt-3">
+              {camaraDisponible() ? (
+                <button type="button" className="btn btn-primary w-full" onClick={() => setConCamara(true)}>
+                  <Camera size={16} /> Escanear con la cámara
+                </button>
+              ) : (
+                <p className="flex items-start gap-2 text-xs text-ink-500">
+                  <Smartphone size={14} className="mt-0.5 shrink-0" />
+                  Este navegador no lee códigos con la cámara. Abrí Stocker con Chrome
+                  en el celular y el botón aparece.
+                </p>
+              )}
+            </div>
 
             <form onSubmit={submitManual} className="mt-3">
               <label className="label">O ingresá el código a mano</label>
@@ -160,16 +173,33 @@ export default function ScanStockPage() {
           </div>
 
           <Card className="p-0">
-            <div className="flex items-center justify-between border-b border-line px-4 py-3">
-              <p className="font-display text-sm font-semibold text-ink-950">Historial de la sesión</p>
-              {historial.length > 0 && (
-                <button className="btn-ghost text-xs" onClick={() => setHistorial([])}><Trash2 size={13} /> Limpiar</button>
-              )}
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line px-4 py-3">
+              <p className="font-display text-sm font-semibold text-ink-950">Lo escaneado en esta sesión</p>
+              <div className="flex items-center gap-2">
+                {/* Dos lecturas del mismo dato: cuánto llevo de cada producto, y
+                    en qué orden pasó. La primera es la que se usa mientras se
+                    escanea; la segunda, para revisar una lectura dudosa. */}
+                <div className="flex rounded-md border border-line bg-paper-50 p-0.5">
+                  {[["producto", "Por producto"], ["cronologico", "Cronológico"]].map(([v, t]) => (
+                    <button key={v} onClick={() => setVista(v)} aria-pressed={vista === v}
+                      className={`rounded px-2.5 py-1 text-xs font-medium transition-colors ${
+                        vista === v ? "bg-ink-950 text-paper-50" : "text-ink-600 hover:bg-paper-200"
+                      }`}>{t}</button>
+                  ))}
+                </div>
+                {historial.length > 0 && (
+                  <button className="btn-ghost text-xs" onClick={() => setHistorial([])}><Trash2 size={13} /> Limpiar</button>
+                )}
+              </div>
             </div>
             {historial.length === 0 ? (
               <p className="px-4 py-10 text-center text-sm text-ink-600">
                 Todavía no escaneaste nada. Elegí qué hace cada lectura y gatillá el lector.
               </p>
+            ) : vista === "producto" ? (
+              <div className="max-h-[520px] overflow-y-auto">
+                <ResumenEscaneo historial={historial} />
+              </div>
             ) : (
               <div className="max-h-[520px] overflow-y-auto">
                 <table className="w-full text-sm">
@@ -215,6 +245,18 @@ export default function ScanStockPage() {
           </Card>
         </div>
       </div>
+
+      {conCamara && (
+        <ScannerCamara
+          onScan={procesarCodigo}
+          onCerrar={() => setConCamara(false)}
+          historial={historial}
+          procesando={procesando}
+          error={error}
+          modo={modo} setModo={setModo}
+          cantidad={cantidad} setCantidad={setCantidad}
+        />
+      )}
     </div>
   );
 }

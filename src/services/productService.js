@@ -132,3 +132,18 @@ export async function scanAdjustStock({ codigo, modo = "agregar", cantidad = 1, 
   const { data } = await http.post("/products/scan/stock", { codigo, modo, cantidad, motivo });
   return data;
 }
+
+/*
+ * Libro de movimientos de stock del negocio.
+ *
+ * Los parámetros vacíos no se mandan: un `tipo=` suelto en la URL es ruido en
+ * los logs del servidor y hace que dos consultas idénticas se vean distintas.
+ */
+export async function fetchStockMovements(filtros = {}) {
+  const params = {};
+  for (const [k, v] of Object.entries(filtros)) {
+    if (v !== "" && v !== null && v !== undefined) params[k] = v;
+  }
+  const { data } = await http.get("/stock/movimientos", { params });
+  return data;
+}

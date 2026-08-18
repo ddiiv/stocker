@@ -92,10 +92,19 @@ function VariantFormModal({ open, onClose, onSaved, variant }) {
     setError("");
   }, [variant, open]);
 
+  /*
+   * El repetido se compara sin mayúsculas ni acentos.
+   *
+   * Antes la comparación era exacta, así que "Rojo" y "rojo" entraban los dos.
+   * No es sólo desprolijo: la confección de SKU les da el mismo código a ambos
+   * y después el alta del producto se cae por SKU duplicado, lejos de donde
+   * estuvo el error.
+   */
   function addValor() {
     const v = nuevo.trim();
     if (!v) return;
-    if (valores.includes(v)) { setNuevo(""); return; }
+    const clave = (x) => x.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+    if (valores.some((x) => clave(x) === clave(v))) { setNuevo(""); return; }
     setValores((arr) => [...arr, v]);
     setNuevo("");
   }
