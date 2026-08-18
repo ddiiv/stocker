@@ -341,9 +341,28 @@ export default function ArcaConfigPage() {
               <div className="flex items-start gap-2 text-brick-500">
                 <XCircle size={16} className="mt-0.5" />
                 <div>
-                  <p className="font-medium">No verificado</p>
+                  {/* El ambiente va en el título del error y no sólo en el
+                      detalle: casi todos los rechazos de AFIP se explican por
+                      haber hecho el trámite en uno y consultar el otro, y sin
+                      verlo acá hay que ir a buscarlo a la config. */}
+                  <p className="font-medium">No verificado · ambiente {verifyResult.ambiente}</p>
                   <p className="text-xs mt-1"><strong>Error:</strong> {verifyResult.error}</p>
                   {verifyResult.hint && <p className="text-xs mt-1"><strong>Sugerencia:</strong> {verifyResult.hint}</p>}
+                  {/* Las causas van numeradas y en orden: el rechazo de AFIP es
+                      siempre el mismo mensaje para tres problemas distintos, y
+                      sin separarlos se revisa el que ya estaba bien. */}
+                  {verifyResult.causas?.length > 0 && (
+                    <ol className="mt-2 list-decimal space-y-1 pl-4 text-xs text-ink-700">
+                      {verifyResult.causas.map((c, i) => <li key={i}>{c}</li>)}
+                    </ol>
+                  )}
+                  {verifyResult.erroresAfip?.length > 1 && (
+                    <ul className="mt-1 space-y-0.5 text-xs">
+                      {verifyResult.erroresAfip.map((e) => (
+                        <li key={e.codigo}><span className="font-mono">AFIP {e.codigo}</span> · {e.mensaje}</li>
+                      ))}
+                    </ul>
+                  )}
                 </div>
               </div>
             )}
