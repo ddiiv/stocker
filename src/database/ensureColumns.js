@@ -19,6 +19,16 @@ const { DataTypes } = require('sequelize');
 const COLUMNAS_ESPERADAS = {
   product_variants: {
     codigoBarras: { type: DataTypes.STRING(60), allowNull: true },
+    /*
+     * El negocio dueño de la variante, copiado del producto.
+     *
+     * Es una desnormalización deliberada y existe por una sola razón: el SKU
+     * tiene que ser único dentro de un negocio y libre entre negocios. Sin esta
+     * columna el único índice posible es sobre `sku` a secas, o sea global, y
+     * entonces el primer local que registra "REMERA-NEG-M" se lo saca a todos
+     * los demás clientes de Stocker para siempre.
+     */
+    businessId: { type: DataTypes.INTEGER, allowNull: true },
   },
   payment_methods: {
     esEfectivo: { type: DataTypes.BOOLEAN, allowNull: true, defaultValue: false },
@@ -37,6 +47,9 @@ const COLUMNAS_ESPERADAS = {
     // Datos que ahora se traen del padrón de ARCA.
     condicionIva: { type: DataTypes.STRING(60), allowNull: true },
     arcaSyncEn:   { type: DataTypes.DATE, allowNull: true },
+    // Cómo arma este negocio los SKU de sus variantes. JSON en texto, como el
+    // resto: MSSQL no tiene tipo JSON. Vacío = las reglas de fábrica.
+    reglaSku:     { type: DataTypes.TEXT, allowNull: true },
   },
   sales: {
     // Recargos/descuentos por medio de pago. `total` sigue siendo el neto de
@@ -79,6 +92,35 @@ const COLUMNAS_ESPERADAS = {
  * mostrando "cobrado: $0". Como antes no había recargos por medio de pago,
  * lo cobrado era exactamente el total.
  */
+/*
+ * Índices que no están declarados en los modelos.
+ *
+ * Se manejan acá y no en la definición del modelo porque son cambios sobre
+ * tablas que ya existen en producción, y porque uno de ellos reemplaza a otro:
+ * hay que crear el nuevo y recién después borrar el viejo.
+ */
+const INDICES = [
+  {
+    tabla: 'product_variants',
+    nombre: 'uq_variants_business_sku',
+    columnas: ['businessId', 'sku'],
+    unico: true,
+    /*
+     * Sólo se crea cuando ninguna variante quedó sin negocio.
+     *
+     * En SQL Server y en Postgres un índice único trata a los NULL como un
+     * valor más: con dos filas sin businessId la creación falla, y peor, si
+     * llegara a pasar dejaría el sistema sin ninguna garantía de unicidad.
+     * Mejor no crearlo y volver a intentar en el próximo arranque, cuando el
+     * relleno ya haya terminado.
+     */
+    requiere: 'SELECT COUNT(*) AS faltan FROM product_variants WHERE businessId IS NULL',
+    requierePg: 'SELECT COUNT(*) AS faltan FROM product_variants WHERE "businessId" IS NULL',
+    // El global se va recién cuando el nuevo está en pie.
+    reemplaza: 'uq_variants_sku',
+  },
+];
+
 const RELLENOS = [
   {
     // Los medios que ya existen y se llaman "Efectivo" quedan marcados solos:
@@ -112,6 +154,20 @@ const RELLENOS = [
     cuandoSeAgrega: 'sales.recargoPagos',
     sql: 'UPDATE sales SET "recargoPagos" = 0 WHERE "recargoPagos" IS NULL',
     sqlMssql: 'UPDATE sales SET recargoPagos = 0 WHERE recargoPagos IS NULL',
+  },
+  {
+    /*
+     * Cada variante hereda el negocio de su producto.
+     *
+     * Reintentable y filtrando por IS NULL: si el arranque se corta a la mitad,
+     * el próximo termina lo que falta. Y es lo que habilita el índice único de
+     * arriba, que no se crea hasta que esto no deje ninguna fila sin completar.
+     */
+    descripcion: 'variantes: heredar el negocio del producto',
+    cuandoSeAgrega: 'product_variants.businessId',
+    reintentable: true,
+    sql: 'UPDATE product_variants SET "businessId" = p."businessId" FROM products p WHERE p.id = product_variants."productId" AND product_variants."businessId" IS NULL',
+    sqlMssql: 'UPDATE v SET v.businessId = p.businessId FROM product_variants v JOIN products p ON p.id = v.productId WHERE v.businessId IS NULL',
   },
   /*
    * Los cinco de abajo son `reintentable`: corren en cada arranque, no sólo
@@ -235,7 +291,77 @@ async function ensureColumns(sequelize) {
     }
   }
 
+  await asegurarIndices(sequelize, esPostgres);
+
   return agregadas;
+}
+
+/*
+ * Crea los índices de INDICES y retira los que reemplazan.
+ *
+ * Todo lo que falla acá se avisa y sigue: un índice que no se pudo crear no
+ * puede impedir que arranque el servidor, pero tampoco puede pasar en silencio
+ * — si el único de SKU no está, el sistema queda aceptando duplicados y eso hay
+ * que verlo en los logs del deploy.
+ */
+/*
+ * Retira un índice único, sea índice o constraint.
+ *
+ * Un UNIQUE creado como constraint se apoya en un índice que aparece en
+ * showIndex, pero DROP INDEX lo rechaza: hay que soltar la constraint. Cuál de
+ * las dos formas tiene cada base depende de cómo se creó en su momento, y en
+ * este proyecto conviven las dos. Se prueba la constraint primero y se cae al
+ * índice, en vez de adivinar.
+ */
+async function retirar(sequelize, qi, tabla, nombre) {
+  try {
+    await sequelize.query(`ALTER TABLE ${qi.quoteIdentifier(tabla)} DROP CONSTRAINT ${qi.quoteIdentifier(nombre)}`);
+  } catch {
+    await qi.removeIndex(tabla, nombre);
+  }
+}
+
+async function asegurarIndices(sequelize, esPostgres) {
+  const qi = sequelize.getQueryInterface();
+
+  for (const idx of INDICES) {
+    try {
+      const existentes = await qi.showIndex(idx.tabla);
+      const yaEsta = existentes.some((i) => i.name === idx.nombre);
+
+      if (!yaEsta) {
+        if (idx.requiere) {
+          const [filas] = await sequelize.query(esPostgres ? idx.requierePg : idx.requiere);
+          const faltan = Number(filas?.[0]?.faltan) || 0;
+          if (faltan > 0) {
+            console.warn(`[schema] ${idx.nombre} todavía no: ${faltan} fila(s) sin completar. Se reintenta en el próximo arranque.`);
+            continue;
+          }
+        }
+        await qi.addIndex(idx.tabla, idx.columnas, { name: idx.nombre, unique: idx.unico });
+        console.log(`[schema] índice ${idx.nombre} creado`);
+      }
+
+      /*
+       * El viejo se borra sólo después de confirmar que el nuevo está.
+       *
+       * Al revés quedaría una ventana —corta, pero real— en la que no hay
+       * ninguna restricción de unicidad sobre el SKU, y en ese hueco cualquier
+       * alta concurrente mete el duplicado que el índice existía para impedir.
+       */
+      if (idx.reemplaza) {
+        const ahora = await qi.showIndex(idx.tabla);
+        const nuevoEsta = ahora.some((i) => i.name === idx.nombre);
+        const viejoEsta = ahora.some((i) => i.name === idx.reemplaza);
+        if (nuevoEsta && viejoEsta) {
+          await retirar(sequelize, qi, idx.tabla, idx.reemplaza);
+          console.log(`[schema] ${idx.reemplaza} retirado (lo reemplaza ${idx.nombre})`);
+        }
+      }
+    } catch (err) {
+      console.warn(`[schema] No se pudo asegurar el índice ${idx.nombre}: ${err.message}`);
+    }
+  }
 }
 
 /*

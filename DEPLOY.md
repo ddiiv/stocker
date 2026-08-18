@@ -192,6 +192,44 @@ BANCO_ALIAS=
 
 Sin esto, la pantalla de pago del cliente cae al contacto por mail.
 
+### SKU de las variantes
+
+No lleva variables. Sí tiene un cambio de esquema que corre solo en el primer
+arranque y conviene mirar en los logs del deploy:
+
+```
+[schema] variantes: heredar el negocio del producto
+[schema] índice uq_variants_business_sku creado
+[schema] uq_variants_sku retirado (lo reemplaza uq_variants_business_sku)
+```
+
+Reemplaza el índice único de `sku` por uno de `(businessId, sku)`. El anterior
+era global: el primer negocio que registraba «REMERA-NEG-M» se lo sacaba a todos
+los demás clientes de Stocker, y el que llegaba segundo veía un error que
+nombraba un índice de la base. Con SKU genéricos entre locales de ropa, eso pasa
+seguido.
+
+Las tres líneas van juntas. Si aparece sólo la primera, el índice se reintenta
+en el próximo arranque: no se crea hasta que ninguna variante quede sin negocio,
+porque un índice único trata a los NULL como un valor más y se crearía mal.
+
+### Escaneo con la cámara
+
+No lleva variables: el lector va entero en el navegador y no manda ninguna
+imagen a ningún lado. Dos cosas del deploy que sí importan:
+
+**Tiene que ser HTTPS.** Sin contexto seguro el navegador no entrega la cámara,
+y el botón no aparece nunca. En Railway ya viene con certificado, así que sale
+solo; sólo se rompe si alguien entra por IP o por HTTP a mano.
+
+**El WebAssembly se sirve desde nuestro propio dominio.** Los navegadores sin
+lector propio —Safari de iOS, Firefox— descargan 1,1 MB de decodificador la
+primera vez. La librería, si no se le dice nada, lo baja de un CDN público; acá
+se le indica el archivo del build. Es a propósito: el wifi de un local con el
+proxy del proveedor filtrando dominios raros dejaría el escáner muerto y sin
+explicación, y de paso le avisaría a un tercero cada vez que un empleado abre el
+escáner. Se descarga una sola vez y queda cacheado como el resto de los assets.
+
 ### WhatsApp
 
 ```bash

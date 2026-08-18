@@ -24,6 +24,18 @@ const Business = db.define('Business', {
   telefono:      { type: DataTypes.STRING(30) },
   email:         { type: DataTypes.STRING(150), allowNull: false },
   passwordHash:  { type: DataTypes.STRING(255), allowNull: false },
+  /*
+   * Reglas de confección de SKU de las variantes.
+   *
+   * TEXT con JSON adentro y no un tipo JSON: MSSQL no lo tiene, y el proyecto
+   * corre sobre MSSQL local y Postgres en Railway con el mismo modelo.
+   */
+  reglaSku: {
+    type: DataTypes.TEXT,
+    allowNull: true,
+    get() { try { return JSON.parse(this.getDataValue('reglaSku')); } catch { return null; } },
+    set(val) { this.setDataValue('reglaSku', val == null ? null : JSON.stringify(val)); },
+  },
 }, { tableName: 'businesses' });
 
 /* ─── Plan (catálogo comercial) ────────────────────────────────────
@@ -489,6 +501,15 @@ const Product = db.define('Product', {
 const ProductVariant = db.define('ProductVariant', {
   id:              { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
   productId:       { type: DataTypes.INTEGER, allowNull: false },
+  /*
+   * Copia del negocio del producto. Ver ensureColumns: es lo que permite que el
+   * SKU sea único dentro de un negocio en vez de único en todo Stocker.
+   *
+   * Nullable en el modelo aunque en la práctica nunca lo sea: las bases que
+   * vienen de antes tienen filas sin completar hasta que corre el relleno, y
+   * declararlo obligatorio rompería el arranque justo en esas.
+   */
+  businessId:      { type: DataTypes.INTEGER, allowNull: true },
   sku:             { type: DataTypes.STRING(100), allowNull: false },
   // Código que devuelve el lector de barras. Puede ser el EAN del proveedor
   // o el de una etiqueta propia. Si está vacío, el escaneo cae al SKU.
@@ -501,6 +522,24 @@ const ProductVariant = db.define('ProductVariant', {
   stockMinimo:     { type: DataTypes.INTEGER, defaultValue: 5 },
   activo:          { type: DataTypes.BOOLEAN, defaultValue: true },
 }, { tableName: 'product_variants' });
+
+/*
+ * El negocio se completa solo a partir del producto.
+ *
+ * Va en un hook y no en cada controlador a propósito: las variantes se crean
+ * desde el alta de producto, el alta individual, la importación de Excel y la
+ * sincronización con Mercado Libre. Repartir la responsabilidad entre cuatro
+ * lugares es garantizar que el quinto se olvide, y una fila sin negocio no sólo
+ * queda fuera de su propio listado: bloquea la creación del índice único.
+ */
+ProductVariant.addHook('beforeValidate', async (variante, opciones) => {
+  if (variante.businessId || !variante.productId) return;
+  const producto = await Product.findByPk(variante.productId, {
+    attributes: ['businessId'],
+    transaction: opciones.transaction,
+  });
+  if (producto) variante.businessId = producto.businessId;
+});
 
 // ─── StockMovement ────────────────────────────────────────────────
 const StockMovement = db.define('StockMovement', {

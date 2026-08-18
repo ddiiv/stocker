@@ -20,6 +20,7 @@ const {
 const { lookupCuit } = require('../controllers/arcaController');
 const arcaConfigCtrl = require('../controllers/arcaConfigController');
 const variantTypeCtrl = require('../controllers/variantTypeController');
+const skuCtrl = require('../controllers/skuController');
 const businessCuitCtrl = require('../controllers/businessCuitController');
 const { testSend: whatsappTestSend } = require('../controllers/whatsappTestController');
 const mlCtrl = require('../controllers/mercadolibreController');
@@ -244,6 +245,18 @@ r.post  ('/products/:id/variants',                        requireAuth, requirePe
 r.put   ('/products/variants/:variantId',                 requireAuth, requirePermission('stock','editar'), productCtrl.updateVariant);
 r.delete('/products/variants/:variantId',                 requireAuth, requirePermission('stock','editar'), productCtrl.deleteVariant);
 r.patch ('/products/variants/:variantId/stock',           requireAuth, requirePermission('stock','editar'), productCtrl.adjustStock);
+// El libro de movimientos es de lectura: alcanza con permiso de ver stock.
+/*
+ * Confección de SKU. Ver la regla es parte de ver el stock; cambiarla afecta a
+ * todo el catálogo y pide permiso de edición.
+ */
+r.get   ('/sku/regla',                                    requireAuth, requirePermission('stock','ver'),    skuCtrl.getRegla);
+r.put   ('/sku/regla',                                    requireAuth, requirePermission('stock','editar'), skuCtrl.putRegla);
+r.post  ('/sku/vista-previa',                             requireAuth, requirePermission('stock','ver'),    skuCtrl.vistaPrevia);
+r.post  ('/sku/sugerir',                                  requireAuth, requirePermission('stock','ver'),    skuCtrl.sugerir);
+r.get   ('/sku/disponible',                               requireAuth, requirePermission('stock','ver'),    skuCtrl.disponible);
+
+r.get   ('/stock/movimientos',                            requireAuth, requirePermission('stock','ver'),    productCtrl.getStockMovements);
 r.get   ('/products/variants/:variantId/movements',       requireAuth, requirePermission('stock','ver'),    productCtrl.getVariantMovements);
 
 // ── Sales & Quotes ───────────────────────────────────────────────
