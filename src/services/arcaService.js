@@ -184,6 +184,19 @@ async function checkStatus({ ambiente = 'homologacion' } = {}) {
   return { ok, ambiente, ...st };
 }
 
+/*
+ * Un pedazo legible de la respuesta de AFIP, para poder diagnosticar.
+ *
+ * Se queda con el cuerpo del resultado y descarta el sobre SOAP, que ocupa
+ * mucho y no dice nada. No lleva token ni firma: esos van en el pedido, no en
+ * la respuesta, así que este recorte se puede mostrar en pantalla.
+ */
+function recorte(xml) {
+  if (!xml) return null;
+  const cuerpo = xml.match(/<(?:\w+:)?FEParamGetPtosVentaResult>([\s\S]*?)<\/(?:\w+:)?FEParamGetPtosVentaResult>/);
+  return (cuerpo ? cuerpo[1] : xml).replace(/\s+/g, ' ').trim().slice(0, 600);
+}
+
 // ── Verificar delegación de un CUIT ───────────────────────────────
 async function verifyDelegation({ businessCuit, ambiente = 'homologacion' }) {
   if (isMock) return { ok: true, mock: true, note: 'ARCA_MOCK=true — verificación simulada.' };
@@ -191,47 +204,81 @@ async function verifyDelegation({ businessCuit, ambiente = 'homologacion' }) {
   const { cert, key } = loadCert(ambiente);
   const cli = loadClient();
   try {
-    const puntos = await cli.feParamGetPtosVenta({
+    const { puntos, errores, xml } = await cli.feParamGetPtosVenta({
       cert, key, ambiente, cuitEmisor: String(businessCuit).replace(/\D/g, ''),
     });
+
+    const base = { ambiente, puntosVenta: puntos, stockerCuit: process.env.ARCA_STOCKER_CUIT };
+
+    /*
+     * Los errores de AFIP se muestran tal cual, con su código.
+     *
+     * El 600 y el 601 son de credenciales o delegación; el 602 es "sin
+     * resultados", que sí significa que no hay puntos de venta. Antes todos
+     * terminaban en el mismo mensaje —"falta dar de alta el punto de venta"—
+     * y mandaban a rehacer un trámite ya hecho mientras el problema real
+     * estaba en otro lado.
+     */
+    const sinResultados = errores.every((x) => x.codigo === 602);
+    if (errores.length && !sinResultados) {
+      return {
+        ...base,
+        ok: false,
+        listoParaFacturar: false,
+        error: errores.map((x) => `[${x.codigo}] ${x.mensaje}`).join(' · '),
+        hint: errores.some((x) => [600, 601].includes(x.codigo))
+          ? 'AFIP rechazó las credenciales o la delegación. Revisá que el CUIT te haya delegado wsfe y que el ambiente (homologación / producción) sea el mismo donde hiciste el trámite.'
+          : null,
+        erroresAfip: errores,
+      };
+    }
 
     /*
      * Que AFIP conteste ya prueba que la delegación existe: si no nos hubiera
      * autorizado, la llamada fallaría. Pero la lista puede venir vacía, y ahí
      * la delegación está bien y facturar igual no se puede — falta que el CUIT
      * dé de alta un punto de venta electrónico en AFIP.
-     *
-     * Devolver ok:true a secas en ese caso deja la pantalla diciendo
-     * "verificado" y el primer intento de factura falla sin explicación.
      */
-    const activos = (puntos || []).filter((p) => !p.bloqueado && !p.Bloqueado);
+    const activos = puntos.filter((p) => !p.Bloqueado && !p.FchBaja);
 
     if (activos.length === 0) {
+      /*
+       * Distinguir "no hay ninguno" de "hay pero están todos dados de baja".
+       *
+       * Mandar a dar de alta un punto de venta a alguien que ya lo tiene, sólo
+       * que bloqueado, es hacerle repetir el trámite equivocado.
+       */
+      const hayPeroInactivos = puntos.length > 0;
       return {
+        ...base,
         ok: true,
         listoParaFacturar: false,
-        ambiente,
-        puntosVenta: puntos || [],
-        stockerCuit: process.env.ARCA_STOCKER_CUIT,
-        advertencia: 'La delegación está bien, pero este CUIT todavía no tiene ningún punto de venta electrónico dado de alta en AFIP.',
-        pasos: [
-          'Entrá a afip.gob.ar con clave fiscal del CUIT que factura.',
-          'Buscá el servicio "Administración de Puntos de Venta y Domicilios".',
-          'Elegí la empresa, entrá a "A/B/M de puntos de venta" y tocá "Agregar".',
-          'Como sistema elegí "RECE para aplicativo y web services" (comprobantes electrónicos).',
-          'Asociá el domicilio fiscal y guardá. Anotá el número que te asigna.',
-          'Volvé acá, cargá ese número como Punto de Venta y verificá de nuevo.',
-        ],
+        advertencia: hayPeroInactivos
+          ? `Este CUIT tiene ${puntos.length} punto(s) de venta en AFIP, pero todos figuran bloqueados o dados de baja.`
+          : 'La delegación está bien, pero en este ambiente AFIP no devuelve ningún punto de venta para este CUIT.',
+        // Cuando AFIP no devolvió nada y tampoco explicó por qué, viaja un
+        // recorte de la respuesta: es la única forma de que el que está
+        // trabado pueda ver qué contestó AFIP en lugar de nuestra conjetura.
+        respuestaAfip: puntos.length === 0 ? recorte(xml) : undefined,
+        pasos: hayPeroInactivos
+          ? [
+            'Entrá a afip.gob.ar con clave fiscal del CUIT que factura.',
+            'Servicio "Administración de Puntos de Venta y Domicilios" → A/B/M de puntos de venta.',
+            'Verificá que el punto de venta no esté dado de baja y volvé a habilitarlo.',
+          ]
+          : [
+            'Confirmá el ambiente: los puntos de venta de homologación y de producción son distintos. Si lo diste de alta en el AFIP real, acá tiene que decir "producción".',
+            'Entrá a afip.gob.ar con clave fiscal del CUIT que factura.',
+            'Buscá el servicio "Administración de Puntos de Venta y Domicilios".',
+            'Elegí la empresa, entrá a "A/B/M de puntos de venta" y tocá "Agregar".',
+            'Como sistema elegí "RECE para aplicativo y web services" (comprobantes electrónicos).',
+            'Asociá el domicilio fiscal y guardá. Anotá el número que te asigna.',
+            'Volvé acá, cargá ese número como Punto de Venta y verificá de nuevo.',
+          ],
       };
     }
 
-    return {
-      ok: true,
-      listoParaFacturar: true,
-      ambiente,
-      puntosVenta: puntos,
-      stockerCuit: process.env.ARCA_STOCKER_CUIT,
-    };
+    return { ...base, ok: true, listoParaFacturar: true };
   } catch (err) {
     const msg = err.message || String(err);
     const hint =

@@ -273,17 +273,71 @@ async function feDummy({ cert, key, ambiente, cuitEmisor }) {
   };
 }
 
+/*
+ * Lista de puntos de venta electrónicos del CUIT.
+ *
+ * Devuelve { puntos, errores, xml }. Los errores viajan en vez de tirarse
+ * porque quien llama necesita distinguir tres situaciones que antes se veían
+ * todas iguales: el CUIT no tiene ningún punto de venta, AFIP rechazó algo, o
+ * la respuesta no se pudo interpretar. Concluir "no diste de alta el punto de
+ * venta" cuando en realidad AFIP dijo otra cosa manda al usuario a rehacer un
+ * trámite que ya hizo.
+ */
 async function feParamGetPtosVenta({ cert, key, ambiente, cuitEmisor }) {
   const xml = await callWsfe({ cert, key, ambiente, cuitEmisor, method: 'FEParamGetPtosVenta' });
-  // Detectar errores primero
-  const err = xml.match(/<Msg>([\s\S]*?)<\/Msg>/);
-  if (err && /error|no autorizado|denegada/i.test(err[1])) throw new Error(err[1]);
-  // Parsear ResultGet → <PtoVenta><Nro>1</Nro><EmisionTipo>WSFE</EmisionTipo><Bloqueado>N</Bloqueado></PtoVenta>
-  const ptos = [];
-  const rx = /<PtoVenta>[\s\S]*?<Nro>(\d+)<\/Nro>[\s\S]*?(?:<EmisionTipo>([^<]*)<\/EmisionTipo>)?[\s\S]*?<\/PtoVenta>/g;
-  let m; while ((m = rx.exec(xml)) !== null) ptos.push({ Nro: Number(m[1]), EmisionTipo: m[2] || null });
-  return ptos;
+  return parsearPtosVenta(xml);
 }
+
+/*
+ * El parseo va aparte de la llamada para poder probarlo sin AFIP.
+ *
+ * Interpretar esta respuesta es donde estuvo el error que hacía decir "falta
+ * dar de alta el punto de venta" a quien ya lo tenía, así que conviene poder
+ * fijarlo con respuestas reales guardadas en vez de depender de una prueba
+ * contra el ambiente de homologación.
+ */
+function parsearPtosVenta(xml) {
+  /*
+   * Los <Err> de AFIP se recogen todos, con su código.
+   *
+   * Antes se miraba un solo <Msg> y se tiraba sólo si decía "error", "no
+   * autorizado" o "denegada". El 602 de AFIP dice "Sin Resultados" y el 600
+   * "ClientCredentials no válidos": ninguno matchea, así que se devolvía una
+   * lista vacía como si el CUIT no tuviera puntos de venta.
+   */
+  const errores = [];
+  const rxErr = /<(?:\w+:)?Err>[\s\S]*?<(?:\w+:)?Code>(\d+)<\/(?:\w+:)?Code>[\s\S]*?<(?:\w+:)?Msg>([\s\S]*?)<\/(?:\w+:)?Msg>[\s\S]*?<\/(?:\w+:)?Err>/g;
+  let e; while ((e = rxErr.exec(xml)) !== null) {
+    errores.push({ codigo: Number(e[1]), mensaje: e[2].trim() });
+  }
+
+  /*
+   * Cada <PtoVenta> se saca entero y después se leen sus campos.
+   *
+   * La versión anterior intentaba capturarlo todo en una sola expresión con
+   * grupos opcionales entre comodines perezosos, y el grupo de EmisionTipo no
+   * matcheaba casi nunca: el comodín de la izquierda se lo comía antes.
+   */
+  const puntos = [];
+  const rxPto = /<(?:\w+:)?PtoVenta>([\s\S]*?)<\/(?:\w+:)?PtoVenta>/g;
+  let m; while ((m = rxPto.exec(xml)) !== null) {
+    const campo = (nombre) => (m[1].match(new RegExp(`<(?:\\w+:)?${nombre}>([^<]*)<`)) || [])[1]?.trim() || null;
+    const nro = campo('Nro');
+    if (!nro) continue;
+    puntos.push({
+      Nro: Number(nro),
+      EmisionTipo: campo('EmisionTipo'),
+      // AFIP manda "N"/"S", no un booleano. Se convierte acá: dejar la cadena
+      // haría que cualquier `if (p.Bloqueado)` diera verdadero también con "N",
+      // y todos los puntos de venta activos quedarían descartados.
+      Bloqueado: /^s$/i.test(campo('Bloqueado') || ''),
+      FchBaja: campo('FchBaja') || null,
+    });
+  }
+
+  return { puntos, errores, xml };
+}
+
 
 async function feCompUltimoAutorizado({ cert, key, ambiente, cuitEmisor, PtoVta, CbteTipo }) {
   const xml = await callWsfe({ cert, key, ambiente, cuitEmisor, method: 'FECompUltimoAutorizado', params: { PtoVta, CbteTipo } });
@@ -444,6 +498,7 @@ module.exports = {
   URLS,
   feDummy,
   feParamGetPtosVenta,
+  __parsearPtosVenta: parsearPtosVenta,   // sólo para los tests
   feCompUltimoAutorizado,
   feCAESolicitar,
   padronA5,
