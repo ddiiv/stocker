@@ -286,6 +286,29 @@ export default function ArcaConfigPage() {
                     ))}
                   </ol>
                 )}
+                {/* Lo que AFIP contestó, cuando no devolvió ningún punto de
+                    venta y tampoco explicó por qué. Es feo a propósito: sin
+                    esto, la pantalla afirma un diagnóstico que no puede
+                    sostener, y el usuario rehace un trámite que ya hizo. */}
+                {verifyResult.respuestaAfip && (
+                  <details className="mt-3 rounded-md border border-line bg-paper-100 px-3 py-2">
+                    <summary className="cursor-pointer text-xs text-ink-600">Qué contestó AFIP exactamente</summary>
+                    <pre className="mt-2 overflow-x-auto whitespace-pre-wrap break-all font-mono text-[11px] text-ink-700">
+                      {verifyResult.respuestaAfip}
+                    </pre>
+                  </details>
+                )}
+
+                {verifyResult.erroresAfip?.length > 0 && (
+                  <ul className="mt-3 space-y-1">
+                    {verifyResult.erroresAfip.map((e) => (
+                      <li key={e.codigo} className="rounded-md bg-brick-50 px-3 py-2 text-xs text-brick-600">
+                        <span className="font-mono">AFIP {e.codigo}</span> · {e.mensaje}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+
                 {verifyResult.puntosVenta?.length > 0 && (
                   <div className="mt-3 rounded-md bg-paper-50 border border-line px-3 py-2 text-ink-700">
                     <p className="text-xs uppercase tracking-wide text-ink-600 mb-1">Puntos de venta electrónicos que AFIP ve en tu CUIT:</p>
@@ -295,6 +318,10 @@ export default function ArcaConfigPage() {
                           <span className={`inline-block h-2 w-2 rounded-full ${Number(pv.Nro) === Number(config?.puntoVenta) ? "bg-teal-500" : "bg-ink-400"}`} />
                           <span className="font-mono">Nro {String(pv.Nro).padStart(4, "0")}</span>
                           {pv.EmisionTipo && <span className="text-ink-500">· {pv.EmisionTipo}</span>}
+                          {/* El estado se muestra: un punto de venta bloqueado
+                              figura en la lista y no sirve para facturar. */}
+                          {pv.Bloqueado && <span className="text-brick-500">· bloqueado</span>}
+                          {pv.FchBaja && <span className="text-brick-500">· dado de baja</span>}
                           {Number(pv.Nro) === Number(config?.puntoVenta) && <span className="ml-auto text-teal-600 font-medium">← el que configuraste</span>}
                         </li>
                       ))}
@@ -302,7 +329,9 @@ export default function ArcaConfigPage() {
                     {!puntoVentaMatchesArca && (
                       <p className="mt-2 flex items-start gap-1 text-xs text-brick-500">
                         <AlertCircle size={12} className="mt-0.5" />
-                        El punto de venta que cargaste ({config?.puntoVenta}) NO aparece en AFIP. Revisá el número o creá uno nuevo tipo "Web Services".
+                        El punto de venta que cargaste ({config?.puntoVenta}) NO aparece entre los de este CUIT
+                        en <strong>{verifyResult.ambiente}</strong>. Si lo diste de alta en el otro ambiente, cambiá
+                        el ambiente acá arriba: los de homologación y los de producción son listas separadas.
                       </p>
                     )}
                   </div>
