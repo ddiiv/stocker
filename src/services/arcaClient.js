@@ -305,11 +305,7 @@ function parsearPtosVenta(xml) {
    * "ClientCredentials no válidos": ninguno matchea, así que se devolvía una
    * lista vacía como si el CUIT no tuviera puntos de venta.
    */
-  const errores = [];
-  const rxErr = /<(?:\w+:)?Err>[\s\S]*?<(?:\w+:)?Code>(\d+)<\/(?:\w+:)?Code>[\s\S]*?<(?:\w+:)?Msg>([\s\S]*?)<\/(?:\w+:)?Msg>[\s\S]*?<\/(?:\w+:)?Err>/g;
-  let e; while ((e = rxErr.exec(xml)) !== null) {
-    errores.push({ codigo: Number(e[1]), mensaje: e[2].trim() });
-  }
+  const errores = leerErrores(xml);
 
   /*
    * Cada <PtoVenta> se saca entero y después se leen sus campos.
@@ -321,17 +317,32 @@ function parsearPtosVenta(xml) {
   const puntos = [];
   const rxPto = /<(?:\w+:)?PtoVenta>([\s\S]*?)<\/(?:\w+:)?PtoVenta>/g;
   let m; while ((m = rxPto.exec(xml)) !== null) {
-    const campo = (nombre) => (m[1].match(new RegExp(`<(?:\\w+:)?${nombre}>([^<]*)<`)) || [])[1]?.trim() || null;
+    const bloque = m[1];
+    /*
+     * Un campo vacío de AFIP puede venir de tres formas: ausente, `<X></X>` o
+     * —y esta es la que engaña— con la cadena literal `NULL`.
+     *
+     * Esa cadena es verdadera en JavaScript. Tomada tal cual, un punto de venta
+     * activo con <FchBaja>NULL</FchBaja> se lee como dado de baja, desaparece
+     * de la lista de activos y el sistema informa que no hay ninguno
+     * habilitado. El usuario mira en AFIP, lo ve vigente, y no hay manera de
+     * conciliar las dos cosas.
+     */
+    const campo = (nombre) => {
+      const bruto = (bloque.match(new RegExp(`<(?:\\w+:)?${nombre}>([^<]*)<`)) || [])[1]?.trim();
+      if (!bruto || /^null$/i.test(bruto)) return null;
+      return bruto;
+    };
+
     const nro = campo('Nro');
     if (!nro) continue;
     puntos.push({
       Nro: Number(nro),
       EmisionTipo: campo('EmisionTipo'),
-      // AFIP manda "N"/"S", no un booleano. Se convierte acá: dejar la cadena
-      // haría que cualquier `if (p.Bloqueado)` diera verdadero también con "N",
-      // y todos los puntos de venta activos quedarían descartados.
+      // "N"/"S", no un booleano. Mismo motivo que arriba: dejar la cadena haría
+      // que `if (p.Bloqueado)` diera verdadero también con "N".
       Bloqueado: /^s$/i.test(campo('Bloqueado') || ''),
-      FchBaja: campo('FchBaja') || null,
+      FchBaja: campo('FchBaja'),
     });
   }
 
@@ -341,23 +352,91 @@ function parsearPtosVenta(xml) {
 
 async function feCompUltimoAutorizado({ cert, key, ambiente, cuitEmisor, PtoVta, CbteTipo }) {
   const xml = await callWsfe({ cert, key, ambiente, cuitEmisor, method: 'FECompUltimoAutorizado', params: { PtoVta, CbteTipo } });
-  const nro = (xml.match(/<CbteNro>(\d+)<\/CbteNro>/) || [])[1];
-  return nro ? Number(nro) : 0;
+  return parsearUltimoAutorizado(xml);
+}
+
+/*
+ * Último comprobante autorizado de un punto de venta.
+ *
+ * Cero es una respuesta legítima: un punto de venta recién dado de alta no
+ * tiene ninguno, y el próximo es el 1.
+ *
+ * Por eso hay que distinguirlo de un error. La versión anterior hacía
+ * `nro ? Number(nro) : 0`, así que cualquier rechazo de AFIP —delegación,
+ * punto de venta inexistente, token vencido— también devolvía cero. El emisor
+ * seguía adelante y le pedía a AFIP autorizar el comprobante número 1: si el
+ * punto de venta ya tenía facturas, AFIP contestaba que el número no es
+ * correlativo, un mensaje que no menciona el problema real y manda a revisar
+ * la numeración en vez de la delegación.
+ */
+function parsearUltimoAutorizado(xml) {
+  const errores = leerErrores(xml);
+  if (errores.length) {
+    throw new Error(errores.map((e) => `[${e.codigo}] ${e.mensaje}`).join(' | '));
+  }
+
+  const nro = (xml.match(/<(?:\w+:)?CbteNro>(\d+)<\/(?:\w+:)?CbteNro>/) || [])[1];
+  if (nro === undefined) {
+    // Ni número ni error: la respuesta no es la que esperamos. Antes esto
+    // también terminaba en cero.
+    throw new Error(`AFIP no devolvió el último comprobante autorizado. Respuesta: ${xml.replace(/\s+/g, ' ').slice(0, 300)}`);
+  }
+  return Number(nro);
+}
+
+/*
+ * Los <Err> de una respuesta de AFIP, con su código.
+ *
+ * Compartido por todos los métodos: cada uno los traía con su propia expresión
+ * —o no los traía— y así fue como una respuesta de error terminó leyéndose
+ * como "este CUIT no tiene puntos de venta".
+ */
+function leerErrores(xml) {
+  const out = [];
+  const rx = /<(?:\w+:)?Err>[\s\S]*?<(?:\w+:)?Code>(\d+)<\/(?:\w+:)?Code>[\s\S]*?<(?:\w+:)?Msg>([\s\S]*?)<\/(?:\w+:)?Msg>[\s\S]*?<\/(?:\w+:)?Err>/g;
+  let m; while ((m = rx.exec(xml)) !== null) out.push({ codigo: Number(m[1]), mensaje: m[2].trim() });
+  return out;
 }
 
 async function feCAESolicitar({ cert, key, ambiente, cuitEmisor, FeCAEReq }) {
   const xml = await callWsfe({ cert, key, ambiente, cuitEmisor, method: 'FECAESolicitar', params: { FeCAEReq } });
-  const cae = (xml.match(/<CAE>([^<]+)<\/CAE>/) || [])[1];
-  const vto = (xml.match(/<CAEFchVto>([^<]+)<\/CAEFchVto>/) || [])[1];
-  const resultado = (xml.match(/<Resultado>([^<]+)<\/Resultado>/) || [])[1];
-  // Errores pueden venir dentro de <Errors><Err>...</Err></Errors> Y también como <Obs>
-  const errores      = [...xml.matchAll(/<Err>[\s\S]*?<Code>([^<]+)<\/Code>[\s\S]*?<Msg>([^<]+)<\/Msg>[\s\S]*?<\/Err>/g)].map((m) => `${m[1]}: ${m[2]}`);
-  const observaciones= [...xml.matchAll(/<Obs>[\s\S]*?<Code>([^<]+)<\/Code>[\s\S]*?<Msg>([^<]+)<\/Msg>[\s\S]*?<\/Obs>/g)].map((m) => `${m[1]}: ${m[2]}`);
+  return parsearCAE(xml);
+}
+
+/*
+ * Respuesta de la solicitud de CAE.
+ *
+ * El resultado se lee del detalle (FeDetResp) y no de la cabecera (FeCabResp).
+ * Los dos traen un <Resultado> y con un solo comprobante coinciden, pero el que
+ * manda sobre ESE comprobante es el del detalle: tomar el primero que aparece
+ * en el XML es tomar el de la cabecera por casualidad de orden.
+ *
+ * Un comprobante puede salir aprobado CON observaciones. Eso no es un error y
+ * el CAE vale, pero las observaciones se devuelven para que queden guardadas
+ * con la factura: son lo que explica, meses después, por qué AFIP la marcó.
+ */
+function parsearCAE(xml) {
+  const detalle = (xml.match(/<(?:\w+:)?FECAEDetResponse>([\s\S]*?)<\/(?:\w+:)?FECAEDetResponse>/) || [])[1] || xml;
+
+  const dato = (fuente, nombre) => {
+    const v = (fuente.match(new RegExp(`<(?:\\w+:)?${nombre}>([^<]*)<`)) || [])[1]?.trim();
+    return (!v || /^null$/i.test(v)) ? null : v;
+  };
+
+  const cae = dato(detalle, 'CAE');
+  const vto = dato(detalle, 'CAEFchVto');
+  const resultado = dato(detalle, 'Resultado') || dato(xml, 'Resultado');
+
+  const errores = leerErrores(xml).map((e) => `${e.codigo}: ${e.mensaje}`);
+  const observaciones = [...xml.matchAll(/<(?:\w+:)?Obs>[\s\S]*?<(?:\w+:)?Code>([^<]+)<\/(?:\w+:)?Code>[\s\S]*?<(?:\w+:)?Msg>([^<]+)<\/(?:\w+:)?Msg>[\s\S]*?<\/(?:\w+:)?Obs>/g)]
+    .map((m) => `${m[1].trim()}: ${m[2].trim()}`);
+
   if (resultado === 'R' || !cae) {
     const msgs = [...errores, ...observaciones];
-    const detail = msgs.length ? msgs.join(' | ') : `CAE rechazado por AFIP. XML: ${xml.slice(0, 500)}`;
+    const detail = msgs.length ? msgs.join(' | ') : `CAE rechazado por AFIP. XML: ${xml.replace(/\s+/g, ' ').slice(0, 500)}`;
     throw new Error(detail);
   }
+
   return {
     CAE: cae,
     CAEFchVto: vto ? vto.replace(/^(\d{4})(\d{2})(\d{2})$/, '$1-$2-$3') : null,
@@ -498,7 +577,10 @@ module.exports = {
   URLS,
   feDummy,
   feParamGetPtosVenta,
-  __parsearPtosVenta: parsearPtosVenta,   // sólo para los tests
+  // sólo para los tests
+  __parsearPtosVenta: parsearPtosVenta,
+  __parsearUltimoAutorizado: parsearUltimoAutorizado,
+  __parsearCAE: parsearCAE,
   feCompUltimoAutorizado,
   feCAESolicitar,
   padronA5,

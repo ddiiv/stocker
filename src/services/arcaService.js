@@ -44,6 +44,41 @@ function determineInvoiceType(clienteCuit) {
   const stripped = String(clienteCuit).replace(/\D/g, '');
   return stripped.length === 11 ? 'A' : 'B';
 }
+
+/*
+ * La letra del comprobante la manda el EMISOR, no el cliente.
+ *
+ * En Argentina el orden es ese y no el inverso:
+ *
+ *   · Monotributista o exento  → siempre C, le venda a quien le venda.
+ *   · Responsable inscripto    → A si el cliente es RI, B en cualquier otro caso.
+ *
+ * El sistema venía eligiendo sólo por el cliente: a un cliente responsable
+ * inscripto le emitía A aunque el emisor fuera monotributista. Eso es una
+ * factura que el monotributista no puede emitir —AFIP la rechaza contra un
+ * punto de venta de monotributo— y, peor, `calcularIVA` le discriminaba 21%
+ * que un monotributista no debe discriminar. Si AFIP llegara a autorizarla,
+ * queda un comprobante fiscal mal emitido.
+ */
+function tipoComprobante({ condicionEmisor, condicionReceptor, clienteCuit }) {
+  const emisor = String(condicionEmisor || '').toLowerCase();
+
+  // El emisor no factura con IVA discriminado: sólo puede emitir C.
+  if (/monotribut|exento|no alcanzado/.test(emisor)) return 'C';
+
+  const receptor = String(condicionReceptor || '').toLowerCase();
+  if (/responsable inscripto/.test(receptor)) return 'A';
+  if (receptor) return 'B';   // monotributo, exento, consumidor final
+
+  /*
+   * Sin condición del receptor se cae a la heurística vieja, que mira si hay
+   * CUIT. Es peor que consultar el padrón, pero es lo único disponible cuando
+   * el padrón no contesta.
+   *
+   * Y sólo se usa si el emisor es responsable inscripto: si no, ya devolvió C.
+   */
+  return determineInvoiceType(clienteCuit);
+}
 // Descompone el importe total en neto + IVA (21%).
 // - Factura A: IVA discriminado, precio no incluye IVA por el receptor (aunque el emisor sí).
 // - Factura B: IVA "incluido" en el total, pero AFIP requiere igual el desglose interno.
@@ -87,9 +122,17 @@ function condicionIvaReceptorId({ tipo, clienteCuit, clienteCondicion }) {
   }
   // Sin dato explícito: inferir por tipo de factura y presencia de CUIT.
   if (!clienteCuit) return 5;              // Consumidor Final
-  if (tipo === 'A') return 1;              // Responsable Inscripto (factura A siempre requiere CUIT)
-  if (tipo === 'C') return 6;              // Factura C típicamente monotributo
-  return 5;                                 // Factura B por default
+  if (tipo === 'A') return 1;              // Factura A sólo se emite a responsable inscripto
+  /*
+   * Con CUIT pero sin condición conocida se declara Consumidor Final.
+   *
+   * Antes, en una factura C, se devolvía 6 (Responsable Monotributo). Ese campo
+   * describe al RECEPTOR, y que el emisor sea monotributista no dice nada de su
+   * cliente: se le estaba atribuyendo una condición fiscal inventada a quien
+   * recibe el comprobante. Consumidor final es lo que corresponde cuando no se
+   * sabe, y es el valor que AFIP admite sin condicionamientos.
+   */
+  return 5;
 }
 
 // ── Solicitar CAE ─────────────────────────────────────────────────
@@ -353,6 +396,7 @@ function debugConfig() {
 }
 
 module.exports = {
+  tipoComprobante,
   solicitarCAE, determineInvoiceType, calcularIVA,
   checkStatus, verifyDelegation, debugConfig,
 };

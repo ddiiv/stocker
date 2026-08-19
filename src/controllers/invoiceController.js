@@ -2,7 +2,7 @@ const path = require('path');
 const sequelize = require('../config/database');
 const { Invoice, InvoiceItem, Sale, SaleItem, Business, Client, BusinessCuit, BusinessArcaConfig } = require('../models');
 const { nextInvoiceNumber } = require('../services/invoiceNumberService');
-const { solicitarCAE, determineInvoiceType, calcularIVA } = require('../services/arcaService');
+const { tipoComprobante, solicitarCAE, determineInvoiceType, calcularIVA } = require('../services/arcaService');
 const { lookupCuit } = require('../services/arcaLookupService');
 const { generateInvoicePdf, generateInvoicePdfBuffer } = require('../services/pdfService');
 const { sendInvoiceEmail } = require('../services/emailService');
@@ -136,9 +136,27 @@ const createInvoice = async (req, res, next) => {
         if (padronInfo?.source === 'afip') condicionReceptor = padronInfo.condicionIva;
       } catch { /* si el padrón falla, seguimos con la heurística */ }
     }
-    const tipo = tipoOverride
-      || (padronInfo?.condicionIvaId ? (padronInfo.condicionIvaId === 1 ? 'A' : 'B') : null)
-      || determineInvoiceType(finalCuit);
+    /*
+     * La letra sale del emisor primero y del receptor después.
+     *
+     * La condición del emisor se toma de su config de ARCA y, si no está, del
+     * CUIT. Un monotributista emite C siempre; sólo un responsable inscripto
+     * elige entre A y B según a quién le venda.
+     *
+     * `tipoOverride` sigue mandando sobre todo: es la salida manual para los
+     * casos que la regla no cubre.
+     */
+    const configEmisor = emisor?.id
+      ? await BusinessArcaConfig.findOne({ where: { businessCuitId: emisor.id } })
+      : null;
+    const condicionEmisor = configEmisor?.condicionIva || emisor?.condicionIva || business.condicionIva || null;
+
+    const tipo = tipoOverride || tipoComprobante({
+      condicionEmisor,
+      condicionReceptor: condicionReceptor
+        || (padronInfo?.condicionIvaId === 1 ? 'Responsable Inscripto' : null),
+      clienteCuit: finalCuit,
+    });
 
     /*
      * Se factura lo que el cliente efectivamente paga, recargo del medio de
@@ -156,12 +174,8 @@ const createInvoice = async (req, res, next) => {
     // Número de factura
     const numero = await nextInvoiceNumber(req.auth.businessId);
 
-    // ARCA: solicitar CAE (usando el CUIT emisor elegido)
-    // Si el CUIT tiene arcaConfig y está verificado, usamos su puntoVenta/ambiente.
-    let arcaConfig = null;
-    if (emisor?.id) {
-      arcaConfig = await BusinessArcaConfig.findOne({ where: { businessCuitId: emisor.id } });
-    }
+    // La config del emisor ya se leyó arriba para decidir la letra.
+    const arcaConfig = configEmisor;
     const { cae, caeVencimiento, respuesta: arcaRespuesta } = await solicitarCAE({
       tipo, total: totalAFacturar, clienteCuit: finalCuit,
       clienteCondicion: condicionReceptor,
