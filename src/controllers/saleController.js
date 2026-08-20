@@ -6,6 +6,7 @@ const { nextSaleNumber } = require('../services/invoiceNumberService');
 const { calcularPagos } = require('../services/paymentService');
 const { cargarVenta, registrarMovimiento, redondear } = require('../services/creditService');
 const { descontarStockVenta, devolverStockVenta } = require('../services/saleStockService');
+const stockService = require('../services/stockService');
 const { generateSalePdf, generateSaleTicketPdf } = require('../services/pdfService');
 const { sendSaleReceiptToCustomer, sendSaleNotificationToBusiness } = require('../services/emailService');
 const { sendSaleWhatsapp, sendSaleNotificationWhatsapp } = require('../services/whatsappService');
@@ -333,6 +334,17 @@ const createSale = async (req, res, next) => {
     // El local también se fija solo para los empleados, con el que tienen
     // asignado. Lo que llegue en el body se ignora: la restricción es del
     // servidor, no de que el frontend deshabilite el desplegable.
+    /*
+     * De qué local sale la mercadería.
+     *
+     * Desde que cada local tiene su propio stock, esto dejó de ser un dato
+     * informativo: es de dónde se descuenta. Un `null` acá significa que el
+     * stock sale del local principal sin que nadie lo haya decidido, y eso
+     * descuadra el inventario de dos locales a la vez — el que pierde stock que
+     * no vendió y el que vendió y no lo pierde.
+     *
+     * Por eso ninguna de las dos ramas puede terminar en null.
+     */
     let locationId = locationIdPedido || null;
     if (req.auth.employeeId) {
       const empleado = await Employee.findOne({
@@ -340,6 +352,16 @@ const createSale = async (req, res, next) => {
         transaction: t,
       });
       locationId = empleado?.locationId || null;
+
+      // Un empleado sin local asignado no puede vender: no hay de dónde sacar
+      // la mercadería. Es un error de configuración y hay que decirlo, no
+      // taparlo descontando del principal.
+      if (!locationId && tipo !== 'cotizacion') {
+        throw Object.assign(
+          new Error('Tu usuario no tiene un local asignado, así que no se puede saber de dónde sale la mercadería. Pedile al dueño que te asigne uno desde Empleados.'),
+          { status: 409 }
+        );
+      }
 
       // Sin turno abierto la venta no tiene contra qué arquearse: el efectivo
       // entraría a una caja que nadie rinde. Las cotizaciones no cobran, así
@@ -354,13 +376,49 @@ const createSale = async (req, res, next) => {
           );
         }
       }
-    } else if (locationId) {
+    } else {
       // Dueño: elige, pero sólo entre los locales de su negocio.
-      const local = await BusinessLocation.findOne({
-        where: { id: locationId, businessId: req.auth.businessId },
-        transaction: t,
-      });
-      if (!local) throw Object.assign(new Error('El local indicado no pertenece a este negocio.'), { status: 400 });
+      if (locationId) {
+        const local = await BusinessLocation.findOne({
+          where: { id: locationId, businessId: req.auth.businessId, activo: true },
+          transaction: t,
+        });
+        if (!local) throw Object.assign(new Error('El local indicado no pertenece a este negocio o está inactivo.'), { status: 400 });
+      } else if (tipo !== 'cotizacion') {
+        /*
+         * Sin elegir: con un solo local no hay ambigüedad y se usa ése. Con
+         * varios hay que decidir, porque el sistema no puede adivinar de cuál
+         * salió la prenda y elegir mal descuadra dos inventarios.
+         */
+        const activos = await BusinessLocation.findAll({
+          where: { businessId: req.auth.businessId, activo: true },
+          order: [['id', 'ASC']], transaction: t,
+        });
+        if (activos.length === 1) locationId = activos[0].id;
+        else if (activos.length === 0) {
+          throw Object.assign(
+            new Error('No hay ningún local cargado. Creá al menos uno antes de vender.'),
+            { status: 409 }
+          );
+        } else {
+          throw Object.assign(
+            new Error('Elegí de qué local sale la mercadería: el stock se descuenta de ese local.'),
+            { status: 400 }
+          );
+        }
+      }
+    }
+
+    /*
+     * El nombre del local, para los mensajes de faltante.
+     *
+     * Decir "no queda stock" sin decir dónde manda a buscar en el depósito
+     * equivocado cuando la mercadería está en la otra sucursal.
+     */
+    let nombreLocalVenta = 'este local';
+    if (locationId) {
+      const l = await BusinessLocation.findByPk(locationId, { attributes: ['nombre'], transaction: t });
+      if (l) nombreLocalVenta = l.nombre;
     }
 
     // Determinar si es mayorista: total de unidades >= 3
@@ -392,15 +450,27 @@ const createSale = async (req, res, next) => {
        * importa es que salga del depósito, no que haya entrado la plata.
        */
       if (sacaMercaderia) {
-        const disponible = Number(variant.stock) || 0;
+        /*
+         * Se comprueba contra el stock DEL LOCAL de la venta.
+         *
+         * Miraba el total de la variante, que desde que el stock es por local
+         * ya no es lo disponible acá: con 0 en esta sucursal y 20 en la otra,
+         * la venta pasaba esta comprobación y recién la frenaba el segundo
+         * control, con un mensaje sobre otra cosa. Peor todavía, el mensaje
+         * decía "no queda stock" cuando sí había, en otro lado.
+         */
+        const disponible = await stockService.stockEn(variant.id, locationId, t);
         if (disponible < item.cantidad) {
           const nombre = [variant.producto.titulo, variant.variante1Valor, variant.variante2Valor]
             .filter(Boolean).join(' · ');
+          const total = Number(variant.stock) || 0;
+          const enOtros = total - disponible;
           throw Object.assign(
             new Error(
-              disponible === 0
-                ? `No queda stock de ${nombre} (${variant.sku}).`
-                : `Sólo quedan ${disponible} de ${nombre} (${variant.sku}) y estás vendiendo ${item.cantidad}.`
+              (disponible === 0
+                ? `No queda stock de ${nombre} (${variant.sku}) en ${nombreLocalVenta}.`
+                : `Sólo quedan ${disponible} de ${nombre} (${variant.sku}) en ${nombreLocalVenta} y estás vendiendo ${item.cantidad}.`)
+              + (enOtros > 0 ? ` Hay ${enOtros} en total entre todos los locales: transferilo desde Stock.` : '')
             ),
             { status: 409 }
           );
@@ -516,7 +586,18 @@ const createSale = async (req, res, next) => {
     // Notificaciones (asíncrono, no bloquea la respuesta)
     notifySaleAsync(sale.id, req.auth.businessId);
     res.status(201).json(full);
-  } catch (error) { await t.rollback(); next(error); }
+  } catch (error) {
+    /*
+     * El rollback no puede tumbar el servidor.
+     *
+     * Si la transacción ya murió —un error de SQL la aborta sola—, este
+     * rollback falla, y como Express no espera al handler la promesa queda sin
+     * manejar y el proceso se cae entero. Un pedido que falla tiene que
+     * devolver 500, no dejar sin servicio a todos los negocios.
+     */
+    await t.rollback().catch(() => {});
+    next(error);
+  }
 };
 
 /*
@@ -617,7 +698,18 @@ const cobrarSale = async (req, res, next) => {
     });
     notifySaleAsync(sale.id, req.auth.businessId);
     res.json(full);
-  } catch (error) { await t.rollback(); next(error); }
+  } catch (error) {
+    /*
+     * El rollback no puede tumbar el servidor.
+     *
+     * Si la transacción ya murió —un error de SQL la aborta sola—, este
+     * rollback falla, y como Express no espera al handler la promesa queda sin
+     * manejar y el proceso se cae entero. Un pedido que falla tiene que
+     * devolver 500, no dejar sin servicio a todos los negocios.
+     */
+    await t.rollback().catch(() => {});
+    next(error);
+  }
 };
 
 /*
@@ -673,7 +765,18 @@ const updateSaleStatus = async (req, res, next) => {
       include: [{ model: SaleItem, as: 'items' }, { association: 'empleado', attributes: ['id', 'nombre', 'apellido'] }],
     });
     res.json(full);
-  } catch (error) { await t.rollback(); next(error); }
+  } catch (error) {
+    /*
+     * El rollback no puede tumbar el servidor.
+     *
+     * Si la transacción ya murió —un error de SQL la aborta sola—, este
+     * rollback falla, y como Express no espera al handler la promesa queda sin
+     * manejar y el proceso se cae entero. Un pedido que falla tiene que
+     * devolver 500, no dejar sin servicio a todos los negocios.
+     */
+    await t.rollback().catch(() => {});
+    next(error);
+  }
 };
 
 // POST /api/sales/cotizacion/:id/convertir

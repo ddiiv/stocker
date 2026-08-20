@@ -271,7 +271,7 @@ const webhookMercadoPago = async (req, res) => {
     await t.commit();
     log.info('billing', 'suscripción acreditada por Mercado Pago', { businessId: sub.businessId });
   } catch (e) {
-    await t.rollback();
+    await t.rollback().catch(() => {});
     log.error('billing', 'no se pudo procesar el webhook de Mercado Pago', { error: e.message });
   }
 };
@@ -371,7 +371,7 @@ const verificarPagos = async (req, res, next) => {
         ? 'Mercado Pago todavía está procesando el pago. Probá de nuevo en unos minutos.'
         : 'Todavía no nos figura ningún pago aprobado. Si acabás de pagar, esperá un momento y volvé a probar.',
     });
-  } catch (e) { await t.rollback(); next(e); }
+  } catch (e) { await t.rollback().catch(() => {}); next(e); }
 };
 
 /*

@@ -1,4 +1,5 @@
-const { SaleItem, ProductVariant, StockMovement } = require('../models');
+const { SaleItem, ProductVariant } = require('../models');
+const stockService = require('./stockService');
 
 /*
  * Salida de mercadería de una venta.
@@ -24,6 +25,16 @@ async function descontarStockVenta(sale, t, { employeeId = null, motivo = null }
     ? sale.items
     : await SaleItem.findAll({ where: { saleId: sale.id }, transaction: t });
 
+  /*
+   * El stock sale del local donde se hizo la venta.
+   *
+   * Antes se descontaba del total de la variante, que era el único que había.
+   * Ahora la mercadería está en algún lado: vender en Palermo tiene que bajar
+   * el stock de Palermo, no el del depósito. Sin local en la venta —ventas
+   * viejas, o un negocio de un solo punto— cae al local principal.
+   */
+  const local = sale.locationId || await stockService.localPorDefecto(sale.businessId, t);
+
   for (const item of items) {
     if (!item.productVariantId) continue;
 
@@ -34,28 +45,38 @@ async function descontarStockVenta(sale, t, { employeeId = null, motivo = null }
     });
     if (!variant) continue;
 
-    const stockAnterior = Number(variant.stock) || 0;
-    if (stockAnterior < item.cantidad) {
+    /*
+     * Se comprueba contra el stock DEL LOCAL, no contra el total.
+     *
+     * Es el punto de todo el cambio: que el total alcance no significa que la
+     * prenda esté en este local. Vender lo que está en la otra sucursal deja el
+     * stock de acá en negativo y a un cliente esperando algo que no está.
+     */
+    const disponible = await stockService.stockEn(variant.id, local, t);
+    if (disponible < item.cantidad) {
+      const nombreLocal = local ? await nombreDeLocal(local, t) : 'este local';
       throw Object.assign(
         new Error(
-          `No hay stock suficiente de ${item.titulo} (${item.sku}): quedan ${stockAnterior} ` +
-          `y la venta ${sale.numero} pide ${item.cantidad}. Ajustá el stock o modificá la venta.`
+          `No hay stock suficiente de ${item.titulo} (${item.sku}) en ${nombreLocal}: ` +
+          `quedan ${disponible} y la venta ${sale.numero} pide ${item.cantidad}. ` +
+          `Hay ${Number(variant.stock) || 0} en total entre todos los locales: ` +
+          `transferilo desde Stock o ajustá la venta.`
         ),
         { status: 409 }
       );
     }
 
-    const stockNuevo = stockAnterior - item.cantidad;
-    await variant.update({ stock: stockNuevo }, { transaction: t });
-    await StockMovement.create({
-      productVariantId: variant.id,
-      locationId: sale.locationId || null,
-      employeeId,
+    await stockService.mover({
+      variantId: variant.id,
+      businessId: sale.businessId,
+      locationId: local,
+      delta: -item.cantidad,
       tipo: 'egreso',
-      cantidad: item.cantidad, stockAnterior, stockNuevo,
       motivo: motivo || `Venta ${sale.numero}`,
-      fechaMovimiento: new Date(),
-    }, { transaction: t });
+      employeeId,
+      saleItemId: item.id,
+      transaction: t,
+    });
   }
 
   await sale.update({ stockDescontado: true }, { transaction: t });
@@ -73,29 +94,41 @@ async function devolverStockVenta(sale, t, { employeeId = null, motivo = null } 
     ? sale.items
     : await SaleItem.findAll({ where: { saleId: sale.id }, transaction: t });
 
+  // Vuelve al mismo local del que salió: es donde el cliente devuelve la prenda.
+  const local = sale.locationId || await stockService.localPorDefecto(sale.businessId, t);
+
   for (const item of items) {
     if (!item.productVariantId) continue;
-    const variant = await ProductVariant.findByPk(item.productVariantId, {
-      transaction: t, lock: t.LOCK.UPDATE,
-    });
+    const variant = await ProductVariant.findByPk(item.productVariantId, { transaction: t });
     if (!variant) continue;
 
-    const stockAnterior = Number(variant.stock) || 0;
-    const stockNuevo    = stockAnterior + item.cantidad;
-    await variant.update({ stock: stockNuevo }, { transaction: t });
-    await StockMovement.create({
-      productVariantId: variant.id,
-      locationId: sale.locationId || null,
-      employeeId,
+    await stockService.mover({
+      variantId: variant.id,
+      businessId: sale.businessId,
+      locationId: local,
+      delta: item.cantidad,
       tipo: 'ingreso',
-      cantidad: item.cantidad, stockAnterior, stockNuevo,
       motivo: motivo || `Anulación venta ${sale.numero}`,
-      fechaMovimiento: new Date(),
-    }, { transaction: t });
+      employeeId,
+      saleItemId: item.id,
+      transaction: t,
+    });
   }
 
   await sale.update({ stockDescontado: false }, { transaction: t });
   return true;
+}
+
+/*
+ * El nombre del local, sólo para el mensaje de error.
+ *
+ * Decir "no hay stock" sin decir dónde obliga a adivinar en cuál de las
+ * sucursales falta.
+ */
+async function nombreDeLocal(locationId, t) {
+  const { BusinessLocation } = require('../models');
+  const l = await BusinessLocation.findByPk(locationId, { attributes: ['nombre'], transaction: t });
+  return l?.nombre || 'este local';
 }
 
 module.exports = { descontarStockVenta, devolverStockVenta };

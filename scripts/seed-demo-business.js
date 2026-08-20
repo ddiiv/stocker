@@ -11,44 +11,93 @@ require('dotenv').config();
 const bcrypt = require('bcryptjs');
 const {
   db, Business, BusinessCuit, BusinessLocation, Role, Employee, Client,
-  Product, ProductVariant, Sale, SaleItem, StockMovement, Invoice, InvoiceItem,
+  Product, ProductVariant, VariantStock, Sale, SaleItem, SalePayment,
+  StockMovement, Invoice, InvoiceItem, PaymentMethod, CashShift, CashMovement,
+  ClientAccountEntry, VariantType, BusinessArcaConfig, Subscription,
+  SubscriptionPayment, MercadoLibreAccount, MercadoLibreLink,
 } = require('../src/models');
 
 const DEMO_EMAIL = 'demo@stocker.app';
 const DEMO_PASSWORD = 'Demo2026!!';
+const EMPLEADO_PASSWORD = 'Vendedor2026!';
 
 const rand = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
 const pick = (arr) => arr[rand(0, arr.length - 1)];
 const round2 = (n) => Math.round(n * 100) / 100;
 
+/*
+ * Borra el demo anterior por completo.
+ *
+ * La lista es larga a propósito: cada tabla que cuelga del negocio tiene que
+ * estar. Una que falte deja filas huérfanas apuntando a un negocio que ya no
+ * existe, y eso no se nota hasta que una consulta las trae y muestra datos de
+ * un demo viejo mezclados con el nuevo.
+ *
+ * El orden es por dependencia de claves foráneas: primero lo que referencia,
+ * después lo referenciado.
+ */
 async function reset() {
   const existente = await Business.findOne({ where: { email: DEMO_EMAIL } });
   if (!existente) return;
-  console.log('→ Borrando negocio demo anterior…');
-  // Orden por dependencias de FK: primero lo que referencia, después lo referenciado.
-  const products = await Product.findAll({ where: { businessId: existente.id } });
+  const id = existente.id;
+  console.log(`→ Borrando negocio demo anterior (id ${id})…`);
+
+  const products = await Product.findAll({ where: { businessId: id }, attributes: ['id'] });
   const productIds = products.map((p) => p.id);
-  const variants = productIds.length ? await ProductVariant.findAll({ where: { productId: productIds } }) : [];
+  const variants = productIds.length
+    ? await ProductVariant.findAll({ where: { productId: productIds }, attributes: ['id'] })
+    : [];
   const variantIds = variants.map((v) => v.id);
 
-  const sales = await Sale.findAll({ where: { businessId: existente.id } });
+  const sales = await Sale.findAll({ where: { businessId: id }, attributes: ['id'] });
   const saleIds = sales.map((s) => s.id);
-  const invoices = await Invoice.findAll({ where: { businessId: existente.id } });
+  const invoices = await Invoice.findAll({ where: { businessId: id }, attributes: ['id'] });
   const invoiceIds = invoices.map((i) => i.id);
+  const turnos = await CashShift.findAll({ where: { businessId: id }, attributes: ['id'] });
+  const turnoIds = turnos.map((t) => t.id);
+  const cuits = await BusinessCuit.findAll({ where: { businessId: id }, attributes: ['id'] });
+  const subs = await Subscription.findAll({ where: { businessId: id }, attributes: ['id'] });
 
   if (invoiceIds.length) await InvoiceItem.destroy({ where: { invoiceId: invoiceIds } });
-  await Invoice.destroy({ where: { businessId: existente.id } });
-  if (saleIds.length) await SaleItem.destroy({ where: { saleId: saleIds } });
-  await Sale.destroy({ where: { businessId: existente.id } });
-  if (variantIds.length) await StockMovement.destroy({ where: { productVariantId: variantIds } });
-  if (productIds.length) await ProductVariant.destroy({ where: { productId: productIds } });
-  await Product.destroy({ where: { businessId: existente.id } });
-  await Employee.destroy({ where: { businessId: existente.id } });
-  await Client.destroy({ where: { businessId: existente.id } });
-  await BusinessCuit.destroy({ where: { businessId: existente.id } });
-  await BusinessLocation.destroy({ where: { businessId: existente.id } });
-  await Role.destroy({ where: { businessId: existente.id } });
+  await Invoice.destroy({ where: { businessId: id } });
+
+  /*
+   * Los movimientos de cuenta corriente y de caja apuntan a la venta, así que
+   * se van antes que ella. Al revés, SQL Server rechaza el DELETE por la clave
+   * foránea y el borrado queda a medias.
+   */
+  await ClientAccountEntry.destroy({ where: { businessId: id } });
+  if (turnoIds.length) await CashMovement.destroy({ where: { cashShiftId: turnoIds } });
+  await CashShift.destroy({ where: { businessId: id } });
+
+  if (saleIds.length) {
+    await SalePayment.destroy({ where: { saleId: saleIds } });
+    await SaleItem.destroy({ where: { saleId: saleIds } });
+  }
+  await Sale.destroy({ where: { businessId: id } });
+
+  if (variantIds.length) {
+    await StockMovement.destroy({ where: { productVariantId: variantIds } });
+    await VariantStock.destroy({ where: { productVariantId: variantIds } });
+    await MercadoLibreLink.destroy({ where: { businessId: id } }).catch(() => {});
+    await ProductVariant.destroy({ where: { id: variantIds } });
+  }
+  await Product.destroy({ where: { businessId: id } });
+
+  if (subs.length) await SubscriptionPayment.destroy({ where: { subscriptionId: subs.map((x) => x.id) } });
+  await Subscription.destroy({ where: { businessId: id } });
+  if (cuits.length) await BusinessArcaConfig.destroy({ where: { businessCuitId: cuits.map((c) => c.id) } });
+  await BusinessArcaConfig.destroy({ where: { businessId: id } }).catch(() => {});
+  await MercadoLibreAccount.destroy({ where: { businessId: id } }).catch(() => {});
+  await PaymentMethod.destroy({ where: { businessId: id } });
+  await VariantType.destroy({ where: { businessId: id } });
+  await Employee.destroy({ where: { businessId: id } });
+  await Client.destroy({ where: { businessId: id } });
+  await BusinessCuit.destroy({ where: { businessId: id } });
+  await BusinessLocation.destroy({ where: { businessId: id } });
+  await Role.destroy({ where: { businessId: id } });
   await existente.destroy();
+  console.log('  listo.');
 }
 
 async function seed() {
@@ -78,11 +127,12 @@ async function seed() {
     businessId: business.id, nombre: business.nombreNegocio, cuit: business.cuit, esPrincipal: true,
   });
 
-  await Role.bulkCreate([
-    { businessId: business.id, nombre: 'Administrador', permisos: { stock:'editar', ventas:'editar', facturacion:'editar', empleados:'editar', dashboard:'editar', cotizaciones:'editar' } },
-    { businessId: business.id, nombre: 'Vendedor', permisos: { stock:'ver', ventas:'editar', facturacion:'ver', empleados:'ninguno', dashboard:'ver', cotizaciones:'editar' } },
-  ]);
-  const rolVendedor = await Role.findOne({ where: { businessId: business.id, nombre: 'Vendedor' } });
+  const roles = await Role.bulkCreate([
+    { businessId: business.id, nombre: 'Administrador', permisos: { stock:'editar', ventas:'editar', facturacion:'editar', empleados:'editar', dashboard:'editar', cotizaciones:'editar', caja:'editar', clientes:'editar', pagos:'editar' } },
+    { businessId: business.id, nombre: 'Vendedor', permisos: { stock:'ver', ventas:'editar', facturacion:'ver', empleados:'ninguno', dashboard:'ver', cotizaciones:'editar', caja:'editar', clientes:'editar', pagos:'ver' } },
+  ], { returning: true });
+  const rolVendedor = roles.find((r) => r.nombre === 'Vendedor');
+  const rolAdmin = roles.find((r) => r.nombre === 'Administrador');
 
   console.log('→ Creando locales…');
   const locales = await BusinessLocation.bulkCreate([
@@ -92,12 +142,36 @@ async function seed() {
   ], { returning: true });
 
   console.log('→ Creando empleados…');
-  const empPass = await bcrypt.hash('Vendedor2026!', 10);
+  const empPass = await bcrypt.hash(EMPLEADO_PASSWORD, 10);
   const empleados = await Employee.bulkCreate([
     { businessId: business.id, roleId: rolVendedor.id, locationId: locales[0].id, dni: '38221109', nombre: 'Camila', apellido: 'Souza', email: 'camila@boutiquealmendra.demo', passwordHash: empPass, activo: true },
     { businessId: business.id, roleId: rolVendedor.id, locationId: locales[1].id, dni: '37845210', nombre: 'Nicolás', apellido: 'Paredes', email: 'nicolas@boutiquealmendra.demo', passwordHash: empPass, activo: true },
-    { businessId: business.id, roleId: rolVendedor.id, locationId: locales[0].id, dni: '40112365', nombre: 'Ayelén', apellido: 'Gómez', email: 'ayelen@boutiquealmendra.demo', passwordHash: empPass, activo: true },
+    // Ayelén es administradora: el demo tiene que mostrar los dos niveles de
+    // permiso, no tres vendedores iguales.
+    { businessId: business.id, roleId: rolAdmin.id, locationId: locales[2].id, dni: '40112365', nombre: 'Ayelén', apellido: 'Gómez', email: 'ayelen@boutiquealmendra.demo', passwordHash: empPass, activo: true },
   ], { returning: true });
+
+  console.log('→ Creando medios de pago…');
+  /*
+   * Se crean acá y no se dejan al arranque del servidor porque las ventas del
+   * historial referencian su id: sin ellos, las ventas quedarían sin líneas de
+   * pago y los filtros por medio de pago no tendrían nada que mostrar.
+   */
+  const medios = await PaymentMethod.bulkCreate([
+    { businessId: business.id, nombre: 'Efectivo',       ajustePct: 0,  esEfectivo: true,  activo: true, orden: 1 },
+    { businessId: business.id, nombre: 'Débito',         ajustePct: 0,  esEfectivo: false, activo: true, orden: 2 },
+    { businessId: business.id, nombre: 'Crédito',        ajustePct: 10, esEfectivo: false, activo: true, orden: 3 },
+    { businessId: business.id, nombre: 'Transferencia',  ajustePct: 0,  esEfectivo: false, activo: true, orden: 4 },
+    { businessId: business.id, nombre: 'QR / Billetera', ajustePct: 0,  esEfectivo: false, activo: true, orden: 5 },
+  ], { returning: true });
+
+  console.log('→ Creando variantes maestras…');
+  // Color y Talle con los valores que usa el catálogo: son los que alimentan la
+  // pantalla de confección de SKU.
+  await VariantType.bulkCreate([
+    { businessId: business.id, nombre: 'Color', valores: ['Blanco','Negro','Beige','Azul','Camel','Gris','Verde','Bordo','Rosa','Floral'] },
+    { businessId: business.id, nombre: 'Talle', valores: ['S','M','L','XL','36','38','40','42'] },
+  ]);
 
   console.log('→ Creando clientes…');
   const nombresCli = [
@@ -154,14 +228,20 @@ async function seed() {
         const colorAbrev = color.replace(/\s/g, '').toUpperCase().slice(0, 6);
         const talleAbrev = String(talle).replace(/\s/g, '').toUpperCase().slice(0, 4);
         const suf = `${colorAbrev}${talleAbrev}`;
-        const stockInicial = rand(4, 40);
+        /*
+         * Nace en cero: el stock entra después, repartido por local y con su
+         * movimiento de ingreso. Ponerlo acá dejaría el total con un número y
+         * `variant_stocks` vacío, o sea el total diciendo una cosa y la suma de
+         * los locales otra.
+         */
         const variant = await ProductVariant.create({
           productId: product.id,
+          businessId: business.id,
           sku: `${skuBase}-${suf}`,
           codigoBarras: `779${String(rand(1000000, 9999999))}`,
           variante1Nombre: 'Color', variante1Valor: color,
           variante2Nombre: 'Talle', variante2Valor: talle,
-          stock: stockInicial, stockMinimo: 5,
+          stock: 0, stockMinimo: 5,
         });
         variantesCreadas.push({ variant, product, categoria: c.categoria });
       }
@@ -169,11 +249,51 @@ async function seed() {
   }
   console.log(`  ${catalogo.length} productos, ${variantesCreadas.length} variantes.`);
 
+  /*
+   * ── Stock inicial repartido por local ──
+   *
+   * Todo se calcula en memoria y se inserta al final en bloque. Pasar por
+   * stockService variante por variante serían miles de consultas —una lectura,
+   * una escritura y un recálculo por cada una— y el seed tardaría minutos.
+   *
+   * El reparto es desparejo a propósito: Palermo es el local grande, Belgrano
+   * la mitad, y Online un stock chico de reposición. Un demo con el mismo
+   * número en los tres locales no muestra el problema que el stock por local
+   * viene a resolver: que la prenda esté en la sucursal equivocada.
+   */
+  console.log('→ Repartiendo stock inicial entre los locales…');
+  const PESO = [0.55, 0.32, 0.13];   // Palermo · Belgrano · Online
+  const hace12Meses = new Date(); hace12Meses.setMonth(hace12Meses.getMonth() - 12);
+
+  // variantId → { locationId → unidades }
+  const stockMem = new Map();
+  const movimientos = [];
+
+  for (const { variant } of variantesCreadas) {
+    const total = rand(6, 45);
+    const porLocal = new Map();
+    let repartido = 0;
+    locales.forEach((l, i) => {
+      // El último local se lleva el resto, así no se pierden unidades por
+      // redondeo y la suma da exactamente el total.
+      const n = i === locales.length - 1 ? total - repartido : Math.round(total * PESO[i]);
+      repartido += n;
+      porLocal.set(l.id, n);
+      if (n > 0) {
+        movimientos.push({
+          productVariantId: variant.id, locationId: l.id, employeeId: null,
+          tipo: 'ingreso', cantidad: n, stockAnterior: 0, stockNuevo: n,
+          motivo: 'Carga inicial de inventario', fechaMovimiento: hace12Meses,
+        });
+      }
+    });
+    stockMem.set(variant.id, porLocal);
+  }
+
   console.log('→ Generando 12 meses de ventas…');
   // Estacionalidad simple: más ventas en los últimos 2 meses (efecto "creciendo"),
   // caída leve en enero/febrero (temporada baja típica de indumentaria en AR).
   const hoy = new Date();
-  const mediosPago = ['Efectivo', 'Débito', 'Crédito', 'Transferencia', 'QR / Billetera'];
   let numeroVenta = 1;
   let totalVentas = 0, totalUnidades = 0;
 
@@ -206,7 +326,17 @@ async function seed() {
       let subtotal = 0;
       const itemsPayload = [];
       for (const { variant, product } of itemsSeleccionados) {
-        const cantidad = rand(1, 2);
+        /*
+         * La venta sale del stock DEL LOCAL donde se hizo.
+         *
+         * Si en ese local no hay, el ítem se saltea en lugar de dejar el stock
+         * en negativo: es lo mismo que hace el sistema en producción, y un demo
+         * con stock negativo no se puede mostrar.
+         */
+        const enLocal = stockMem.get(variant.id)?.get(local.id) || 0;
+        if (enLocal <= 0) continue;
+
+        const cantidad = Math.min(rand(1, 2), enLocal);
         const precioUnitario = esMayorista ? Number(product.precioMayorista) : Number(product.precioMinorista);
         const itemSubtotal = round2(precioUnitario * cantidad);
         subtotal += itemSubtotal;
@@ -216,10 +346,24 @@ async function seed() {
           variante1Nombre: variant.variante1Nombre, variante1Valor: variant.variante1Valor,
           variante2Nombre: variant.variante2Nombre, variante2Valor: variant.variante2Valor,
           cantidad, precioUnitario, subtotal: itemSubtotal, esMayorista,
+          // Se guarda para poder armar el movimiento con el stock antes y
+          // después, que es lo que muestra el libro.
+          _antes: enLocal,
         });
+        stockMem.get(variant.id).set(local.id, enLocal - cantidad);
       }
 
+      // Una venta sin ítems —porque no había stock de ninguno en ese local— no
+      // se registra: sería una venta de nada.
+      if (!itemsPayload.length) continue;
+
       const numero = `V-${String(numeroVenta++).padStart(6, '0')}`;
+      const medio = pick(medios);
+      const cobrada = estado === 'pagado';
+      const total = round2(subtotal);
+      // El recargo del medio de pago se cobra además del precio de lista.
+      const recargo = cobrada ? round2(total * (Number(medio.ajustePct) || 0) / 100) : 0;
+
       const sale = await Sale.create({
         businessId: business.id,
         locationId: local.id,
@@ -227,13 +371,64 @@ async function seed() {
         clientId: cliente?.id || null,
         numero, tipo: 'venta', estado,
         esMayorista,
-        subtotal: round2(subtotal),
+        subtotal: total,
         descuentoPct: 0, descuento: 0,
-        total: round2(subtotal),
-        medioPago: pick(mediosPago),
+        total,
+        medioPago: medio.nombre,
+        // Campos que llegaron con las ventas fiadas y los medios de pago: se
+        // dejan coherentes desde el principio en vez de esperar al relleno del
+        // arranque, que sólo completa lo que encuentra en NULL.
+        condicionPago: 'contado',
+        recargoPagos: recargo,
+        totalCobrado: cobrada ? round2(total + recargo) : 0,
+        saldoPendiente: cobrada ? 0 : total,
+        stockDescontado: true,
+        cobradoEn: cobrada ? fecha : null,
+        cobradoPorEmployeeId: cobrada ? empleado.id : null,
         fecha: fechaStr,
       });
-      await SaleItem.bulkCreate(itemsPayload.map((it) => ({ ...it, saleId: sale.id })));
+
+      const items = await SaleItem.bulkCreate(
+        itemsPayload.map(({ _antes, ...it }) => ({ ...it, saleId: sale.id })),
+        { returning: true },
+      );
+
+      /*
+       * La venta queda en el libro de movimientos, con su local y su vendedor.
+       *
+       * Es lo que permite reconstruir el día cuando falta mercadería: sin esto
+       * el stock baja y no hay nada que explique por qué. `saleItemId` es
+       * además lo que distingue una venta de una corrección de carga.
+       */
+      itemsPayload.forEach((it, k) => {
+        movimientos.push({
+          productVariantId: it.productVariantId,
+          locationId: local.id,
+          employeeId: empleado.id,
+          saleItemId: items[k]?.id || null,
+          tipo: 'egreso',
+          cantidad: it.cantidad,
+          stockAnterior: it._antes,
+          stockNuevo: it._antes - it.cantidad,
+          motivo: `Venta ${numero}`,
+          fechaMovimiento: fecha,
+        });
+      });
+
+      // Las líneas de pago: sin ellas los filtros por medio de pago no tienen
+      // qué mostrar y las ventas figuran como si vinieran de un sistema viejo.
+      if (cobrada) {
+        await SalePayment.create({
+          saleId: sale.id,
+          paymentMethodId: medio.id,
+          nombre: medio.nombre,
+          monto: total,
+          ajustePct: Number(medio.ajustePct) || 0,
+          ajusteMonto: recargo,
+          montoFinal: round2(total + recargo),
+          esEfectivo: medio.esEfectivo,
+        });
+      }
 
       totalVentas += subtotal;
       totalUnidades += itemsPayload.reduce((s, i) => s + i.cantidad, 0);
@@ -242,13 +437,63 @@ async function seed() {
 
   console.log(`  ${numeroVenta - 1} ventas generadas · $${Math.round(totalVentas).toLocaleString('es-AR')} facturado · ${totalUnidades} unidades.`);
 
+  /*
+   * ── Volcado del stock ──
+   *
+   * Recién acá se escribe: el stock que queda es el resultado real de la carga
+   * inicial menos las ventas, no un número inventado. Por eso la suma de los
+   * locales y el total de la variante coinciden por construcción y no por
+   * casualidad.
+   */
+  console.log('→ Guardando stock por local y movimientos…');
+  const filasStock = [];
+  const totalesPorVariante = new Map();
+  for (const [variantId, porLocal] of stockMem) {
+    let total = 0;
+    for (const [locationId, unidades] of porLocal) {
+      total += unidades;
+      // Sólo se guardan las combinaciones con historia: una fila en cero de un
+      // local que nunca recibió esa prenda no aporta nada y multiplica la tabla
+      // por la cantidad de locales.
+      if (unidades > 0) {
+        filasStock.push({ businessId: business.id, productVariantId: variantId, locationId, stock: unidades });
+      }
+    }
+    totalesPorVariante.set(variantId, total);
+  }
+
+  await VariantStock.bulkCreate(filasStock);
+  for (const [variantId, total] of totalesPorVariante) {
+    await ProductVariant.update({ stock: total }, { where: { id: variantId } });
+  }
+  // En tandas: un solo bulkCreate de miles de filas hace un INSERT gigante que
+  // SQL Server rechaza por cantidad de parámetros.
+  for (let i = 0; i < movimientos.length; i += 500) {
+    await StockMovement.bulkCreate(movimientos.slice(i, i + 500));
+  }
+
+  const stockFinal = [...totalesPorVariante.values()].reduce((a, b) => a + b, 0);
+  console.log(`  ${filasStock.length} filas de stock · ${stockFinal} unidades en góndola · ${movimientos.length} movimientos.`);
+
   console.log('\n✔ Negocio demo listo.\n');
-  console.log('─────────────────────────────────────────');
-  console.log(`  Negocio:     ${business.nombreNegocio}`);
-  console.log(`  Email:       ${DEMO_EMAIL}`);
-  console.log(`  Contraseña:  ${DEMO_PASSWORD}`);
-  console.log('─────────────────────────────────────────');
-  console.log('  (Es el login de dueño — entra directo, sin selector de empleado.)');
+  console.log('═════════════════════════════════════════════════════════');
+  console.log(`  ${business.nombreNegocio}  ·  CUIT ${business.cuit}`);
+  console.log('═════════════════════════════════════════════════════════');
+  console.log('  DUEÑA (pestaña "Dueño" del login)');
+  console.log(`    Email:      ${DEMO_EMAIL}`);
+  console.log(`    Contraseña: ${DEMO_PASSWORD}`);
+  console.log('');
+  console.log('  EMPLEADOS (pestaña "Empleado" del login)');
+  console.log(`    Contraseña de los tres: ${EMPLEADO_PASSWORD}`);
+  for (const e of empleados) {
+    const rol = roles.find((r) => r.id === e.roleId)?.nombre || '—';
+    const loc = locales.find((l) => l.id === e.locationId)?.nombre || 'sin local';
+    console.log(`    ${(e.nombre + ' ' + e.apellido).padEnd(18)} ${e.email.padEnd(34)} ${rol.padEnd(14)} ${loc}`);
+  }
+  console.log('');
+  console.log('  LOCALES');
+  for (const l of locales) console.log(`    ${String(l.id).padStart(3)}  ${l.nombre}`);
+  console.log('═════════════════════════════════════════════════════════');
 }
 
 seed()

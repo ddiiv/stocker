@@ -267,7 +267,7 @@ const createInvoice = async (req, res, next) => {
 
     const full = await Invoice.findByPk(invoice.id, { include: [{ model: InvoiceItem, as: 'items' }] });
     res.status(201).json(full);
-  } catch (error) { await t.rollback(); next(error); }
+  } catch (error) { await t.rollback().catch(() => {}); next(error); }
 };
 
 // PATCH /api/invoices/:id/anular

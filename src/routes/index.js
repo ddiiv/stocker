@@ -259,6 +259,13 @@ r.get   ('/sku/disponible',                               requireAuth, requirePe
 // Imprimir etiquetas es parte de operar el stock, no de editarlo.
 r.post  ('/products/etiquetas',                           requireAuth, requirePermission('stock','ver'),    productCtrl.generarEtiquetasPdf);
 
+r.post  ('/stock/ajuste-masivo',                          requireAuth, requirePermission('stock','editar'), productCtrl.ajusteMasivo);
+r.get   ('/stock/ingresos',                               requireAuth, requirePermission('stock','ver'),    productCtrl.getIngresosDelDia);
+r.get   ('/stock/por-local/productos',                     requireAuth, requirePermission('stock','ver'),    productCtrl.getProductosPorLocal);
+r.get   ('/stock/por-local/producto/:id',                 requireAuth, requirePermission('stock','ver'),    productCtrl.getVariantesPorLocal);
+r.get   ('/stock/por-local',                              requireAuth, requirePermission('stock','ver'),    productCtrl.getStockPorLocal);
+r.post  ('/stock/transferir',                             requireAuth, requirePermission('stock','editar'), productCtrl.transferirStock);
+
 r.get   ('/stock/movimientos',                            requireAuth, requirePermission('stock','ver'),    productCtrl.getStockMovements);
 r.get   ('/products/variants/:variantId/movements',       requireAuth, requirePermission('stock','ver'),    productCtrl.getVariantMovements);
 

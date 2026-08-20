@@ -541,6 +541,41 @@ ProductVariant.addHook('beforeValidate', async (variante, opciones) => {
   if (producto) variante.businessId = producto.businessId;
 });
 
+/*
+ * ─── VariantStock: el stock de una variante EN UN LOCAL ──────────
+ *
+ * Cada local tiene los mismos productos y distinto stock. Esta tabla es la
+ * verdad: una fila por combinación de variante y local.
+ *
+ * `ProductVariant.stock` se conserva como el TOTAL, recalculado como la suma de
+ * estas filas cada vez que una cambia. Es una desnormalización a propósito y
+ * conviene entender por qué: media docena de pantallas —métricas, publicación
+ * en Mercado Libre, exportación a Excel, el buscador del punto de venta,
+ * etiquetas— leen ese campo y lo que quieren mostrar es justamente el total.
+ * Reescribirlas todas de una para que sumen por su cuenta es la forma segura de
+ * dejar una sin migrar y que muestre un número inventado durante meses.
+ *
+ * Quien escribe stock lo hace por services/stockService, que actualiza la fila
+ * del local y el total en la misma transacción. Ningún controlador toca
+ * `ProductVariant.stock` directamente.
+ */
+const VariantStock = db.define('VariantStock', {
+  id:               { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
+  businessId:       { type: DataTypes.INTEGER, allowNull: false },
+  productVariantId: { type: DataTypes.INTEGER, allowNull: false },
+  locationId:       { type: DataTypes.INTEGER, allowNull: false },
+  stock:            { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
+  // Mínimo por local: un depósito central y un local de barrio no reponen con
+  // el mismo umbral.
+  stockMinimo:      { type: DataTypes.INTEGER, allowNull: true },
+}, {
+  tableName: 'variant_stocks',
+  indexes: [
+    { name: 'uq_variant_stock', unique: true, fields: ['productVariantId', 'locationId'] },
+    { name: 'idx_variant_stock_local', fields: ['businessId', 'locationId'] },
+  ],
+});
+
 // ─── StockMovement ────────────────────────────────────────────────
 const StockMovement = db.define('StockMovement', {
   id:               { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
@@ -820,6 +855,31 @@ Product.belongsTo(Business, { foreignKey: 'businessId' });
 Product.hasMany(ProductVariant, { foreignKey: 'productId', as: 'productVariants', onDelete: 'CASCADE' });
 ProductVariant.belongsTo(Product, { foreignKey: 'productId', as: 'producto' });
 
+/*
+ * Borrar una variante borra su stock en todos los locales: sin la variante, esas
+ * filas no significan nada.
+ */
+ProductVariant.hasMany(VariantStock, { foreignKey: 'productVariantId', as: 'porLocal', onDelete: 'CASCADE' });
+VariantStock.belongsTo(ProductVariant, { foreignKey: 'productVariantId', as: 'variante' });
+
+/*
+ * El local NO cascadea, y no es un olvido.
+ *
+ * SQL Server rechaza crear la tabla si las dos claves foráneas borran en
+ * cascada: `product_variants` y `business_locations` cuelgan las dos de
+ * `businesses`, así que borrar un negocio llegaría hasta acá por dos caminos y
+ * el motor no lo permite ("multiple cascade paths"). Verificado probando las
+ * cuatro combinaciones: cualquiera de las dos sola funciona, juntas no.
+ *
+ * Elegir cuál conservar es fácil: los locales de este sistema se dan de baja
+ * con `activo = false`, no se borran, así que la cascada por local nunca se
+ * dispararía. La de variante sí.
+ */
+BusinessLocation.hasMany(VariantStock, { foreignKey: 'locationId', as: 'stocks', onDelete: 'NO ACTION' });
+// El `onDelete` va también acá: la restricción la crea el lado que tiene la
+// columna, y sin declararlo Sequelize le pone CASCADE por su cuenta.
+VariantStock.belongsTo(BusinessLocation, { foreignKey: 'locationId', as: 'local', onDelete: 'NO ACTION' });
+
 ProductVariant.hasMany(StockMovement, { foreignKey: 'productVariantId', as: 'movimientos', onDelete: 'CASCADE' });
 StockMovement.belongsTo(ProductVariant, { foreignKey: 'productVariantId', as: 'variante' });
 StockMovement.belongsTo(Employee, { foreignKey: 'employeeId', as: 'empleado' });
@@ -890,7 +950,7 @@ SubscriptionPayment.belongsTo(Plan, { foreignKey: 'planId', as: 'plan', onDelete
 module.exports = {
   db,
   Plan, Subscription, SubscriptionPayment, PlatformAdmin, PlatformSetting, AuthAttempt,
-  Business, BusinessLocation, BusinessCuit, BusinessArcaConfig, ArcaToken, VariantType,
+  Business, BusinessLocation, BusinessCuit, BusinessArcaConfig, ArcaToken, VariantType, VariantStock,
   MercadoLibreAccount, MercadoLibreLink,
   Role, Employee, EmployeeSession, PasswordResetCode, AccountChangeCode, Client,
   Product, ProductVariant, StockMovement,

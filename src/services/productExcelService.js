@@ -1,5 +1,6 @@
 const ExcelJS = require('exceljs');
 const { Product, ProductVariant } = require('../models');
+const stockService = require('./stockService');
 
 const COLUMNS = [
   { header: 'SKU Padre',        key: 'sku',             width: 18 },
@@ -104,7 +105,10 @@ function toStr(v) {
   return String(v).trim();
 }
 
-async function importProductsXlsx(businessId, buffer) {
+async function importProductsXlsx(businessId, buffer, { locationId = null } = {}) {
+  // A qué local entra lo importado. Sin indicarlo, al principal.
+  locationId = locationId || await stockService.localPorDefecto(businessId);
+
   const workbook = new ExcelJS.Workbook();
   await workbook.xlsx.load(buffer);
   const worksheet = workbook.worksheets[0];
@@ -174,20 +178,41 @@ async function importProductsXlsx(businessId, buffer) {
           variante2Nombre: v2n || null, variante2Valor: v2v || null,
           stockMinimo: row.stockMinimo !== '' && row.stockMinimo !== undefined ? toNumber(row.stockMinimo, 5) : undefined,
         };
-        if (hasStock) variantFields.stock = toNumber(stockRaw, 0);
+        /*
+         * El stock del Excel no se escribe en la variante: se aplica como un
+         * ajuste sobre el local de destino.
+         *
+         * Poniéndolo directo en `product_variants.stock` el total diría una
+         * cosa y la suma de los locales otra, y el primer movimiento posterior
+         * recalcularía el total y haría desaparecer lo importado sin dejar
+         * rastro. Además así la importación queda en el libro de movimientos,
+         * que es donde se busca cuando un conteo no cierra.
+         */
+        const stockImportado = hasStock ? toNumber(stockRaw, 0) : null;
 
         if (variant) {
           await variant.update(Object.fromEntries(Object.entries(variantFields).filter(([, v]) => v !== undefined)));
           summary.variantsUpdated++;
         } else {
-          await ProductVariant.create({
+          variant = await ProductVariant.create({
             productId: product.id, sku: skuVariante,
             variante1Nombre: v1n || null, variante1Valor: v1v || null,
             variante2Nombre: v2n || null, variante2Valor: v2v || null,
-            stock: hasStock ? toNumber(stockRaw, 0) : 0,
+            stock: 0,
             stockMinimo: variantFields.stockMinimo ?? 5,
           });
           summary.variantsCreated++;
+        }
+
+        if (stockImportado !== null) {
+          await stockService.mover({
+            variantId: variant.id,
+            businessId,
+            locationId,
+            fijar: stockImportado,
+            tipo: 'ajuste',
+            motivo: 'Importación de Excel',
+          });
         }
       } catch (e) {
         summary.errors.push(`Fila ${row._row}: ${e.message}`);

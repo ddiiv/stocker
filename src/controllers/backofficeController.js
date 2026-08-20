@@ -308,7 +308,7 @@ const aprobarPago = async (req, res, next) => {
     await t.commit();
     log.info('backoffice', 'pago acreditado a mano', { pago: pago.id, admin: req.admin.id });
     res.json({ pago, periodo: { desde, hasta } });
-  } catch (e) { await t.rollback(); next(e); }
+  } catch (e) { await t.rollback().catch(() => {}); next(e); }
 };
 
 // POST /api/backoffice/pagos/:id/rechazar

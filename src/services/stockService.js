@@ -1,0 +1,201 @@
+/*
+ * El único lugar donde se escribe stock.
+ *
+ * Desde que cada local tiene el suyo, un movimiento toca dos cosas que no
+ * pueden separarse: la fila del local y el total de la variante. Si un
+ * controlador actualizara una sola, el total quedaría mintiendo — y un total
+ * equivocado no se nota hasta que alguien va a buscar mercadería que el sistema
+ * dice tener.
+ *
+ * Por eso todo pasa por acá: venta, ajuste manual, escaneo, importación de
+ * Excel y devoluciones. Ningún otro archivo hace `variant.update({ stock })`.
+ */
+
+const { Op } = require('sequelize');
+const { ProductVariant, VariantStock, BusinessLocation, StockMovement } = require('../models');
+
+/*
+ * A qué local va un movimiento que no lo aclara.
+ *
+ * El primer local activo del negocio. Existe porque hay tres caminos que no
+ * siempre saben dónde están parados —el dueño ajustando desde la oficina, una
+ * importación de Excel, una venta vieja sin local— y la alternativa sería
+ * dejar ese stock fuera de todos los locales, o sea invisible.
+ *
+ * Un negocio sin locales cargados devuelve null: ahí el stock queda sólo en el
+ * total, que es lo que había antes de esta función y sigue siendo correcto.
+ */
+async function localPorDefecto(businessId, transaction = null) {
+  const local = await BusinessLocation.findOne({
+    where: { businessId, activo: true },
+    order: [['id', 'ASC']],
+    transaction,
+  });
+  return local?.id || null;
+}
+
+/*
+ * La fila de stock de una variante en un local, creándola si no existe.
+ *
+ * Se crea en cero: un local que nunca recibió una prenda tiene cero de ella, no
+ * "sin dato". Eso permite mostrar la grilla completa de locales sin huecos.
+ */
+async function filaDe(variantId, locationId, businessId, t) {
+  const [fila] = await VariantStock.findOrCreate({
+    where: { productVariantId: variantId, locationId },
+    defaults: { productVariantId: variantId, locationId, businessId, stock: 0 },
+    transaction: t,
+    lock: t ? t.LOCK.UPDATE : undefined,
+  });
+  return fila;
+}
+
+/*
+ * Recalcula el total de la variante como la suma de sus locales.
+ *
+ * Se recalcula en vez de sumar el delta al total anterior. Sumar arrastra
+ * cualquier desvío para siempre: si un total quedó mal por una migración a
+ * medias o por un bug viejo, el error se propaga a cada movimiento. Recalcular
+ * lo corrige solo en el primer movimiento que toque esa variante.
+ */
+async function recalcularTotal(variantId, t) {
+  const filas = await VariantStock.findAll({
+    where: { productVariantId: variantId },
+    attributes: ['stock'],
+    transaction: t,
+  });
+  const total = filas.reduce((s, f) => s + (Number(f.stock) || 0), 0);
+  await ProductVariant.update({ stock: total }, { where: { id: variantId }, transaction: t });
+  return total;
+}
+
+/**
+ * Mueve stock de una variante en un local y deja el movimiento registrado.
+ *
+ * Una de dos: `delta` (suma o resta) o `fijar` (deja el stock en ese número).
+ * Devuelve { stockAnterior, stockNuevo, total, locationId } del LOCAL, no del
+ * total: quien llama necesita saber qué pasó donde lo pidió.
+ *
+ * `permitirNegativo` existe para las devoluciones y correcciones; el resto de
+ * los caminos deja que reviente, porque un stock negativo es un dato falso que
+ * después nadie sabe de dónde salió.
+ */
+async function mover({
+  variantId, businessId, locationId = null,
+  delta = null, fijar = null,
+  tipo, motivo = null, employeeId = null, saleItemId = null,
+  transaction: t,
+  permitirNegativo = false,
+  registrarMovimiento = true,
+}) {
+  if (delta === null && fijar === null) throw new Error('mover() necesita delta o fijar.');
+
+  const local = locationId || await localPorDefecto(businessId, t);
+  if (!local) {
+    /*
+     * Sin locales cargados no hay dónde poner el stock. Antes esto no podía
+     * pasar porque el stock no tenía lugar; ahora sí, y hay que decirlo en vez
+     * de perder el movimiento en silencio.
+     */
+    const err = new Error('El negocio no tiene ningún local cargado. Creá al menos uno para poder mover stock.');
+    err.status = 409;
+    throw err;
+  }
+
+  const fila = await filaDe(variantId, local, businessId, t);
+  const stockAnterior = Number(fila.stock) || 0;
+  const stockNuevo = fijar !== null ? Number(fijar) : stockAnterior + Number(delta);
+
+  if (stockNuevo < 0 && !permitirNegativo) {
+    const err = new Error(`Quedaría en ${stockNuevo}: no se puede sacar más de lo que hay en el local.`);
+    err.status = 409;
+    err.disponible = stockAnterior;
+    throw err;
+  }
+
+  await fila.update({ stock: stockNuevo }, { transaction: t });
+  const total = await recalcularTotal(variantId, t);
+
+  if (registrarMovimiento) {
+    await StockMovement.create({
+      productVariantId: variantId,
+      locationId: local,
+      employeeId,
+      saleItemId,
+      tipo,
+      cantidad: fijar !== null ? Number(fijar) : Math.abs(Number(delta)),
+      stockAnterior, stockNuevo,
+      motivo: motivo || '',
+      fechaMovimiento: new Date(),
+    }, { transaction: t });
+  }
+
+  return { stockAnterior, stockNuevo, total, locationId: local };
+}
+
+/** Cuánto hay de una variante en un local. */
+async function stockEn(variantId, locationId, t = null) {
+  if (!locationId) return null;
+  const fila = await VariantStock.findOne({
+    where: { productVariantId: variantId, locationId },
+    transaction: t,
+  });
+  return Number(fila?.stock) || 0;
+}
+
+/**
+ * El desglose por local de varias variantes, en una consulta.
+ *
+ * Una consulta por variante convertiría el listado de un producto de veinte
+ * variantes en veinte viajes a la base.
+ */
+async function desglosePorVariante(variantIds, businessId) {
+  if (!variantIds.length) return new Map();
+  const filas = await VariantStock.findAll({
+    where: { productVariantId: { [Op.in]: variantIds }, businessId },
+    include: [{ association: 'local', attributes: ['id', 'nombre', 'activo'] }],
+    order: [['locationId', 'ASC']],
+  });
+  const mapa = new Map();
+  for (const f of filas) {
+    if (!mapa.has(f.productVariantId)) mapa.set(f.productVariantId, []);
+    mapa.get(f.productVariantId).push({
+      locationId: f.locationId,
+      local: f.local?.nombre || null,
+      activo: f.local?.activo ?? true,
+      stock: Number(f.stock) || 0,
+      stockMinimo: f.stockMinimo,
+    });
+  }
+  return mapa;
+}
+
+/*
+ * Mueve stock de un local a otro.
+ *
+ * Son dos movimientos con el mismo motivo, no uno: en el libro tiene que
+ * quedar la salida de un local y la entrada en el otro, porque es lo que se
+ * mira cuando falta mercadería en el destino.
+ */
+async function transferir({ variantId, businessId, desde, hacia, cantidad, employeeId = null, motivo = null, transaction: t }) {
+  const n = Number(cantidad);
+  if (!Number.isFinite(n) || n <= 0) {
+    const err = new Error('La cantidad a transferir tiene que ser mayor a cero.'); err.status = 400; throw err;
+  }
+  if (!desde || !hacia || Number(desde) === Number(hacia)) {
+    const err = new Error('Elegí un local de origen y otro de destino distintos.'); err.status = 400; throw err;
+  }
+
+  const nota = motivo || 'Transferencia entre locales';
+  const salida = await mover({
+    variantId, businessId, locationId: desde, delta: -n,
+    tipo: 'egreso', motivo: `${nota} (sale)`, employeeId, transaction: t,
+  });
+  const entrada = await mover({
+    variantId, businessId, locationId: hacia, delta: n,
+    tipo: 'ingreso', motivo: `${nota} (entra)`, employeeId, transaction: t,
+  });
+  return { salida, entrada };
+}
+
+module.exports = { mover, stockEn, desglosePorVariante, transferir, localPorDefecto, recalcularTotal };

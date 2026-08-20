@@ -64,11 +64,14 @@ echo "variante=$VID sku=$SKU precio=$PRECIO stock=$STOCK0"
 
 CID=$(C -X POST $API/clients -d '{"nombre":"Fiado","apellido":"QA"}' | J .id)
 MEF=$(C "$API/payment-methods?activos=true" | J ".filter(m=>m.esEfectivo)[0].id")
+# Desde que el stock es por local, la venta tiene que decir de cuál sale: con
+# varios locales el servidor ya no elige por su cuenta.
+LOC=$(C "$API/locations" | J ".sort((a,b)=>a.id-b.id)[0].id")
 MTR=$(C "$API/payment-methods?activos=true" | J ".filter(m=>!m.esEfectivo)[0].id")
 echo "cliente=$CID efectivo=$MEF otro=$MTR"
 
 fiar() { # fiar <clientId|null> <descontarStock>
-  C -X POST $API/sales -d "{\"tipo\":\"venta\",\"condicionPago\":\"cuenta_corriente\",\"clientId\":$1,\"descontarStock\":$2,\"items\":[{\"productVariantId\":$VID,\"cantidad\":1}]}"
+  C -X POST $API/sales -d "{\"tipo\":\"venta\",\"condicionPago\":\"cuenta_corriente\",\"clientId\":$1,\"locationId\":$LOC,\"descontarStock\":$2,\"items\":[{\"productVariantId\":$VID,\"cantidad\":1}]}"
 }
 
 tit "1. QUÉ NO SE PUEDE FIAR"
@@ -132,7 +135,7 @@ chk "saldó las ventas abiertas" "si"      "$(echo "$PAGO" | J ".ventasSaldadas.
 chk "la venta quedó pagada"     "pagado"  "$(C $API/sales/$S3 | J .estado)"
 
 tit "8. VENTA AL CONTADO (no se rompió)"
-VC=$(C -X POST $API/sales -d "{\"tipo\":\"venta\",\"estado\":\"pagado\",\"items\":[{\"productVariantId\":$VID,\"cantidad\":1}],\"pagos\":[{\"paymentMethodId\":$MEF,\"monto\":$PRECIO}]}")
+VC=$(C -X POST $API/sales -d "{\"tipo\":\"venta\",\"estado\":\"pagado\",\"locationId\":$LOC,\"items\":[{\"productVariantId\":$VID,\"cantidad\":1}],\"pagos\":[{\"paymentMethodId\":$MEF,\"monto\":$PRECIO}]}")
 chk "pagada en el acto"   "pagado"   "$(echo "$VC" | J .estado)"
 chk "condición contado"   "contado"  "$(echo "$VC" | J .condicionPago)"
 chk "stock descontado"    "true"     "$(echo "$VC" | J .stockDescontado)"

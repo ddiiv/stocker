@@ -68,7 +68,7 @@ const create = async (req, res, next) => {
     }, { transaction: t });
     await t.commit();
     res.status(201).json(created);
-  } catch (e) { await t.rollback(); next(e); }
+  } catch (e) { await t.rollback().catch(() => {}); next(e); }
 };
 
 // PUT /api/business-cuits/:id
@@ -112,7 +112,7 @@ const update = async (req, res, next) => {
     await row.update(patch, { transaction: t });
     await t.commit();
     res.json(row);
-  } catch (e) { await t.rollback(); next(e); }
+  } catch (e) { await t.rollback().catch(() => {}); next(e); }
 };
 
 // DELETE /api/business-cuits/:id

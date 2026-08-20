@@ -106,8 +106,16 @@ check "password incorrecta rechaza"      "401" "$(code -X POST "$API/api/auth/lo
 titulo "2. AISLAMIENTO ENTRE NEGOCIOS (IDOR)"
 login_duenio
 # La variante 1 pertenece a otro negocio; el dueño demo no debe poder tocarla.
+# El id del negocio demo sale de la sesión. Estaba escrito a mano y al recrear
+# el demo cambia, así que las cuatro comprobaciones de aislamiento fallaban
+# comparando contra un negocio que ya no existe.
+NEGOCIO_ID=$(curl -s -b "$TMP/duenio.txt" "$API/api/auth/me" | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{console.log(JSON.parse(d).negocio.id)}catch{console.log('')}})")
+
+# El stock es por local: la venta tiene que decir de cuál sale.
+LOCAL_ID=$(curl -s -b "$TMP/duenio.txt" "$API/api/locations" | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{console.log(JSON.parse(d).sort((a,b)=>a.id-b.id)[0].id)}catch{console.log('')}})")
+
 VENTA_AJENA=$(curl -s -b "$TMP/duenio.txt" -X POST "$API/api/sales" -H 'Content-Type: application/json' \
-  -d '{"items":[{"productVariantId":1,"cantidad":1}],"tipo":"venta","estado":"pagado"}')
+  -d "{\"items\":[{\"productVariantId\":1,\"cantidad\":1}],\"tipo\":\"venta\",\"estado\":\"pagado\",\"locationId\":$LOCAL_ID}")
 contiene "no se puede vender producto de otro negocio"  "no encontrada" "$VENTA_AJENA"
 check "no se puede leer variante ajena"     "404" "$(code -b "$TMP/duenio.txt" "$API/api/products/variants/1/movements")"
 check "no se puede editar stock ajeno"      "404" "$(code -b "$TMP/duenio.txt" -X PATCH \
@@ -175,13 +183,13 @@ if [ -n "$EMPID" ] && [ -n "$AJENO" ]; then
     const { Employee } = require('./src/models');
     (async () => { const e = await Employee.findByPk($EMPID); console.log(e.businessId); process.exit(0); })();
   " 2>/dev/null | tail -1)
-  check "businessId enviado por el cliente se ignora" "35" "$QUEDO"
+  check "businessId enviado por el cliente se ignora" "$NEGOCIO_ID" "$QUEDO"
 
   # Volver a loguear: si el businessId hubiera cambiado, la sesión sería de otro negocio.
   curl -s -c "$TMP/qa3.txt" -X POST "$API/api/auth/employee-login" -H 'Content-Type: application/json' \
     -d '{"email":"qa.deposito@stocker.test","password":"QaTest2026!"}' -o /dev/null
   NEG=$(curl -s -b "$TMP/qa3.txt" "$API/api/auth/me" | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{console.log(JSON.parse(d).negocio.id)}catch{console.log('')}})")
-  check "tras re-loguear la sesión sigue en su negocio" "35" "$NEG"
+  check "tras re-loguear la sesión sigue en su negocio" "$NEGOCIO_ID" "$NEG"
 
   # Claves foráneas de otro negocio
   check "no acepta un cargo de otro negocio"  "400" "$(code -b "$TMP/qa2.txt" -X PUT "$API/api/employees/$EMPID" \
@@ -211,14 +219,14 @@ if [ -n "$AJENO" ]; then
   NUEVO=$(curl -s -b "$TMP/duenio.txt" -X POST "$API/api/clients" -H 'Content-Type: application/json' \
     -d "{\"nombre\":\"QA MassAssign\",\"businessId\":$AJENO}" \
     | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{const r=JSON.parse(d);console.log(r.id+'|'+r.businessId)}catch{console.log('|')}})")
-  check "alta de cliente: ignora el businessId del cliente" "35" "${NUEVO#*|}"
+  check "alta de cliente: ignora el businessId del cliente" "$NEGOCIO_ID" "${NUEVO#*|}"
 
   CLI_ID="${NUEVO%%|*}"
   if [ -n "$CLI_ID" ]; then
     QUEDO=$(curl -s -b "$TMP/duenio.txt" -X PUT "$API/api/clients/$CLI_ID" -H 'Content-Type: application/json' \
       -d "{\"nombre\":\"QA MassAssign\",\"businessId\":$AJENO}" \
       | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{console.log(JSON.parse(d).businessId)}catch{console.log('')}})")
-    check "edición de cliente: ignora el businessId del cliente" "35" "$QUEDO"
+    check "edición de cliente: ignora el businessId del cliente" "$NEGOCIO_ID" "$QUEDO"
 
     # El saldo sólo se mueve con cargos y pagos, que dejan rastro en el
     # extracto. Si se pudiera escribir a mano, el límite de crédito no valdría.
@@ -266,15 +274,15 @@ check "empleado depósito: SÍ ve stock"             "200" "$(code -b "$TMP/qa.t
 check "empleado depósito: SÍ ve locales"           "200" "$(code -b "$TMP/qa.txt" "$API/api/locations")"
 
 titulo "4. TOKEN FORJADO CON EL SECRETO VIEJO"
-FORJADO=$(node -e "
+FORJADO=$(NEGOCIO_ID="$NEGOCIO_ID" node -e "
   const jwt=require('jsonwebtoken');
-  console.log(jwt.sign({type:'business',businessId:35},'dev-secret-change-me',{expiresIn:'7d'}));
+  console.log(jwt.sign({type:'business',businessId:Number(process.env.NEGOCIO_ID)||1},'dev-secret-change-me',{expiresIn:'7d'}));
 ")
 check "token firmado con 'dev-secret-change-me' rechazado" "401" \
   "$(code -H "Authorization: Bearer $FORJADO" "$API/api/auth/me")"
 
 titulo "5. CSRF EN EL OAUTH DE MERCADOLIBRE"
-CB=$(curl -s -o /dev/null -w '%{redirect_url}' "$API/api/mercadolibre/callback?code=FALSO&state=35")
+CB=$(curl -s -o /dev/null -w '%{redirect_url}' "$API/api/mercadolibre/callback?code=FALSO&state=$NEGOCIO_ID")
 contiene "state crudo (businessId) rechazado"      "ml_error" "$CB"
 CB2=$(curl -s -o /dev/null -w '%{redirect_url}' "$API/api/mercadolibre/callback?code=FALSO&state=2")
 contiene "state de otro negocio rechazado"         "ml_error" "$CB2"
@@ -321,7 +329,7 @@ VARIANTE=$(curl -s -b "$TMP/duenio.txt" "$API/api/products" | node -e "
   });")
 if [ -n "$VARIANTE" ]; then
   VENTA=$(curl -s -b "$TMP/duenio.txt" -X POST "$API/api/sales" -H 'Content-Type: application/json' \
-    -d "{\"items\":[{\"productVariantId\":$VARIANTE,\"cantidad\":1}],\"tipo\":\"venta\",\"estado\":\"pendiente\"}")
+    -d "{\"items\":[{\"productVariantId\":$VARIANTE,\"cantidad\":1}],\"tipo\":\"venta\",\"estado\":\"pendiente\",\"locationId\":$LOCAL_ID}")
   contiene "venta legítima con producto propio"  '"id"' "$VENTA"
   VENTA_ID=$(echo "$VENTA" | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{console.log(JSON.parse(d).id)}catch{console.log('')}})")
   [ -n "$VENTA_ID" ] && check "ticket PDF de la venta" "200" "$(code -b "$TMP/duenio.txt" "$API/api/sales/$VENTA_ID/ticket")"

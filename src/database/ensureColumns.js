@@ -169,6 +169,52 @@ const RELLENOS = [
     sql: 'UPDATE product_variants SET "businessId" = p."businessId" FROM products p WHERE p.id = product_variants."productId" AND product_variants."businessId" IS NULL',
     sqlMssql: 'UPDATE v SET v.businessId = p.businessId FROM product_variants v JOIN products p ON p.id = v.productId WHERE v.businessId IS NULL',
   },
+  {
+    /*
+     * El stock que había pasa al primer local de cada negocio.
+     *
+     * Hasta ahora `product_variants.stock` era un número suelto, sin lugar.
+     * Al pasar a stock por local hay que decidir dónde estaba, y la única
+     * respuesta honesta es "en el local principal": es donde el negocio venía
+     * operando, y repartirlo entre locales sería inventar datos.
+     *
+     * Reintentable y con NOT EXISTS: sólo crea las filas que faltan, así que
+     * repetirlo no duplica ni pisa un stock ya ajustado por local. Una variante
+     * que ya fue distribuida a mano no se toca.
+     *
+     * Los negocios sin locales quedan sin filas: su stock sigue viviendo en el
+     * total, que es exactamente lo que tenían antes.
+     *
+     * Va después del relleno de `businessId` porque filtra por esa columna: al
+     * revés, en una base recién migrada no encontraría ninguna variante y todo
+     * el stock quedaría sin local hasta el arranque siguiente.
+     */
+    descripcion: 'stock existente: asignarlo al local principal',
+    cuandoSeAgrega: 'product_variants.businessId',
+    reintentable: true,
+    sql: `
+      INSERT INTO variant_stocks ("businessId", "productVariantId", "locationId", stock, "createdAt", "updatedAt")
+      SELECT v."businessId", v.id, l.id, COALESCE(v.stock, 0), NOW(), NOW()
+      FROM product_variants v
+      JOIN LATERAL (
+        SELECT id FROM business_locations
+        WHERE "businessId" = v."businessId" AND activo = true
+        ORDER BY id ASC LIMIT 1
+      ) l ON true
+      WHERE v."businessId" IS NOT NULL
+        AND NOT EXISTS (SELECT 1 FROM variant_stocks vs WHERE vs."productVariantId" = v.id)`,
+    sqlMssql: `
+      INSERT INTO variant_stocks (businessId, productVariantId, locationId, stock, createdAt, updatedAt)
+      SELECT v.businessId, v.id, l.id, ISNULL(v.stock, 0), GETDATE(), GETDATE()
+      FROM product_variants v
+      CROSS APPLY (
+        SELECT TOP 1 id FROM business_locations
+        WHERE businessId = v.businessId AND activo = 1
+        ORDER BY id ASC
+      ) l
+      WHERE v.businessId IS NOT NULL
+        AND NOT EXISTS (SELECT 1 FROM variant_stocks vs WHERE vs.productVariantId = v.id)`,
+  },
   /*
    * Los cinco de abajo son `reintentable`: corren en cada arranque, no sólo
    * cuando la columna se acaba de crear.

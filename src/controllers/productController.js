@@ -1,11 +1,12 @@
 const { Op, fn, col } = require('sequelize');
 const sequelize = require('../config/database');
-const { Product, ProductVariant, StockMovement, Employee } = require('../models');
+const { Product, ProductVariant, StockMovement, Employee, BusinessLocation } = require('../models');
 const { ilikeOperator } = require('../utils/sqlHelpers');
 const { exportProductsXlsx, importProductsXlsx } = require('../services/productExcelService');
 const { exigirCupo } = require('../services/planService');
 const skuService = require('../services/skuService');
 const { generarEtiquetas } = require('../services/labelService');
+const stockService = require('../services/stockService');
 
 /*
  * Toma del body sólo los campos permitidos.
@@ -164,6 +165,11 @@ const createProduct = async (req, res, next) => {
           }
           usados.add(libre);
 
+          /*
+           * Nacen en cero y sin fila de stock por local: la fila se crea sola
+           * en el primer movimiento. Crear 3 locales × 40 variantes de entrada
+           * son 120 filas en cero que no dicen nada.
+           */
           await ProductVariant.create({
             productId: product.id,
             businessId: req.auth.businessId,
@@ -179,7 +185,7 @@ const createProduct = async (req, res, next) => {
     await t.commit();
     const full = await Product.findByPk(product.id, { include: [{ model: ProductVariant, as: 'productVariants' }] });
     res.status(201).json(full);
-  } catch (error) { await t.rollback(); next(error); }
+  } catch (error) { await t.rollback().catch(() => {}); next(error); }
 };
 
 // ── PUT /api/products/:id ──────────────────────────────────────────
@@ -289,6 +295,8 @@ const scanAdjustStock = async (req, res, next) => {
       const emp = await Employee.findByPk(req.auth.employeeId, { attributes: ['locationId'], transaction: t });
       locationId = emp?.locationId || null;
     }
+    // El dueño escanea sin local asignado: va al principal.
+    if (!locationId) locationId = await stockService.localPorDefecto(req.auth.businessId, t);
 
     const variant = await buscarPorCodigo(codigo, req.auth.businessId, t);
     if (!variant) {
@@ -296,7 +304,8 @@ const scanAdjustStock = async (req, res, next) => {
       return res.status(404).json({ message: `Ningún producto coincide con el código "${codigo}".` });
     }
 
-    const stockAnterior = Number(variant.stock) || 0;
+    // El stock del LOCAL donde se está escaneando, no el total del negocio.
+    const stockAnterior = await stockService.stockEn(variant.id, locationId, t);
     let stockNuevo;
     if (modo === 'agregar') {
       stockNuevo = stockAnterior + cant;
@@ -305,11 +314,13 @@ const scanAdjustStock = async (req, res, next) => {
       // Escaneando en el depósito el error es todavía más fácil de cometer,
       // porque se sostiene el lector y se repite la lectura sin mirar.
       if (cant > stockAnterior) {
+        const total = Number(variant.stock) || 0;
         await t.rollback();
         return res.status(409).json({
-          message: stockAnterior === 0
-            ? `${variant.producto.titulo} (${variant.sku}) ya está en cero.`
-            : `Sólo hay ${stockAnterior} de ${variant.producto.titulo} (${variant.sku}) y estás quitando ${cant}.`,
+          message: (stockAnterior === 0
+            ? `${variant.producto.titulo} (${variant.sku}) ya está en cero en este local.`
+            : `Sólo hay ${stockAnterior} de ${variant.producto.titulo} (${variant.sku}) en este local y estás quitando ${cant}.`)
+            + (total > stockAnterior ? ` Hay ${total} en total entre todos los locales.` : ''),
           sku: variant.sku,
           disponible: stockAnterior,
           solicitado: cant,
@@ -320,17 +331,18 @@ const scanAdjustStock = async (req, res, next) => {
       stockNuevo = cant;
     }
 
-    await variant.update({ stock: stockNuevo }, { transaction: t });
-    await StockMovement.create({
-      productVariantId: variant.id,
+    const r = await stockService.mover({
+      variantId: variant.id,
+      businessId: req.auth.businessId,
       locationId,
-      employeeId: req.auth.employeeId || null,
+      // Igual que en el ajuste manual: el modo "fijar" registra el stock final;
+      // agregar y quitar registran lo que se movió.
+      ...(modo === 'fijar' ? { fijar: cant } : { delta: stockNuevo - stockAnterior }),
       tipo: modo === 'agregar' ? 'ingreso' : modo === 'quitar' ? 'egreso' : 'ajuste',
-      cantidad: cant,
-      stockAnterior,
-      stockNuevo,
       motivo: motivo || `Escaneo masivo (${modo})`,
-    }, { transaction: t });
+      employeeId: req.auth.employeeId || null,
+      transaction: t,
+    });
 
     await t.commit();
     res.json({
@@ -339,6 +351,8 @@ const scanAdjustStock = async (req, res, next) => {
       variante: [variant.variante1Valor, variant.variante2Valor].filter(Boolean).join(' · ') || null,
       stockAnterior, stockNuevo,
       delta: stockNuevo - stockAnterior,
+      locationId,
+      total: r.total,
     });
   } catch (error) {
     await t.rollback().catch(() => {});
@@ -373,7 +387,14 @@ const addVariant = async (req, res, next) => {
       return res.status(409).json({ message: `El SKU ${limpio} ya lo usa otra variante de este negocio.` });
     }
 
-    const variant = await ProductVariant.create({ productId: product.id, businessId: req.auth.businessId, sku: limpio, codigoBarras: codigoBarras || null, variante1Nombre, variante1Valor, variante2Nombre, variante2Valor, stock, stockMinimo });
+    const variant = await ProductVariant.create({
+      productId: product.id, businessId: req.auth.businessId, sku: limpio,
+      codigoBarras: codigoBarras || null,
+      variante1Nombre, variante1Valor, variante2Nombre, variante2Valor,
+      // El stock lo carga stockService abajo, para que quede asignado a un
+      // local. Nace en cero y el movimiento inicial lo sube.
+      stock: 0, stockMinimo,
+    });
 
     /*
      * El stock con el que nace la variante también es un movimiento.
@@ -383,16 +404,17 @@ const addVariant = async (req, res, next) => {
      * y no puede distinguirla de un faltante mal cargado.
      */
     if (Number(stock) > 0) {
-      await StockMovement.create({
-        productVariantId: variant.id,
-        employeeId: req.auth.employeeId || null,
+      await stockService.mover({
+        variantId: variant.id,
+        businessId: req.auth.businessId,
+        // Sin local explícito va al principal: es donde se recibe la mercadería.
+        locationId: req.body.locationId || null,
+        delta: Number(stock),
         tipo: 'ingreso',
-        cantidad: Number(stock),
-        stockAnterior: 0,
-        stockNuevo: Number(stock),
         motivo: 'Stock inicial de la variante',
-        fechaMovimiento: new Date(),
+        employeeId: req.auth.employeeId || null,
       });
+      await variant.reload();
     }
 
     res.status(201).json(variant);
@@ -460,7 +482,20 @@ const adjustStock = async (req, res, next) => {
       return res.status(404).json({ message: 'Variante no encontrada.' });
     }
 
-    const stockAnterior = Number(variant.stock) || 0;
+    /*
+     * El ajuste es sobre un local concreto.
+     *
+     * Del cuerpo si lo aclara; si no, del local del empleado que lo hace; y si
+     * es el dueño —que no tiene local asignado—, el principal. Antes esto no
+     * hacía falta porque el stock era uno solo.
+     */
+    const local = locationId
+      || (req.auth.employeeId
+        ? (await Employee.findByPk(req.auth.employeeId, { attributes: ['locationId'], transaction: t }))?.locationId
+        : null)
+      || await stockService.localPorDefecto(req.auth.businessId, t);
+
+    const stockAnterior = await stockService.stockEn(variant.id, local, t);
     let stockNuevo;
     if (tipo === 'ingreso' || tipo === 'devolucion') {
       stockNuevo = stockAnterior + cantidad;
@@ -478,15 +513,20 @@ const adjustStock = async (req, res, next) => {
       if (cantidad > stockAnterior) {
         const nombre = [variant.producto.titulo, variant.variante1Valor, variant.variante2Valor]
           .filter(Boolean).join(' · ');
+        const total = Number(variant.stock) || 0;
         await t.rollback();
         return res.status(409).json({
           // La salida siempre nombra el camino correcto. Decir sólo "no hay
           // stock" deja a quien está corrigiendo un conteo sin saber qué hacer.
+          // Y ahora aclara que el faltante es de ESTE local: puede haber de
+          // sobra en otro, y entonces lo que corresponde es transferir.
           message: (stockAnterior === 0
-            ? `No queda stock de ${nombre} (${variant.sku}), así que no hay nada que sacar. `
-            : `Sólo hay ${stockAnterior} de ${nombre} (${variant.sku}) y estás sacando ${cantidad}. `) +
+            ? `No queda stock de ${nombre} (${variant.sku}) en este local, así que no hay nada que sacar. `
+            : `Sólo hay ${stockAnterior} de ${nombre} (${variant.sku}) en este local y estás sacando ${cantidad}. `) +
+            (total > stockAnterior ? `Hay ${total} en total entre todos los locales: podés transferirlo. ` : '') +
             `Si el número que figura está mal, usá un ajuste de inventario.`,
           disponible: stockAnterior,
+          totalOtrosLocales: total - stockAnterior,
           solicitado: cantidad,
         });
       }
@@ -495,19 +535,30 @@ const adjustStock = async (req, res, next) => {
       stockNuevo = cantidad; // ajuste directo: fija el stock contado
     }
 
-    await variant.update({ stock: stockNuevo }, { transaction: t });
-    await StockMovement.create({
-      productVariantId: variant.id,
-      locationId: locationId || null,
-      employeeId: req.auth.employeeId || null,
-      tipo, cantidad, stockAnterior, stockNuevo,
+    /*
+     * Ingreso, egreso y devolución van por `delta`; el ajuste, por `fijar`.
+     *
+     * No es indistinto aunque el stock final sea el mismo: el movimiento
+     * registra `cantidad`, y con `fijar` esa cantidad es el stock resultante.
+     * Un ingreso de 5 sobre 20 quedaría anotado como "ingreso de 25" y el libro
+     * de movimientos pasaría a decir cualquier cosa. Con `fijar` la cantidad
+     * absoluta sí es lo correcto: un ajuste de inventario es "quedó en N".
+     */
+    const r = await stockService.mover({
+      variantId: variant.id,
+      businessId: req.auth.businessId,
+      locationId: local,
+      ...(tipo === 'ajuste' ? { fijar: stockNuevo } : { delta: stockNuevo - stockAnterior }),
+      tipo,
       motivo: motivo || '',
-      fechaMovimiento: new Date(),
-    }, { transaction: t });
+      employeeId: req.auth.employeeId || null,
+      transaction: t,
+    });
 
     await t.commit();
-    res.json({ variant, stockAnterior, stockNuevo, tipo });
-  } catch (error) { await t.rollback(); next(error); }
+    // `stockAnterior`/`stockNuevo` son del local; `total` es de la variante.
+    res.json({ variant, stockAnterior, stockNuevo, tipo, locationId: local, total: r.total });
+  } catch (error) { await t.rollback().catch(() => {}); next(error); }
 };
 
 // ── GET /api/products/variants/:variantId/movements ───────────────
@@ -669,6 +720,509 @@ const getStockMovements = async (req, res, next) => {
 };
 
 /*
+ * ── GET /api/stock/por-local ──────────────────────────────────────
+ *
+ * El stock de cada variante desglosado por local, más el total.
+ *
+ * Responde las tres preguntas juntas: cuánto hay en cada local, dónde está cada
+ * cosa, y cuánto hay en total. Separarlas en tres pantallas obligaría a sumar a
+ * mano para saber si conviene transferir o reponer.
+ */
+const getStockPorLocal = async (req, res, next) => {
+  try {
+    const { q, locationId, soloConStock, soloBajoMinimo } = req.query;
+    const page  = Math.max(1, Number(req.query.page) || 1);
+    const limit = Math.min(200, Math.max(1, Number(req.query.limit) || 50));
+
+    const like = ilikeOperator();
+    const whereVariante = { businessId: req.auth.businessId };
+    if (q) {
+      const texto = `%${String(q).trim()}%`;
+      whereVariante[Op.or] = [
+        { sku: { [like]: texto } },
+        { codigoBarras: { [like]: texto } },
+        { '$producto.titulo$': { [like]: texto } },
+      ];
+    }
+
+    /*
+     * Las variantes se paginan solas y el desglose se trae después, aparte.
+     *
+     * Traer `porLocal` como include junto con `limit` no funciona: Sequelize
+     * aplica el límite a las filas del JOIN, no a las variantes, así que una
+     * variante con stock en tres locales consume tres lugares de la página y
+     * pierde los que no entran. Se veía como stock desaparecido — una
+     * transferencia a Belgrano que la base tenía bien y la pantalla mostraba en
+     * cero.
+     */
+    const { count, rows } = await ProductVariant.findAndCountAll({
+      where: whereVariante,
+      include: [
+        { model: Product, as: 'producto', attributes: ['id', 'titulo', 'skuAgrupador', 'categoria'], required: true },
+      ],
+      order: [[{ model: Product, as: 'producto' }, 'titulo', 'ASC'], ['sku', 'ASC']],
+      offset: (page - 1) * limit,
+      limit,
+      distinct: true,
+      subQuery: false,
+    });
+
+    // Una sola consulta para el desglose de toda la página.
+    const stockPorVariante = await stockService.desglosePorVariante(rows.map((v) => v.id), req.auth.businessId);
+
+    const locales = await BusinessLocation.findAll({
+      where: { businessId: req.auth.businessId },
+      attributes: ['id', 'nombre', 'activo'],
+      order: [['id', 'ASC']],
+    });
+
+    /*
+     * Cada variante trae una entrada por local, incluso donde no tiene fila.
+     *
+     * Un local sin fila tiene cero, no "sin dato": mostrar la grilla completa
+     * es lo que permite ver de un vistazo dónde falta. Con huecos habría que
+     * cruzar mentalmente qué locales existen contra cuáles aparecen.
+     */
+    const data = rows.map((v) => {
+      const porId = new Map((stockPorVariante.get(v.id) || []).map((p) => [p.locationId, p.stock]));
+      const desglose = locales.map((l) => ({
+        locationId: l.id, local: l.nombre, activo: l.activo,
+        stock: porId.get(l.id) || 0,
+      }));
+      return {
+        variantId: v.id,
+        sku: v.sku,
+        titulo: v.producto.titulo,
+        skuAgrupador: v.producto.skuAgrupador,
+        categoria: v.producto.categoria,
+        variante1Valor: v.variante1Valor,
+        variante2Valor: v.variante2Valor,
+        stockMinimo: v.stockMinimo,
+        total: Number(v.stock) || 0,
+        porLocal: desglose,
+      };
+    });
+
+    // Los filtros de "sólo con stock" y "bajo el mínimo" se aplican sobre el
+    // resultado ya desglosado: dependen del local elegido, y expresar eso en
+    // SQL con el include opcional daría una consulta difícil de sostener.
+    let filtrados = data;
+    if (locationId) {
+      const id = Number(locationId);
+      filtrados = filtrados.map((d) => ({ ...d, enLocal: d.porLocal.find((p) => p.locationId === id)?.stock ?? 0 }));
+      if (soloConStock === 'true')   filtrados = filtrados.filter((d) => d.enLocal > 0);
+      if (soloBajoMinimo === 'true') filtrados = filtrados.filter((d) => d.enLocal <= (d.stockMinimo ?? 0));
+    } else {
+      if (soloConStock === 'true')   filtrados = filtrados.filter((d) => d.total > 0);
+      if (soloBajoMinimo === 'true') filtrados = filtrados.filter((d) => d.total <= (d.stockMinimo ?? 0));
+    }
+
+    res.json({
+      data: filtrados,
+      locales: locales.map((l) => ({ id: l.id, nombre: l.nombre, activo: l.activo })),
+      total: count, page, limit,
+    });
+  } catch (error) { next(error); }
+};
+
+/*
+ * ── GET /api/stock/por-local/productos ────────────────────────────
+ *
+ * Los productos padre de un local, con su stock ahí y su total.
+ *
+ * Es el primer nivel de la vista por local: se elige el local y se ven los
+ * productos, no las variantes. Un catálogo de veinte productos con veinte
+ * variantes cada uno son cuatrocientas filas — imposible de recorrer para
+ * responder "¿qué tengo en Belgrano?".
+ *
+ * El detalle por variante se pide aparte, cuando se abre uno.
+ */
+const getProductosPorLocal = async (req, res, next) => {
+  try {
+    const locationId = Number(req.query.locationId) || null;
+    const { q } = req.query;
+
+    const locales = await BusinessLocation.findAll({
+      where: { businessId: req.auth.businessId },
+      attributes: ['id', 'nombre', 'activo'],
+      order: [['id', 'ASC']],
+    });
+    if (locationId && !locales.some((l) => l.id === locationId)) {
+      return res.status(404).json({ message: 'El local no pertenece a este negocio.' });
+    }
+
+    const like = ilikeOperator();
+    const whereProducto = { businessId: req.auth.businessId, activo: true };
+    if (q) {
+      const texto = `%${String(q).trim()}%`;
+      whereProducto[Op.or] = [
+        { titulo: { [like]: texto } },
+        { sku: { [like]: texto } },
+        { skuAgrupador: { [like]: texto } },
+        { categoria: { [like]: texto } },
+      ];
+    }
+
+    const productos = await Product.findAll({
+      where: whereProducto,
+      attributes: ['id', 'titulo', 'sku', 'skuAgrupador', 'categoria', 'genero'],
+      include: [{
+        model: ProductVariant, as: 'productVariants',
+        attributes: ['id', 'stock', 'stockMinimo'],
+        required: false,
+      }],
+      order: [['titulo', 'ASC']],
+    });
+
+    // El desglose de todas las variantes de la página, en una consulta.
+    const idsVariantes = productos.flatMap((p) => p.productVariants.map((v) => v.id));
+    const desglose = await stockService.desglosePorVariante(idsVariantes, req.auth.businessId);
+
+    const data = productos.map((p) => {
+      let enLocal = 0;
+      let total = 0;
+      let variantesConStockAca = 0;
+      for (const v of p.productVariants) {
+        total += Number(v.stock) || 0;
+        const filas = desglose.get(v.id) || [];
+        const aca = locationId ? (filas.find((f) => f.locationId === locationId)?.stock || 0) : null;
+        if (locationId) {
+          enLocal += aca;
+          if (aca > 0) variantesConStockAca++;
+        }
+      }
+      return {
+        productId: p.id,
+        skuAgrupador: p.skuAgrupador,
+        titulo: p.titulo,
+        categoria: p.categoria,
+        genero: p.genero,
+        variantes: p.productVariants.length,
+        // Cuánto hay en el local elegido y cuánto en todos los locales juntos:
+        // las dos cifras juntas son las que dicen si conviene transferir.
+        enLocal: locationId ? enLocal : null,
+        total,
+        variantesConStock: locationId ? variantesConStockAca : null,
+      };
+    });
+
+    res.json({ data, locales: locales.map((l) => ({ id: l.id, nombre: l.nombre, activo: l.activo })) });
+  } catch (error) { next(error); }
+};
+
+/*
+ * ── GET /api/stock/por-local/producto/:id ─────────────────────────
+ *
+ * Las variantes de un producto con su stock en cada local.
+ *
+ * Segundo nivel: ya se sabe qué producto interesa y ahora se quiere ver dónde
+ * está cada talle. Trae todos los locales, no sólo el elegido, porque la
+ * pregunta que sigue a "no tengo el talle M acá" es "¿en qué local está?".
+ */
+const getVariantesPorLocal = async (req, res, next) => {
+  try {
+    const producto = await Product.findOne({
+      where: { id: req.params.id, businessId: req.auth.businessId },
+      attributes: ['id', 'titulo', 'sku', 'skuAgrupador', 'categoria'],
+    });
+    if (!producto) return res.status(404).json({ message: 'Producto no encontrado.' });
+
+    const variantes = await ProductVariant.findAll({
+      where: { productId: producto.id },
+      attributes: ['id', 'sku', 'codigoBarras', 'variante1Nombre', 'variante1Valor', 'variante2Nombre', 'variante2Valor', 'stock', 'stockMinimo'],
+      order: [['sku', 'ASC']],
+    });
+
+    const locales = await BusinessLocation.findAll({
+      where: { businessId: req.auth.businessId },
+      attributes: ['id', 'nombre', 'activo'],
+      order: [['id', 'ASC']],
+    });
+    const desglose = await stockService.desglosePorVariante(variantes.map((v) => v.id), req.auth.businessId);
+
+    res.json({
+      producto: {
+        id: producto.id, titulo: producto.titulo,
+        skuAgrupador: producto.skuAgrupador, categoria: producto.categoria,
+        total: variantes.reduce((s, v) => s + (Number(v.stock) || 0), 0),
+      },
+      locales: locales.map((l) => ({ id: l.id, nombre: l.nombre, activo: l.activo })),
+      variantes: variantes.map((v) => {
+        const filas = desglose.get(v.id) || [];
+        const porId = new Map(filas.map((f) => [f.locationId, f.stock]));
+        return {
+          variantId: v.id, sku: v.sku,
+          variante1Valor: v.variante1Valor, variante2Valor: v.variante2Valor,
+          stockMinimo: v.stockMinimo,
+          total: Number(v.stock) || 0,
+          // Un local sin fila tiene cero, no "sin dato": la grilla se muestra
+          // completa para poder ver de un vistazo dónde falta.
+          porLocal: locales.map((l) => ({ locationId: l.id, local: l.nombre, stock: porId.get(l.id) || 0 })),
+        };
+      }),
+    });
+  } catch (error) { next(error); }
+};
+
+/*
+ * ── POST /api/stock/transferir ────────────────────────────────────
+ *
+ * Mueve unidades de un local a otro. Queda como dos movimientos —una salida y
+ * una entrada— porque es lo que se mira cuando la mercadería no aparece en el
+ * destino.
+ */
+const transferirStock = async (req, res, next) => {
+  const t = await sequelize.transaction();
+  try {
+    const { variantId, desde, hacia, cantidad, motivo } = req.body || {};
+
+    const variant = await ProductVariant.findOne({
+      where: { id: variantId, businessId: req.auth.businessId },
+      include: [{ model: Product, as: 'producto', attributes: ['titulo'] }],
+      transaction: t,
+    });
+    if (!variant) { await t.rollback(); return res.status(404).json({ message: 'Variante no encontrada.' }); }
+
+    if (Number(desde) === Number(hacia)) {
+      // Se comprueba antes que la existencia: con origen y destino iguales la
+      // consulta devuelve un solo local y el error diría que no existe, que es
+      // una pista falsa.
+      await t.rollback();
+      return res.status(400).json({ message: 'Elegí un local de origen y otro de destino distintos.' });
+    }
+
+    // Los dos locales tienen que ser de este negocio: sin esto se podría mandar
+    // mercadería al local de otro cliente de Stocker.
+    const locales = await BusinessLocation.findAll({
+      where: { id: [Number(desde), Number(hacia)], businessId: req.auth.businessId },
+      transaction: t,
+    });
+    if (locales.length !== 2) {
+      await t.rollback();
+      return res.status(404).json({ message: 'Alguno de los locales no existe en este negocio.' });
+    }
+
+    const r = await stockService.transferir({
+      variantId: variant.id,
+      businessId: req.auth.businessId,
+      desde: Number(desde), hacia: Number(hacia),
+      cantidad: Number(cantidad),
+      employeeId: req.auth.employeeId || null,
+      motivo,
+      transaction: t,
+    });
+
+    await t.commit();
+    res.json({ ok: true, sku: variant.sku, titulo: variant.producto.titulo, ...r });
+  } catch (error) {
+    await t.rollback().catch(() => {});
+    if (error.status) return res.status(error.status).json({ message: error.message });
+    next(error);
+  }
+};
+
+/*
+ * ── POST /api/stock/ajuste-masivo ─────────────────────────────────
+ *
+ * Ajusta el stock de varias variantes de una vez, en un solo pedido.
+ *
+ * Cargar mercadería variante por variante son veinte pedidos y veinte esperas
+ * para descargar un remito: se tipea un número, se espera, la pantalla se
+ * recarga y se pierde dónde estaba uno. Acá se cargan todas las cantidades y se
+ * mandan juntas.
+ *
+ * Todo en una transacción: o entra el remito completo o no entra nada. Con
+ * quince líneas aplicadas y una fallando, nadie sabría cuáles quedaron.
+ */
+const ajusteMasivo = async (req, res, next) => {
+  const t = await sequelize.transaction();
+  try {
+    const { locationId, motivo, items } = req.body || {};
+    const lineas = Array.isArray(items) ? items : [];
+    if (!lineas.length) { await t.rollback(); return res.status(400).json({ message: 'No se mandó ninguna línea.' }); }
+    if (lineas.length > 500) { await t.rollback(); return res.status(400).json({ message: 'Máximo 500 líneas por ajuste.' }); }
+
+    const local = locationId
+      ? Number(locationId)
+      : (req.auth.employeeId
+        ? (await Employee.findByPk(req.auth.employeeId, { attributes: ['locationId'], transaction: t }))?.locationId
+        : null) || await stockService.localPorDefecto(req.auth.businessId, t);
+
+    if (local) {
+      const existe = await BusinessLocation.findOne({
+        where: { id: local, businessId: req.auth.businessId }, transaction: t,
+      });
+      if (!existe) { await t.rollback(); return res.status(404).json({ message: 'El local no pertenece a este negocio.' }); }
+    }
+
+    // Todas las variantes de una, y filtradas por negocio: sin esto se podría
+    // ajustar el stock de otro cliente de Stocker mandando sus ids.
+    const ids = [...new Set(lineas.map((l) => Number(l.variantId)).filter(Boolean))];
+    const variantes = await ProductVariant.findAll({
+      where: { id: ids, businessId: req.auth.businessId },
+      include: [{ model: Product, as: 'producto', attributes: ['titulo'] }],
+      transaction: t,
+    });
+    const porId = new Map(variantes.map((v) => [v.id, v]));
+    const faltan = ids.filter((id) => !porId.has(id));
+    if (faltan.length) {
+      await t.rollback();
+      return res.status(404).json({ message: `No se encontraron ${faltan.length} de las variantes indicadas.` });
+    }
+
+    const resultados = [];
+    for (const linea of lineas) {
+      const v = porId.get(Number(linea.variantId));
+      if (!v) continue;
+
+      /*
+       * Dos formas de cargar, según cómo piense el que la usa:
+       *   · `delta`  — "entraron 6": lo natural al recibir un remito.
+       *   · `fijar`  — "quedaron 24": lo natural al contar el inventario.
+       *
+       * Se registran con el tipo que corresponde, para que el libro de
+       * movimientos distinga un ingreso de un recuento.
+       */
+      const tieneFijar = linea.fijar !== undefined && linea.fijar !== null && linea.fijar !== '';
+      const delta = Number(linea.delta) || 0;
+      if (!tieneFijar && delta === 0) continue;   // línea sin cambios: se saltea
+
+      const actual = await stockService.stockEn(v.id, local, t);
+      const destino = tieneFijar ? Number(linea.fijar) : actual + delta;
+
+      if (destino < 0) {
+        await t.rollback();
+        return res.status(409).json({
+          message: `${v.producto.titulo} (${v.sku}): hay ${actual} en el local y estás sacando ${Math.abs(delta)}. Ninguna línea se aplicó.`,
+          sku: v.sku, disponible: actual,
+        });
+      }
+
+      const r = await stockService.mover({
+        variantId: v.id,
+        businessId: req.auth.businessId,
+        locationId: local,
+        ...(tieneFijar ? { fijar: destino } : { delta }),
+        tipo: tieneFijar ? 'ajuste' : (delta > 0 ? 'ingreso' : 'egreso'),
+        motivo: motivo || 'Ajuste masivo',
+        employeeId: req.auth.employeeId || null,
+        transaction: t,
+      });
+
+      resultados.push({
+        variantId: v.id, sku: v.sku,
+        stockAnterior: r.stockAnterior, stockNuevo: r.stockNuevo, total: r.total,
+      });
+    }
+
+    await t.commit();
+    res.json({ ok: true, locationId: local, aplicadas: resultados.length, resultados });
+  } catch (error) {
+    await t.rollback().catch(() => {});
+    if (error.status) return res.status(error.status).json({ message: error.message });
+    next(error);
+  }
+};
+
+/*
+ * ── GET /api/stock/ingresos ───────────────────────────────────────
+ *
+ * Lo que entró en un día, por variante.
+ *
+ * Es para etiquetar mercadería recién recibida: al descargar un remito uno
+ * quiere una etiqueta por unidad que ENTRÓ, no por unidad que hay. Si en el
+ * local ya había 20 y entraron 6, imprimir por stock son 26 etiquetas y 20
+ * prendas que hay que despegar.
+ *
+ * Qué entra en la cuenta:
+ *
+ *   · Ingresos y devoluciones suman.
+ *   · Los egresos que NO vienen de una venta restan: son correcciones sobre la
+ *     misma carga. Cargar 15 y después −1 porque una vino fallada es haber
+ *     recibido 14, y hay que imprimir 14 etiquetas. Sumando sólo los ingresos
+ *     el sistema pedía 15 y sobraba una.
+ *   · Los egresos de ventas NO restan. Recibir 15 y vender una en el día sigue
+ *     siendo haber recibido 15: la vendida también se etiquetó.
+ *   · Los ajustes quedan afuera: un ajuste de inventario deja el stock en un
+ *     número, no dice cuántas unidades llegaron.
+ *
+ * Lo que separa una venta de una corrección es `saleItemId`, que sólo llevan
+ * los movimientos que nacieron de una venta.
+ */
+const getIngresosDelDia = async (req, res, next) => {
+  try {
+    const { fecha, locationId } = req.query;
+    const dia = /^\d{4}-\d{2}-\d{2}$/.test(fecha || '') ? fecha : new Date().toISOString().slice(0, 10);
+    const [a, m, d] = dia.split('-').map(Number);
+    const desde = new Date(a, m - 1, d, 0, 0, 0, 0);
+    const hasta = new Date(a, m - 1, d, 23, 59, 59, 999);
+
+    const where = {
+      fechaMovimiento: { [Op.gte]: desde, [Op.lte]: hasta },
+      [Op.or]: [
+        { tipo: { [Op.in]: ['ingreso', 'devolucion'] } },
+        // Egresos que no son ventas: correcciones de la propia carga.
+        { tipo: 'egreso', saleItemId: null },
+      ],
+    };
+    if (locationId) where.locationId = Number(locationId);
+
+    const movimientos = await StockMovement.findAll({
+      where,
+      include: [{
+        association: 'variante',
+        attributes: ['id', 'sku', 'codigoBarras', 'variante1Valor', 'variante2Valor'],
+        required: true,
+        // El filtro de negocio va en el include porque los movimientos no
+        // tienen businessId: cuelgan de la variante.
+        where: { businessId: req.auth.businessId },
+        include: [{ association: 'producto', attributes: ['id', 'titulo', 'skuAgrupador'], required: true }],
+      }, { association: 'local', attributes: ['id', 'nombre'], required: false }],
+      order: [['fechaMovimiento', 'ASC']],
+    });
+
+    /*
+     * Se agrupa por variante: si la misma prenda entró en dos remitos del mismo
+     * día, lo que se quiere imprimir es la suma, no dos lotes separados.
+     */
+    const porVariante = new Map();
+    for (const mv of movimientos) {
+      const v = mv.variante;
+      if (!porVariante.has(v.id)) {
+        porVariante.set(v.id, {
+          variantId: v.id, sku: v.sku,
+          titulo: v.producto.titulo, skuAgrupador: v.producto.skuAgrupador,
+          variante1Valor: v.variante1Valor, variante2Valor: v.variante2Valor,
+          unidades: 0, movimientos: 0, locales: new Set(),
+        });
+      }
+      const acum = porVariante.get(v.id);
+      // El egreso resta: es una corrección sobre lo que se acaba de cargar.
+      const signo = mv.tipo === 'egreso' ? -1 : 1;
+      acum.unidades += signo * (Number(mv.cantidad) || 0);
+      acum.movimientos += 1;
+      if (mv.local?.nombre) acum.locales.add(mv.local.nombre);
+    }
+
+    /*
+     * Una variante que quedó en cero o en negativo no se lista.
+     *
+     * Pasa cuando lo que entró se corrigió entero, o cuando el día tuvo sólo
+     * bajas manuales. En los dos casos no hay nada que etiquetar, y ofrecer
+     * cero etiquetas es ruido.
+     */
+    const data = [...porVariante.values()]
+      .filter((x) => x.unidades > 0)
+      .map((x) => ({ ...x, locales: [...x.locales] }));
+    res.json({
+      fecha: dia,
+      data,
+      totalUnidades: data.reduce((s, x) => s + x.unidades, 0),
+    });
+  } catch (error) { next(error); }
+};
+
+/*
  * ── POST /api/products/etiquetas ──────────────────────────────────
  *
  * Devuelve el PDF de etiquetas para las variantes pedidas.
@@ -752,9 +1306,12 @@ const importProducts = async (req, res, next) => {
      * un archivo de 5 MB para que después se rechace fila por fila.
      */
     await exigirCupo(req.auth.businessId, 'skus');
-    const summary = await importProductsXlsx(req.auth.businessId, req.file.buffer);
+    // El local de destino puede venir en el formulario; si no, el principal.
+    const summary = await importProductsXlsx(req.auth.businessId, req.file.buffer, {
+      locationId: req.body?.locationId ? Number(req.body.locationId) : null,
+    });
     res.json(summary);
   } catch (error) { next(error); }
 };
 
-module.exports = { getProducts, getProduct, createProduct, updateProduct, deleteProduct, addVariant, updateVariant, deleteVariant, adjustStock, getVariantMovements, getStockMovements, generarEtiquetasPdf, exportProducts, importProducts, scanLookup, scanAdjustStock };
+module.exports = { getProducts, getProduct, createProduct, updateProduct, deleteProduct, addVariant, updateVariant, deleteVariant, adjustStock, getVariantMovements, getStockMovements, getStockPorLocal, getProductosPorLocal, getVariantesPorLocal, transferirStock, getIngresosDelDia, ajusteMasivo, generarEtiquetasPdf, exportProducts, importProducts, scanLookup, scanAdjustStock };

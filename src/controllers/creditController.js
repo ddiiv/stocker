@@ -174,7 +174,7 @@ const registrarPago = async (req, res, next) => {
       ventasSaldadas: saldadas.map((v) => ({ id: v.id, numero: v.numero })),
     });
   } catch (e) {
-    await t.rollback();
+    await t.rollback().catch(() => {});
     next(e);
   }
 };
