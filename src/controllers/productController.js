@@ -5,6 +5,7 @@ const { ilikeOperator } = require('../utils/sqlHelpers');
 const { exportProductsXlsx, importProductsXlsx } = require('../services/productExcelService');
 const { exigirCupo } = require('../services/planService');
 const skuService = require('../services/skuService');
+const { generarEtiquetas } = require('../services/labelService');
 
 /*
  * Toma del body sólo los campos permitidos.
@@ -667,6 +668,66 @@ const getStockMovements = async (req, res, next) => {
   } catch (error) { next(error); }
 };
 
+/*
+ * ── POST /api/products/etiquetas ──────────────────────────────────
+ *
+ * Devuelve el PDF de etiquetas para las variantes pedidas.
+ *
+ * Es POST y no GET porque el cuerpo lleva una cantidad por variante: el uso
+ * normal es "una etiqueta por unidad en stock", pero al recibir mercadería se
+ * imprime por lo que entró, que no es lo que hay. Fijar la cantidad del lado
+ * del cliente evita tener que inventar reglas acá.
+ *
+ * Cuerpo: { items: [{ variantId, cantidad }] }
+ */
+const generarEtiquetasPdf = async (req, res, next) => {
+  try {
+    const pedidos = Array.isArray(req.body?.items) ? req.body.items : [];
+    if (!pedidos.length) return res.status(400).json({ message: 'No se pidió ninguna etiqueta.' });
+
+    const ids = [...new Set(pedidos.map((i) => Number(i.variantId)).filter(Boolean))];
+    if (!ids.length) return res.status(400).json({ message: 'Las variantes son inválidas.' });
+
+    /*
+     * Las variantes se traen filtrando por negocio.
+     *
+     * No alcanza con que el pedido traiga ids: sin este filtro, mandar un id
+     * ajeno imprimiría la etiqueta —con su SKU y su código de barras— de un
+     * producto de otro cliente de Stocker.
+     */
+    const variantes = await ProductVariant.findAll({
+      where: { id: ids, businessId: req.auth.businessId },
+      include: [{ model: Product, as: 'producto', required: true, where: { businessId: req.auth.businessId } }],
+    });
+
+    const porId = new Map(variantes.map((v) => [v.id, v]));
+    const faltan = ids.filter((id) => !porId.has(id));
+    if (faltan.length) {
+      return res.status(404).json({ message: `No se encontraron ${faltan.length} de las variantes pedidas.` });
+    }
+
+    // Se respeta el orden en que vinieron: el cliente los manda agrupados por
+    // producto y ordenados por talle, y así sale el rollo.
+    const items = pedidos
+      .map((p) => ({
+        variante: porId.get(Number(p.variantId)),
+        cantidad: Number(p.cantidad) || 0,
+      }))
+      .filter((x) => x.variante && x.cantidad > 0)
+      .map((x) => ({ producto: x.variante.producto, variante: x.variante, cantidad: x.cantidad }));
+
+    const { doc, total } = generarEtiquetas(items);
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="etiquetas-${total}.pdf"`);
+    doc.pipe(res);
+    doc.end();
+  } catch (error) {
+    if (error.status) return res.status(error.status).json({ message: error.message });
+    next(error);
+  }
+};
+
 // ── GET /api/products/export ────────────────────────────────────────
 const exportProducts = async (req, res, next) => {
   try {
@@ -696,4 +757,4 @@ const importProducts = async (req, res, next) => {
   } catch (error) { next(error); }
 };
 
-module.exports = { getProducts, getProduct, createProduct, updateProduct, deleteProduct, addVariant, updateVariant, deleteVariant, adjustStock, getVariantMovements, getStockMovements, exportProducts, importProducts, scanLookup, scanAdjustStock };
+module.exports = { getProducts, getProduct, createProduct, updateProduct, deleteProduct, addVariant, updateVariant, deleteVariant, adjustStock, getVariantMovements, getStockMovements, generarEtiquetasPdf, exportProducts, importProducts, scanLookup, scanAdjustStock };

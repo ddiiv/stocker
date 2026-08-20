@@ -256,6 +256,9 @@ r.post  ('/sku/vista-previa',                             requireAuth, requirePe
 r.post  ('/sku/sugerir',                                  requireAuth, requirePermission('stock','ver'),    skuCtrl.sugerir);
 r.get   ('/sku/disponible',                               requireAuth, requirePermission('stock','ver'),    skuCtrl.disponible);
 
+// Imprimir etiquetas es parte de operar el stock, no de editarlo.
+r.post  ('/products/etiquetas',                           requireAuth, requirePermission('stock','ver'),    productCtrl.generarEtiquetasPdf);
+
 r.get   ('/stock/movimientos',                            requireAuth, requirePermission('stock','ver'),    productCtrl.getStockMovements);
 r.get   ('/products/variants/:variantId/movements',       requireAuth, requirePermission('stock','ver'),    productCtrl.getVariantMovements);
 
