@@ -4,15 +4,26 @@ import { ArrowLeft, Plus, Trash2 } from "lucide-react";
 import { fetchProductGroups, adjustVariantStock, createVariant, deleteVariant, updateVariant, fetchVariantesPorLocal } from "../services/productService";
 import { suggestSku, skuDisponible } from "../services/skuService";
 import { ordenarVariantes, CRITERIOS } from "../utils/ordenVariantes";
+import { useAuth } from "../context/AuthContext";
+import { canEdit } from "../utils/permissions";
 import { GrupoFiltro, OpcionFiltro } from "../components/ui/Filtros";
 import { PageHeader, Card, EmptyState } from "../components/ui/Layout";
 import AddVariantModal from "../components/products/AddVariantModal";
 import EditProductModal from "../components/products/EditProductModal";
 import CargaRapidaStock from "../components/products/CargaRapidaStock";
+import CeldaPrecio from "../components/products/CeldaPrecio";
 import { formatCurrency } from "../utils/formatters";
 import { Boxes, PencilLine, Check, X, Wand2, Loader2, Tag, ListPlus, Store, MapPin } from "lucide-react";
 
 export default function ProductDetailPage() {
+  /*
+   * Ver el stock de todos los locales lo puede hacer cualquier empleado del
+   * negocio. Modificarlo —ajustar, cargar, cambiar precios, crear variantes—
+   * pide permiso de edición.
+   */
+  const { user } = useAuth();
+  const puedeEditar = canEdit(user, "stock");
+
   const { skuAgrupador } = useParams();
   const [group, setGroup] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -97,6 +108,10 @@ export default function ProductDetailPage() {
   }
 
   const locales = porLocal?.locales || [];
+  // Qué columnas de local se dibujan: todas, o sólo la elegida.
+  const localesVisibles = localAjuste
+    ? locales.filter((l) => String(l.id) === String(localAjuste))
+    : locales;
   // variantId → [{ locationId, local, stock }]
   const stockDe = new Map((porLocal?.variantes || []).map((v) => [v.variantId, v.porLocal]));
 
@@ -128,13 +143,17 @@ export default function ProductDetailPage() {
           <Link to={`/stock/etiquetas?producto=${encodeURIComponent(group.skuAgrupador)}`} className="btn-ghost">
             <Tag size={15} /> Etiquetas
           </Link>
-          {/* Cargar el stock de todas las variantes de una, en vez de fila por
-              fila esperando una llamada por cada una. */}
-          <button className="btn-ghost" onClick={() => setCargaRapida((v) => !v)}>
-            <ListPlus size={15} /> {cargaRapida ? "Salir de carga rápida" : "Cargar stock"}
-          </button>
-          <button className="btn-ghost" onClick={() => setEditOpen(true)}><PencilLine size={15} /> Editar producto</button>
-          <button className="btn-accent" onClick={() => setAddOpen(true)}><Plus size={15} /> Nueva variante</button>
+          {/* Las tres modifican el catálogo: sin permiso de edición no se
+              muestran. Etiquetas y la vista por local quedan para todos. */}
+          {puedeEditar && (
+            <>
+              <button className="btn-ghost" onClick={() => setCargaRapida((v) => !v)}>
+                <ListPlus size={15} /> {cargaRapida ? "Salir de carga rápida" : "Cargar stock"}
+              </button>
+              <button className="btn-ghost" onClick={() => setEditOpen(true)}><PencilLine size={15} /> Editar producto</button>
+              <button className="btn-accent" onClick={() => setAddOpen(true)}><Plus size={15} /> Nueva variante</button>
+            </>
+          )}
         </>}
       />
 
@@ -175,14 +194,22 @@ export default function ProductDetailPage() {
       {locales.length > 1 && (
         <div className="mb-3 flex flex-wrap items-center gap-2 rounded-md border border-line bg-paper-50 px-3 py-2">
           <MapPin size={14} className="text-ink-500" />
-          <span className="text-xs text-ink-700">Los ajustes de stock se aplican en</span>
+          <span className="text-xs text-ink-700">Ver el stock de</span>
+          {/* Un solo selector para las dos cosas: qué columna se destaca y
+              sobre qué local operan los ajustes. Dos controles separados —uno
+              para mirar y otro para editar— se desincronizan, y ahí es donde
+              alguien ajusta el local que no estaba mirando. */}
           <select className="input w-auto py-1 text-xs" value={localAjuste}
             onChange={(e) => setLocalAjuste(e.target.value)}>
-            <option value="">Elegí el local…</option>
+            <option value="">Todos los locales</option>
             {locales.map((l) => <option key={l.id} value={l.id}>{l.nombre}</option>)}
           </select>
-          {!localAjuste && (
-            <span className="text-xs text-brick-500">Sin elegirlo no se puede ajustar.</span>
+          {puedeEditar && (
+            <span className="text-xs text-ink-500">
+              {localAjuste
+                ? "Los ajustes se aplican en ese local."
+                : "Elegí uno para poder ajustar el stock."}
+            </span>
           )}
         </div>
       )}
@@ -199,7 +226,7 @@ export default function ProductDetailPage() {
       </div>
 
       <div className="card overflow-x-auto p-0">
-        <table className="w-full min-w-[700px] text-sm">
+        <table className="w-full min-w-[900px] text-sm">
           <thead>
             <tr className="border-b border-line bg-paper-100 text-left text-xs uppercase tracking-wide text-ink-600">
               <th className="px-4 py-3 font-medium">SKU</th>
@@ -208,13 +235,21 @@ export default function ProductDetailPage() {
               {/* Una columna por local: el stock no es un número, es un número
                   EN un lugar. Con un solo local la fila no aporta nada y se
                   muestra sólo el total. */}
-              {locales.length > 1 && locales.map((l) => (
+              {/* Con un local elegido se muestra sólo el suyo: la grilla
+                  completa sirve para comparar, y una columna sola para
+                  trabajar sobre ese local sin ruido al lado. */}
+              {locales.length > 1 && localesVisibles.map((l) => (
                 <th key={l.id} className="px-3 py-3 text-right font-medium">{l.nombre}</th>
               ))}
               <th className="px-4 py-3 text-right font-medium">
                 {locales.length > 1 ? "Total" : "Stock"}
               </th>
               <th className="px-4 py-3 font-medium">Stock mín.</th>
+              {/* El precio por variante: en gris cuando lo hereda del producto,
+                  en negro cuando es propio. Sin esa distinción no hay forma de
+                  saber por qué dos talles valen distinto. */}
+              <th className="px-3 py-3 text-right font-medium">Minorista</th>
+              <th className="px-3 py-3 text-right font-medium">Mayorista</th>
               <th className="px-4 py-3 font-medium">Acciones</th>
             </tr>
           </thead>
@@ -223,8 +258,9 @@ export default function ProductDetailPage() {
               <VariantEditRow key={v.id} variant={v}
                 onAdjust={handleAdjustStock} onDelete={handleDeleteVariant}
                 agrupador={group.skuAgrupador} onSaved={load}
-                locales={locales} stockLocal={stockDe.get(v.id)}
-                localElegido={localAjuste} />
+                locales={locales} localesVisibles={localesVisibles}
+                stockLocal={stockDe.get(v.id)}
+                localElegido={localAjuste} puedeEditar={puedeEditar} />
             ))}
           </tbody>
         </table>
@@ -338,7 +374,7 @@ function CeldaSku({ variant, agrupador, onSaved }) {
   );
 }
 
-function VariantEditRow({ variant, onAdjust, onDelete, agrupador, onSaved, locales = [], stockLocal = [], localElegido }) {
+function VariantEditRow({ variant, onAdjust, onDelete, agrupador, onSaved, locales = [], localesVisibles = [], stockLocal = [], localElegido, puedeEditar = true }) {
   const [form, setForm] = useState({ tipo: "ingreso", cantidad: 1, motivo: "" });
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -382,12 +418,16 @@ function VariantEditRow({ variant, onAdjust, onDelete, agrupador, onSaved, local
 
   return (
     <tr className="border-b border-line last:border-0">
-      <td className="px-4 py-3"><CeldaSku variant={variant} agrupador={agrupador} onSaved={onSaved} /></td>
+      <td className="px-4 py-3">
+        {puedeEditar
+          ? <CeldaSku variant={variant} agrupador={agrupador} onSaved={onSaved} />
+          : <span className="tag-chip">{variant.sku}</span>}
+      </td>
       <td className="px-4 py-3 text-ink-700">{variant.variante1Nombre && <><span className="text-ink-400 text-xs">{variant.variante1Nombre}:</span> {variant.variante1Valor}</>}</td>
       <td className="px-4 py-3 text-ink-700">{variant.variante2Nombre && <><span className="text-ink-400 text-xs">{variant.variante2Nombre}:</span> {variant.variante2Valor}</>}</td>
       {/* El stock de cada local, y después el total. El cero se apaga: lo que
           se busca de un vistazo es dónde SÍ hay. */}
-      {locales.length > 1 && locales.map((l) => {
+      {locales.length > 1 && localesVisibles.map((l) => {
         const n = (stockLocal || []).find((x) => x.locationId === l.id)?.stock ?? 0;
         return (
           <td key={l.id} className="px-3 py-3 text-right tabular-nums">
@@ -397,6 +437,8 @@ function VariantEditRow({ variant, onAdjust, onDelete, agrupador, onSaved, local
       })}
       <td className="px-4 py-3 text-right"><span className={`badge ${status}`}>{variant.stock} un.</span></td>
       <td className="px-4 py-3 text-ink-600">{variant.stockMinimo}</td>
+      <td className="px-3 py-3"><CeldaPrecio variant={variant} campo="precioMinorista" onSaved={onSaved} soloLectura={!puedeEditar} /></td>
+      <td className="px-3 py-3"><CeldaPrecio variant={variant} campo="precioMayorista" onSaved={onSaved} soloLectura={!puedeEditar} /></td>
       <td className="px-4 py-3">
         {editing ? (
           <div>
@@ -432,6 +474,9 @@ function VariantEditRow({ variant, onAdjust, onDelete, agrupador, onSaved, local
           </div>
         ) : (
           <div className="flex gap-1">
+            {!puedeEditar ? (
+              <span className="text-xs text-ink-400">Sólo lectura</span>
+            ) : (<>
             <button className="btn-ghost px-2 py-1.5 text-xs"
               onClick={() => setEditing(true)}
               disabled={locales.length > 1 && !localElegido}
@@ -439,6 +484,7 @@ function VariantEditRow({ variant, onAdjust, onDelete, agrupador, onSaved, local
               <PencilLine size={13} /> Ajustar stock
             </button>
             <button className="btn-ghost px-2 py-1.5 text-xs text-brick-500" title="Eliminar variante" onClick={() => onDelete(variant)}><Trash2 size={13} /></button>
+            </>)}
           </div>
         )}
       </td>

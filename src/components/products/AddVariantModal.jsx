@@ -4,6 +4,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import Modal from "../ui/Modal";
 import { suggestSku } from "../../services/skuService";
+import { fetchPos } from "../../services/employeeService";
 
 /*
  * Alta de una variante dentro de un producto.
@@ -65,7 +66,7 @@ export default function AddVariantModal({ open, onClose, group, onCreate }) {
     setServerError("");
   }, [open, ejes, reset]);
 
-  const [n1, v1, n2, v2, sku] = watch(["variante1Nombre", "variante1Valor", "variante2Nombre", "variante2Valor", "sku"]);
+  const [n1, v1, n2, v2, sku, stockInicial] = watch(["variante1Nombre", "variante1Valor", "variante2Nombre", "variante2Valor", "sku", "stock"]);
 
   /*
    * La sugerencia la arma el servidor con la regla del negocio.
@@ -77,6 +78,31 @@ export default function AddVariantModal({ open, onClose, group, onCreate }) {
    */
   const [sugerido, setSugerido] = useState("");
   const [ocupado, setOcupado] = useState(false);
+
+  /*
+   * A qué local entra el stock inicial.
+   *
+   * Sin esto la variante nacía con sus unidades en el local principal sin que
+   * nadie lo decidiera, y esa mercadería se busca después contra la góndola
+   * equivocada. Sólo hace falta preguntarlo si hay más de un local y si
+   * efectivamente se está cargando stock.
+   */
+  const [locales, setLocales] = useState([]);
+  const [locationId, setLocationId] = useState("");
+
+  // El local sólo se pide si hay stock que ubicar y más de un local donde
+  // ponerlo. Va acá y no arriba: `locales` tiene que estar declarado antes.
+  const necesitaLocal = Number(stockInicial) > 0 && locales.length > 1;
+
+  useEffect(() => {
+    if (!open) return;
+    fetchPos()
+      .then((ls) => {
+        setLocales(ls);
+        if (ls.length === 1) setLocationId(String(ls[0].id));
+      })
+      .catch(() => {});
+  }, [open]);
 
   useEffect(() => {
     if (!open || !v1?.trim()) { setSugerido(""); setOcupado(false); return; }
@@ -104,6 +130,9 @@ export default function AddVariantModal({ open, onClose, group, onCreate }) {
   async function onSubmit(values) {
     setServerError("");
     if (repetido) { setServerError(`El SKU ${values.sku} ya lo usa otra variante de este producto.`); return; }
+    if (Number(values.stock) > 0 && locales.length > 1 && !locationId) {
+      setServerError("Elegí a qué local entra el stock inicial."); return;
+    }
     try {
       await onCreate({
         ...values,
@@ -111,6 +140,7 @@ export default function AddVariantModal({ open, onClose, group, onCreate }) {
         codigoBarras: values.codigoBarras?.trim() || null,
         variante2Nombre: values.variante2Nombre?.trim() || null,
         variante2Valor:  values.variante2Valor?.trim()  || null,
+        locationId: locationId ? Number(locationId) : null,
       });
       onClose();
     } catch (err) {
@@ -192,6 +222,9 @@ export default function AddVariantModal({ open, onClose, group, onCreate }) {
             <label className="label">Stock inicial</label>
             <input className="input" type="number" min="0" step="1" inputMode="numeric" {...register("stock")} />
             {errors.stock && <p className="field-error">{errors.stock.message}</p>}
+            {locales.length === 1 && Number(stockInicial) > 0 && (
+              <p className="mt-1 text-xs text-ink-500">Entra en {locales[0].nombre}.</p>
+            )}
           </div>
           <div>
             <label className="label">Stock mínimo</label>
@@ -200,9 +233,23 @@ export default function AddVariantModal({ open, onClose, group, onCreate }) {
           </div>
         </div>
 
+        {necesitaLocal && (
+          <div>
+            <label className="label">¿A qué local entra? <span className="text-brick-500">*</span></label>
+            <select className={`input ${!locationId ? "border-brick-500" : ""}`}
+              value={locationId} onChange={(e) => setLocationId(e.target.value)}>
+              <option value="">Elegí el local…</option>
+              {locales.map((l) => <option key={l.id} value={l.id}>{l.nombre}</option>)}
+            </select>
+            <p className="mt-1 text-xs text-ink-500">
+              El stock vive en un local. Después se puede transferir desde Stock → Por local.
+            </p>
+          </div>
+        )}
+
         <div className="flex justify-end gap-2 pt-2">
           <button type="button" className="btn-ghost" onClick={onClose}>Cancelar</button>
-          <button type="submit" className="btn-accent" disabled={isSubmitting}>
+          <button type="submit" className="btn-accent" disabled={isSubmitting || (necesitaLocal && !locationId)}>
             {isSubmitting ? "Creando…" : "Crear variante"}
           </button>
         </div>

@@ -15,6 +15,13 @@ export async function getProductGroup(skuAgrupador) {
   return groups[0] || null;
 }
 
+/*
+ * Un precio propio se distingue del heredado por no ser nulo, no por ser mayor
+ * a cero: una variante de muestra puede valer 0 y eso es una decisión.
+ */
+const heredado = (propio, delPadre) =>
+  Number(propio !== null && propio !== undefined && propio !== "" ? propio : delPadre) || 0;
+
 function groupBySkuAgrupador(products) {
   const map = new Map();
   for (const p of products) {
@@ -44,9 +51,24 @@ function groupBySkuAgrupador(products) {
       variante1Nombre: v.variante1Nombre, variante1Valor: v.variante1Valor,
       variante2Nombre: v.variante2Nombre, variante2Valor: v.variante2Valor,
       stock: v.stock, stockMinimo: v.stockMinimo,
-      costo: Number(p.costo),
-      precio: Number(p.precioMinorista),
-      precioMayorista: Number(p.precioMayorista),
+      /*
+       * El precio de la variante si lo tiene; si no, el del producto.
+       *
+       * Nulo significa "hereda", no "cero": la mayoría de las variantes
+       * comparte el precio del padre y tiene que seguir el cambio cuando ese
+       * precio se toca. Sólo las que llevan un número propio se apartan.
+       */
+      costo:           heredado(v.costo, p.costo),
+      precio:          heredado(v.precioMinorista, p.precioMinorista),
+      precioMayorista: heredado(v.precioMayorista, p.precioMayorista),
+      // Los valores crudos, para que la edición sepa cuál es propio y cuál no.
+      precioPropio: {
+        costo: v.costo, precioMinorista: v.precioMinorista, precioMayorista: v.precioMayorista,
+      },
+      // Y los del padre, para poder mostrar de qué se está apartando.
+      precioPadre: {
+        costo: Number(p.costo), precioMinorista: Number(p.precioMinorista), precioMayorista: Number(p.precioMayorista),
+      },
     }));
   }
   return Array.from(map.values()).map((g) => {

@@ -6,6 +6,8 @@ import StockTabs from "../components/stock/StockTabs";
 import { ordenarVariantes, CRITERIOS } from "../utils/ordenVariantes";
 import { GrupoFiltro, OpcionFiltro } from "../components/ui/Filtros";
 import Modal from "../components/ui/Modal";
+import { useAuth } from "../context/AuthContext";
+import { canEdit } from "../utils/permissions";
 
 /*
  * Stock por local, en dos niveles.
@@ -20,6 +22,14 @@ import Modal from "../components/ui/Modal";
  */
 
 export default function StockByLocationPage() {
+  /*
+   * Ver el stock de todos los locales lo puede hacer cualquier empleado: es
+   * información que se necesita para atender. Mover mercadería entre locales
+   * es otra cosa y pide edición.
+   */
+  const { user } = useAuth();
+  const puedeEditar = canEdit(user, "stock");
+
   const [locales, setLocales] = useState([]);
   const [local, setLocal] = useState("");
   const [texto, setTexto] = useState("");
@@ -155,7 +165,7 @@ export default function StockByLocationPage() {
               nombreLocal={nombreLocal}
               abierto={abierto === p.productId}
               onAbrir={() => setAbierto(abierto === p.productId ? null : p.productId)}
-              onTransferir={setTransferir}
+              onTransferir={puedeEditar ? setTransferir : null}
               recargar={recargar}
             />
           ))}
@@ -180,6 +190,8 @@ export default function StockByLocationPage() {
  * cientos de filas que casi nunca se miran.
  */
 function FilaProducto({ producto: p, local, nombreLocal, abierto, onAbrir, onTransferir, recargar }) {
+  // Sin `onTransferir` el usuario no puede mover stock: no se dibuja el botón.
+  const puedeTransferir = typeof onTransferir === "function";
   const [detalle, setDetalle] = useState(null);
   const [cargando, setCargando] = useState(false);
   const [orden, setOrden] = useState("talle");
@@ -293,7 +305,7 @@ function FilaProducto({ producto: p, local, nombreLocal, abierto, onAbrir, onTra
                             {bajo && <span className="ml-1 text-[10px] uppercase text-brick-500">mín {v.stockMinimo}</span>}
                           </td>
                           <td className="px-4 py-2 text-right">
-                            {detalle.locales.length > 1 && v.total > 0 && (
+                            {puedeTransferir && detalle.locales.length > 1 && v.total > 0 && (
                               <button className="btn-ghost px-2 py-1 text-xs" title="Transferir entre locales"
                                 onClick={() => onTransferir({ ...v, titulo: detalle.producto.titulo })}>
                                 <ArrowLeftRight size={13} />

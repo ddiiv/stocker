@@ -4,6 +4,8 @@ import { AlertTriangle, Check, Save, RotateCcw, Tag, Info } from "lucide-react";
 import { fetchReglaSku, saveReglaSku, previewSku } from "../services/skuService";
 import { PageHeader, Card, EmptyState } from "../components/ui/Layout";
 import StockTabs from "../components/stock/StockTabs";
+import { useAuth } from "../context/AuthContext";
+import { canEdit } from "../utils/permissions";
 
 /*
  * Confección de SKU.
@@ -26,6 +28,13 @@ const EJEMPLO = { nombre: "Color", valores: ["Azul Marino", "Azul Claro", "Marr�
 const EJEMPLO2 = { nombre: "Talle", valores: ["S", "M", "XL"] };
 
 export default function SkuBuilderPage() {
+  /*
+   * Mirar la regla es parte de entender los SKU y lo puede hacer cualquiera;
+   * cambiarla afecta a todo el catálogo y pide permiso de edición.
+   */
+  const { user } = useAuth();
+  const puedeEditar = canEdit(user, "stock");
+
   const [regla, setRegla] = useState(null);
   const [original, setOriginal] = useState(null);
   const [ejes, setEjes] = useState([]);
@@ -171,7 +180,9 @@ export default function SkuBuilderPage() {
             </div>
 
             <div className="mt-5 flex items-center gap-2 border-t border-ink-100 pt-4">
-              <button className="btn btn-primary" onClick={guardar} disabled={guardando || !sinGuardar}>
+              <button className="btn btn-primary" onClick={guardar}
+                disabled={guardando || !sinGuardar || !puedeEditar}
+                title={puedeEditar ? "" : "Necesitás permiso de edición en stock"}>
                 <Save size={15} /> {guardando ? "Guardando…" : "Guardar regla"}
               </button>
               {sinGuardar && (
@@ -181,6 +192,11 @@ export default function SkuBuilderPage() {
               )}
             </div>
 
+            {!puedeEditar && (
+              <p className="mt-3 rounded-md bg-paper-100 px-3 py-2 text-xs text-ink-600">
+                Podés ver cómo se arman los SKU, pero cambiar la regla necesita permiso de edición en stock.
+              </p>
+            )}
             {aviso && <p className="mt-3 flex items-center gap-2 rounded-md bg-teal-50 px-3 py-2 text-sm text-teal-700"><Check size={15} /> {aviso}</p>}
             {error && <p className="mt-3 rounded-md bg-brick-50 px-3 py-2 text-sm text-brick-500">{error}</p>}
           </Card>
