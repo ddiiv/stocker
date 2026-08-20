@@ -3,16 +3,21 @@ import { useParams, Link } from "react-router-dom";
 import { ArrowLeft, Plus, Trash2 } from "lucide-react";
 import { fetchProductGroups, adjustVariantStock, createVariant, deleteVariant, updateVariant } from "../services/productService";
 import { suggestSku, skuDisponible } from "../services/skuService";
+import { ordenarVariantes, CRITERIOS } from "../utils/ordenVariantes";
+import { GrupoFiltro, OpcionFiltro } from "../components/ui/Filtros";
 import { PageHeader, Card, EmptyState } from "../components/ui/Layout";
 import AddVariantModal from "../components/products/AddVariantModal";
+import EditProductModal from "../components/products/EditProductModal";
 import { formatCurrency } from "../utils/formatters";
-import { Boxes, PencilLine, Check, X, Wand2, Loader2 } from "lucide-react";
+import { Boxes, PencilLine, Check, X, Wand2, Loader2, Tag } from "lucide-react";
 
 export default function ProductDetailPage() {
   const { skuAgrupador } = useParams();
   const [group, setGroup] = useState(null);
   const [loading, setLoading] = useState(true);
   const [addOpen, setAddOpen] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
+  const [orden, setOrden] = useState("talle");
 
   async function load() {
     setLoading(true);
@@ -65,6 +70,12 @@ export default function ProductDetailPage() {
         group={group}
         onCreate={handleCreateVariant}
       />
+      <EditProductModal
+        open={editOpen}
+        onClose={() => setEditOpen(false)}
+        group={group}
+        onSaved={load}
+      />
 
       <Link to="/stock" className="mb-4 inline-flex items-center gap-1 text-sm text-ink-600 hover:text-ink-950">
         <ArrowLeft size={15} /> Volver a stock
@@ -72,7 +83,13 @@ export default function ProductDetailPage() {
       <PageHeader
         title={group.title}
         subtitle={`${group.categoria || ""} · ${group.genero || ""} · SKU agrupador: ${group.skuAgrupador}`}
-        actions={<button className="btn-accent" onClick={() => setAddOpen(true)}><Plus size={15} /> Nueva variante</button>}
+        actions={<>
+          <Link to={`/stock/etiquetas?producto=${encodeURIComponent(group.skuAgrupador)}`} className="btn-ghost">
+            <Tag size={15} /> Etiquetas
+          </Link>
+          <button className="btn-ghost" onClick={() => setEditOpen(true)}><PencilLine size={15} /> Editar producto</button>
+          <button className="btn-accent" onClick={() => setAddOpen(true)}><Plus size={15} /> Nueva variante</button>
+        </>}
       />
 
       <div className="mb-5 grid grid-cols-2 gap-4 sm:grid-cols-4">
@@ -80,6 +97,20 @@ export default function ProductDetailPage() {
         <Card><p className="text-xs uppercase tracking-wide text-ink-600">Stock total</p><p className="mt-2 font-display text-lg font-semibold">{group.stockTotal} un.</p></Card>
         <Card><p className="text-xs uppercase tracking-wide text-ink-600">Precio minorista</p><p className="mt-2 font-display text-lg font-semibold">{formatCurrency(group.precioDesde)}</p></Card>
         <Card><p className="text-xs uppercase tracking-wide text-ink-600">Precio mayorista</p><p className="mt-2 font-display text-lg font-semibold">{formatCurrency(group.variants[0]?.precioMayorista || 0)}</p></Card>
+      </div>
+
+      {/* El orden es de lectura, no de datos: se acomoda como se acomoda la
+          mercadería, y el criterio depende de si se está mirando por talle o
+          por color. */}
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <span className="text-xs text-ink-600">Ordenar variantes</span>
+        <GrupoFiltro>
+          {CRITERIOS.map((c) => (
+            <OpcionFiltro key={c.value} activa={orden === c.value} onClick={() => setOrden(c.value)}>
+              {c.label}
+            </OpcionFiltro>
+          ))}
+        </GrupoFiltro>
       </div>
 
       <div className="card overflow-x-auto p-0">
@@ -95,7 +126,7 @@ export default function ProductDetailPage() {
             </tr>
           </thead>
           <tbody>
-            {group.variants.map((v) => (
+            {ordenarVariantes(group.variants, orden).map((v) => (
               <VariantEditRow key={v.id} variant={v}
                 onAdjust={handleAdjustStock} onDelete={handleDeleteVariant}
                 agrupador={group.skuAgrupador} onSaved={load} />

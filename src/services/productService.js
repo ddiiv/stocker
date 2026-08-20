@@ -24,6 +24,9 @@ function groupBySkuAgrupador(products) {
         skuAgrupador: key,
         title: p.titulo,
         modelo: p.modelo,
+        // La descripción viaja porque el formulario de edición la precarga: sin
+        // ella el campo arrancaría vacío y guardar borraría la que había.
+        descripcion: p.descripcion,
         categoria: p.categoria,
         genero: p.genero,
         variants: [],
@@ -146,4 +149,33 @@ export async function fetchStockMovements(filtros = {}) {
   }
   const { data } = await http.get("/stock/movimientos", { params });
   return data;
+}
+
+/*
+ * PDF de etiquetas.
+ *
+ * Llega como blob y se descarga en el navegador. Los errores del backend vienen
+ * en JSON aunque el pedido esperaba un PDF —por ejemplo cuando un SKU no entra
+ * legible en la etiqueta—, así que hay que leer el blob para poder mostrarlos:
+ * sin esto el usuario vería "error" y nunca sabría cuál es el SKU problemático.
+ */
+export async function generarEtiquetas(items) {
+  try {
+    const { data } = await http.post("/products/etiquetas", { items }, { responseType: "blob" });
+    return data;
+  } catch (e) {
+    const cuerpo = e.response?.data;
+    if (cuerpo instanceof Blob && cuerpo.type.includes("json")) {
+      const texto = await cuerpo.text();
+      try {
+        const json = JSON.parse(texto);
+        const err = new Error(json.message || "No se pudieron generar las etiquetas.");
+        err.codigos = json.codigos;
+        throw err;
+      } catch (parseo) {
+        if (parseo instanceof Error && parseo.message !== "Unexpected end of JSON input") throw parseo;
+      }
+    }
+    throw e;
+  }
 }

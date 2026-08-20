@@ -6,6 +6,7 @@ const TABS = [
   { to: "/stock/sku", label: "Confección de SKU" },
   { to: "/stock/escanear", label: "Escanear stock" },
   { to: "/stock/movimientos", label: "Movimientos" },
+  { to: "/stock/etiquetas", label: "Etiquetas" },
 ];
 
 /*
