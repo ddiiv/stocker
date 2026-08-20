@@ -58,7 +58,7 @@ export default function EmployeeFormModal({ open, onClose, onSave, posList = [],
     <Modal open={open} onClose={onClose} title={isEdit ? "Editar empleado" : "Nuevo empleado"} width="max-w-2xl">
       <form onSubmit={handleSubmit} className="space-y-5">
         {error && <p className="rounded-md bg-brick-50 px-3 py-2 text-sm text-brick-500">{error}</p>}
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div><label className="label">Nombre *</label><input className="input" required minLength={2} maxLength={100} value={form.nombre} onChange={(e) => set("nombre", e.target.value)} /></div>
           <div><label className="label">Apellido *</label><input className="input" required minLength={2} maxLength={100} value={form.apellido} onChange={(e) => set("apellido", e.target.value)} /></div>
           <div>

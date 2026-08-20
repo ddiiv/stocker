@@ -8,9 +8,21 @@ import { PERIODOS } from "../../utils/periodos";
  * distinto, el usuario duda de si filtran distinto.
  */
 
-/** Grupo de opciones excluyentes, estilo segmentado. */
+/*
+ * Grupo de opciones excluyentes, estilo segmentado.
+ *
+ * Scrollea de costado cuando no entra. Un grupo de cinco opciones —el de tipo
+ * de movimiento— mide más que la pantalla de un celular, y sin scroll la última
+ * queda afuera sin forma de tocarla. `w-fit` mantiene el ancho justo en
+ * pantallas grandes; `max-w-full` es lo que le permite achicarse en las chicas.
+ */
 export function GrupoFiltro({ children }) {
-  return <div className="flex w-fit rounded-md border border-line bg-paper-50 p-1">{children}</div>;
+  return (
+    <div className="flex w-fit max-w-full overflow-x-auto rounded-md border border-line bg-paper-50 p-1
+                    [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+      {children}
+    </div>
+  );
 }
 
 export function OpcionFiltro({ activa, onClick, children }) {
@@ -18,7 +30,7 @@ export function OpcionFiltro({ activa, onClick, children }) {
     <button
       onClick={onClick}
       aria-pressed={activa}
-      className={`rounded px-3 py-1.5 text-xs font-medium transition-colors ${
+      className={`shrink-0 whitespace-nowrap rounded px-3 py-1.5 text-xs font-medium transition-colors ${
         activa ? "bg-ink-950 text-paper-50" : "text-ink-600 hover:bg-paper-200"
       }`}
     >

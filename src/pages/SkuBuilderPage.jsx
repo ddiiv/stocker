@@ -141,7 +141,7 @@ export default function SkuBuilderPage() {
                 </p>
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="label">Antes de los códigos</label>
                   <input className="input font-mono" maxLength={3} placeholder="(nada)"

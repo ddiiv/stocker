@@ -46,7 +46,7 @@ export default function EmployeesPage() {
         title="Empleados"
         subtitle="Perfiles, cargos, permisos y locales asignados"
         actions={
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <button className="btn-ghost" onClick={() => setLocationModal(true)}><MapPin size={15} /> Nuevo local</button>
             <button className="btn-ghost" onClick={() => { setRoleEditando(null); setRoleModal(true); }}><ShieldCheck size={15} /> Nuevo cargo</button>
             <button className="btn-accent" onClick={() => { setEditing(null); setModalOpen(true); }}><Plus size={15} /> Nuevo empleado</button>

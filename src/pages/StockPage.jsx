@@ -87,7 +87,7 @@ export default function StockPage() {
         title="Stock"
         subtitle="Productos agrupados por SKU agrupador. Hacé click en uno para ver y editar sus variantes."
         actions={
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <input ref={fileInputRef} type="file" accept=".xlsx" className="hidden" onChange={handleImportFile} />
             <button className="btn-ghost" onClick={handleImportClick} disabled={importing}>
               <Upload size={15} /> {importing ? "Importando…" : "Importar Excel"}
@@ -135,8 +135,12 @@ export default function StockPage() {
       ) : groups.length === 0 ? (
         <EmptyState icon={Boxes} title="No se encontraron productos" description={search ? `Sin resultados para "${search}".` : "Todavía no cargaste productos."} />
       ) : (
-        <div className="card overflow-hidden p-0">
-          <table className="w-full text-sm">
+        /* La tabla scrollea de costado en pantallas chicas. Con
+           `overflow-hidden` sus últimas columnas quedaban cortadas y sin forma
+           de alcanzarlas: 615 px de tabla dentro de 341 de pantalla. El `min-w`
+           evita que las columnas se compriman hasta volverse ilegibles. */
+        <div className="card overflow-x-auto p-0">
+          <table className="w-full min-w-[640px] text-sm">
             <thead>
               <tr className="border-b border-line bg-paper-100 text-left text-xs uppercase tracking-wide text-ink-600">
                 <th className="px-4 py-3 font-medium">Producto</th>
@@ -228,7 +232,7 @@ function NewProductModal({ open, onClose, onCreated }) {
     <Modal open={open} onClose={onClose} title="Nuevo producto" width="max-w-2xl">
       <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
         {serverError && <p className="rounded-md bg-brick-50 px-3 py-2 text-sm text-brick-500">{serverError}</p>}
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div>
             <label className="label">Título *</label>
             <input className="input" maxLength={200} {...register("titulo", { required: "Obligatorio", minLength: { value: 2, message: "Mínimo 2 caracteres" } })} />

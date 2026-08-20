@@ -85,7 +85,7 @@ export default function RegisterPage() {
             {errors.nombreNegocio && <p className="field-error">{errors.nombreNegocio.message}</p>}
           </div>
 
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <label className="label">Tu nombre</label>
               <input className="input" {...register("ownerNombre")} />

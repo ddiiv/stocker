@@ -9,7 +9,10 @@ export function PageHeader({ title, subtitle, actions }) {
         <h2 className="font-display text-2xl font-semibold text-ink-950">{title}</h2>
         {subtitle && <p className="mt-1 text-sm text-ink-600">{subtitle}</p>}
       </div>
-      {actions && <div className="flex items-center gap-2">{actions}</div>}
+      {/* Las acciones envuelven: en un celular, tres botones en fila se salen
+          del ancho de la pantalla y el último queda cortado. Envuelve acá y no
+          en cada página para que ninguna se olvide. */}
+      {actions && <div className="flex flex-wrap items-center gap-2">{actions}</div>}
     </div>
   );
 }

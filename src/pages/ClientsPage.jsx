@@ -227,7 +227,7 @@ function ClientFormModal({ open, onClose, onSaved, client }) {
     <Modal open={open} onClose={onClose} title={client ? "Editar cliente" : "Nuevo cliente"} width="max-w-2xl">
       <form onSubmit={handleSubmit} className="space-y-4">
         {serverError && <p className="rounded-md bg-brick-50 px-3 py-2 text-sm text-brick-500">{serverError}</p>}
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div className="col-span-2">
             <label className="label">CUIT (se autocompleta con ARCA)</label>
             <input

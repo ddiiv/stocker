@@ -129,7 +129,7 @@ export default function AddVariantModal({ open, onClose, group, onCreate }) {
       <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
         {serverError && <p className="rounded-md bg-brick-50 px-3 py-2 text-sm text-brick-500">{serverError}</p>}
 
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div>
             <label className="label">
               {ejes.nombre1 || "Primer atributo"}
@@ -187,7 +187,7 @@ export default function AddVariantModal({ open, onClose, group, onCreate }) {
           <p className="mt-1 text-xs text-ink-500">Es lo que lee el escáner. Se puede cargar después.</p>
         </div>
 
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div>
             <label className="label">Stock inicial</label>
             <input className="input" type="number" min="0" step="1" inputMode="numeric" {...register("stock")} />
