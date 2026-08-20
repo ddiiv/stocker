@@ -216,10 +216,26 @@ app.use((req, res, next) => {
   next();
 });
 
-// Carpeta de PDFs accesible estáticamente
+/*
+ * La carpeta de PDFs NO se sirve estáticamente.
+ *
+ * Estaba montada en `/storage/pdfs` con express.static y sin ninguna
+ * autenticación. Los nombres son adivinables —`factura-0008-00000012-45.pdf`:
+ * número de comprobante y id de fila, los dos enteros chicos—, así que
+ * cualquiera que alcanzara el backend podía enumerar y bajarse las facturas de
+ * todos los negocios. Comprobado: un GET sin sesión devolvía 200 y el PDF
+ * entero.
+ *
+ * Hoy no está expuesto a internet porque el backend no tiene dominio público y
+ * los frontends sólo reenvían `/api`, pero eso es una decisión de despliegue
+ * que puede cambiar sin que nadie recuerde esta línea.
+ *
+ * No hace falta para nada: los dos endpoints que entregan comprobantes
+ * —`/api/sales/:id/ticket` y `/api/invoices/:id/pdf`— regeneran el PDF desde la
+ * base y lo mandan con la sesión validada.
+ */
 const pdfDir = process.env.PDF_STORAGE_PATH || path.join(__dirname, 'storage/pdfs');
 fse.ensureDirSync(pdfDir);
-app.use('/storage/pdfs', express.static(pdfDir));
 
 // ── Rutas ─────────────────────────────────────────────────────────
 app.get('/', (req, res) => res.json({ message: 'Stocker API v2 ✔', status: 'ok' }));

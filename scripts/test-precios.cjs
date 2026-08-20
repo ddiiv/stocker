@@ -1,0 +1,161 @@
+/*
+ * Precio propio por variante.
+ *
+ * Es plata: si un lugar del sistema queda leyendo el precio del producto en vez
+ * del de la variante, el negocio cobra de menos y no se entera hasta cerrar la
+ * caja. Por eso se prueba la regla y además la venta de punta a punta.
+ *
+ * Uso:  API=http://localhost:3000 node scripts/test-precios.cjs
+ */
+require('dotenv').config({ path: __dirname + '/../.env' });
+
+const API = process.env.API || 'http://localhost:3000';
+const {
+  Business, BusinessLocation, Product, ProductVariant, VariantStock,
+  Sale, SaleItem, SalePayment, StockMovement, PaymentMethod,
+} = require('../src/models');
+const precios = require('../src/services/precioService');
+const stock = require('../src/services/stockService');
+
+let ok = 0, ko = 0;
+const chk = (t, e, o) => {
+  const a = JSON.stringify(e), b = JSON.stringify(o);
+  if (a === b) { console.log(`  \x1b[32m✓\x1b[0m ${t}`); ok++; }
+  else { console.log(`  \x1b[31m✗\x1b[0m ${t}\n      esperado ${a}\n      obtuvo   ${b}`); ko++; }
+};
+const tit = (t) => console.log(`\n\x1b[1m${t}\x1b[0m`);
+
+function sesion() {
+  let cookie = '';
+  return async (metodo, ruta, cuerpo) => {
+    const r = await fetch(`${API}${ruta}`, {
+      method: metodo,
+      headers: { 'Content-Type': 'application/json', ...(cookie ? { Cookie: cookie } : {}) },
+      body: cuerpo ? JSON.stringify(cuerpo) : undefined,
+    });
+    const set = r.headers.getSetCookie?.() || [];
+    if (set.length) cookie = set.map((c) => c.split(';')[0]).join('; ');
+    const texto = await r.text();
+    let json = null; try { json = JSON.parse(texto); } catch { /* no json */ }
+    return { status: r.status, json };
+  };
+}
+
+(async () => {
+  const padre = { precioMinorista: 10000, precioMayorista: 8000, costo: 4000 };
+
+  tit('1. LA REGLA: propio si lo tiene, del padre si no');
+  chk('sin precio propio, hereda',        10000, precios.precioMinorista({ precioMinorista: null }, padre));
+  chk('con precio propio, manda el suyo', 13000, precios.precioMinorista({ precioMinorista: 13000 }, padre));
+  chk('mayorista, igual criterio',         8000, precios.precioMayorista({ precioMayorista: null }, padre));
+  chk('costo, igual criterio',             4500, precios.costo({ costo: 4500 }, padre));
+
+  /*
+   * Cero es un precio, no un campo vacío: una variante de muestra o de regalo
+   * puede valer 0 y eso es una decisión. Tratarlo como "sin precio" haría que
+   * cobrara el del padre, o sea que se cobrara algo que se decidió regalar.
+   */
+  chk('cero es un precio propio, no "vacío"', 0, precios.precioMinorista({ precioMinorista: 0 }, padre));
+  chk('cadena vacía sí es "vacío"',       10000, precios.precioMinorista({ precioMinorista: '' }, padre));
+
+  tit('2. PRECIO DE VENTA SEGÚN MODALIDAD');
+  const v = { precioMinorista: 13000, precioMayorista: null, producto: padre };
+  chk('minorista usa el propio',  13000, precios.precioDeVenta(v, false));
+  chk('mayorista cae al del padre', 8000, precios.precioDeVenta(v, true));
+
+  // ── De punta a punta ──
+  const negocio = await Business.findOne({ where: { email: 'demo@stocker.app' } });
+  const local = (await BusinessLocation.findAll({ where: { businessId: negocio.id, activo: true }, order: [['id', 'ASC']] }))[0];
+  const metodo = await PaymentMethod.findOne({ where: { businessId: negocio.id } });
+
+  const prod = await Product.create({
+    businessId: negocio.id, sku: 'QA-PRE', skuAgrupador: 'QA-PRE', titulo: 'QA Precios',
+    precioMinorista: 10000, precioMayorista: 8000, costo: 4000, activo: true,
+  });
+  const chico = await ProductVariant.create({
+    productId: prod.id, businessId: negocio.id, sku: 'QA-PRE-S',
+    variante1Nombre: 'Talle', variante1Valor: 'S', stock: 0, stockMinimo: 0,
+  });
+  const grande = await ProductVariant.create({
+    productId: prod.id, businessId: negocio.id, sku: 'QA-PRE-XXL',
+    variante1Nombre: 'Talle', variante1Valor: 'XXL', stock: 0, stockMinimo: 0,
+    precioMinorista: 13000,
+  });
+
+  const creadas = [];
+  try {
+    await stock.mover({ variantId: chico.id, businessId: negocio.id, locationId: local.id, delta: 10, tipo: 'ingreso', motivo: 'QA' });
+    await stock.mover({ variantId: grande.id, businessId: negocio.id, locationId: local.id, delta: 10, tipo: 'ingreso', motivo: 'QA' });
+
+    const api = sesion();
+    await api('POST', '/api/auth/login', { email: 'demo@stocker.app', password: 'Demo2026!!' });
+
+    tit('3. EL BUSCADOR DEL PUNTO DE VENTA');
+    const bChico  = await api('GET', `/api/products/scan/${chico.sku}`);
+    const bGrande = await api('GET', `/api/products/scan/${grande.sku}`);
+    chk('el talle S muestra el del producto', 10000, bChico.json?.precioMinorista);
+    chk('el XXL muestra el suyo',             13000, bGrande.json?.precioMinorista);
+    chk('y avisa cuál es propio',              true, bGrande.json?.propio?.precioMinorista);
+    chk('el del producto no figura como propio', false, bChico.json?.propio?.precioMinorista);
+
+    tit('4. LA VENTA COBRA LO QUE CORRESPONDE');
+    /*
+     * Sin mandar `precioUnitario`: se prueba lo que decide el servidor. Si el
+     * cliente manda el precio, un bug del servidor quedaría tapado por el
+     * número que vino del navegador.
+     */
+    const venta = await api('POST', '/api/sales', {
+      tipo: 'venta', estado: 'pagado', locationId: local.id,
+      items: [{ productVariantId: chico.id, cantidad: 1 }, { productVariantId: grande.id, cantidad: 1 }],
+      pagos: [{ paymentMethodId: metodo.id, monto: 23000 }],
+    });
+    if (venta.json?.id) creadas.push(venta.json.id);
+    chk('la venta entra', 201, venta.status);
+    const porSku = new Map((venta.json?.items || []).map((i) => [i.sku, Number(i.precioUnitario)]));
+    chk('cobró el del producto por el S',  10000, porSku.get('QA-PRE-S'));
+    chk('cobró el propio por el XXL',      13000, porSku.get('QA-PRE-XXL'));
+    chk('el total suma los dos',           23000, Number(venta.json?.total));
+
+    tit('5. MAYORISTA — 3 o más prendas');
+    // El XXL no tiene mayorista propio: tiene que caer al del producto.
+    const mayor = await api('POST', '/api/sales', {
+      tipo: 'venta', estado: 'pagado', locationId: local.id,
+      items: [{ productVariantId: grande.id, cantidad: 3 }],
+      pagos: [{ paymentMethodId: metodo.id, monto: 24000 }],
+    });
+    if (mayor.json?.id) creadas.push(mayor.json.id);
+    chk('sin mayorista propio, usa el del producto', 8000, Number(mayor.json?.items?.[0]?.precioUnitario));
+
+    tit('6. VOLVER A HEREDAR');
+    const quitar = await api('POST', '/api/products/precios-masivo', {
+      items: [{ variantId: grande.id, precioMinorista: null }],
+    });
+    chk('la llamada entra', 200, quitar.status);
+    const trasQuitar = await api('GET', `/api/products/scan/${grande.sku}`);
+    chk('vuelve al precio del producto', 10000, trasQuitar.json?.precioMinorista);
+    chk('y deja de ser propio',           false, trasQuitar.json?.propio?.precioMinorista);
+
+    tit('7. VALIDACIONES');
+    const negativo = await api('POST', '/api/products/precios-masivo', {
+      items: [{ variantId: grande.id, precioMinorista: -5 }],
+    });
+    chk('un precio negativo se rechaza', 400, negativo.status);
+    const ajeno = await api('POST', '/api/products/precios-masivo', { items: [{ variantId: 1, precioMinorista: 1 }] });
+    chk('una variante de otro negocio, también', 404, ajeno.status);
+
+  } finally {
+    for (const id of creadas) {
+      await SalePayment.destroy({ where: { saleId: id } });
+      await SaleItem.destroy({ where: { saleId: id } });
+      await Sale.destroy({ where: { id } });
+    }
+    await StockMovement.destroy({ where: { productVariantId: [chico.id, grande.id] } });
+    await SaleItem.destroy({ where: { productVariantId: [chico.id, grande.id] } });
+    await VariantStock.destroy({ where: { productVariantId: [chico.id, grande.id] } });
+    await ProductVariant.destroy({ where: { id: [chico.id, grande.id] } });
+    await Product.destroy({ where: { id: prod.id } });
+  }
+
+  console.log(`\n\x1b[1m─────────────────────────────\x1b[0m\n  \x1b[32mPasaron: ${ok}\x1b[0m   \x1b[31mFallaron: ${ko}\x1b[0m`);
+  process.exit(ko ? 1 : 0);
+})().catch((e) => { console.error('ERROR', e); process.exit(1); });

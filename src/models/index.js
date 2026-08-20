@@ -521,6 +521,20 @@ const ProductVariant = db.define('ProductVariant', {
   stock:           { type: DataTypes.INTEGER, defaultValue: 0 },
   stockMinimo:     { type: DataTypes.INTEGER, defaultValue: 5 },
   activo:          { type: DataTypes.BOOLEAN, defaultValue: true },
+  /*
+   * Precio propio de la variante. NULL = usa el del producto.
+   *
+   * Nulo y no cero, y la diferencia importa: un talle especial que sale más
+   * caro necesita su precio, pero la mayoría de las variantes comparte el del
+   * padre y tiene que seguir haciéndolo. Con cero por defecto, subir el precio
+   * del producto no llegaría a ninguna variante y todo pasaría a valer nada.
+   *
+   * El nulo también es lo que permite cambiar el precio de un producto de
+   * cuarenta variantes tocando un solo número, que es el caso habitual.
+   */
+  precioMinorista: { type: DataTypes.DECIMAL(12, 2), allowNull: true },
+  precioMayorista: { type: DataTypes.DECIMAL(12, 2), allowNull: true },
+  costo:           { type: DataTypes.DECIMAL(12, 2), allowNull: true },
 }, { tableName: 'product_variants' });
 
 /*

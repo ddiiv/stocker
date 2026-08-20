@@ -1,4 +1,5 @@
 const path = require('path');
+const fse = require('fs-extra');
 const sequelize = require('../config/database');
 const { Invoice, InvoiceItem, Sale, SaleItem, Business, Client, BusinessCuit, BusinessArcaConfig } = require('../models');
 const { nextInvoiceNumber } = require('../services/invoiceNumberService');
@@ -250,14 +251,27 @@ const createInvoice = async (req, res, next) => {
       return null;
     });
 
-    if (pdfPath) {
-      await invoice.update({ pdfPath });
-    }
+    /*
+     * `pdfPath` ya NO se guarda en la factura.
+     *
+     * Apuntaba a un archivo del contenedor, y en Railway el disco se borra en
+     * cada deploy: la columna quedaba señalando algo que no existe. Peor, daba
+     * a entender que la factura vive en ese archivo cuando la fuente es la
+     * base — `/api/invoices/:id/pdf` la regenera entera cada vez que se pide.
+     *
+     * El archivo se genera igual porque el mail lo adjunta, y se borra apenas
+     * sale.
+     */
+    const absPdf = pdfPath ? path.resolve(pdfPath) : null;
 
     // Notificaciones
     if (finalEmail && enviarEmail) {
-      sendInvoiceEmail({ to: finalEmail, clienteNombre, invoice: invoice.toJSON(), pdfPath: pdfPath ? path.resolve(pdfPath) : null, business: business.toJSON() })
-        .catch((err) => console.error('[email]', err.message));
+      sendInvoiceEmail({ to: finalEmail, clienteNombre, invoice: invoice.toJSON(), pdfPath: absPdf, business: business.toJSON() })
+        .catch((err) => console.error('[email]', err.message))
+        .finally(() => { if (absPdf) fse.remove(absPdf).catch(() => {}); });
+    } else if (absPdf) {
+      // Sin mail que lo adjunte, el archivo no tiene ningún uso.
+      await fse.remove(absPdf).catch(() => {});
     }
 
     if (clienteWhatsapp && enviarWhatsapp) {

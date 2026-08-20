@@ -7,7 +7,9 @@ const { calcularPagos } = require('../services/paymentService');
 const { cargarVenta, registrarMovimiento, redondear } = require('../services/creditService');
 const { descontarStockVenta, devolverStockVenta } = require('../services/saleStockService');
 const stockService = require('../services/stockService');
+const { precioDeVenta } = require('../services/precioService');
 const { generateSalePdf, generateSaleTicketPdf } = require('../services/pdfService');
+const fse = require('fs-extra');
 const { sendSaleReceiptToCustomer, sendSaleNotificationToBusiness } = require('../services/emailService');
 const { sendSaleWhatsapp, sendSaleNotificationWhatsapp } = require('../services/whatsappService');
 
@@ -36,8 +38,27 @@ async function notifySaleAsync(saleId, businessId) {
 
     const absPdf = pdfPath ? path.resolve(pdfPath) : null;
 
+    /*
+     * El PDF se borra cuando terminaron de salir los mails.
+     *
+     * Existe sólo para adjuntarse: los endpoints que entregan comprobantes lo
+     * regeneran desde la base, así que el archivo no se vuelve a leer nunca.
+     * Dejándolo, el contenedor junta un PDF por venta hasta el próximo deploy
+     * —en Railway el disco es efímero y se borra ahí, pero mientras tanto ocupa
+     * y no sirve para nada.
+     *
+     * Se cuentan los envíos y se borra al terminar el último: borrarlo antes
+     * dejaría a nodemailer sin el adjunto a mitad de camino.
+     */
+    let pendientes = 0;
+    const limpiar = async () => {
+      if (--pendientes > 0 || !absPdf) return;
+      await fse.remove(absPdf).catch(() => {});
+    };
+
     // Mail al cliente si tiene email
     if (sale.cliente?.email) {
+      pendientes++;
       sendSaleReceiptToCustomer({
         to: sale.cliente.email,
         cliente: sale.cliente.toJSON(),
@@ -46,10 +67,13 @@ async function notifySaleAsync(saleId, businessId) {
         business: business.toJSON(),
         emisor: emisor?.toJSON() || null,
         pdfPath: absPdf,
-      }).catch((err) => console.error('[email cliente]', err.message));
+      })
+        .catch((err) => console.error('[email cliente]', err.message))
+        .finally(limpiar);
     }
     // Aviso interno al negocio (siempre)
     if (business.email) {
+      pendientes++;
       sendSaleNotificationToBusiness({
         to: business.email,
         cliente: sale.cliente?.toJSON() || null,
@@ -59,8 +83,13 @@ async function notifySaleAsync(saleId, businessId) {
         emisor: emisor?.toJSON() || null,
         empleado: sale.empleado?.toJSON() || null,
         pdfPath: absPdf,
-      }).catch((err) => console.error('[email negocio]', err.message));
+      })
+        .catch((err) => console.error('[email negocio]', err.message))
+        .finally(limpiar);
     }
+
+    // Nadie va a adjuntarlo: se borra ya.
+    if (absPdf && pendientes === 0) await fse.remove(absPdf).catch(() => {});
     // WhatsApp al cliente (prefiere whatsapp, cae en telefono)
     const wpTo = sale.cliente?.whatsapp || sale.cliente?.telefono;
     if (wpTo) {
@@ -94,10 +123,15 @@ async function notifySaleAsync(saleId, businessId) {
   }
 }
 
-// Precio según mayorista (>= 3 prendas totales en la venta)
+/*
+ * Precio según mayorista (>= 3 prendas totales en la venta).
+ *
+ * La variante puede tener precio propio —un talle grande que sale más caro— y
+ * en ese caso manda sobre el del producto. Lo resuelve precioService, que es el
+ * único lugar donde vive esa regla.
+ */
 function calcPrecio(variant, esMayorista) {
-  const padre = variant.producto;
-  return esMayorista ? Number(padre.precioMayorista) : Number(padre.precioMinorista);
+  return precioDeVenta(variant, esMayorista);
 }
 
 /*

@@ -7,6 +7,7 @@ const { exigirCupo } = require('../services/planService');
 const skuService = require('../services/skuService');
 const { generarEtiquetas } = require('../services/labelService');
 const stockService = require('../services/stockService');
+const precioService = require('../services/precioService');
 
 /*
  * Toma del body sólo los campos permitidos.
@@ -28,7 +29,9 @@ function soloCampos(body, permitidos) {
 const CAMPOS_PRODUCTO = ['sku', 'skuAgrupador', 'titulo', 'descripcion', 'precioMinorista',
   'precioMayorista', 'costo', 'variantes', 'modelo', 'categoria', 'genero', 'activo'];
 const CAMPOS_VARIANTE = ['sku', 'codigoBarras', 'variante1Nombre', 'variante1Valor',
-  'variante2Nombre', 'variante2Valor', 'stock', 'stockMinimo', 'activo'];
+  'variante2Nombre', 'variante2Valor', 'stock', 'stockMinimo', 'activo',
+  // Precios propios: null vuelve a heredar el del producto.
+  'precioMinorista', 'precioMayorista', 'costo'];
 
 
 // ── Helpers ────────────────────────────────────────────────────────
@@ -256,8 +259,8 @@ const scanLookup = async (req, res, next) => {
       variante2Nombre: variant.variante2Nombre,
       variante2Valor:  variant.variante2Valor,
       stock: variant.stock,
-      precioMinorista: Number(variant.producto.precioMinorista) || 0,
-      precioMayorista: Number(variant.producto.precioMayorista) || 0,
+      // Los de la variante si los tiene; si no, los del producto.
+      ...precioService.resumenDe(variant),
     });
   } catch (error) { next(error); }
 };
@@ -387,6 +390,36 @@ const addVariant = async (req, res, next) => {
       return res.status(409).json({ message: `El SKU ${limpio} ya lo usa otra variante de este negocio.` });
     }
 
+    /*
+     * Con stock inicial hay que decir a qué local entra, y se resuelve ANTES de
+     * crear la variante.
+     *
+     * Validándolo después, un rechazo dejaba la variante ya creada en cero: el
+     * usuario ve un error, vuelve a intentar y se encuentra con que el SKU "ya
+     * existe" — el que acaba de crear él mismo sin querer.
+     *
+     * Con un solo local no hay ambigüedad. Con varios, mandarlo al principal
+     * por descarte carga la mercadería en una sucursal donde no está, y eso
+     * después se busca a mano contra la góndola.
+     */
+    let destino = req.body.locationId || null;
+    if (Number(stock) > 0) {
+      if (destino) {
+        const local = await BusinessLocation.findOne({
+          where: { id: destino, businessId: req.auth.businessId, activo: true },
+        });
+        if (!local) return res.status(400).json({ message: 'El local indicado no pertenece a este negocio o está inactivo.' });
+      } else {
+        const activos = await BusinessLocation.findAll({
+          where: { businessId: req.auth.businessId, activo: true }, order: [['id', 'ASC']],
+        });
+        if (activos.length === 1) destino = activos[0].id;
+        else if (activos.length > 1) {
+          return res.status(400).json({ message: 'Elegí a qué local entra el stock inicial de la variante.' });
+        }
+      }
+    }
+
     const variant = await ProductVariant.create({
       productId: product.id, businessId: req.auth.businessId, sku: limpio,
       codigoBarras: codigoBarras || null,
@@ -407,8 +440,7 @@ const addVariant = async (req, res, next) => {
       await stockService.mover({
         variantId: variant.id,
         businessId: req.auth.businessId,
-        // Sin local explícito va al principal: es donde se recibe la mercadería.
-        locationId: req.body.locationId || null,
+        locationId: destino,
         delta: Number(stock),
         tipo: 'ingreso',
         motivo: 'Stock inicial de la variante',
@@ -1125,6 +1157,73 @@ const ajusteMasivo = async (req, res, next) => {
 };
 
 /*
+ * ── POST /api/products/precios-masivo ─────────────────────────────
+ *
+ * Pone precio propio a varias variantes de una vez.
+ *
+ * El caso que lo justifica: "de XL para arriba, $2.000 más". Hacerlo variante
+ * por variante en un producto de cuarenta combinaciones son cuarenta ediciones,
+ * y basta olvidarse de una para que un talle se venda al precio equivocado
+ * hasta que alguien lo note en la caja.
+ *
+ * Cuerpo: { items: [{ variantId, precioMinorista?, precioMayorista?, costo? }] }
+ * Un campo en `null` devuelve esa variante a heredar el precio del producto.
+ */
+const preciosMasivo = async (req, res, next) => {
+  const t = await sequelize.transaction();
+  try {
+    const lineas = Array.isArray(req.body?.items) ? req.body.items : [];
+    if (!lineas.length) { await t.rollback(); return res.status(400).json({ message: 'No se mandó ninguna línea.' }); }
+    if (lineas.length > 500) { await t.rollback(); return res.status(400).json({ message: 'Máximo 500 variantes por vez.' }); }
+
+    const ids = [...new Set(lineas.map((l) => Number(l.variantId)).filter(Boolean))];
+    const variantes = await ProductVariant.findAll({
+      where: { id: ids, businessId: req.auth.businessId },
+      transaction: t,
+    });
+    const porId = new Map(variantes.map((v) => [v.id, v]));
+    if (ids.length !== porId.size) {
+      await t.rollback();
+      return res.status(404).json({ message: 'Alguna de las variantes no pertenece a este negocio.' });
+    }
+
+    const CAMPOS = ['precioMinorista', 'precioMayorista', 'costo'];
+    let aplicadas = 0;
+
+    for (const linea of lineas) {
+      const v = porId.get(Number(linea.variantId));
+      if (!v) continue;
+      const patch = {};
+
+      for (const campo of CAMPOS) {
+        if (!(campo in linea)) continue;   // no vino: no se toca
+        const bruto = linea[campo];
+        /*
+         * `null` y cadena vacía significan "volvé a heredar". Es la única
+         * forma de deshacer un precio propio sin tener que acordarse del
+         * precio del producto y volver a escribirlo.
+         */
+        if (bruto === null || bruto === '') { patch[campo] = null; continue; }
+        const n = Number(bruto);
+        if (!Number.isFinite(n) || n < 0) {
+          await t.rollback();
+          return res.status(400).json({ message: `Precio inválido para ${v.sku}: ${bruto}` });
+        }
+        patch[campo] = n;
+      }
+
+      if (Object.keys(patch).length) { await v.update(patch, { transaction: t }); aplicadas++; }
+    }
+
+    await t.commit();
+    res.json({ ok: true, aplicadas });
+  } catch (error) {
+    await t.rollback().catch(() => {});
+    next(error);
+  }
+};
+
+/*
  * ── GET /api/stock/ingresos ───────────────────────────────────────
  *
  * Lo que entró en un día, por variante.
@@ -1314,4 +1413,4 @@ const importProducts = async (req, res, next) => {
   } catch (error) { next(error); }
 };
 
-module.exports = { getProducts, getProduct, createProduct, updateProduct, deleteProduct, addVariant, updateVariant, deleteVariant, adjustStock, getVariantMovements, getStockMovements, getStockPorLocal, getProductosPorLocal, getVariantesPorLocal, transferirStock, getIngresosDelDia, ajusteMasivo, generarEtiquetasPdf, exportProducts, importProducts, scanLookup, scanAdjustStock };
+module.exports = { getProducts, getProduct, createProduct, updateProduct, deleteProduct, addVariant, updateVariant, deleteVariant, adjustStock, getVariantMovements, getStockMovements, getStockPorLocal, getProductosPorLocal, getVariantesPorLocal, transferirStock, getIngresosDelDia, ajusteMasivo, preciosMasivo, generarEtiquetasPdf, exportProducts, importProducts, scanLookup, scanAdjustStock };

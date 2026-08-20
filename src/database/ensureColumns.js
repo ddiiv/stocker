@@ -29,6 +29,13 @@ const COLUMNAS_ESPERADAS = {
      * los demás clientes de Stocker para siempre.
      */
     businessId: { type: DataTypes.INTEGER, allowNull: true },
+    /*
+     * Precios propios de la variante. Nulos a propósito: nulo significa
+     * "usa el del producto", que es lo que hacen casi todas.
+     */
+    precioMinorista: { type: DataTypes.DECIMAL(12, 2), allowNull: true },
+    precioMayorista: { type: DataTypes.DECIMAL(12, 2), allowNull: true },
+    costo:           { type: DataTypes.DECIMAL(12, 2), allowNull: true },
   },
   payment_methods: {
     esEfectivo: { type: DataTypes.BOOLEAN, allowNull: true, defaultValue: false },

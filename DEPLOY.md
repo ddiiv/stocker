@@ -192,6 +192,37 @@ BANCO_ALIAS=
 
 Sin esto, la pantalla de pago del cliente cae al contacto por mail.
 
+### Dónde quedan los PDF
+
+En el disco del contenedor, que en Railway es **efímero**: se borra en cada
+deploy. Y está bien que así sea, porque nada depende de esos archivos.
+
+Los comprobantes se regeneran desde la base cada vez que se piden:
+
+| Qué | Endpoint | De dónde sale |
+|---|---|---|
+| Ticket de venta | `GET /api/sales/:id/ticket` | se arma en el momento |
+| Factura | `GET /api/invoices/:id/pdf` | se arma en el momento |
+| Etiquetas | `POST /api/products/etiquetas` | se arma en el momento |
+
+El archivo en disco existe sólo mientras se adjunta a un mail, y se borra apenas
+sale. `PDF_STORAGE_PATH` sigue existiendo para ese uso temporal; no hace falta un
+volumen persistente.
+
+**La carpeta no se sirve por HTTP.** Estuvo montada en `/storage/pdfs` con
+`express.static` y sin autenticación: con nombres como
+`factura-0008-00000012-45.pdf` —número de comprobante e id de fila, los dos
+enteros chicos— cualquiera que alcanzara el backend podía enumerar las facturas
+de todos los negocios. No estaba expuesto a internet porque el backend no tiene
+dominio público y los frontends sólo reenvían `/api`, pero eso es una decisión
+de despliegue que puede cambiar. La ruta se retiró.
+
+Si en algún momento hiciera falta guardar comprobantes de verdad —una copia
+inmutable de lo emitido, por ejemplo— no alcanza con un volumen de Railway: hay
+que mandarlos a un almacenamiento de objetos (S3, R2) y guardar la URL. Hoy no
+hace falta: el CAE, el número y los importes están en la base, que es lo que
+respalda la factura ante ARCA.
+
 ### SKU de las variantes
 
 No lleva variables. Sí tiene un cambio de esquema que corre solo en el primer

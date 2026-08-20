@@ -257,6 +257,7 @@ r.post  ('/sku/sugerir',                                  requireAuth, requirePe
 r.get   ('/sku/disponible',                               requireAuth, requirePermission('stock','ver'),    skuCtrl.disponible);
 
 // Imprimir etiquetas es parte de operar el stock, no de editarlo.
+r.post  ('/products/precios-masivo',                       requireAuth, requirePermission('stock','editar'), productCtrl.preciosMasivo);
 r.post  ('/products/etiquetas',                           requireAuth, requirePermission('stock','ver'),    productCtrl.generarEtiquetasPdf);
 
 r.post  ('/stock/ajuste-masivo',                          requireAuth, requirePermission('stock','editar'), productCtrl.ajusteMasivo);

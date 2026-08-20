@@ -46,6 +46,16 @@ const fallo = async (fn) => { try { await fn(); return null; } catch (e) { retur
     return filas.reduce((s, f) => s + f.stock, 0);
   };
 
+  // Sesión de dueño, para los pedidos que van por HTTP.
+  let cookieDuenio = '';
+  {
+    const r = await fetch(`${process.env.API || 'http://localhost:3000'}/api/auth/login`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: 'demo@stocker.app', password: 'Demo2026!!' }),
+    });
+    cookieDuenio = (r.headers.getSetCookie?.() || []).map((c) => c.split(';')[0]).join('; ');
+  }
+
   try {
     tit('1. CADA LOCAL LLEVA EL SUYO');
     await stock.mover({ variantId: v.id, businessId: negocio.id, locationId: A.id, delta: 10, tipo: 'ingreso', motivo: 'QA' });
@@ -132,6 +142,37 @@ const fallo = async (fn) => { try { await fn(); return null; } catch (e) { retur
     chk('el total quedó sucio', 9999, await totalDe());
     await stock.mover({ variantId: v.id, businessId: negocio.id, locationId: A.id, delta: 1, tipo: 'ingreso', motivo: 'QA' });
     chk('el movimiento siguiente lo corrige', await suma(), await totalDe());
+
+    tit('9. ALTA DE VARIANTE CON STOCK INICIAL');
+    /*
+     * El stock inicial necesita un local igual que cualquier otro movimiento.
+     * Y si falta, la variante no tiene que quedar creada: un rechazo a medias
+     * deja al usuario reintentando contra un SKU que él mismo acaba de ocupar.
+     */
+    const { Product } = require('../src/models');
+    const prodAlta = await Product.findOne({ where: { businessId: negocio.id } });
+    const api = (metodo, ruta, cuerpo) => fetch(`${process.env.API || 'http://localhost:3000'}${ruta}`, {
+      method: metodo, headers: { 'Content-Type': 'application/json', Cookie: cookieDuenio },
+      body: cuerpo ? JSON.stringify(cuerpo) : undefined,
+    }).then(async (r) => ({ status: r.status, json: await r.json().catch(() => null) }));
+
+    const sinLocal = await api('POST', `/api/products/${prodAlta.id}/variants`, {
+      sku: 'QA-ALTA-1', variante1Nombre: 'Color', variante1Valor: 'QA', stock: 7,
+    });
+    chk('sin local, con stock inicial: rechaza', 400, sinLocal.status);
+    chk('y no deja la variante creada', 0, await ProductVariant.count({ where: { sku: 'QA-ALTA-1' } }));
+
+    const conLocal = await api('POST', `/api/products/${prodAlta.id}/variants`, {
+      sku: 'QA-ALTA-1', variante1Nombre: 'Color', variante1Valor: 'QA', stock: 7, locationId: B.id,
+    });
+    chk('con local: entra', 201, conLocal.status);
+    const creada = await ProductVariant.findOne({ where: { sku: 'QA-ALTA-1' } });
+    chk('el stock quedó en ESE local', 7, await stock.stockEn(creada.id, B.id));
+    chk('y no en el otro',             0, await stock.stockEn(creada.id, A.id));
+
+    await StockMovement.destroy({ where: { productVariantId: creada.id } });
+    await VariantStock.destroy({ where: { productVariantId: creada.id } });
+    await ProductVariant.destroy({ where: { id: creada.id } });
 
   } finally {
     await StockMovement.destroy({ where: { productVariantId: v.id } });

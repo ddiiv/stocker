@@ -27,6 +27,9 @@ contiene() { # contiene <descripción> <substring> <texto>
   esac
 }
 code() { curl -s -o /dev/null -w '%{http_code}' --max-time 30 "$@"; }
+# Igual que `code`. Existe con otro nombre para dejar claro en el llamado que se
+# usa con pedidos que llevan cuerpo.
+codeP() { curl -s -o /dev/null -w '%{http_code}' --max-time 30 "$@"; }
 # Igual que `code` pero guardando el cuerpo. No sirve pasarle -o a `code`: ya
 # trae el suyo apuntando a /dev/null, curl empareja cada -o con una URL y el
 # segundo se descarta en silencio, dejando el archivo sin crear.
@@ -272,6 +275,32 @@ check "empleado depósito: empleados bloqueado"     "403" "$(code -b "$TMP/qa.tx
 check "empleado depósito: dashboard bloqueado"     "403" "$(code -b "$TMP/qa.txt" "$API/api/dashboard")"
 check "empleado depósito: SÍ ve stock"             "200" "$(code -b "$TMP/qa.txt" "$API/api/products")"
 check "empleado depósito: SÍ ve locales"           "200" "$(code -b "$TMP/qa.txt" "$API/api/locations")"
+
+# ── Funciones de stock agregadas después: ver vs. editar ──
+#
+# Se prueban con un vendedor (stock=ver), que es el caso que importa: leer el
+# stock de todos los locales lo tiene que poder hacer cualquier empleado, y
+# ninguna de las escrituras.
+curl -s -c "$TMP/vend.txt" -X POST "$API/api/auth/employee-login" -H 'Content-Type: application/json' \
+  -d '{"email":"camila@boutiquealmendra.demo","password":"Vendedor2026!"}' -o /dev/null
+VAR_ID=$(curl -s -b "$TMP/vend.txt" "$API/api/stock/por-local?limit=1&soloConStock=true" | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{console.log(JSON.parse(d).data[0].variantId)}catch{console.log('')}})")
+
+if [ -n "$VAR_ID" ]; then
+  check "vendedor: ve el stock por local"     "200" "$(code -b "$TMP/vend.txt" "$API/api/stock/por-local")"
+  check "vendedor: ve productos por local"    "200" "$(code -b "$TMP/vend.txt" "$API/api/stock/por-local/productos")"
+  check "vendedor: ve movimientos de stock"   "200" "$(code -b "$TMP/vend.txt" "$API/api/stock/movimientos")"
+  check "vendedor: ve ingresos del día"       "200" "$(code -b "$TMP/vend.txt" "$API/api/stock/ingresos")"
+  check "vendedor: ve la regla de SKU"        "200" "$(code -b "$TMP/vend.txt" "$API/api/sku/regla")"
+  check "vendedor: puede generar etiquetas"   "200" "$(codeP -b "$TMP/vend.txt" -X POST "$API/api/products/etiquetas" -H 'Content-Type: application/json' -d "{\"items\":[{\"variantId\":$VAR_ID,\"cantidad\":1}]}")"
+
+  check "vendedor NO transfiere stock"        "403" "$(codeP -b "$TMP/vend.txt" -X POST "$API/api/stock/transferir" -H 'Content-Type: application/json' -d "{\"variantId\":$VAR_ID,\"desde\":1,\"hacia\":2,\"cantidad\":1}")"
+  check "vendedor NO hace ajuste masivo"      "403" "$(codeP -b "$TMP/vend.txt" -X POST "$API/api/stock/ajuste-masivo" -H 'Content-Type: application/json' -d "{\"items\":[{\"variantId\":$VAR_ID,\"delta\":5}]}")"
+  check "vendedor NO cambia precios"          "403" "$(codeP -b "$TMP/vend.txt" -X POST "$API/api/products/precios-masivo" -H 'Content-Type: application/json' -d "{\"items\":[{\"variantId\":$VAR_ID,\"precioMinorista\":1}]}")"
+  check "vendedor NO guarda la regla de SKU"  "403" "$(codeP -b "$TMP/vend.txt" -X PUT "$API/api/sku/regla" -H 'Content-Type: application/json' -d '{"regla":{"caracteres":4}}')"
+  check "vendedor NO edita una variante"      "403" "$(codeP -b "$TMP/vend.txt" -X PUT "$API/api/products/variants/$VAR_ID" -H 'Content-Type: application/json' -d '{"precioMinorista":1}')"
+  check "vendedor NO importa Excel"           "403" "$(codeP -b "$TMP/vend.txt" -X POST "$API/api/products/import")"
+  check "vendedor NO escanea para ajustar"    "403" "$(codeP -b "$TMP/vend.txt" -X POST "$API/api/products/scan/stock" -H 'Content-Type: application/json' -d '{"codigo":"X","modo":"agregar","cantidad":1}')"
+fi
 
 titulo "4. TOKEN FORJADO CON EL SECRETO VIEJO"
 FORJADO=$(NEGOCIO_ID="$NEGOCIO_ID" node -e "
