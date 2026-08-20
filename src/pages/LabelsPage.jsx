@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { Tag, Printer, RotateCcw, Search, Loader2, AlertTriangle } from "lucide-react";
-import { fetchProductGroups, generarEtiquetas } from "../services/productService";
+import { Tag, Printer, RotateCcw, Search, Loader2, AlertTriangle, PackagePlus, Info } from "lucide-react";
+import { fetchProductGroups, generarEtiquetas, fetchIngresosDelDia } from "../services/productService";
+import { fetchPos } from "../services/employeeService";
 import { PageHeader, Card, EmptyState } from "../components/ui/Layout";
 import StockTabs from "../components/stock/StockTabs";
 import { GrupoFiltro, OpcionFiltro } from "../components/ui/Filtros";
@@ -29,6 +30,14 @@ export default function LabelsPage() {
   const [cantidades, setCantidades] = useState({});   // variantId → cantidad
   const [generando, setGenerando] = useState(false);
   const [error, setError] = useState("");
+
+  // Etiquetar por lo que ENTRÓ un día, en vez de por lo que hay.
+  const [fuente, setFuente] = useState("stock");     // stock | ingresos
+  const [fecha, setFecha] = useState(() => new Date().toLocaleDateString("sv-SE"));
+  const [localIngreso, setLocalIngreso] = useState("");
+  const [locales, setLocales] = useState([]);
+  const [resumenIngresos, setResumenIngresos] = useState(null);
+  const [cargandoIngresos, setCargandoIngresos] = useState(false);
 
   useEffect(() => {
     const t = setTimeout(() => {
@@ -62,6 +71,39 @@ export default function LabelsPage() {
   }, [busqueda]);
 
   useEffect(() => { cargar(); }, [cargar]);
+
+  useEffect(() => { fetchPos().then(setLocales).catch(() => {}); }, []);
+
+  /*
+   * Carga las cantidades desde los ingresos del día elegido.
+   *
+   * Es el caso de recibir mercadería: se necesita una etiqueta por unidad que
+   * ENTRÓ, no por unidad que hay. Con 20 en el local y 6 recibidas, etiquetar
+   * por stock imprime 26 y hay que despegar 20.
+   *
+   * Todo lo que no entró ese día se pone en cero: si quedara con su stock, el
+   * lote mezclaría la mercadería nueva con la que ya estaba etiquetada.
+   */
+  async function cargarIngresos() {
+    setCargandoIngresos(true); setError("");
+    try {
+      const r = await fetchIngresosDelDia({ fecha, locationId: localIngreso || null });
+      const porVariante = new Map(r.data.map((x) => [x.variantId, x.unidades]));
+      setCantidades(() => {
+        const next = {};
+        for (const g of grupos) for (const v of g.variants) next[v.id] = porVariante.get(v.id) || 0;
+        return next;
+      });
+      setResumenIngresos(r);
+      if (r.data.length === 0) {
+        setError(`No entró mercadería el ${fecha}${localIngreso ? " en ese local" : ""}.`);
+      }
+    } catch (e) {
+      setError(e.response?.data?.message || "No se pudieron cargar los ingresos del día.");
+    } finally {
+      setCargandoIngresos(false);
+    }
+  }
 
   const items = useMemo(() => {
     const out = [];
@@ -140,6 +182,47 @@ export default function LabelsPage() {
         }
       />
       <StockTabs />
+
+      {/* De dónde salen las cantidades */}
+      <div className="mb-4 flex flex-wrap items-center gap-2">
+        <GrupoFiltro>
+          <OpcionFiltro activa={fuente === "stock"} onClick={() => { setFuente("stock"); setResumenIngresos(null); }}>
+            Por stock actual
+          </OpcionFiltro>
+          <OpcionFiltro activa={fuente === "ingresos"} onClick={() => setFuente("ingresos")}>
+            Por lo que entró
+          </OpcionFiltro>
+        </GrupoFiltro>
+
+        {fuente === "ingresos" && (
+          <>
+            <input type="date" className="input w-auto py-1.5 text-xs" value={fecha}
+              onChange={(e) => setFecha(e.target.value)} />
+            {locales.length > 1 && (
+              <select className="input w-auto py-1.5 text-xs" value={localIngreso}
+                onChange={(e) => setLocalIngreso(e.target.value)}>
+                <option value="">Todos los locales</option>
+                {locales.map((l) => <option key={l.id} value={l.id}>{l.nombre}</option>)}
+              </select>
+            )}
+            <button className="btn-accent text-xs" onClick={cargarIngresos} disabled={cargandoIngresos}>
+              {cargandoIngresos ? <Loader2 size={13} className="animate-spin" /> : <PackagePlus size={13} />}
+              {cargandoIngresos ? "Buscando…" : "Cargar ese día"}
+            </button>
+          </>
+        )}
+      </div>
+
+      {resumenIngresos && resumenIngresos.data.length > 0 && (
+        <p className="mb-4 flex items-start gap-2 rounded-md bg-teal-50 px-3 py-2 text-sm text-teal-700">
+          <Info size={15} className="mt-0.5 shrink-0" />
+          <span>
+            El {resumenIngresos.fecha} entraron <strong>{resumenIngresos.totalUnidades} unidades</strong> en{" "}
+            {resumenIngresos.data.length} variante{resumenIngresos.data.length === 1 ? "" : "s"}.
+            Las cantidades de abajo quedaron cargadas con eso; el resto en cero.
+          </span>
+        </p>
+      )}
 
       <div className="mb-4 flex flex-wrap items-center gap-2">
         <div className="relative">

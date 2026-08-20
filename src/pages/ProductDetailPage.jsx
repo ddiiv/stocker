@@ -1,15 +1,16 @@
 import { useEffect, useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import { ArrowLeft, Plus, Trash2 } from "lucide-react";
-import { fetchProductGroups, adjustVariantStock, createVariant, deleteVariant, updateVariant } from "../services/productService";
+import { fetchProductGroups, adjustVariantStock, createVariant, deleteVariant, updateVariant, fetchVariantesPorLocal } from "../services/productService";
 import { suggestSku, skuDisponible } from "../services/skuService";
 import { ordenarVariantes, CRITERIOS } from "../utils/ordenVariantes";
 import { GrupoFiltro, OpcionFiltro } from "../components/ui/Filtros";
 import { PageHeader, Card, EmptyState } from "../components/ui/Layout";
 import AddVariantModal from "../components/products/AddVariantModal";
 import EditProductModal from "../components/products/EditProductModal";
+import CargaRapidaStock from "../components/products/CargaRapidaStock";
 import { formatCurrency } from "../utils/formatters";
-import { Boxes, PencilLine, Check, X, Wand2, Loader2, Tag } from "lucide-react";
+import { Boxes, PencilLine, Check, X, Wand2, Loader2, Tag, ListPlus, Store, MapPin } from "lucide-react";
 
 export default function ProductDetailPage() {
   const { skuAgrupador } = useParams();
@@ -18,12 +19,44 @@ export default function ProductDetailPage() {
   const [addOpen, setAddOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [orden, setOrden] = useState("talle");
+  const [cargaRapida, setCargaRapida] = useState(false);
+  /*
+   * El desglose por local del producto.
+   *
+   * Sin esto la columna "Stock" es el total de todos los locales y no lo dice:
+   * se lee como "hay 32 acá" cuando pueden estar repartidas entre tres
+   * sucursales. En un sistema con stock por local, un número sin lugar no
+   * significa nada.
+   */
+  const [porLocal, setPorLocal] = useState(null);
+  /*
+   * A qué local se aplican los ajustes de esta pantalla.
+   *
+   * Antes no existía la pregunta porque el stock era uno solo. Ahora ajustar
+   * sin decir dónde descontaría del local principal por descarte, que casi
+   * nunca es el que uno tiene delante.
+   */
+  const [localAjuste, setLocalAjuste] = useState("");
 
   async function load() {
     setLoading(true);
     const groups = await fetchProductGroups({ search: skuAgrupador });
-    setGroup(groups.find((g) => g.skuAgrupador === skuAgrupador) || null);
+    const g = groups.find((x) => x.skuAgrupador === skuAgrupador) || null;
+    setGroup(g);
     setLoading(false);
+
+    // El desglose se pide aparte y no bloquea el resto de la pantalla: si
+    // fallara, el producto se sigue viendo con su total.
+    const productId = g?.variants?.[0]?.productId;
+    if (productId) {
+      fetchVariantesPorLocal(productId)
+        .then((d) => {
+          setPorLocal(d);
+          // Con un solo local no hay nada que elegir.
+          setLocalAjuste((actual) => actual || (d.locales.length === 1 ? String(d.locales[0].id) : ""));
+        })
+        .catch(() => setPorLocal(null));
+    }
   }
 
   useEffect(() => { load(); }, [skuAgrupador]);
@@ -31,7 +64,11 @@ export default function ProductDetailPage() {
   async function handleAdjustStock(variant, tipo, cantidad, motivo) {
     // El error se propaga a propósito: la fila lo muestra al lado del campo.
     // Antes se perdía en una promesa sin capturar y el botón quedaba trabado.
-    await adjustVariantStock(variant.id, { tipo, cantidad: Number(cantidad), motivo });
+    // `locationId` va explícito: el ajuste es sobre el local elegido arriba.
+    await adjustVariantStock(variant.id, {
+      tipo, cantidad: Number(cantidad), motivo,
+      locationId: localAjuste ? Number(localAjuste) : undefined,
+    });
     await load();
   }
 
@@ -58,6 +95,10 @@ export default function ProductDetailPage() {
       alert(err.response?.data?.message || "Error al eliminar la variante");
     }
   }
+
+  const locales = porLocal?.locales || [];
+  // variantId → [{ locationId, local, stock }]
+  const stockDe = new Map((porLocal?.variantes || []).map((v) => [v.variantId, v.porLocal]));
 
   if (loading) return <div className="card h-64 animate-pulse bg-paper-200/60" />;
   if (!group)  return <EmptyState icon={Boxes} title="Producto no encontrado" action={<Link to="/stock" className="btn-ghost">Volver a stock</Link>} />;
@@ -87,6 +128,11 @@ export default function ProductDetailPage() {
           <Link to={`/stock/etiquetas?producto=${encodeURIComponent(group.skuAgrupador)}`} className="btn-ghost">
             <Tag size={15} /> Etiquetas
           </Link>
+          {/* Cargar el stock de todas las variantes de una, en vez de fila por
+              fila esperando una llamada por cada una. */}
+          <button className="btn-ghost" onClick={() => setCargaRapida((v) => !v)}>
+            <ListPlus size={15} /> {cargaRapida ? "Salir de carga rápida" : "Cargar stock"}
+          </button>
           <button className="btn-ghost" onClick={() => setEditOpen(true)}><PencilLine size={15} /> Editar producto</button>
           <button className="btn-accent" onClick={() => setAddOpen(true)}><Plus size={15} /> Nueva variante</button>
         </>}
@@ -94,14 +140,53 @@ export default function ProductDetailPage() {
 
       <div className="mb-5 grid grid-cols-2 gap-4 sm:grid-cols-4">
         <Card><p className="text-xs uppercase tracking-wide text-ink-600">Variantes</p><p className="mt-2 font-display text-lg font-semibold">{group.variants.length}</p></Card>
-        <Card><p className="text-xs uppercase tracking-wide text-ink-600">Stock total</p><p className="mt-2 font-display text-lg font-semibold">{group.stockTotal} un.</p></Card>
+        <Card>
+          <p className="text-xs uppercase tracking-wide text-ink-600">Stock total</p>
+          <p className="mt-2 font-display text-lg font-semibold">{group.stockTotal} un.</p>
+          {/* Cuántos locales suma ese total: es la diferencia entre "hay 32
+              acá" y "hay 32 repartidas en tres sucursales". */}
+          {locales.length > 1 && (
+            <p className="mt-0.5 text-xs text-ink-500">sumando {locales.length} locales</p>
+          )}
+        </Card>
         <Card><p className="text-xs uppercase tracking-wide text-ink-600">Precio minorista</p><p className="mt-2 font-display text-lg font-semibold">{formatCurrency(group.precioDesde)}</p></Card>
         <Card><p className="text-xs uppercase tracking-wide text-ink-600">Precio mayorista</p><p className="mt-2 font-display text-lg font-semibold">{formatCurrency(group.variants[0]?.precioMayorista || 0)}</p></Card>
       </div>
 
+      {cargaRapida && (
+        <div className="mb-5">
+          <CargaRapidaStock
+            group={group}
+            orden={orden}
+            onCancelar={() => setCargaRapida(false)}
+            /*
+             * Se recarga el producto pero NO se sale del modo: al descargar un
+             * remito se cargan varias tandas seguidas, y salir en cada guardado
+             * obligaría a volver a entrar cada vez.
+             */
+            onListo={async () => { await load(); }}
+          />
+        </div>
+      )}
+
       {/* El orden es de lectura, no de datos: se acomoda como se acomoda la
           mercadería, y el criterio depende de si se está mirando por talle o
           por color. */}
+      {locales.length > 1 && (
+        <div className="mb-3 flex flex-wrap items-center gap-2 rounded-md border border-line bg-paper-50 px-3 py-2">
+          <MapPin size={14} className="text-ink-500" />
+          <span className="text-xs text-ink-700">Los ajustes de stock se aplican en</span>
+          <select className="input w-auto py-1 text-xs" value={localAjuste}
+            onChange={(e) => setLocalAjuste(e.target.value)}>
+            <option value="">Elegí el local…</option>
+            {locales.map((l) => <option key={l.id} value={l.id}>{l.nombre}</option>)}
+          </select>
+          {!localAjuste && (
+            <span className="text-xs text-brick-500">Sin elegirlo no se puede ajustar.</span>
+          )}
+        </div>
+      )}
+
       <div className="mb-3 flex flex-wrap items-center gap-2">
         <span className="text-xs text-ink-600">Ordenar variantes</span>
         <GrupoFiltro>
@@ -120,7 +205,15 @@ export default function ProductDetailPage() {
               <th className="px-4 py-3 font-medium">SKU</th>
               <th className="px-4 py-3 font-medium">Dim 1</th>
               <th className="px-4 py-3 font-medium">Dim 2</th>
-              <th className="px-4 py-3 font-medium">Stock</th>
+              {/* Una columna por local: el stock no es un número, es un número
+                  EN un lugar. Con un solo local la fila no aporta nada y se
+                  muestra sólo el total. */}
+              {locales.length > 1 && locales.map((l) => (
+                <th key={l.id} className="px-3 py-3 text-right font-medium">{l.nombre}</th>
+              ))}
+              <th className="px-4 py-3 text-right font-medium">
+                {locales.length > 1 ? "Total" : "Stock"}
+              </th>
               <th className="px-4 py-3 font-medium">Stock mín.</th>
               <th className="px-4 py-3 font-medium">Acciones</th>
             </tr>
@@ -129,7 +222,9 @@ export default function ProductDetailPage() {
             {ordenarVariantes(group.variants, orden).map((v) => (
               <VariantEditRow key={v.id} variant={v}
                 onAdjust={handleAdjustStock} onDelete={handleDeleteVariant}
-                agrupador={group.skuAgrupador} onSaved={load} />
+                agrupador={group.skuAgrupador} onSaved={load}
+                locales={locales} stockLocal={stockDe.get(v.id)}
+                localElegido={localAjuste} />
             ))}
           </tbody>
         </table>
@@ -243,13 +338,24 @@ function CeldaSku({ variant, agrupador, onSaved }) {
   );
 }
 
-function VariantEditRow({ variant, onAdjust, onDelete, agrupador, onSaved }) {
+function VariantEditRow({ variant, onAdjust, onDelete, agrupador, onSaved, locales = [], stockLocal = [], localElegido }) {
   const [form, setForm] = useState({ tipo: "ingreso", cantidad: 1, motivo: "" });
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
-  const disponible = Number(variant.stock) || 0;
+  /*
+   * Lo disponible es lo que hay EN EL LOCAL elegido, no el total.
+   *
+   * Con 32 en Palermo y 0 en Belgrano, validar contra el total dejaba pedir un
+   * egreso de 5 en Belgrano y la comprobación pasaba: el rechazo llegaba
+   * después, desde el servidor, con la mercadería ya contada como salida en la
+   * cabeza del que la estaba cargando.
+   */
+  const disponible = locales.length > 1 && localElegido
+    ? ((stockLocal || []).find((x) => String(x.locationId) === String(localElegido))?.stock ?? 0)
+    : (Number(variant.stock) || 0);
+  const nombreLocal = locales.find((l) => String(l.id) === String(localElegido))?.nombre;
   const pedido = Number(form.cantidad) || 0;
   /*
    * Un egreso no puede superar el stock actual. El backend lo rechaza igual;
@@ -279,7 +385,17 @@ function VariantEditRow({ variant, onAdjust, onDelete, agrupador, onSaved }) {
       <td className="px-4 py-3"><CeldaSku variant={variant} agrupador={agrupador} onSaved={onSaved} /></td>
       <td className="px-4 py-3 text-ink-700">{variant.variante1Nombre && <><span className="text-ink-400 text-xs">{variant.variante1Nombre}:</span> {variant.variante1Valor}</>}</td>
       <td className="px-4 py-3 text-ink-700">{variant.variante2Nombre && <><span className="text-ink-400 text-xs">{variant.variante2Nombre}:</span> {variant.variante2Valor}</>}</td>
-      <td className="px-4 py-3"><span className={`badge ${status}`}>{variant.stock} un.</span></td>
+      {/* El stock de cada local, y después el total. El cero se apaga: lo que
+          se busca de un vistazo es dónde SÍ hay. */}
+      {locales.length > 1 && locales.map((l) => {
+        const n = (stockLocal || []).find((x) => x.locationId === l.id)?.stock ?? 0;
+        return (
+          <td key={l.id} className="px-3 py-3 text-right tabular-nums">
+            <span className={n === 0 ? "text-ink-300" : "text-ink-900"}>{n}</span>
+          </td>
+        );
+      })}
+      <td className="px-4 py-3 text-right"><span className={`badge ${status}`}>{variant.stock} un.</span></td>
       <td className="px-4 py-3 text-ink-600">{variant.stockMinimo}</td>
       <td className="px-4 py-3">
         {editing ? (
@@ -299,19 +415,29 @@ function VariantEditRow({ variant, onAdjust, onDelete, agrupador, onSaved }) {
               onChange={(e) => setForm({ ...form, cantidad: e.target.value })}
             />
             <input type="text" className="input h-8 w-24 text-xs" placeholder="Motivo" value={form.motivo} onChange={(e) => setForm({ ...form, motivo: e.target.value })} />
+            {nombreLocal && (
+              <span className="flex items-center gap-1 whitespace-nowrap text-xs text-ink-600">
+                <Store size={12} /> {nombreLocal}
+              </span>
+            )}
             <button className="btn-accent px-2 py-1" onClick={save} disabled={saving || excede}><Check size={13} /></button>
             <button className="btn-ghost px-2 py-1 text-xs" onClick={() => { setEditing(false); setError(""); }}>✕</button>
           </div>
           {excede && (
             <p className="mt-1 text-xs text-brick-500">
-              Sólo hay {disponible}. Para corregir el número usá «Ajuste».
+              Sólo hay {disponible}{nombreLocal ? ` en ${nombreLocal}` : ""}. Para corregir el número usá «Ajuste».
             </p>
           )}
           {error && <p className="mt-1 text-xs text-brick-500">{error}</p>}
           </div>
         ) : (
           <div className="flex gap-1">
-            <button className="btn-ghost px-2 py-1.5 text-xs" onClick={() => setEditing(true)}><PencilLine size={13} /> Ajustar stock</button>
+            <button className="btn-ghost px-2 py-1.5 text-xs"
+              onClick={() => setEditing(true)}
+              disabled={locales.length > 1 && !localElegido}
+              title={locales.length > 1 && !localElegido ? "Elegí primero en qué local" : "Ajustar stock"}>
+              <PencilLine size={13} /> Ajustar stock
+            </button>
             <button className="btn-ghost px-2 py-1.5 text-xs text-brick-500" title="Eliminar variante" onClick={() => onDelete(variant)}><Trash2 size={13} /></button>
           </div>
         )}

@@ -29,6 +29,7 @@ import ProductMetricsPage from "./pages/ProductMetricsPage";
 import StockMovementsPage from "./pages/StockMovementsPage";
 import SkuBuilderPage from "./pages/SkuBuilderPage";
 import LabelsPage from "./pages/LabelsPage";
+import StockByLocationPage from "./pages/StockByLocationPage";
 import ScanStockPage from "./pages/ScanStockPage";
 import PosPage from "./pages/PosPage";
 import BusinessCuitsPage from "./pages/BusinessCuitsPage";
@@ -62,6 +63,7 @@ export default function App() {
             <Route path="/stock/movimientos"            element={<PermissionRoute permission="stock"><StockMovementsPage /></PermissionRoute>} />
             <Route path="/stock/sku"                    element={<PermissionRoute permission="stock"><SkuBuilderPage /></PermissionRoute>} />
             <Route path="/stock/etiquetas"              element={<PermissionRoute permission="stock"><LabelsPage /></PermissionRoute>} />
+            <Route path="/stock/por-local"              element={<PermissionRoute permission="stock"><StockByLocationPage /></PermissionRoute>} />
             <Route path="/stock/:skuAgrupador"          element={<PermissionRoute permission="stock"><ProductDetailPage /></PermissionRoute>} />
             <Route path="/ventas"                       element={<PermissionRoute permission="ventas"><SalesPage /></PermissionRoute>} />
             <Route path="/ventas/nueva"                 element={<PermissionRoute permission="ventas" level="editar"><NewSalePage /></PermissionRoute>} />

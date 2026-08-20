@@ -5,6 +5,7 @@ const TABS = [
   { to: "/stock/variantes", label: "Variantes" },
   { to: "/stock/sku", label: "Confección de SKU" },
   { to: "/stock/escanear", label: "Escanear stock" },
+  { to: "/stock/por-local", label: "Por local" },
   { to: "/stock/movimientos", label: "Movimientos" },
   { to: "/stock/etiquetas", label: "Etiquetas" },
 ];

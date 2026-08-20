@@ -44,7 +44,17 @@ export default function NewSalePage() {
     // El servidor asigna el vendedor y el local desde la sesión de todos modos.
     if (puedeElegirVendedor) {
       fetchEmployees().then((emps) => { setEmployees(emps.filter((e) => e.activo)); if (emps[0]) setEmployeeId(emps[0].id); });
-      fetchPos().then((pos) => { setLocations(pos); if (pos[0]) setLocationId(pos[0].id); });
+      fetchPos().then((pos) => {
+        setLocations(pos);
+        /*
+         * Sólo se preselecciona si hay uno.
+         *
+         * Antes se elegía el primero siempre, y con varios locales eso es una
+         * decisión tomada por el sistema: el stock salía del primero de la
+         * lista aunque la venta fuera de otra sucursal.
+         */
+        if (pos.length === 1) setLocationId(pos[0].id);
+      });
     }
     fetchClients().then(setClients);
     fetchPaymentMethods({ soloActivos: true })
@@ -225,21 +235,57 @@ export default function NewSalePage() {
         <div className="space-y-5">
           <Card>
             <p className="mb-4 font-display text-sm font-semibold text-ink-950">Empleado y local</p>
-            <div className="space-y-4">
-              <div>
-                <label className="label">Empleado</label>
-                <select className="input" value={employeeId} onChange={(e) => setEmployeeId(e.target.value)}>
-                  {employees.map((e) => <option key={e.id} value={e.id}>{e.nombre} {e.apellido}</option>)}
-                </select>
+            {puedeElegirVendedor ? (
+              <div className="space-y-4">
+                <div>
+                  <label className="label">Empleado</label>
+                  <select className="input" value={employeeId} onChange={(e) => setEmployeeId(e.target.value)}>
+                    {employees.map((e) => <option key={e.id} value={e.id}>{e.nombre} {e.apellido}</option>)}
+                  </select>
+                </div>
+                <div>
+                  {/* Ya no existe "sin local específico": el stock sale de un
+                      local concreto y hay que decir de cuál. */}
+                  <label className="label">Local <span className="text-brick-500">*</span></label>
+                  <select className={`input ${!locationId ? "border-brick-500" : ""}`}
+                    value={locationId} onChange={(e) => setLocationId(e.target.value)}>
+                    <option value="">Elegí el local…</option>
+                    {locations.map((l) => <option key={l.id} value={l.id}>{l.nombre}</option>)}
+                  </select>
+                </div>
               </div>
-              <div>
-                <label className="label">Local</label>
-                <select className="input" value={locationId} onChange={(e) => setLocationId(e.target.value)}>
-                  <option value="">Sin local específico</option>
-                  {locations.map((l) => <option key={l.id} value={l.id}>{l.nombre}</option>)}
-                </select>
+            ) : (
+              /*
+               * Un empleado no elige: vende como él mismo y en su local, y el
+               * servidor lo impone igual.
+               *
+               * Antes acá se dibujaban los dos desplegables vacíos: las listas
+               * sólo se piden con permiso de empleados, que un vendedor no
+               * tiene, así que quedaban sin opciones. Ofrecer una decisión que
+               * no se puede tomar —y que además el servidor ignora— es peor que
+               * no ofrecerla.
+               */
+              <div className="rounded-md bg-paper-100 px-3 py-2.5">
+                <p className="text-xs uppercase tracking-wide text-ink-600">Vendedor</p>
+                <p className="font-medium text-ink-900">
+                  {[user?.nombre, user?.apellido].filter(Boolean).join(" ") || "Tu usuario"}
+                </p>
+                {user?.local?.nombre ? (
+                  <>
+                    <p className="mt-2 text-xs uppercase tracking-wide text-ink-600">Local</p>
+                    <p className="font-medium text-ink-900">{user.local.nombre}</p>
+                    <p className="mt-2 text-xs text-ink-500">
+                      Se registran automáticamente con tu sesión. El stock sale de este local.
+                    </p>
+                  </>
+                ) : (
+                  <p className="mt-2 rounded-md bg-brick-50 px-2 py-1.5 text-xs text-brick-600">
+                    No tenés un local asignado, así que no vas a poder registrar la venta.
+                    Pedile al dueño que te asigne uno desde Empleados.
+                  </p>
+                )}
               </div>
-            </div>
+            )}
           </Card>
 
           <Card>

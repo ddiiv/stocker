@@ -56,7 +56,12 @@ export default function PosPage() {
     // de locales para elegir, así que esas dos sólo se piden si va a usarlas.
     if (puedeElegirVendedor) {
       fetchEmployees().then(setEmployees).catch(() => {});
-      fetchPos().then(setLocations).catch(() => {});
+      fetchPos().then((ls) => {
+        setLocations(ls);
+        // Un solo local no es una decisión: se elige solo y el dueño no tiene
+        // que tocar un desplegable de una sola opción en cada venta.
+        if (ls.length === 1) setLocationId(String(ls[0].id));
+      }).catch(() => {});
     }
     fetchClients().then((c) => setClientes(c.data || c)).catch(() => {});
     fetchPaymentMethods({ soloActivos: true })
@@ -83,7 +88,16 @@ export default function PosPage() {
   const pagosCuadran = pagos.length === 1 || Math.abs(total - sumaPagos) < 0.02;
   // Fiando no hay medios de pago que cuadrar todavía, pero sí hace falta un
   // cliente: sin saber quién debe, la deuda no existe.
-  const puedeCobrar = items.length > 0 && !cobrando && (
+  /*
+   * El dueño necesita haber elegido local; el empleado, tenerlo asignado.
+   *
+   * Es de dónde sale la mercadería: sin eso el backend rechaza la venta, y es
+   * mejor que el botón no se habilite a que el rechazo llegue con el carrito
+   * cargado y el cliente esperando.
+   */
+  const hayLocal = puedeElegirVendedor ? Boolean(locationId) : Boolean(user?.local?.id);
+
+  const puedeCobrar = items.length > 0 && !cobrando && hayLocal && (
     esFiado ? Boolean(clientId) : (metodos.length > 0 && pagosCuadran)
   );
 
@@ -446,23 +460,39 @@ export default function PosPage() {
                 <option value="">Sin asignar</option>
                 {employees.map((e) => <option key={e.id} value={e.id}>{e.nombre} {e.apellido || ""}</option>)}
               </select>
-              <label className="label">Local</label>
-              <select className="input" value={locationId} onChange={(e) => setLocationId(e.target.value)}>
-                <option value="">Sin asignar</option>
+              {/* El local no es opcional: es de dónde sale la mercadería. Sin
+                  elegirlo el stock se descontaría de otro local y quedarían dos
+                  inventarios mal. Con un solo local se elige solo. */}
+              <label className="label">Local <span className="text-brick-500">*</span></label>
+              <select className={`input ${!locationId ? "border-brick-500" : ""}`}
+                value={locationId} onChange={(e) => setLocationId(e.target.value)}>
+                <option value="">Elegí el local…</option>
                 {locations.map((l) => <option key={l.id} value={l.id}>{l.nombre}</option>)}
               </select>
+              {!locationId && (
+                <p className="mt-1 text-xs text-brick-500">El stock se descuenta de este local.</p>
+              )}
             </Card>
           ) : (
             <Card className="bg-paper-100">
               <p className="text-xs uppercase tracking-wide text-ink-600">Vendedor</p>
               <p className="font-medium text-ink-900">{user?.nombre} {user?.apellido || ""}</p>
-              {user?.local?.nombre && (
+              {user?.local?.nombre ? (
                 <>
                   <p className="mt-2 text-xs uppercase tracking-wide text-ink-600">Local</p>
                   <p className="font-medium text-ink-900">{user.local.nombre}</p>
+                  <p className="mt-2 text-xs text-ink-500">
+                    Se registran automáticamente con tu sesión. El stock sale de este local.
+                  </p>
                 </>
+              ) : (
+                // Sin local asignado el backend rechaza la venta; conviene
+                // avisarlo acá y no cuando ya cargó todo el carrito.
+                <p className="mt-2 rounded-md bg-brick-50 px-2 py-1.5 text-xs text-brick-600">
+                  No tenés un local asignado, así que no vas a poder vender.
+                  Pedile al dueño que te asigne uno desde Empleados.
+                </p>
               )}
-              <p className="mt-2 text-xs text-ink-500">Se registran automáticamente con tu sesión.</p>
             </Card>
           )}
 

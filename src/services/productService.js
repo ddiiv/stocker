@@ -179,3 +179,63 @@ export async function generarEtiquetas(items) {
     throw e;
   }
 }
+
+/*
+ * Stock desglosado por local, con el total.
+ *
+ * Una sola llamada devuelve las tres cosas —cuánto en cada local, dónde está
+ * cada cosa y el total— porque separarlas obligaría a sumar del lado del
+ * navegador y a que dos pantallas puedan discrepar.
+ */
+export async function fetchStockPorLocal(filtros = {}) {
+  const params = {};
+  for (const [k, v] of Object.entries(filtros)) {
+    if (v !== "" && v !== null && v !== undefined && v !== false) params[k] = v;
+  }
+  const { data } = await http.get("/stock/por-local", { params });
+  return data;
+}
+
+export async function transferirStock(payload) {
+  const { data } = await http.post("/stock/transferir", payload);
+  return data;
+}
+
+/*
+ * Los dos niveles de la vista por local: primero productos, después variantes.
+ *
+ * Separados porque un catálogo de 20 productos con 20 variantes son 400 filas,
+ * y la pregunta "¿qué tengo en Belgrano?" no se responde recorriendo 400 filas.
+ */
+export async function fetchProductosPorLocal({ locationId, q } = {}) {
+  const params = {};
+  if (locationId) params.locationId = locationId;
+  if (q) params.q = q;
+  const { data } = await http.get("/stock/por-local/productos", { params });
+  return data;
+}
+
+export async function fetchVariantesPorLocal(productId) {
+  const { data } = await http.get(`/stock/por-local/producto/${productId}`);
+  return data;
+}
+
+/*
+ * Ajuste de stock de varias variantes en un solo pedido.
+ *
+ * Es lo que hace posible cargar un remito sin esperar una llamada por línea.
+ * El backend lo aplica todo junto o nada: no puede quedar medio remito cargado.
+ */
+export async function ajusteMasivoStock({ locationId, motivo, items }) {
+  const { data } = await http.post("/stock/ajuste-masivo", { locationId, motivo, items });
+  return data;
+}
+
+/** Lo que entró en un día, por variante. Para etiquetar mercadería recibida. */
+export async function fetchIngresosDelDia({ fecha, locationId } = {}) {
+  const params = {};
+  if (fecha) params.fecha = fecha;
+  if (locationId) params.locationId = locationId;
+  const { data } = await http.get("/stock/ingresos", { params });
+  return data;
+}
