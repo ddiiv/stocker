@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Check, Loader2, TriangleAlert } from "lucide-react";
+import { Check, Loader2, RotateCcw, TriangleAlert } from "lucide-react";
 import { Link } from "react-router-dom";
 import Modal from "../ui/Modal";
 import { fetchVariantTypes } from "../../services/variantTypeService";
@@ -26,6 +26,10 @@ import { fetchPos } from "../../services/employeeService";
 
 const clave = (v) => String(v ?? "").trim().normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
 
+// La identidad de una fila son sus valores, no su posición ni su SKU: los dos
+// últimos cambian mientras se edita.
+const claveFila = (valores = []) => valores.map((v) => clave(v.valor)).join("|");
+
 export default function BulkVariantsModal({ open, onClose, group, onCreated }) {
   const productId = group?.variants?.[0]?.productId;
 
@@ -37,6 +41,14 @@ export default function BulkVariantsModal({ open, onClose, group, onCreated }) {
   const [calculando, setCalculando] = useState(false);
   const [creando, setCreando] = useState(false);
   const [error, setError] = useState("");
+
+  /*
+   * SKU escritos a mano, por combinación.
+   *
+   * Se guardan acá y no se leen del plan: el plan vuelve del servidor en cada
+   * tecleo y usar su valor haría saltar el cursor al final del campo.
+   */
+  const [manuales, setManuales] = useState({});
 
   const [stock, setStock] = useState(0);
   const [stockMinimo, setStockMinimo] = useState(5);
@@ -63,7 +75,7 @@ export default function BulkVariantsModal({ open, onClose, group, onCreated }) {
 
   useEffect(() => {
     if (!open) return;
-    setError(""); setPlan(null); setElegidos({}); setStock(0);
+    setError(""); setPlan(null); setElegidos({}); setStock(0); setManuales({});
     setCargandoTipos(true);
     fetchVariantTypes().then(setTipos).catch(() => setTipos([])).finally(() => setCargandoTipos(false));
     fetchPos().then((ls) => {
@@ -99,6 +111,12 @@ export default function BulkVariantsModal({ open, onClose, group, onCreated }) {
     });
   }
 
+  // Los manuales viajan como lista de { valores, sku }: el servidor los valida
+  // igual que a los automáticos y devuelve por qué rechaza cada uno.
+  const listaManuales = useCallback(() => Object.entries(manuales)
+    .filter(([, sku]) => String(sku).trim())
+    .map(([k, sku]) => ({ valores: k.split("|").map((v) => ({ valor: v })), sku })), [manuales]);
+
   const pedirPlan = useCallback(async () => {
     const cuerpo = maestras
       .map((m) => ({ nombre: m.eje, valores: [...(elegidos[m.eje] || [])] }))
@@ -106,13 +124,13 @@ export default function BulkVariantsModal({ open, onClose, group, onCreated }) {
     if (!cuerpo.length) { setPlan(null); return; }
     setCalculando(true); setError("");
     try {
-      setPlan(await variantesMasivo(productId, { ejes: cuerpo }));
+      setPlan(await variantesMasivo(productId, { ejes: cuerpo, manuales: listaManuales() }));
     } catch (e) {
       setPlan(null);
       setError(e.response?.data?.message || "No se pudo calcular la vista previa.");
     }
     setCalculando(false);
-  }, [maestras, elegidos, productId]);
+  }, [maestras, elegidos, productId, listaManuales]);
 
   // Se recalcula al soltar el tilde, con una pausa corta: tildar cuatro talles
   // seguidos no tiene por qué disparar cuatro consultas.
@@ -123,6 +141,11 @@ export default function BulkVariantsModal({ open, onClose, group, onCreated }) {
     timer.current = setTimeout(pedirPlan, 250);
     return () => clearTimeout(timer.current);
   }, [open, productId, pedirPlan]);
+
+  // Las que la regla no pudo resolver sin numerar.
+  const chocan = (plan?.aCrear || []).filter((f) => f.choca);
+  // Y las que directamente no sirven: escritas a mano y ya tomadas.
+  const invalidas = (plan?.aCrear || []).filter((f) => f.libre === false);
 
   const necesitaLocal = Number(stock) > 0 && locales.length > 1;
 
@@ -136,6 +159,7 @@ export default function BulkVariantsModal({ open, onClose, group, onCreated }) {
         .filter((e) => e.valores.length > 0);
       const r = await variantesMasivo(productId, {
         ejes: cuerpo,
+        manuales: listaManuales(),
         stock: Number(stock) || 0,
         stockMinimo: Number(stockMinimo) || 0,
         locationId: locationId ? Number(locationId) : null,
@@ -217,18 +241,87 @@ export default function BulkVariantsModal({ open, onClose, group, onCreated }) {
                   )}
                 </p>
                 {plan.aCrear.length > 0 && (
-                  <div className="mt-2 max-h-40 overflow-y-auto">
+                  <div className="mt-2 max-h-48 overflow-y-auto">
                     <table className="w-full text-xs">
                       <tbody>
-                        {plan.aCrear.map((f) => (
-                          <tr key={f.sku} className="border-b border-line/60 last:border-0">
-                            <td className="py-1 text-ink-700">{f.etiqueta}</td>
-                            <td className="py-1 text-right font-mono text-ink-500">{f.sku}</td>
-                          </tr>
-                        ))}
+                        {plan.aCrear.map((f) => {
+                          const k = claveFila(f.valores);
+                          const editado = manuales[k] !== undefined;
+                          return (
+                            <tr key={k} className="border-b border-line/60 last:border-0 align-top">
+                              <td className="py-1 pr-2 text-ink-700">{f.etiqueta}</td>
+                              <td className="py-1">
+                                <div className="flex items-center justify-end gap-1">
+                                  {/* Editable siempre, no sólo cuando choca: el
+                                      negocio puede querer otro código por
+                                      cualquier motivo, y descubrir que se puede
+                                      escribir recién cuando algo falla es tarde. */}
+                                  <input
+                                    className={`w-40 rounded border px-1.5 py-0.5 text-right font-mono text-xs
+                                      ${f.libre === false ? "border-brick-500 bg-brick-50 text-brick-500"
+                                        : f.choca ? "border-brass-300 bg-brass-50 text-brass-800"
+                                        : "border-line bg-paper-50 text-ink-700"}`}
+                                    value={editado ? manuales[k] : (f.sku || "")}
+                                    // Vaciar el campo vuelve al automático, y la
+                                    // marca de agua dice cuál es: sin esto la caja
+                                    // queda en blanco y no se sabe qué se va a crear.
+                                    placeholder={f.sku || ""}
+                                    onChange={(e) => setManuales((m) => ({ ...m, [k]: e.target.value }))}
+                                    spellCheck={false}
+                                  />
+                                  {/* Volver al automático: sin esto, corregir un
+                                      SKU escrito por error obliga a adivinar
+                                      cuál era el que proponía la regla. */}
+                                  {editado ? (
+                                    <button
+                                      type="button"
+                                      title="Volver al código automático"
+                                      className="text-ink-400 hover:text-ink-700"
+                                      onClick={() => setManuales((m) => {
+                                        const { [k]: _, ...resto } = m;
+                                        return resto;
+                                      })}
+                                    >
+                                      <RotateCcw size={12} />
+                                    </button>
+                                  ) : <span className="w-3" />}
+                                </div>
+                                {f.motivo && <p className="mt-0.5 text-right text-[11px] text-brick-500">{f.motivo}</p>}
+                                {!f.motivo && f.choca && (
+                                  <p className="mt-0.5 text-right text-[11px] text-ink-400">
+                                    la regla daba <span className="line-through">{f.skuBase}</span>, ya en uso
+                                  </p>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })}
                       </tbody>
                     </table>
                   </div>
+                )}
+
+                {/*
+                  * Numerar evita frenar el alta, pero un SKU terminado en -2 no
+                  * le dice nada a quien lo lee en la etiqueta. Lo que arregla el
+                  * choque de verdad es una abreviatura, y para eso hay que
+                  * enterarse de que pasó.
+                  */}
+                {chocan.length > 0 && (
+                  <p className="mt-2 rounded-md bg-brass-50 px-2 py-1.5 text-xs text-brass-800">
+                    <TriangleAlert size={12} className="mr-1 inline" />
+                    {chocan.length === 1 ? "Un código ya está" : `${chocan.length} códigos ya están`} en uso
+                    en el negocio, así que {chocan.length === 1 ? "se numeró" : "se numeraron"}.
+                    Escribilos como quieras acá arriba, o cargá una abreviatura en{" "}
+                    <Link to="/stock/sku" className="underline">Confección de SKU</Link> para que salgan bien siempre.
+                  </p>
+                )}
+
+                {invalidas.length > 0 && (
+                  <p className="mt-2 rounded-md bg-brick-50 px-2 py-1.5 text-xs text-brick-500">
+                    {invalidas.length === 1 ? "Hay un SKU que no se puede usar" : `Hay ${invalidas.length} SKU que no se pueden usar`}.
+                    Los SKU de variante son únicos en todo el negocio.
+                  </p>
                 )}
               </>
             ) : null}
@@ -270,7 +363,7 @@ export default function BulkVariantsModal({ open, onClose, group, onCreated }) {
           <button
             type="button"
             className="btn-accent"
-            disabled={!plan?.aCrear?.length || creando || calculando}
+            disabled={!plan?.aCrear?.length || creando || calculando || invalidas.length > 0}
             onClick={crear}
           >
             {creando
