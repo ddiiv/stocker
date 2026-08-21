@@ -55,10 +55,36 @@ const getProducts = async (req, res, next) => {
     if (genero)    where.genero    = genero;
     if (search) {
       const like = ilikeOperator();
+      const texto = `%${String(search).trim()}%`;
+
+      /*
+       * También se busca por el SKU y el código de barras de las variantes.
+       *
+       * Es como se busca en la práctica: lo que está impreso en la etiqueta de
+       * la prenda es el SKU de la variante, no el del producto padre. Buscando
+       * "BA-010-BEIGEM" —que es lo que uno tiene en la mano— la lista no
+       * devolvía nada, y había que adivinar el nombre del producto.
+       *
+       * Va como subconsulta y no como filtro sobre el include: con `limit`, un
+       * include de tipo hasMany hace que Sequelize aplique el límite a las
+       * filas del JOIN, y un producto de veinte variantes se comería la página
+       * entera.
+       */
+      const conVariante = await ProductVariant.findAll({
+        where: {
+          businessId: req.auth.businessId,
+          [Op.or]: [{ sku: { [like]: texto } }, { codigoBarras: { [like]: texto } }],
+        },
+        attributes: ['productId'],
+        group: ['productId'],
+      });
+      const idsPorVariante = conVariante.map((v) => v.productId);
+
       where[Op.or] = [
-        { titulo: { [like]: `%${search}%` } },
-        { sku:    { [like]: `%${search}%` } },
-        { skuAgrupador: { [like]: `%${search}%` } },
+        { titulo: { [like]: texto } },
+        { sku:    { [like]: texto } },
+        { skuAgrupador: { [like]: texto } },
+        ...(idsPorVariante.length ? [{ id: { [Op.in]: idsPorVariante } }] : []),
       ];
     }
 
@@ -74,12 +100,127 @@ const getProducts = async (req, res, next) => {
   } catch (error) { next(error); }
 };
 
+/*
+ * ── GET /api/products/buscar-variantes ────────────────────────────
+ *
+ * Busca VARIANTES para agregar a una venta o cotización.
+ *
+ * Devuelve variantes y no productos, que es la diferencia que importa: el
+ * buscador anterior encontraba el producto y desplegaba sus nueve variantes,
+ * así que escribir el SKU exacto de la que se tenía en la mano igual obligaba a
+ * buscarla entre las otras ocho.
+ *
+ * La consulta se parte en palabras y todas tienen que aparecer en algún lado
+ * —título, categoría, color, talle, SKU o código de barras—. Eso es lo que hace
+ * que "buzo beige m" encuentre justo esa combinación, que es como se busca
+ * cuando el cliente la tiene puesta y no hay etiqueta a mano.
+ */
+const buscarVariantes = async (req, res, next) => {
+  try {
+    const q = String(req.query.q || '').trim();
+    if (q.length < 2) return res.json({ data: [] });
+
+    const limit = Math.min(50, Math.max(1, Number(req.query.limit) || 25));
+    const locationId = Number(req.query.locationId) || null;
+    const like = ilikeOperator();
+
+    /*
+     * Cada palabra por separado, y todas tienen que estar.
+     *
+     * Buscando la frase entera, "buzo beige m" no encuentra nada: no hay ningún
+     * campo que contenga esas tres palabras juntas y en ese orden. Partiéndola,
+     * cada una matchea donde corresponde y la intersección deja la variante
+     * exacta.
+     */
+    const palabras = q.split(/\s+/).filter(Boolean).slice(0, 6);
+    const condicionesPorPalabra = palabras.map((palabra) => {
+      const texto = `%${palabra}%`;
+      return {
+        [Op.or]: [
+          { sku: { [like]: texto } },
+          { codigoBarras: { [like]: texto } },
+          { variante1Valor: { [like]: texto } },
+          { variante2Valor: { [like]: texto } },
+          { '$producto.titulo$': { [like]: texto } },
+          { '$producto.categoria$': { [like]: texto } },
+          { '$producto.skuAgrupador$': { [like]: texto } },
+        ],
+      };
+    });
+
+    const variantes = await ProductVariant.findAll({
+      where: { businessId: req.auth.businessId, activo: true, [Op.and]: condicionesPorPalabra },
+      include: [{
+        model: Product, as: 'producto', required: true,
+        where: { activo: true },
+        attributes: ['id', 'titulo', 'skuAgrupador', 'categoria', 'precioMinorista', 'precioMayorista', 'costo'],
+      }],
+      limit,
+      subQuery: false,
+    });
+
+    // El stock en el local de la venta: es lo que decide si se puede vender.
+    const desglose = locationId
+      ? await stockService.desglosePorVariante(variantes.map((v) => v.id), req.auth.businessId)
+      : new Map();
+
+    const data = variantes.map((v) => {
+      const enLocal = locationId
+        ? ((desglose.get(v.id) || []).find((f) => f.locationId === locationId)?.stock ?? 0)
+        : null;
+      return {
+        id: v.id,
+        sku: v.sku,
+        codigoBarras: v.codigoBarras,
+        titulo: v.producto.titulo,
+        skuAgrupador: v.producto.skuAgrupador,
+        categoria: v.producto.categoria,
+        productId: v.producto.id,
+        variante1Nombre: v.variante1Nombre, variante1Valor: v.variante1Valor,
+        variante2Nombre: v.variante2Nombre, variante2Valor: v.variante2Valor,
+        stock: Number(v.stock) || 0,
+        enLocal,
+        // Los precios de la variante si los tiene; si no, los del producto.
+        ...precioService.resumenDe(v, v.producto),
+      };
+    });
+
+    /*
+     * Orden: primero lo que coincide exactamente, después por título.
+     *
+     * Quien tipea un SKU completo espera esa fila arriba, no en el medio de una
+     * lista alfabética.
+     */
+    const exacto = q.toLowerCase();
+    data.sort((a, b) => {
+      const pa = a.sku.toLowerCase() === exacto || a.codigoBarras === q ? 0 : 1;
+      const pb = b.sku.toLowerCase() === exacto || b.codigoBarras === q ? 0 : 1;
+      if (pa !== pb) return pa - pb;
+      return `${a.titulo}${a.sku}`.localeCompare(`${b.titulo}${b.sku}`, 'es');
+    });
+
+    res.json({ data });
+  } catch (error) { next(error); }
+};
+
 // ── GET /api/products/:id ──────────────────────────────────────────
 const getProduct = async (req, res, next) => {
   try {
     const product = await Product.findOne({
       where: { id: req.params.id, businessId: req.auth.businessId },
       include: [{ model: ProductVariant, as: 'productVariants' }],
+    });
+    if (!product) return res.status(404).json({ message: 'Producto no encontrado.' });
+    res.json(product);
+  } catch (error) { next(error); }
+};
+
+// ── GET /api/products/sku/:skuV ─────────────────────────────────────
+const getProductPadreBySkuVariante = async (req, res, next) => {
+  try {
+    const product = await Product.findOne({
+        where :{ sku: req.params.skuV, businessId: req.auth.businessId },
+        include: [{ model: ProductVariant, as: 'productVariants' }],
     });
     if (!product) return res.status(404).json({ message: 'Producto no encontrado.' });
     res.json(product);
@@ -229,13 +370,22 @@ const deleteProduct = async (req, res, next) => {
 async function buscarPorCodigo(codigo, businessId, transaction = null) {
   const limpio = String(codigo || '').trim();
   if (!limpio) return null;
+  /*
+   * Sólo lo que sigue en el catálogo.
+   *
+   * Dar de baja un producto lo apaga a él y no a sus variantes, así que sin
+   * este filtro el lector seguía encontrándolas: la prenda desaparecía de todas
+   * las pantallas y aun así se podía escanear y vender en el mostrador, con el
+   * stock saliendo de un producto que el negocio dio por discontinuado.
+   */
   const opciones = {
-    include: [{ model: Product, as: 'producto', where: { businessId } }],
+    include: [{ model: Product, as: 'producto', where: { businessId, activo: true }, required: true }],
+    where: { activo: true },
     transaction,
   };
   return (
-    await ProductVariant.findOne({ ...opciones, where: { codigoBarras: limpio } })
-    || await ProductVariant.findOne({ ...opciones, where: { sku: limpio } })
+    await ProductVariant.findOne({ ...opciones, where: { ...opciones.where, codigoBarras: limpio } })
+    || await ProductVariant.findOne({ ...opciones, where: { ...opciones.where, sku: limpio } })
   );
 }
 
@@ -248,6 +398,16 @@ const scanLookup = async (req, res, next) => {
     if (!variant) {
       return res.status(404).json({ message: `Ningún producto coincide con el código "${req.params.codigo}".` });
     }
+    /*
+     * Stock en el local que pregunta, además del total.
+     *
+     * En el punto de venta la mercadería sale de un local concreto: mostrar el
+     * total hace creer que hay unidades cuando están en la otra sucursal.
+     */
+    const locationId = Number(req.query.locationId) || null;
+    const enLocal = locationId
+      ? await stockService.stockEn(variant.id, locationId)
+      : null;
     res.json({
       id: variant.id,
       sku: variant.sku,
@@ -259,6 +419,7 @@ const scanLookup = async (req, res, next) => {
       variante2Nombre: variant.variante2Nombre,
       variante2Valor:  variant.variante2Valor,
       stock: variant.stock,
+      enLocal,
       // Los de la variante si los tiene; si no, los del producto.
       ...precioService.resumenDe(variant),
     });
@@ -375,6 +536,206 @@ const deleteVariant = async (req, res, next) => {
 };
 
 // ── POST /api/products/:id/variants ───────────────────────────────
+/*
+ * POST /api/products/:id/variants/masivo
+ *
+ * Alta de variantes tomando los valores de la tabla maestra del negocio.
+ *
+ * Cargar talle por talle a mano es lo que más tiempo lleva de todo el alta de
+ * un producto, y es donde aparecen los SKU escritos distinto. Acá se eligen los
+ * valores y el servidor arma la combinatoria.
+ *
+ * Dos reglas, que son las que hacen que esto se pueda usar sin miedo:
+ *
+ *   - No borra nada. Destildar un valor que ya tiene variante no la elimina:
+ *     sólo deja de proponerla. Sacar mercadería del catálogo es una decisión
+ *     que se toma variante por variante, no de rebote.
+ *   - No duplica. Toda combinación que ya exista en el producto se omite, se
+ *     compare como se compare — "Beige" y "beige" son el mismo color.
+ *
+ * Siempre devuelve el plan (`aCrear` y `omitidas`). Con `confirmar: true`
+ * además lo ejecuta, así lo que se muestra en pantalla es exactamente lo que se
+ * va a grabar y no dos cálculos parecidos.
+ */
+const clave = (v) => String(v ?? '').trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+
+const agregarVariantesMasivo = async (req, res, next) => {
+  const t = await sequelize.transaction();
+  try {
+    const product = await Product.findOne({
+      where: { id: req.params.id, businessId: req.auth.businessId },
+      transaction: t,
+    });
+    if (!product) { await t.rollback(); return res.status(404).json({ message: 'Producto no encontrado.' }); }
+
+    const { ejes = [], stock = 0, stockMinimo = 5, confirmar = false } = req.body;
+    if (!Array.isArray(ejes) || ejes.length === 0) {
+      await t.rollback();
+      return res.status(400).json({ message: 'Elegí al menos un valor para generar variantes.' });
+    }
+    if (ejes.length > 2) {
+      await t.rollback();
+      return res.status(400).json({ message: 'Un producto se organiza con hasta dos atributos.' });
+    }
+
+    const limpios = ejes.map((e) => ({
+      nombre: String(e.nombre || '').trim(),
+      valores: [...new Set((e.valores || []).map((v) => String(v).trim()).filter(Boolean))],
+    }));
+    if (limpios.some((e) => !e.nombre || e.valores.length === 0)) {
+      await t.rollback();
+      return res.status(400).json({ message: 'Cada atributo necesita un nombre y al menos un valor elegido.' });
+    }
+
+    /*
+     * Los ejes tienen que ser los del producto.
+     *
+     * Un producto que se diferencia por Color y Talle no puede recibir una
+     * variante por Sabor: la fila quedaría con un atributo que ninguna otra
+     * tiene y las pantallas que agrupan por eje la mostrarían suelta.
+     */
+    const existentes = await ProductVariant.findAll({
+      where: { productId: product.id }, transaction: t,
+    });
+    const referencia = existentes[0];
+    if (referencia) {
+      const propios = [referencia.variante1Nombre, referencia.variante2Nombre].filter(Boolean).map(clave);
+      const intrusos = limpios.map((e) => e.nombre).filter((n) => !propios.includes(clave(n)));
+      if (intrusos.length) {
+        await t.rollback();
+        return res.status(400).json({
+          message: `Este producto se organiza por ${propios.length === 2 ? `${referencia.variante1Nombre} y ${referencia.variante2Nombre}` : referencia.variante1Nombre}. `
+            + `No se le pueden agregar variantes por ${intrusos.join(', ')}.`,
+        });
+      }
+      // En el orden del producto, no en el que llegó: el eje 1 del producto
+      // tiene que seguir siendo el eje 1 de las variantes nuevas.
+      limpios.sort((a, b) => propios.indexOf(clave(a.nombre)) - propios.indexOf(clave(b.nombre)));
+    }
+
+    // Combinatoria. Con un solo eje, una fila por valor.
+    const [eje1, eje2] = limpios;
+    const combos = [];
+    for (const v1 of eje1.valores) {
+      if (eje2) { for (const v2 of eje2.valores) combos.push([{ eje: eje1.nombre, valor: v1 }, { eje: eje2.nombre, valor: v2 }]); }
+      else combos.push([{ eje: eje1.nombre, valor: v1 }]);
+    }
+
+    // Lo que ya está, por combinación de valores.
+    const yaEstan = new Map();
+    for (const v of existentes) {
+      yaEstan.set([clave(v.variante1Valor), clave(v.variante2Valor)].join('|'), v);
+    }
+
+    const regla = await skuService.reglaDe(req.auth.businessId);
+    const aCrear = [];
+    const omitidas = [];
+    for (const combo of combos) {
+      const k = [clave(combo[0]?.valor), clave(combo[1]?.valor)].join('|');
+      const previa = yaEstan.get(k);
+      const etiqueta = combo.map((c) => c.valor).join(' · ');
+      if (previa) { omitidas.push({ etiqueta, sku: previa.sku, motivo: 'ya existe' }); continue; }
+      aCrear.push({
+        etiqueta,
+        valores: combo,
+        sku: skuService.componer({ agrupador: product.skuAgrupador || product.sku, valores: combo, regla }),
+      });
+    }
+
+    if (!confirmar) {
+      await t.rollback();
+      return res.json({ aCrear, omitidas });
+    }
+    if (!aCrear.length) {
+      await t.rollback();
+      return res.status(409).json({ message: 'Todas las combinaciones elegidas ya existen en este producto.', aCrear, omitidas });
+    }
+
+    await exigirCupo(req.auth.businessId, 'skus', aCrear.length);
+
+    /*
+     * Con stock inicial hay que saber a qué local entra, y se resuelve antes de
+     * crear nada: rechazarlo después dejaría medio lote cargado.
+     */
+    let destino = req.body.locationId || null;
+    if (Number(stock) > 0) {
+      const activos = await BusinessLocation.findAll({
+        where: { businessId: req.auth.businessId, activo: true }, order: [['id', 'ASC']], transaction: t,
+      });
+      if (destino) {
+        if (!activos.some((l) => String(l.id) === String(destino))) {
+          await t.rollback();
+          return res.status(400).json({ message: 'El local indicado no pertenece a este negocio o está inactivo.' });
+        }
+      } else if (activos.length === 1) destino = activos[0].id;
+      else if (activos.length > 1) {
+        await t.rollback();
+        return res.status(400).json({ message: 'Elegí a qué local entra el stock inicial.' });
+      }
+    }
+
+    /*
+     * Los SKU se resuelven contra la base y contra el propio lote.
+     *
+     * `estaLibre` consulta fuera de esta transacción, así que no ve las
+     * variantes que se están creando acá: dos valores que dan el mismo código
+     * —"Azul Marino" y "Azul Claro" dan los dos AZU— recibirían el mismo SKU y
+     * la segunda inserción moriría contra el índice único. El lote se lleva
+     * aparte y suma al descarte.
+     */
+    const delLote = new Set();
+    const skuLibre = async (base) => {
+      const raiz = String(base).trim().slice(0, 90);
+      for (const intento of [raiz, ...Array.from({ length: 49 }, (_, i) => `${raiz}-${i + 2}`)]) {
+        if (delLote.has(intento)) continue;
+        if (await skuService.estaLibre(req.auth.businessId, intento)) { delLote.add(intento); return intento; }
+      }
+      return null;
+    };
+
+    const creadas = [];
+    for (const fila of aCrear) {
+      const libre = await skuLibre(fila.sku);
+      if (!libre) {
+        await t.rollback();
+        return res.status(409).json({ message: `No se pudo generar un SKU libre para ${fila.etiqueta}. Revisá las abreviaturas en Confección de SKU.` });
+      }
+      const v = await ProductVariant.create({
+        productId: product.id, businessId: req.auth.businessId, sku: libre,
+        codigoBarras: null,
+        variante1Nombre: fila.valores[0]?.eje || null, variante1Valor: fila.valores[0]?.valor || null,
+        variante2Nombre: fila.valores[1]?.eje || null, variante2Valor: fila.valores[1]?.valor || null,
+        stock: 0, stockMinimo,
+      }, { transaction: t });
+      creadas.push({ id: v.id, sku: v.sku, etiqueta: fila.etiqueta });
+    }
+
+    await t.commit();
+
+    /*
+     * El stock inicial va después del commit, y cada uno como movimiento.
+     *
+     * Sin la entrada anotada, el libro muestra unidades aparecidas de la nada y
+     * quien audita no puede distinguirlas de un faltante mal cargado.
+     */
+    if (Number(stock) > 0) {
+      for (const c of creadas) {
+        await stockService.mover({
+          variantId: c.id, businessId: req.auth.businessId, locationId: destino,
+          delta: Number(stock), tipo: 'ingreso',
+          motivo: 'Stock inicial de la variante',
+          employeeId: req.auth.employeeId || null,
+        });
+      }
+    }
+
+    res.status(201).json({ creadas, omitidas });
+  } catch (error) {
+    await t.rollback().catch(() => {});
+    next(error);
+  }
+};
+
 const addVariant = async (req, res, next) => {
   try {
     const product = await Product.findOne({ where: { id: req.params.id, businessId: req.auth.businessId } });
@@ -887,11 +1248,24 @@ const getProductosPorLocal = async (req, res, next) => {
     const whereProducto = { businessId: req.auth.businessId, activo: true };
     if (q) {
       const texto = `%${String(q).trim()}%`;
+      // Mismo criterio que el listado de productos: el SKU que se tiene en la
+      // mano es el de la variante.
+      const conVariante = await ProductVariant.findAll({
+        where: {
+          businessId: req.auth.businessId,
+          [Op.or]: [{ sku: { [like]: texto } }, { codigoBarras: { [like]: texto } }],
+        },
+        attributes: ['productId'],
+        group: ['productId'],
+      });
+      const idsPorVariante = conVariante.map((v) => v.productId);
+
       whereProducto[Op.or] = [
         { titulo: { [like]: texto } },
         { sku: { [like]: texto } },
         { skuAgrupador: { [like]: texto } },
         { categoria: { [like]: texto } },
+        ...(idsPorVariante.length ? [{ id: { [Op.in]: idsPorVariante } }] : []),
       ];
     }
 
@@ -1413,4 +1787,4 @@ const importProducts = async (req, res, next) => {
   } catch (error) { next(error); }
 };
 
-module.exports = { getProducts, getProduct, createProduct, updateProduct, deleteProduct, addVariant, updateVariant, deleteVariant, adjustStock, getVariantMovements, getStockMovements, getStockPorLocal, getProductosPorLocal, getVariantesPorLocal, transferirStock, getIngresosDelDia, ajusteMasivo, preciosMasivo, generarEtiquetasPdf, exportProducts, importProducts, scanLookup, scanAdjustStock };
+module.exports = { getProducts, buscarVariantes, agregarVariantesMasivo, getProductPadreBySkuVariante, getProduct, createProduct, updateProduct, deleteProduct, addVariant, updateVariant, deleteVariant, adjustStock, getVariantMovements, getStockMovements, getStockPorLocal, getProductosPorLocal, getVariantesPorLocal, transferirStock, getIngresosDelDia, ajusteMasivo, preciosMasivo, generarEtiquetasPdf, exportProducts, importProducts, scanLookup, scanAdjustStock };

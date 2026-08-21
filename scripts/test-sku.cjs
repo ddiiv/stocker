@@ -123,9 +123,49 @@ const comp = (agrupador, pares, regla = R) =>
         ? [{ nombre: existente.variante2Nombre || 'Talle', valores: [existente.variante2Valor] }]
         : []),
     ],
-    regla: { caracteres: 50 },   // el valor entero: reproduce el SKU existente
+    /*
+     * La regla real del negocio, no una inventada.
+     *
+     * Antes decía `{ caracteres: 50 }` para reproducir SKUs que el demo armaba
+     * con el valor entero. Desde que el demo usa la misma regla que la
+     * aplicación, forzar otra hace que la vista previa arme un código distinto
+     * del guardado y el test falle por el motivo equivocado.
+     */
+    regla: await sku.reglaDe(negocio.id),
   });
   chk('marca como existente lo que ya está', true, contra.filas.some((f) => f.yaExiste));
+
+  tit('9. BUSCAR PRODUCTOS POR EL SKU DE LA VARIANTE');
+  /*
+   * Es como se busca en el mostrador: lo impreso en la etiqueta es el SKU de la
+   * variante, no el del producto padre. Antes eso no devolvía nada y había que
+   * adivinar el nombre del producto.
+   */
+  const API = process.env.API || 'http://localhost:3000';
+  let cookie = '';
+  const pedir = async (ruta, cuerpo) => {
+    const r = await fetch(`${API}${ruta}`, {
+      method: cuerpo ? 'POST' : 'GET',
+      headers: { 'Content-Type': 'application/json', ...(cookie ? { Cookie: cookie } : {}) },
+      body: cuerpo ? JSON.stringify(cuerpo) : undefined,
+    });
+    const set = r.headers.getSetCookie?.() || [];
+    if (set.length) cookie = set.map((c) => c.split(';')[0]).join('; ');
+    return r.json().catch(() => null);
+  };
+  await pedir('/api/auth/login', { email: 'demo@stocker.app', password: 'Demo2026!!' });
+
+  const buscar = async (q) => (await pedir(`/api/products?search=${encodeURIComponent(q)}&limit=50`))?.total ?? -1;
+  const unaVariante = await ProductVariant.findOne({
+    where: { businessId: negocio.id, codigoBarras: { [require('sequelize').Op.ne]: null } },
+    include: [{ association: 'producto', attributes: ['titulo'] }],
+  });
+
+  chk('el SKU completo de la variante encuentra su producto', 1, await buscar(unaVariante.sku));
+  chk('un pedazo del SKU también',        true, (await buscar(unaVariante.sku.slice(-6))) >= 1);
+  chk('el código de barras encuentra su producto', 1, await buscar(unaVariante.codigoBarras));
+  chk('el título sigue funcionando',      true, (await buscar(unaVariante.producto.titulo)) >= 1);
+  chk('algo inexistente no devuelve nada',   0, await buscar('NO-EXISTE-' + Date.now()));
 
   console.log(`\n\x1b[1m─────────────────────────────\x1b[0m\n  \x1b[32mPasaron: ${ok}\x1b[0m   \x1b[31mFallaron: ${ko}\x1b[0m`);
   process.exit(ko ? 1 : 0);

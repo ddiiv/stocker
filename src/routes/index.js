@@ -166,6 +166,10 @@ r.get   ('/employees/:id/sessions', requireAuth, requirePermission('empleados','
 r.post  ('/employees',              requireAuth, requirePermission('empleados','editar'), employeeCtrl.createEmployee);
 r.put   ('/employees/:id',          requireAuth, requirePermission('empleados','editar'), employeeCtrl.updateEmployee);
 r.patch ('/employees/:id/toggle',   requireAuth, requirePermission('empleados','editar'), employeeCtrl.toggleActive);
+// Levantar el bloqueo por intentos fallidos: sólo el dueño. Es una decisión de
+// seguridad —si fue un ataque o alguien que se equivocó de tecla—, y no algo
+// que se delegue con el módulo de empleados.
+r.post  ('/employees/:id/desbloquear', requireAuth, requireOwner, employeeCtrl.desbloquear);
 r.delete('/employees/:id',          requireAuth, requirePermission('empleados','editar'), employeeCtrl.deleteEmployee);
 
 // ── Clients ───────────────────────────────────────────────────────
@@ -234,6 +238,11 @@ r.delete('/business-cuits/:id', requireAuth, requirePermission('facturacion','ed
 r.get   ('/products',                                     requireAuth, requirePermission('stock','ver'),    productCtrl.getProducts);
 r.get   ('/products/export',                              requireAuth, requirePermission('stock','ver'),    productCtrl.exportProducts);
 r.post  ('/products/import',    requireAuth, requirePermission('stock','editar'), requireFeature(FEATURES.IMPORTACION_MASIVA), upload.single('file'),    productCtrl.importProducts);
+r.get   ('/products/sku/:skuV', requireAuth, requirePermission('stock','ver'),    productCtrl.getProductPadreBySkuVariante);
+// Buscador de variantes para el alta de ventas. Vale con ver stock o ver
+// ventas: quien vende necesita encontrar la prenda aunque no tenga el módulo
+// de stock, y es sólo consulta.
+r.get   ('/products/buscar-variantes',                    requireAuth, requireAnyPermission(['stock','ventas'],'ver'), productCtrl.buscarVariantes);
 // Escaneo con lector de barras — antes de /products/:id para que no lo capture
 r.get   ('/products/scan/:codigo',                        requireAuth, requirePermission('stock','ver'),    productCtrl.scanLookup);
 r.post  ('/products/scan/stock',                          requireAuth, requirePermission('stock','editar'), productCtrl.scanAdjustStock);
@@ -242,6 +251,9 @@ r.post  ('/products',                                     requireAuth, requirePe
 r.put   ('/products/:id',                                 requireAuth, requirePermission('stock','editar'), productCtrl.updateProduct);
 r.delete('/products/:id',                                 requireAuth, requirePermission('stock','editar'), productCtrl.deleteProduct);
 r.post  ('/products/:id/variants',                        requireAuth, requirePermission('stock','editar'), productCtrl.addVariant);
+// Alta por combinatoria desde la tabla maestra de variantes. Sin `confirmar`
+// sólo devuelve el plan, así la pantalla muestra exactamente lo que va a grabar.
+r.post  ('/products/:id/variants/masivo',                 requireAuth, requirePermission('stock','editar'), productCtrl.agregarVariantesMasivo);
 r.put   ('/products/variants/:variantId',                 requireAuth, requirePermission('stock','editar'), productCtrl.updateVariant);
 r.delete('/products/variants/:variantId',                 requireAuth, requirePermission('stock','editar'), productCtrl.deleteVariant);
 r.patch ('/products/variants/:variantId/stock',           requireAuth, requirePermission('stock','editar'), productCtrl.adjustStock);

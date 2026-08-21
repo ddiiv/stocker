@@ -16,6 +16,7 @@ const {
   ClientAccountEntry, VariantType, BusinessArcaConfig, Subscription,
   SubscriptionPayment, MercadoLibreAccount, MercadoLibreLink,
 } = require('../src/models');
+const skuService = require('../src/services/skuService');
 
 const DEMO_EMAIL = 'demo@stocker.app';
 const DEMO_PASSWORD = 'Demo2026!!';
@@ -204,6 +205,19 @@ async function seed() {
     { titulo: 'Buzo Canguro Oversize', categoria: 'Buzos', costo: 8100, minorista: 24900, mayorista: 18900, colores: ['Beige','Negro','Verde'], talles: ['S','M','L'] },
   ];
 
+  /*
+   * La regla de SKU del negocio, la misma con la que la aplicación arma los
+   * códigos: así el demo no queda con dos formatos distintos conviviendo.
+   *
+   * Las abreviaturas no son decorado: "Azul Claro" y "Azul Oscuro" dan las dos
+   * AZU con tres letras, y sin excepción sus seis variantes chocarían. Es
+   * además el caso que hace entender para qué sirve la pantalla de confección.
+   */
+  await skuService.guardarRegla(business.id, {
+    abreviaturas: { Color: { 'Azul Claro': 'AZC', 'Azul Oscuro': 'AZO' } },
+  });
+  const regla = await skuService.reglaDe(business.id);
+
   const variantesCreadas = []; // { variant, product, categoria }
   for (let i = 0; i < catalogo.length; i++) {
     const c = catalogo[i];
@@ -225,9 +239,21 @@ async function seed() {
         // Truncar color y talle por separado (no la concatenación) para que
         // combinaciones largas no colapsen al mismo sufijo, ej. "Azul OscuroS"
         // y "Azul OscuroM" perdiendo la letra de talle al cortar a 10 chars.
-        const colorAbrev = color.replace(/\s/g, '').toUpperCase().slice(0, 6);
-        const talleAbrev = String(talle).replace(/\s/g, '').toUpperCase().slice(0, 4);
-        const suf = `${colorAbrev}${talleAbrev}`;
+        /*
+         * El SKU lo arma la misma regla del negocio que usa la aplicación.
+         *
+         * Antes se abreviaba acá con otra fórmula (6 letras del color, 4 del
+         * talle) y salía BA-010-BEIGEM, mientras que cualquier variante creada
+         * después desde la pantalla salía BA-010-BEIM, con las 3 letras que
+         * manda la regla. Dos formatos conviviendo dentro del mismo producto
+         * hacen dudar de cuál es el correcto justo en el dato que se lee del
+         * código de barras.
+         */
+        const skuVariante = await skuService.liberar(business.id, skuService.componer({
+          agrupador: skuAgrupador,
+          valores: [{ eje: 'Color', valor: color }, { eje: 'Talle', valor: talle }],
+          regla,
+        }));
         /*
          * Nace en cero: el stock entra después, repartido por local y con su
          * movimiento de ingreso. Ponerlo acá dejaría el total con un número y
@@ -237,7 +263,7 @@ async function seed() {
         const variant = await ProductVariant.create({
           productId: product.id,
           businessId: business.id,
-          sku: `${skuBase}-${suf}`,
+          sku: skuVariante,
           codigoBarras: `779${String(rand(1000000, 9999999))}`,
           variante1Nombre: 'Color', variante1Valor: color,
           variante2Nombre: 'Talle', variante2Valor: talle,

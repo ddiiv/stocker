@@ -506,7 +506,9 @@ const createSale = async (req, res, next) => {
                 : `Sólo quedan ${disponible} de ${nombre} (${variant.sku}) en ${nombreLocalVenta} y estás vendiendo ${item.cantidad}.`)
               + (enOtros > 0 ? ` Hay ${enOtros} en total entre todos los locales: transferilo desde Stock.` : '')
             ),
-            { status: 409 }
+            // La pantalla lo usa para ofrecer registrarla como cotización en
+            // vez de dejar al cajero sin salida con el cliente enfrente.
+            { status: 409, detalles: { codigo: 'SIN_STOCK' } }
           );
         }
       }
@@ -543,8 +545,10 @@ const createSale = async (req, res, next) => {
     // En una venta fiada no hay medios que calcular: se ignora lo que llegue
     // en `pagos` para que el frontend no pueda dejar un cobro anotado sobre
     // plata que todavía no entró.
+    // Una cotización tampoco cobra: es un presupuesto. Si llegaran `pagos`
+    // se guardarían líneas de cobro sobre plata que nadie entregó.
     const { lineas, recargoPagos, totalCobrado, resumen } =
-      await calcularPagos(esFiado ? null : pagos, total, req.auth.businessId);
+      await calcularPagos(esFiado || tipo === 'cotizacion' ? null : pagos, total, req.auth.businessId);
 
     const sale = await Sale.create({
       businessId:  req.auth.businessId,

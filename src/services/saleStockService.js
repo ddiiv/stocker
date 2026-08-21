@@ -62,7 +62,7 @@ async function descontarStockVenta(sale, t, { employeeId = null, motivo = null }
           `Hay ${Number(variant.stock) || 0} en total entre todos los locales: ` +
           `transferilo desde Stock o ajustá la venta.`
         ),
-        { status: 409 }
+        { status: 409, detalles: { codigo: 'SIN_STOCK' } }
       );
     }
 

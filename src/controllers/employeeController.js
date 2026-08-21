@@ -2,6 +2,7 @@ const bcrypt = require('bcryptjs');
 const { Employee, BusinessLocation, Role, EmployeeSession } = require('../models');
 const identidad = require('../services/identityRegistry');
 const { exigirCupo } = require('../services/planService');
+const bloqueo = require('../services/bloqueoService');
 
 const sanitize = (e) => { const { passwordHash, ...s } = e.toJSON(); return s; };
 
@@ -13,7 +14,61 @@ const getEmployees = async (req, res, next) => {
       include: [{ association: 'cargo' }, { association: 'local', attributes: ['id', 'nombre'] }],
       order: [['nombre', 'ASC']],
     });
-    res.json(employees.map(sanitize));
+
+    /*
+     * Quién está trabado por intentos fallidos.
+     *
+     * Viaja con la lista y no en un pedido aparte: el dueño se entera del
+     * bloqueo porque la empleada se lo dice desde el mostrador, y tiene que
+     * poder verlo y levantarlo en la misma pantalla donde ya está.
+     */
+    const estados = await bloqueo.estadoDeCuentas(employees.map((e) => e.email));
+
+    res.json(employees.map((e) => ({
+      ...sanitize(e),
+      bloqueo: estados.get(String(e.email || '').trim().toLowerCase()) || { bloqueado: false, fallos: 0 },
+    })));
+  } catch (error) { next(error); }
+};
+
+/*
+ * POST /api/employees/:id/desbloquear
+ *
+ * Levanta el bloqueo por intentos fallidos de un empleado del negocio.
+ *
+ * El bloqueo existe para frenar a quien prueba contraseñas, no para castigar a
+ * quien se equivocó tres veces con clientes esperando. El dueño sabe cuál de
+ * los dos casos es y puede decidirlo; el sistema, no.
+ *
+ * Sólo alcanza a los empleados de su propio negocio, y sólo limpia el conteo
+ * por cuenta: el de la IP sigue en pie, así esto no sirve para tapar un ataque.
+ */
+const desbloquear = async (req, res, next) => {
+  try {
+    const employee = await Employee.findOne({
+      where: { id: req.params.id, businessId: req.auth.businessId },
+    });
+    if (!employee) return res.status(404).json({ message: 'Empleado no encontrado.' });
+    if (!employee.email) return res.status(400).json({ message: 'Este empleado no tiene email, así que no puede estar bloqueado.' });
+
+    await bloqueo.desbloquearCuenta(employee.email);
+
+    /*
+     * Se vuelve a mirar el estado después de limpiar.
+     *
+     * Si los intentos vinieron todos de la misma red, el bloqueo por IP sigue
+     * activo y la persona va a seguir sin poder entrar. Decirlo acá evita que
+     * el dueño apriete el botón, vea "listo" y se entere por su empleada de que
+     * no cambió nada.
+     */
+    const sigue = await bloqueo.revisar({ req, identificador: employee.email });
+    res.json({
+      ok: true,
+      mensaje: sigue
+        ? `Se limpiaron los intentos de ${employee.nombre}, pero sigue bloqueado por la cantidad de intentos desde esa red: faltan ${sigue.minutos} minuto${sigue.minutos === 1 ? '' : 's'}.`
+        : `${employee.nombre} ya puede volver a entrar.`,
+      sigueBloqueado: Boolean(sigue),
+    });
   } catch (error) { next(error); }
 };
 
@@ -161,4 +216,4 @@ const getSessions = async (req, res, next) => {
   } catch (error) { next(error); }
 };
 
-module.exports = { getEmployees, getEmployee, createEmployee, updateEmployee, toggleActive, deleteEmployee, getSessions };
+module.exports = { getEmployees, desbloquear, getEmployee, createEmployee, updateEmployee, toggleActive, deleteEmployee, getSessions };

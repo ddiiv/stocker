@@ -202,6 +202,83 @@ const frenarSiBloqueado = (tipo) => async (req, res, next) => {
   }
 };
 
+/*
+ * Estado de bloqueo de varias cuentas a la vez.
+ *
+ * Es para la pantalla de empleados del dueño: sin esto habría que preguntar de
+ * a una y la lista dispararía una consulta por empleado.
+ *
+ * Mira sólo el eje POR CUENTA. El bloqueo por IP no es de la persona sino del
+ * lugar desde donde se intentó, y mostrarlo en la ficha de un empleado haría
+ * pensar que el problema es suyo cuando puede ser el de al lado.
+ */
+async function estadoDeCuentas(emails = []) {
+  const limpios = [...new Set(emails.map(limpiarEmail).filter(Boolean))];
+  const estado = new Map(limpios.map((e) => [e, null]));
+  if (!limpios.length) return estado;
+
+  const desde = haceMinutos(VENTANA_MIN);
+  const filas = await AuthAttempt.findAll({
+    where: { identificador: { [Op.in]: limpios }, exito: false, fecha: { [Op.gte]: desde } },
+    order: [['fecha', 'DESC']],
+    attributes: ['identificador', 'fecha'],
+  });
+
+  const porCuenta = new Map();
+  for (const f of filas) {
+    const k = f.identificador;
+    if (!porCuenta.has(k)) porCuenta.set(k, []);
+    porCuenta.get(k).push(f.fecha);
+  }
+
+  // Los fallos del último día deciden cuánto dura, igual que en `revisar`.
+  const fallosDia = await AuthAttempt.findAll({
+    where: { identificador: { [Op.in]: limpios }, exito: false, fecha: { [Op.gte]: haceMinutos(24 * 60) } },
+    attributes: ['identificador'],
+  });
+  const cuentaDia = new Map();
+  for (const f of fallosDia) cuentaDia.set(f.identificador, (cuentaDia.get(f.identificador) || 0) + 1);
+
+  for (const [email, fechas] of porCuenta) {
+    if (fechas.length < TOPE_POR_CUENTA) {
+      estado.set(email, { bloqueado: false, fallos: fechas.length });
+      continue;
+    }
+    const hasta = enMinutos(fechas[0], duracionPara(cuentaDia.get(email) || fechas.length));
+    if (hasta <= new Date()) { estado.set(email, { bloqueado: false, fallos: fechas.length }); continue; }
+    estado.set(email, {
+      bloqueado: true,
+      fallos: fechas.length,
+      hasta,
+      minutos: Math.max(1, Math.ceil((hasta - Date.now()) / 60000)),
+    });
+  }
+  for (const email of limpios) {
+    if (!estado.get(email)) estado.set(email, { bloqueado: false, fallos: 0 });
+  }
+  return estado;
+}
+
+/*
+ * Levanta el bloqueo de una cuenta, a pedido de quien administra el negocio.
+ *
+ * Distinto de `limpiar`, que borra sólo lo de la misma IP porque lo dispara el
+ * propio que acertó la contraseña. Acá el que decide es el dueño, que sabe que
+ * su empleada se equivocó tres veces, y esperar quince minutos con clientes en
+ * el mostrador no es una opción.
+ *
+ * Borra únicamente los fallos DE ESA CUENTA. El conteo por IP queda intacto a
+ * propósito: si alguien está probando cuentas desde una red, esto no puede
+ * servir para borrar el rastro.
+ */
+async function desbloquearCuenta(email) {
+  const cuenta = limpiarEmail(email);
+  if (!cuenta) return 0;
+  const borrados = await AuthAttempt.destroy({ where: { identificador: cuenta, exito: false } });
+  log.info('bloqueo', 'bloqueo levantado a mano', { cuenta: mask.email(cuenta), borrados });
+  return borrados;
+}
+
 /** Borra historial viejo. Se llama al arrancar. */
 async function purgar() {
   try {
@@ -218,5 +295,6 @@ async function purgar() {
 
 module.exports = {
   registrar, limpiar, revisar, frenarSiBloqueado, purgar,
+  estadoDeCuentas, desbloquearCuenta,
   VENTANA_MIN, TOPE_POR_IP, TOPE_POR_CUENTA,
 };
