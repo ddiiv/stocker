@@ -9,11 +9,12 @@ import { canEdit } from "../utils/permissions";
 import { GrupoFiltro, OpcionFiltro } from "../components/ui/Filtros";
 import { PageHeader, Card, EmptyState } from "../components/ui/Layout";
 import AddVariantModal from "../components/products/AddVariantModal";
+import BulkVariantsModal from "../components/products/BulkVariantsModal";
 import EditProductModal from "../components/products/EditProductModal";
 import CargaRapidaStock from "../components/products/CargaRapidaStock";
 import CeldaPrecio from "../components/products/CeldaPrecio";
 import { formatCurrency } from "../utils/formatters";
-import { Boxes, PencilLine, Check, X, Wand2, Loader2, Tag, ListPlus, Store, MapPin } from "lucide-react";
+import { Boxes, PencilLine, Check, X, Wand2, Loader2, Tag, ListPlus, Store, MapPin, LayoutGrid } from "lucide-react";
 
 export default function ProductDetailPage() {
   /*
@@ -28,6 +29,7 @@ export default function ProductDetailPage() {
   const [group, setGroup] = useState(null);
   const [loading, setLoading] = useState(true);
   const [addOpen, setAddOpen] = useState(false);
+  const [masivoOpen, setMasivoOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [orden, setOrden] = useState("talle");
   const [cargaRapida, setCargaRapida] = useState(false);
@@ -126,6 +128,12 @@ export default function ProductDetailPage() {
         group={group}
         onCreate={handleCreateVariant}
       />
+      <BulkVariantsModal
+        open={masivoOpen}
+        onClose={() => setMasivoOpen(false)}
+        group={group}
+        onCreated={load}
+      />
       <EditProductModal
         open={editOpen}
         onClose={() => setEditOpen(false)}
@@ -151,6 +159,9 @@ export default function ProductDetailPage() {
                 <ListPlus size={15} /> {cargaRapida ? "Salir de carga rápida" : "Cargar stock"}
               </button>
               <button className="btn-ghost" onClick={() => setEditOpen(true)}><PencilLine size={15} /> Editar producto</button>
+              {/* La combinatoria desde la tabla maestra es el camino rápido; el
+                  alta de a una queda para el caso suelto que no está en la tabla. */}
+              <button className="btn-ghost" onClick={() => setMasivoOpen(true)}><LayoutGrid size={15} /> Desde tabla maestra</button>
               <button className="btn-accent" onClick={() => setAddOpen(true)}><Plus size={15} /> Nueva variante</button>
             </>
           )}

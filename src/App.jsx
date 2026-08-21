@@ -7,6 +7,7 @@ import CashPage from "./pages/CashPage";
 import AccountPage from "./pages/AccountPage";
 import SubscriptionPage from "./pages/SubscriptionPage";
 import PermissionRoute from "./components/layout/PermissionRoute";
+import OwnerRoute from "./components/layout/OwnerRoute";
 import AppLayout from "./components/layout/AppLayout";
 
 import LoginPage from "./pages/LoginPage";
@@ -74,9 +75,9 @@ export default function App() {
             <Route path="/facturacion/cuits/:cuitId/arca" element={<PermissionRoute permission="facturacion" level="editar"><ArcaConfigPage /></PermissionRoute>} />
             <Route path="/clientes"                     element={<PermissionRoute permission="clientes"><ClientsPage /></PermissionRoute>} />
             <Route path="/clientes/cuentas"             element={<PermissionRoute permission="clientes"><ClientAccountsPage /></PermissionRoute>} />
-            <Route path="/cuenta"                       element={<AccountPage />} />
+            <Route path="/cuenta"                       element={<OwnerRoute><AccountPage /></OwnerRoute>} />
             {/* Suscripción: la ve el dueño, no los empleados. */}
-            <Route path="/cuenta/suscripcion"           element={<SubscriptionPage />} />
+            <Route path="/cuenta/suscripcion"           element={<OwnerRoute><SubscriptionPage /></OwnerRoute>} />
             <Route path="/pagos"                        element={<PermissionRoute permission="pagos"><PaymentMethodsPage /></PermissionRoute>} />
             <Route path="/caja"                         element={<PermissionRoute permission="caja"><CashPage /></PermissionRoute>} />
             <Route path="/empleados"                    element={<PermissionRoute permission="empleados"><EmployeesPage /></PermissionRoute>} />

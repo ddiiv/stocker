@@ -14,7 +14,7 @@ import {
   BadgeCheck,
 } from "lucide-react";
 import { useAuth } from "../../context/AuthContext";
-import { canView } from "../../utils/permissions";
+import { canView, esAdministradorTotal } from "../../utils/permissions";
 
 const ALL_LINKS = [
   { to: "/dashboard",   label: "Dashboard",             icon: LayoutDashboard, permission: "dashboard" },
@@ -34,7 +34,10 @@ const ALL_LINKS = [
 
 export default function Sidebar({ open, onClose }) {
   const { user } = useAuth();
-  const esDuenio = !user?.employeeId;
+  // La sesión del empleado no trae `employeeId` sino `id` y `type: "employee"`,
+  // así que preguntar por `employeeId` daba dueño siempre y todos veían el link
+  // de Suscripción, que después les respondía 403.
+  const esDuenio = esAdministradorTotal(user);
   const links = ALL_LINKS.filter((l) => (l.soloDuenio ? esDuenio : canView(user, l.permission)));
   return (
     <>

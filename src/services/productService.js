@@ -142,8 +142,12 @@ export async function importProductsExcel(file) {
 }
 
 /** Identifica un producto por el código que devuelve el lector de barras. */
-export async function scanProduct(codigo) {
-  const { data } = await http.get(`/products/scan/${encodeURIComponent(codigo)}`);
+export async function scanProduct(codigo, locationId = null) {
+  const { data } = await http.get(`/products/scan/${encodeURIComponent(codigo)}`, {
+    // Con local, la respuesta trae además el stock en ese local: es el que
+    // decide si la venta se puede hacer o hay que pasarla a cotización.
+    params: locationId ? { locationId } : undefined,
+  });
   return data;
 }
 
@@ -259,5 +263,18 @@ export async function fetchIngresosDelDia({ fecha, locationId } = {}) {
   if (fecha) params.fecha = fecha;
   if (locationId) params.locationId = locationId;
   const { data } = await http.get("/stock/ingresos", { params });
+  return data;
+}
+
+/*
+ * Alta de variantes por combinatoria, tomando los valores de la tabla maestra.
+ *
+ * Sin `confirmar` el servidor devuelve el plan —qué se crearía y qué se omite
+ * por existir ya—, y con `confirmar` lo ejecuta. Es el mismo cálculo en los dos
+ * casos a propósito: la vista previa tiene que ser lo que se graba, no una
+ * cuenta parecida hecha en el navegador.
+ */
+export async function variantesMasivo(productId, payload) {
+  const { data } = await http.post(`/products/${productId}/variants/masivo`, payload);
   return data;
 }

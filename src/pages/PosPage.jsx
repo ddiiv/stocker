@@ -45,6 +45,8 @@ export default function PosPage() {
   const [cobrando, setCobrando] = useState(false);
   const [ultimaVenta, setUltimaVenta] = useState(null);
   const [faltaTurno, setFaltaTurno] = useState(false);
+  // El backend rechazó la venta por stock: se ofrece pasarla a cotización.
+  const [sinStockServidor, setSinStockServidor] = useState(false);
   const [resaltado, setResaltado] = useState(null);
   const inputRef = useRef(null);
   const resaltadoTimer = useRef(null);
@@ -74,6 +76,35 @@ export default function PosPage() {
     inputRef.current?.focus();
   }, [puedeElegirVendedor]);
 
+  /*
+   * De qué local sale la mercadería.
+   *
+   * El dueño lo elige; el empleado tiene el suyo. Es el que decide qué stock
+   * mirar: el total del negocio no sirve, porque las unidades pueden estar en
+   * la otra sucursal.
+   */
+  const localEfectivo = puedeElegirVendedor ? locationId : (user?.local?.id || "");
+
+  // Cambiar de local cambia el stock disponible de todo lo que ya está en el
+  // carrito, así que hay que volver a preguntarlo.
+  useEffect(() => {
+    if (!localEfectivo || items.length === 0) return;
+    let cancelado = false;
+    (async () => {
+      const frescos = await Promise.all(items.map(async (i) => {
+        try {
+          const p = await scanProduct(i.sku, localEfectivo);
+          return { ...i, stock: p.stock, enLocal: p.enLocal };
+        } catch { return i; }
+      }));
+      if (!cancelado) setItems(frescos);
+    })();
+    return () => { cancelado = true; };
+    // Sólo al cambiar de local: agregar `items` volvería a pedir todo en cada
+    // escaneo, que ya trae su propio stock.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [localEfectivo]);
+
   const totalUnidades = items.reduce((s, i) => s + i.cantidad, 0);
   const esMayorista = totalUnidades >= UMBRAL_MAYORISTA;
   const precioDe = (i) => (esMayorista ? i.precioMayorista : i.precioMinorista);
@@ -97,8 +128,29 @@ export default function PosPage() {
    */
   const hayLocal = puedeElegirVendedor ? Boolean(locationId) : Boolean(user?.local?.id);
 
+  /*
+   * Líneas sin stock en este local.
+   *
+   * `enLocal` puede venir en null (todavía no se preguntó, o no hay local
+   * elegido): eso no es "sin stock", es "no se sabe", y no tiene que disparar
+   * la cotización.
+   */
+  const faltantes = items.filter(
+    (i) => i.enLocal !== null && i.enLocal !== undefined && i.cantidad > Number(i.enLocal)
+  );
+  /*
+   * Sin stock la operación pasa a ser cotización.
+   *
+   * Puede pasar que la mercadería esté en el local pero todavía no cargada en
+   * el sistema, y el cliente está esperando. En vez de frenar la venta se deja
+   * el comprobante hecho como presupuesto, que después se convierte en venta
+   * desde Ventas y cotizaciones cuando el stock aparezca.
+   */
+  const seraCotizacion = faltantes.length > 0 || sinStockServidor;
+
   const puedeCobrar = items.length > 0 && !cobrando && hayLocal && (
-    esFiado ? Boolean(clientId) : (metodos.length > 0 && pagosCuadran)
+    // Una cotización no cobra: no necesita medios de pago ni cliente.
+    seraCotizacion ? true : (esFiado ? Boolean(clientId) : (metodos.length > 0 && pagosCuadran))
   );
 
   // El botón muestra lo que hay que pedirle al cliente, recargo incluido.
@@ -107,9 +159,9 @@ export default function PosPage() {
   const totalBoton = esFiado ? total : totalCobro;
 
   async function procesarCodigo(codigo) {
-    setError("");
+    setError(""); setSinStockServidor(false);
     try {
-      const p = await scanProduct(codigo);
+      const p = await scanProduct(codigo, localEfectivo || null);
       setItems((prev) => {
         const existente = prev.find((i) => i.id === p.id);
         if (existente) {
@@ -144,30 +196,35 @@ export default function PosPage() {
   }
 
   function cambiarCantidad(id, delta) {
+    setSinStockServidor(false);
     setItems((prev) => prev
       .map((i) => (i.id === id ? { ...i, cantidad: i.cantidad + delta } : i))
       .filter((i) => i.cantidad > 0));
   }
 
-  function quitar(id) { setItems((prev) => prev.filter((i) => i.id !== id)); }
+  function quitar(id) { setSinStockServidor(false); setItems((prev) => prev.filter((i) => i.id !== id)); }
 
-  async function cobrar() {
+  async function cobrar(forzarCotizacion = false) {
     if (!items.length) return;
+    const cotiza = forzarCotizacion === true || seraCotizacion;
     setCobrando(true); setError("");
     try {
       const venta = await createSale({
-        tipo: "venta",
+        tipo: cotiza ? "cotizacion" : "venta",
         fecha: new Date().toISOString().slice(0, 10),
         // Sin cliente elegido la venta es a consumidor final. Fiando el
         // backend la rechaza, porque la deuda necesita dueño.
         clientId: clientId ? Number(clientId) : null,
         locationId: locationId || null,
         employeeId: employeeId || null,
-        condicionPago,
-        // Fiada queda pendiente y sin medio de pago: se elige al cobrarla.
-        ...(esFiado
-          ? { descontarStock: seLoLleva }
-          : { estado: "pagado", pagos: lineasParaApi(pagos, metodos, total) }),
+        // Una cotización no se fía ni se cobra: queda como presupuesto y el
+        // local se guarda igual, para que al convertirla el stock salga de acá.
+        condicionPago: cotiza ? "contado" : condicionPago,
+        ...(cotiza
+          ? {}
+          : esFiado
+            ? { descontarStock: seLoLleva }
+            : { estado: "pagado", pagos: lineasParaApi(pagos, metodos, total) }),
         items: items.map((i) => ({ productVariantId: i.id, cantidad: i.cantidad })),
       });
       setUltimaVenta(venta);
@@ -176,6 +233,7 @@ export default function PosPage() {
       setBuscarCliente("");
       setCondicionPago("contado");
       setSeLoLleva(true);
+      setSinStockServidor(false);
       if (metodos.length) setPagos([{ paymentMethodId: metodos[0].id, monto: 0, ajusteManual: "" }]);
       inputRef.current?.focus();
     } catch (e) {
@@ -183,6 +241,13 @@ export default function PosPage() {
       // Sin turno abierto el backend responde 409: se ofrece el atajo para
       // abrirlo en vez de dejar al cajero adivinando qué falta.
       setFaltaTurno(e.response?.status === 409 && /turno de caja/i.test(msg));
+      /*
+       * Stock que se fue entre el escaneo y el cobro —lo vendió otra caja, o
+       * nunca estuvo cargado—. El backend lo marca con SIN_STOCK y acá se
+       * ofrece dejarla como cotización, que es la salida que sirve con el
+       * cliente esperando.
+       */
+      setSinStockServidor(e.response?.data?.codigo === "SIN_STOCK");
       setError(msg);
     } finally {
       setCobrando(false);
@@ -192,20 +257,26 @@ export default function PosPage() {
   // ── Pantalla de venta cerrada ───────────────────────────────────
   if (ultimaVenta) {
     const ventaFiada = ultimaVenta.condicionPago === "cuenta_corriente";
+    const esCotizacion = ultimaVenta.tipo === "cotizacion";
     return (
       <div>
         <PageHeader
-          title={ventaFiada ? "Venta fiada" : "Venta registrada"}
+          title={esCotizacion ? "Cotización registrada" : ventaFiada ? "Venta fiada" : "Venta registrada"}
           subtitle={`Comprobante ${ultimaVenta.numero}`}
         />
         <Card className="mx-auto max-w-md text-center">
           {/* Lo cobrado, no el neto: con recargo son importes distintos y el
               cajero necesita ver el que le pidió al cliente. Fiando no entró
               nada, así que se muestra lo que quedó anotado como deuda. */}
-          <p className={`font-display text-4xl font-semibold ${ventaFiada ? "text-brass-700" : "text-teal-600"}`}>
-            {formatCurrency(ventaFiada ? ultimaVenta.total : (ultimaVenta.totalCobrado || ultimaVenta.total))}
+          <p className={`font-display text-4xl font-semibold ${esCotizacion || ventaFiada ? "text-brass-700" : "text-teal-600"}`}>
+            {formatCurrency(esCotizacion || ventaFiada ? ultimaVenta.total : (ultimaVenta.totalCobrado || ultimaVenta.total))}
           </p>
-          {ventaFiada ? (
+          {esCotizacion ? (
+            <p className="mt-1 text-sm text-ink-600">
+              No se cobró ni se descontó stock. Cuando cargues la mercadería,
+              convertila en venta desde Ventas y cotizaciones.
+            </p>
+          ) : ventaFiada ? (
             <p className="mt-1 text-sm text-ink-600">
               Queda en la cuenta de {ultimaVenta.cliente?.nombre} {ultimaVenta.cliente?.apellido || ""}.
               El medio de pago se elige al cobrarla.
@@ -228,7 +299,7 @@ export default function PosPage() {
               <ScanLine size={15} /> Nueva venta
             </button>
             <button className="btn-ghost justify-center text-xs" onClick={() => navigate(`/ventas/${ultimaVenta.id}`)}>
-              Ver detalle de la venta
+              {esCotizacion ? "Ver detalle de la cotización" : "Ver detalle de la venta"}
             </button>
           </div>
         </Card>
@@ -299,8 +370,13 @@ export default function PosPage() {
                             {[i.variante1Valor, i.variante2Valor].filter(Boolean).length > 0 && (
                               <span className="ml-1">{[i.variante1Valor, i.variante2Valor].filter(Boolean).join(" · ")}</span>
                             )}
-                            {i.cantidad > i.stock && (
-                              <span className="ml-2 text-brick-500">Stock: {i.stock}</span>
+                            {/* El stock del local, que es de donde sale: el total
+                                del negocio haría creer que hay unidades acá. */}
+                            {i.enLocal !== null && i.enLocal !== undefined && i.cantidad > Number(i.enLocal) && (
+                              <span className="ml-2 text-brick-500">
+                                Sin stock acá: {i.enLocal}
+                                {Number(i.stock) > Number(i.enLocal) ? ` · ${i.stock} en otros locales` : ""}
+                              </span>
                             )}
                           </p>
                         </td>
@@ -496,16 +572,33 @@ export default function PosPage() {
             </Card>
           )}
 
+          {/* Sin stock no se puede vender, pero sí dejar el comprobante hecho.
+              El aviso va pegado al botón, que es donde se decide. */}
+          {seraCotizacion && items.length > 0 && (
+            <div className="rounded-md border border-brass-300 bg-brass-50 px-3 py-2 text-xs text-brass-800">
+              <p className="font-medium">Se va a registrar como cotización.</p>
+              <p className="mt-1">
+                {sinStockServidor
+                  ? "No hay stock suficiente para descontar, así que no se puede cerrar como venta."
+                  : `No hay stock en este local de ${faltantes.map((i) => i.sku).join(", ")}.`}
+                {" "}Queda como presupuesto, sin cobrar y sin descontar stock; cuando cargues
+                la mercadería la convertís en venta desde Ventas y cotizaciones.
+              </p>
+            </div>
+          )}
+
           <button
-            className="btn-accent w-full justify-center py-3 text-base"
+            className={`w-full justify-center py-3 text-base ${seraCotizacion ? "btn-primary" : "btn-accent"}`}
             disabled={!puedeCobrar}
-            onClick={cobrar}
+            onClick={() => cobrar()}
           >
             {cobrando
               ? <><Loader2 size={16} className="animate-spin" /> Registrando…</>
-              : esFiado
-                ? <><NotebookPen size={16} /> Fiar {formatCurrency(totalBoton)}</>
-                : <>Cobrar {formatCurrency(totalBoton)}</>}
+              : seraCotizacion
+                ? <><NotebookPen size={16} /> Guardar cotización {formatCurrency(total)}</>
+                : esFiado
+                  ? <><NotebookPen size={16} /> Fiar {formatCurrency(totalBoton)}</>
+                  : <>Cobrar {formatCurrency(totalBoton)}</>}
           </button>
           {items.length > 0 && (
             <button className="btn-ghost w-full justify-center text-xs text-brick-500" onClick={() => setItems([])}>

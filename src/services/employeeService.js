@@ -66,3 +66,15 @@ export async function createClient(payload) {
   const { data } = await http.post("/clients", payload);
   return data;
 }
+
+/*
+ * Levanta el bloqueo por intentos fallidos de un empleado.
+ *
+ * Devuelve un mensaje del servidor y no un simple ok: puede pasar que el
+ * bloqueo siga en pie por la cantidad de intentos desde esa red, y quien
+ * aprieta el botón tiene que enterarse ahí y no por su empleada.
+ */
+export async function desbloquearEmpleado(id) {
+  const { data } = await http.post(`/employees/${id}/desbloquear`);
+  return data;
+}

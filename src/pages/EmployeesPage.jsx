@@ -1,15 +1,26 @@
 import { useEffect, useState } from "react";
-import { Plus, Users, PencilLine, Power, MapPin, ShieldCheck, Activity, Monitor } from "lucide-react";
-import { fetchEmployees, fetchPos, fetchRoles, createEmployee, updateEmployee, toggleEmployeeActive, createLocation, createRole, updateRole, fetchEmployeeSessions } from "../services/employeeService";
+import { Plus, Users, PencilLine, Power, MapPin, ShieldCheck, Activity, Monitor, Lock, LockOpen } from "lucide-react";
+import { fetchEmployees, fetchPos, fetchRoles, createEmployee, updateEmployee, toggleEmployeeActive, createLocation, createRole, updateRole, fetchEmployeeSessions, desbloquearEmpleado } from "../services/employeeService";
 import { initials, formatDateTime } from "../utils/formatters";
 import { PageHeader, EmptyState, Card } from "../components/ui/Layout";
 import EmployeeFormModal from "../components/employees/EmployeeFormModal";
 import Modal from "../components/ui/Modal";
 import { useForm } from "react-hook-form";
-import { permisosVacios, PERM_MODULES } from "../utils/permissions";
+import { permisosVacios, PERM_MODULES, esAdministradorTotal } from "../utils/permissions";
 import PermissionsMatrix from "../components/employees/PermissionsMatrix";
+import { useAuth } from "../context/AuthContext";
 
 export default function EmployeesPage() {
+  /*
+   * Levantar un bloqueo es del titular de la cuenta y de nadie más.
+   *
+   * Es una decisión de seguridad —distinguir a quien se equivocó de tecla de
+   * quien está probando contraseñas—, así que no va con el módulo de empleados:
+   * un cargo con permiso de editar empleados administra gente, no el acceso.
+   */
+  const { user } = useAuth();
+  const esDuenio = esAdministradorTotal(user);
+
   const [employees, setEmployees] = useState([]);
   const [locations, setLocations] = useState([]);
   const [roles, setRoles] = useState([]);
@@ -39,6 +50,26 @@ export default function EmployeesPage() {
   }
 
   async function handleToggle(id) { await toggleEmployeeActive(id); await load(); }
+
+  /*
+   * Levantar el bloqueo por intentos fallidos.
+   *
+   * Se avisa con el mensaje del servidor porque no siempre alcanza: si los
+   * intentos vinieron todos de la misma red, el bloqueo por IP sigue corriendo
+   * y la persona no va a poder entrar igual.
+   */
+  const [desbloqueando, setDesbloqueando] = useState(null);
+  async function handleDesbloquear(e) {
+    setDesbloqueando(e.id);
+    try {
+      const r = await desbloquearEmpleado(e.id);
+      await load();
+      alert(r.mensaje);
+    } catch (err) {
+      alert(err.response?.data?.message || "No se pudo levantar el bloqueo.");
+    }
+    setDesbloqueando(null);
+  }
 
   return (
     <div>
@@ -87,9 +118,34 @@ export default function EmployeesPage() {
                   <td className="px-4 py-3 text-ink-700">{e.cargo?.nombre || "Sin cargo"}</td>
                   <td className="px-4 py-3 text-ink-700">{e.local?.nombre || "—"}</td>
                   <td className="px-4 py-3 text-ink-500 text-xs">{e.ultimaConexion ? new Date(e.ultimaConexion).toLocaleString("es-AR") : "Nunca"}</td>
-                  <td className="px-4 py-3"><span className={`badge ${e.activo ? "badge-ok" : "badge-out"}`}>{e.activo ? "Activo" : "Inactivo"}</span></td>
+                  <td className="px-4 py-3">
+                    <span className={`badge ${e.activo ? "badge-ok" : "badge-out"}`}>{e.activo ? "Activo" : "Inactivo"}</span>
+                    {/* El bloqueo por intentos fallidos no es lo mismo que estar
+                        inactivo: la cuenta está habilitada, pero el login no la
+                        deja pasar hasta que se venza. */}
+                    {e.bloqueo?.bloqueado && (
+                      <span
+                        className="badge badge-low ml-1"
+                        title={esDuenio
+                          ? `Se vence solo en ${e.bloqueo.minutos} min`
+                          : `Se vence solo en ${e.bloqueo.minutos} min. Sólo el dueño puede levantarlo antes.`}
+                      >
+                        <Lock size={11} className="mr-1" /> Bloqueado {e.bloqueo.minutos}′
+                      </span>
+                    )}
+                  </td>
                   <td className="px-4 py-3">
                     <div className="flex justify-end gap-1">
+                      {e.bloqueo?.bloqueado && esDuenio && (
+                        <button
+                          className="btn-ghost px-2 py-1.5 text-brass-700"
+                          title="Levantar el bloqueo por intentos fallidos"
+                          disabled={desbloqueando === e.id}
+                          onClick={() => handleDesbloquear(e)}
+                        >
+                          <LockOpen size={14} />
+                        </button>
+                      )}
                       <button className="btn-ghost px-2 py-1.5" title="Sesiones" onClick={() => setSessionsFor(e)}><Activity size={14} /></button>
                       <button className="btn-ghost px-2 py-1.5" title="Editar" onClick={() => { setEditing(e); setModalOpen(true); }}><PencilLine size={14} /></button>
                       <button className="btn-ghost px-2 py-1.5" title={e.activo ? "Desactivar" : "Activar"} onClick={() => handleToggle(e.id)}><Power size={14} /></button>

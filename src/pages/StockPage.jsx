@@ -123,7 +123,7 @@ export default function StockPage() {
       <div className="mb-5 flex items-center gap-3">
         <div className="relative flex-1 max-w-md">
           <Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-ink-400" />
-          <input className="input pl-9" placeholder="Buscar por título o SKU…" value={search} onChange={(e) => setSearch(e.target.value)} />
+          <input className="input pl-9" placeholder="Buscar por título, SKU o código de barras…" value={search} onChange={(e) => setSearch(e.target.value)} />
         </div>
         <button className="btn-ghost" onClick={() => load(search)}>
           <RefreshCw size={15} /> Actualizar

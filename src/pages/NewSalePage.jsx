@@ -147,7 +147,7 @@ export default function NewSalePage() {
               <input type="date" className="input ml-auto w-auto" value={fecha} onChange={(e) => setFecha(e.target.value)} />
             </div>
             {esMayorista && <p className="mb-3 rounded-md bg-teal-50 px-3 py-2 text-xs font-medium text-teal-600">✓ Precio MAYORISTA aplicado (≥ 3 prendas)</p>}
-            <ProductPicker onPick={addItem} />
+            <ProductPicker onPick={addItem} locationId={locationId || null} />
             <div className="mt-4 overflow-x-auto">
               {items.length === 0 ? (
                 <p className="py-8 text-center text-sm text-ink-500">Todavía no agregaste productos.</p>
