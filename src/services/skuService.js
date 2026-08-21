@@ -107,10 +107,22 @@ async function reglaDe(businessId) {
   return reglaCompleta(b?.reglaSku);
 }
 
+/*
+ * Guarda la regla, conservando lo que no venga en el pedido.
+ *
+ * Antes reemplazaba el objeto entero: un PUT con sólo `{ caracteres: 4 }`
+ * volvía las abreviaturas a cero sin decir nada, y con ellas los arreglos de
+ * los choques —"Azul Claro" y "Azul Oscuro" volviendo a ser los dos AZU—. Los
+ * SKU ya emitidos no cambian, así que el destrozo recién se ve la próxima vez
+ * que alguien crea una variante.
+ *
+ * La mezcla es de un nivel a propósito: mandar `abreviaturas` reemplaza el
+ * conjunto completo, que es lo que hace falta para poder borrar una.
+ */
 async function guardarRegla(businessId, regla) {
   const b = await Business.findByPk(businessId);
   if (!b) return null;
-  const limpia = reglaCompleta(regla);
+  const limpia = reglaCompleta({ ...(b.reglaSku || {}), ...(regla || {}) });
   await b.update({ reglaSku: limpia });
   return limpia;
 }

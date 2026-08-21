@@ -568,7 +568,7 @@ const agregarVariantesMasivo = async (req, res, next) => {
     });
     if (!product) { await t.rollback(); return res.status(404).json({ message: 'Producto no encontrado.' }); }
 
-    const { ejes = [], stock = 0, stockMinimo = 5, confirmar = false } = req.body;
+    const { ejes = [], stock = 0, stockMinimo = 5, confirmar = false, manuales = [] } = req.body;
     if (!Array.isArray(ejes) || ejes.length === 0) {
       await t.rollback();
       return res.status(400).json({ message: 'Elegí al menos un valor para generar variantes.' });
@@ -628,6 +628,53 @@ const agregarVariantesMasivo = async (req, res, next) => {
     }
 
     const regla = await skuService.reglaDe(req.auth.businessId);
+
+    /*
+     * Los SKU se resuelven contra TODO el negocio y contra el propio lote.
+     *
+     * Son únicos por negocio —hay un índice que lo impone—, así que no alcanza
+     * con que no se repitan dentro de este producto: el mismo código puede
+     * estar en otro. Y `estaLibre` consulta la base, que todavía no ve lo que
+     * se está por crear acá, así que el lote se lleva aparte: "Verde" y "Verde
+     * Agua" dan las dos VER y sin esto la segunda inserción moriría contra el
+     * índice.
+     *
+     * Se resuelve también cuando sólo se pide la vista previa. Si no, la
+     * pantalla mostraba un SKU y se grababa otro numerado.
+     */
+    const delLote = new Set();
+    const resolverSku = async (base) => {
+      const raiz = String(base).trim().slice(0, 90);
+      for (const intento of [raiz, ...Array.from({ length: 49 }, (_, i) => `${raiz}-${i + 2}`)]) {
+        if (delLote.has(intento)) continue;
+        if (await skuService.estaLibre(req.auth.businessId, intento)) { delLote.add(intento); return intento; }
+      }
+      return null;
+    };
+
+    /*
+     * SKU escritos a mano, por combinación.
+     *
+     * Cuando la regla choca, numerar es una salida de apuro: BA-010-VERS-2 no
+     * le dice nada a quien lo lee en la etiqueta. La otra salida es escribirlo
+     * —VAGS, el que el negocio hubiera elegido—, y tiene que poder hacerse acá
+     * mismo, sin salir a configurar la regla y volver.
+     *
+     * Se validan igual que los automáticos: contra todo el negocio y contra el
+     * propio lote. Un SKU a mano no es una excepción a la unicidad; es sólo
+     * otra forma de elegirlo.
+     */
+    const aMano = new Map();
+    // Cada valor puede venir como { eje, valor } o como texto suelto: la clave
+    // se arma con el valor, nunca con el objeto.
+    const valorDe = (v) => (v && typeof v === 'object' ? v.valor : v);
+    for (const m of Array.isArray(manuales) ? manuales : []) {
+      const vals = Array.isArray(m?.valores) ? m.valores : [];
+      const texto = String(m?.sku ?? '').trim();
+      if (!texto) continue;
+      aMano.set([clave(valorDe(vals[0])), clave(valorDe(vals[1]))].join('|'), texto);
+    }
+
     const aCrear = [];
     const omitidas = [];
     for (const combo of combos) {
@@ -635,10 +682,45 @@ const agregarVariantesMasivo = async (req, res, next) => {
       const previa = yaEstan.get(k);
       const etiqueta = combo.map((c) => c.valor).join(' · ');
       if (previa) { omitidas.push({ etiqueta, sku: previa.sku, motivo: 'ya existe' }); continue; }
+
+      const base = skuService.componer({ agrupador: product.skuAgrupador || product.sku, valores: combo, regla });
+      const escrito = aMano.get(k);
+
+      if (escrito) {
+        /*
+         * El motivo del rechazo se distingue, porque se arreglan distinto: uno
+         * es cambiar el texto, el otro es cambiar el que está más arriba en la
+         * misma tabla.
+         */
+        let motivo = null;
+        if (escrito.length > 100) motivo = 'Más de 100 caracteres.';
+        else if (delLote.has(escrito)) motivo = 'Repetido con otra fila de esta misma tabla.';
+        else if (!await skuService.estaLibre(req.auth.businessId, escrito)) motivo = 'Ya lo usa otra variante del negocio.';
+
+        if (!motivo) delLote.add(escrito);
+        aCrear.push({
+          etiqueta, valores: combo, sku: escrito, skuBase: base,
+          manual: true, choca: false,
+          libre: !motivo, motivo,
+        });
+        continue;
+      }
+
+      const sku = await resolverSku(base);
       aCrear.push({
         etiqueta,
         valores: combo,
-        sku: skuService.componer({ agrupador: product.skuAgrupador || product.sku, valores: combo, regla }),
+        sku,
+        /*
+         * `choca` avisa que la regla produjo un código ya tomado y hubo que
+         * numerarlo. Es la señal para escribirlo a mano o cargar una
+         * abreviatura, en vez de quedarse con el número.
+         */
+        choca: Boolean(sku) && sku !== base,
+        skuBase: base,
+        manual: false,
+        libre: Boolean(sku),
+        motivo: sku ? null : 'La regla no encontró ningún código libre.',
       });
     }
 
@@ -675,33 +757,26 @@ const agregarVariantesMasivo = async (req, res, next) => {
     }
 
     /*
-     * Los SKU se resuelven contra la base y contra el propio lote.
+     * Nada se graba si algún SKU no sirve.
      *
-     * `estaLibre` consulta fuera de esta transacción, así que no ve las
-     * variantes que se están creando acá: dos valores que dan el mismo código
-     * —"Azul Marino" y "Azul Claro" dan los dos AZU— recibirían el mismo SKU y
-     * la segunda inserción moriría contra el índice único. El lote se lleva
-     * aparte y suma al descarte.
+     * Ni el escrito a mano que choca ni el automático que se quedó sin
+     * variantes libres. Crear la mitad del lote dejaría al usuario con un
+     * producto a medio armar y sin saber cuáles entraron.
      */
-    const delLote = new Set();
-    const skuLibre = async (base) => {
-      const raiz = String(base).trim().slice(0, 90);
-      for (const intento of [raiz, ...Array.from({ length: 49 }, (_, i) => `${raiz}-${i + 2}`)]) {
-        if (delLote.has(intento)) continue;
-        if (await skuService.estaLibre(req.auth.businessId, intento)) { delLote.add(intento); return intento; }
-      }
-      return null;
-    };
+    const invalida = aCrear.find((f) => !f.sku || f.libre === false);
+    if (invalida) {
+      await t.rollback();
+      return res.status(409).json({
+        message: `El SKU de ${invalida.etiqueta} no se puede usar: ${invalida.motivo || 'no hay ninguno libre.'}`,
+        etiqueta: invalida.etiqueta,
+        sku: invalida.sku,
+      });
+    }
 
     const creadas = [];
     for (const fila of aCrear) {
-      const libre = await skuLibre(fila.sku);
-      if (!libre) {
-        await t.rollback();
-        return res.status(409).json({ message: `No se pudo generar un SKU libre para ${fila.etiqueta}. Revisá las abreviaturas en Confección de SKU.` });
-      }
       const v = await ProductVariant.create({
-        productId: product.id, businessId: req.auth.businessId, sku: libre,
+        productId: product.id, businessId: req.auth.businessId, sku: fila.sku,
         codigoBarras: null,
         variante1Nombre: fila.valores[0]?.eje || null, variante1Valor: fila.valores[0]?.valor || null,
         variante2Nombre: fila.valores[1]?.eje || null, variante2Valor: fila.valores[1]?.valor || null,

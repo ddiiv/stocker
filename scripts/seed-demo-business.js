@@ -170,7 +170,15 @@ async function seed() {
   // Color y Talle con los valores que usa el catálogo: son los que alimentan la
   // pantalla de confección de SKU.
   await VariantType.bulkCreate([
-    { businessId: business.id, nombre: 'Color', valores: ['Blanco','Negro','Beige','Azul','Camel','Gris','Verde','Bordo','Rosa','Floral'] },
+    /*
+     * Los valores que el catálogo usa de verdad, incluidos los compuestos.
+     *
+     * Faltaban "Azul Claro", "Azul Oscuro" y "Verde Militar", que sí tienen
+     * variantes: sin ellos en la maestra, agregarle un talle a la Campera Denim
+     * desde la tabla no era posible y había que cargarlo a mano. Son además los
+     * que hacen falta para que las abreviaturas de más abajo se entiendan.
+     */
+    { businessId: business.id, nombre: 'Color', valores: ['Blanco','Negro','Beige','Azul','Azul Claro','Azul Oscuro','Camel','Gris','Verde','Verde Militar','Bordo','Rosa','Floral'] },
     { businessId: business.id, nombre: 'Talle', valores: ['S','M','L','XL','36','38','40','42'] },
   ]);
 
@@ -214,7 +222,7 @@ async function seed() {
    * además el caso que hace entender para qué sirve la pantalla de confección.
    */
   await skuService.guardarRegla(business.id, {
-    abreviaturas: { Color: { 'Azul Claro': 'AZC', 'Azul Oscuro': 'AZO' } },
+    abreviaturas: { Color: { 'Azul Claro': 'AZC', 'Azul Oscuro': 'AZO', 'Verde Militar': 'VMI' } },
   });
   const regla = await skuService.reglaDe(business.id);
 
