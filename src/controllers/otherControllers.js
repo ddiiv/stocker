@@ -1,4 +1,5 @@
 const { Op } = require('sequelize');
+const { cuitValido, emailValido } = require('../utils/identificadores');
 const { sanitizarPermisos } = require('../config/permisos');
 const bcrypt = require('bcryptjs');
 const { BusinessLocation, Role, Client, Sale, SaleItem, Invoice, ProductVariant, Product, StockMovement } = require('../models');
@@ -20,7 +21,7 @@ function soloCampos(body, permitidos) {
   return patch;
 }
 
-const CAMPOS_LOCAL   = ['nombre', 'direccion', 'telefono', 'activo'];
+const CAMPOS_LOCAL   = ['nombre', 'direccion', 'telefono', 'activo', 'tipo'];
 const CAMPOS_CLIENTE = ['nombre', 'apellido', 'email', 'telefono', 'whatsapp',
   'cuit', 'dni', 'direccion', 'tipo', 'notas'];
 
@@ -32,11 +33,25 @@ const getLocations = async (req, res, next) => {
     res.json(locs);
   } catch (e) { next(e); }
 };
+/*
+ * Local o depósito, y nada más.
+ *
+ * Se valida acá porque de este campo cuelga todo el circuito: un tipo mal
+ * escrito haría que el lugar no aparezca ni como local de venta ni como
+ * depósito, y sería invisible en las dos pantallas a la vez.
+ */
+const TIPOS_LOCAL = ['local', 'deposito'];
+
 const createLocation = async (req, res, next) => {
   try {
-    const { nombre, direccion, telefono } = req.body;
+    const { nombre, direccion, telefono, tipo } = req.body;
     if (!nombre || !direccion) return res.status(400).json({ message: 'Nombre y dirección son obligatorios.' });
-    const loc = await BusinessLocation.create({ businessId: req.auth.businessId, nombre, direccion, telefono });
+    if (tipo && !TIPOS_LOCAL.includes(tipo)) {
+      return res.status(400).json({ message: 'El tipo tiene que ser "local" o "deposito".' });
+    }
+    const loc = await BusinessLocation.create({
+      businessId: req.auth.businessId, nombre, direccion, telefono, tipo: tipo || 'local',
+    });
     res.status(201).json(loc);
   } catch (e) { next(e); }
 };
@@ -44,6 +59,29 @@ const updateLocation = async (req, res, next) => {
   try {
     const loc = await BusinessLocation.findOne({ where: { id: req.params.id, businessId: req.auth.businessId } });
     if (!loc) return res.status(404).json({ message: 'Local no encontrado.' });
+
+    const { tipo } = req.body;
+    if (tipo && !TIPOS_LOCAL.includes(tipo)) {
+      return res.status(400).json({ message: 'El tipo tiene que ser "local" o "deposito".' });
+    }
+    /*
+     * Convertir un local de venta en depósito no es un cambio de etiqueta: de
+     * un depósito no se vende. Si tiene mercadería, avisar antes es mejor que
+     * dejar al cajero descubriéndolo con un cliente adelante.
+     */
+    if (tipo === 'deposito' && loc.tipo !== 'deposito') {
+      const { VariantStock } = require('../models');
+      const conStock = await VariantStock.count({ where: { locationId: loc.id, stock: { [Op.gt]: 0 } } });
+      if (conStock && req.body.confirmar !== true) {
+        return res.status(409).json({
+          message: `"${loc.nombre}" tiene ${conStock} artículo(s) con stock y desde un depósito no se vende. `
+            + 'Confirmá si querés convertirlo igual: la mercadería queda ahí y sale por transferencia.',
+          codigo: 'LOCAL_CON_STOCK',
+          articulos: conStock,
+        });
+      }
+    }
+
     await loc.update(soloCampos(req.body, CAMPOS_LOCAL));
     res.json(loc);
   } catch (e) { next(e); }
@@ -119,10 +157,29 @@ const getClients = async (req, res, next) => {
     res.json(clients);
   } catch (e) { next(e); }
 };
+/*
+ * Valida los identificadores de un cliente.
+ *
+ * El CUIT es el dato con el que se emite la factura: mal cargado, el rechazo
+ * llega de ARCA con el cliente esperando el comprobante. El email es por donde
+ * se manda ese comprobante; con un error de tipeo no llega y nadie se entera.
+ */
+function errorDeIdentificadores(body) {
+  if (body?.cuit && String(body.cuit).trim() && !cuitValido(body.cuit)) {
+    return 'El CUIT no es válido: revisá los números. Son 11 dígitos y el último es verificador.';
+  }
+  if (body?.email && String(body.email).trim() && !emailValido(body.email)) {
+    return 'El email no tiene un formato válido.';
+  }
+  return null;
+}
+
 const createClient = async (req, res, next) => {
   try {
     const { nombre } = req.body;
     if (!nombre) return res.status(400).json({ message: 'El nombre es obligatorio.' });
+    const malIdent = errorDeIdentificadores(req.body);
+    if (malIdent) return res.status(400).json({ message: malIdent });
     // El businessId va DESPUÉS del spread a propósito: al revés, un businessId
     // enviado por el cliente pisaba el de la sesión y el cliente nacía en otro
     // negocio.
@@ -135,6 +192,8 @@ const createClient = async (req, res, next) => {
 };
 const updateClient = async (req, res, next) => {
   try {
+    const malIdent = errorDeIdentificadores(req.body);
+    if (malIdent) return res.status(400).json({ message: malIdent });
     const client = await Client.findOne({ where: { id: req.params.id, businessId: req.auth.businessId } });
     if (!client) return res.status(404).json({ message: 'Cliente no encontrado.' });
     await client.update(soloCampos(req.body, CAMPOS_CLIENTE));

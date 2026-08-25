@@ -17,6 +17,41 @@ const { DataTypes } = require('sequelize');
 
 // tabla → { columna: definición }
 const COLUMNAS_ESPERADAS = {
+  business_locations: {
+    /*
+     * Local o depósito. Los que ya existen quedan como 'local' —es lo que
+     * venían siendo—, y el negocio marca a mano cuál es su depósito. Adivinarlo
+     * por el nombre convertiría en bodega a cualquier local que se llame
+     * "Depósito Central" y le cortaría las ventas de un día para el otro.
+     */
+    tipo: { type: DataTypes.STRING(20), allowNull: false, defaultValue: 'local' },
+  },
+  pedidos_reposicion: {
+    /*
+     * El saldo del pedido: lo que se pidió y no llegó a salir del depósito.
+     * Queda esperando que alguien decida mandarlo o darlo de baja, y se muestra
+     * primero en la bandeja para que no se pierda de vista.
+     */
+    saldoEstado:    { type: DataTypes.STRING(20), allowNull: true },
+    saldoMotivo:    { type: DataTypes.STRING(500), allowNull: true },
+    saldoResueltoPorEmployeeId: { type: DataTypes.INTEGER, allowNull: true },
+    saldoResueltoEn:            { type: DataTypes.DATE, allowNull: true },
+    pedidoOrigenId: { type: DataTypes.INTEGER, allowNull: true },
+  },
+  sale_items: {
+    /*
+     * El costo de la mercadería al momento de venderla.
+     *
+     * Sin esto el margen histórico se calculaba contra el costo ACTUAL del
+     * producto: cuando un proveedor sube los precios, todos los márgenes del
+     * año pasado cambian solos y un mes que fue bueno pasa a figurar en
+     * pérdida. Un análisis a varios años necesita que el pasado no se reescriba.
+     *
+     * Nulo en las ventas anteriores a este cambio: ahí se cae al costo del
+     * producto, que es la mejor aproximación disponible y queda dicho.
+     */
+    costoUnitario: { type: DataTypes.DECIMAL(12, 2), allowNull: true },
+  },
   product_variants: {
     codigoBarras: { type: DataTypes.STRING(60), allowNull: true },
     /*
@@ -57,6 +92,9 @@ const COLUMNAS_ESPERADAS = {
     // Cómo arma este negocio los SKU de sus variantes. JSON en texto, como el
     // resto: MSSQL no tiene tipo JSON. Vacío = las reglas de fábrica.
     reglaSku:     { type: DataTypes.TEXT, allowNull: true },
+    // Política de venta sin stock. Los negocios que ya existen arrancan en
+    // 'permitir': es lo que pide el mostrador y lo que evita perder la venta.
+    ventaSinStock: { type: DataTypes.STRING(10), allowNull: false, defaultValue: 'permitir' },
   },
   sales: {
     // Recargos/descuentos por medio de pago. `total` sigue siendo el neto de
@@ -125,6 +163,27 @@ const INDICES = [
     requierePg: 'SELECT COUNT(*) AS faltan FROM product_variants WHERE "businessId" IS NULL',
     // El global se va recién cuando el nuevo está en pie.
     reemplaza: 'uq_variants_sku',
+  },
+  /*
+   * Los índices del análisis.
+   *
+   * Todas las consultas del dashboard filtran por negocio + tipo + estado y
+   * recortan por fecha. Sin este índice, cada carga del panel recorre la tabla
+   * de ventas entera: con tres años de historia eso son decenas de miles de
+   * filas leídas para mostrar un número.
+   */
+  {
+    tabla: 'sales',
+    nombre: 'idx_sales_analitica',
+    columnas: ['businessId', 'tipo', 'estado', 'fecha'],
+    unico: false,
+  },
+  {
+    // El JOIN de los items contra su venta, que es el otro lado de cada agregado.
+    tabla: 'sale_items',
+    nombre: 'idx_sale_items_venta',
+    columnas: ['saleId'],
+    unico: false,
   },
 ];
 
@@ -303,6 +362,36 @@ const RELLENOS = [
     reintentable: true,
     sql: `UPDATE subscriptions SET "descuentoPct" = 0 WHERE "descuentoPct" IS NULL`,
     sqlMssql: `UPDATE subscriptions SET descuentoPct = 0 WHERE descuentoPct IS NULL`,
+  },
+  {
+    /*
+     * Ventas anteriores: se copia el costo actual del producto.
+     *
+     * Es una aproximación y no hay otra: el costo de entonces no quedó
+     * guardado en ninguna parte. A partir de ahora cada venta guarda el suyo,
+     * así que el error no crece.
+     */
+    descripcion: 'items de venta anteriores: costo del producto',
+    cuandoSeAgrega: 'sale_items.costoUnitario',
+    reintentable: true,
+    sql: `UPDATE si SET si."costoUnitario" = p.costo
+          FROM sale_items si
+          JOIN product_variants pv ON pv.id = si."productVariantId"
+          JOIN products p ON p.id = pv."productId"
+          WHERE si."costoUnitario" IS NULL`,
+    sqlMssql: `UPDATE si SET si.costoUnitario = p.costo
+               FROM sale_items si
+               JOIN product_variants pv ON pv.id = si.productVariantId
+               JOIN products p ON p.id = pv.productId
+               WHERE si.costoUnitario IS NULL`,
+  },
+  {
+    // Los locales que ya existían son locales. Un depósito se marca a mano.
+    descripcion: 'locales existentes: tipo local',
+    cuandoSeAgrega: 'business_locations.tipo',
+    reintentable: true,
+    sql: `UPDATE business_locations SET tipo = 'local' WHERE tipo IS NULL OR tipo = ''`,
+    sqlMssql: `UPDATE business_locations SET tipo = 'local' WHERE tipo IS NULL OR tipo = ''`,
   },
 ];
 

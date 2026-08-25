@@ -1,6 +1,6 @@
 const { Op, fn, col } = require('sequelize');
 const sequelize = require('../config/database');
-const { Product, ProductVariant, StockMovement, Employee, BusinessLocation } = require('../models');
+const { Product, ProductVariant, StockMovement, Employee, BusinessLocation, VariantStock } = require('../models');
 const { ilikeOperator } = require('../utils/sqlHelpers');
 const { exportProductsXlsx, importProductsXlsx } = require('../services/productExcelService');
 const { exigirCupo } = require('../services/planService');
@@ -934,8 +934,19 @@ const adjustStock = async (req, res, next) => {
     const { tipo, cantidad, motivo, locationId } = req.body;
     if (!['ingreso', 'egreso', 'ajuste', 'devolucion'].includes(tipo))
       return res.status(400).json({ message: 'Tipo de movimiento inválido.' });
-    if (!cantidad || cantidad <= 0)
-      return res.status(400).json({ message: 'La cantidad debe ser mayor a 0.' });
+    /*
+     * El cero sólo vale para el ajuste, y ahí es un dato.
+     *
+     * "Conté y no quedó ninguna" es un resultado de inventario legítimo, y
+     * hasta ahora era imposible de cargar: el guard rechazaba el 0 para todos
+     * los tipos por igual. Para un ingreso o un egreso sigue sin tener sentido
+     * —no mueve nada— y se rechaza.
+     */
+    const cant = Number(cantidad);
+    if (!Number.isInteger(cant) || cant < 0)
+      return res.status(400).json({ message: 'La cantidad tiene que ser un número entero de 0 o más.' });
+    if (cant === 0 && tipo !== 'ajuste')
+      return res.status(400).json({ message: 'Un ingreso o egreso de 0 no mueve nada. Si querés corregir el número, usá un ajuste de inventario.' });
 
     // Postgres no soporta `FOR UPDATE` sobre LEFT OUTER JOIN. Lockeamos sólo
     // la tabla principal con { of: ProductVariant }; el include se resuelve
@@ -966,7 +977,7 @@ const adjustStock = async (req, res, next) => {
     const stockAnterior = await stockService.stockEn(variant.id, local, t);
     let stockNuevo;
     if (tipo === 'ingreso' || tipo === 'devolucion') {
-      stockNuevo = stockAnterior + cantidad;
+      stockNuevo = stockAnterior + cant;
     } else if (tipo === 'egreso') {
       /*
        * No se puede sacar más de lo que hay.
@@ -978,7 +989,7 @@ const adjustStock = async (req, res, next) => {
        * mano. Si lo que se quiere es corregir el número, para eso está el
        * ajuste, que fija el stock y queda registrado como tal.
        */
-      if (cantidad > stockAnterior) {
+      if (cant > stockAnterior) {
         const nombre = [variant.producto.titulo, variant.variante1Valor, variant.variante2Valor]
           .filter(Boolean).join(' · ');
         const total = Number(variant.stock) || 0;
@@ -990,17 +1001,17 @@ const adjustStock = async (req, res, next) => {
           // sobra en otro, y entonces lo que corresponde es transferir.
           message: (stockAnterior === 0
             ? `No queda stock de ${nombre} (${variant.sku}) en este local, así que no hay nada que sacar. `
-            : `Sólo hay ${stockAnterior} de ${nombre} (${variant.sku}) en este local y estás sacando ${cantidad}. `) +
+            : `Sólo hay ${stockAnterior} de ${nombre} (${variant.sku}) en este local y estás sacando ${cant}. `) +
             (total > stockAnterior ? `Hay ${total} en total entre todos los locales: podés transferirlo. ` : '') +
             `Si el número que figura está mal, usá un ajuste de inventario.`,
           disponible: stockAnterior,
           totalOtrosLocales: total - stockAnterior,
-          solicitado: cantidad,
+          solicitado: cant,
         });
       }
-      stockNuevo = stockAnterior - cantidad;
+      stockNuevo = stockAnterior - cant;
     } else {
-      stockNuevo = cantidad; // ajuste directo: fija el stock contado
+      stockNuevo = cant; // ajuste directo: fija el stock contado
     }
 
     /*
@@ -1862,4 +1873,44 @@ const importProducts = async (req, res, next) => {
   } catch (error) { next(error); }
 };
 
-module.exports = { getProducts, buscarVariantes, agregarVariantesMasivo, getProductPadreBySkuVariante, getProduct, createProduct, updateProduct, deleteProduct, addVariant, updateVariant, deleteVariant, adjustStock, getVariantMovements, getStockMovements, getStockPorLocal, getProductosPorLocal, getVariantesPorLocal, transferirStock, getIngresosDelDia, ajusteMasivo, preciosMasivo, generarEtiquetasPdf, exportProducts, importProducts, scanLookup, scanAdjustStock };
+/*
+ * GET /api/stock/a-regularizar
+ *
+ * Lo que se vendió sin tenerlo cargado: stock en negativo, por local.
+ *
+ * Es la contracara de dejar vender sin stock. Permitirlo sin esta lista sería
+ * convertir el inventario en ficción; con ella, el negativo deja de ser un
+ * número raro y pasa a ser una tarea concreta —contar eso y cargarlo—.
+ */
+const stockARegularizar = async (req, res, next) => {
+  try {
+    const filas = await VariantStock.findAll({
+      where: { businessId: req.auth.businessId, stock: { [Op.lt]: 0 } },
+      include: [
+        {
+          model: ProductVariant, as: 'variante', required: true,
+          include: [{ model: Product, as: 'producto', attributes: ['titulo', 'skuAgrupador'] }],
+        },
+        { model: BusinessLocation, as: 'local', attributes: ['id', 'nombre', 'tipo'] },
+      ],
+      order: [['stock', 'ASC']],
+      limit: 200,
+    });
+
+    const data = filas.map((f) => ({
+      productVariantId: f.productVariantId,
+      sku: f.variante?.sku,
+      titulo: f.variante?.producto?.titulo,
+      variante: [f.variante?.variante1Valor, f.variante?.variante2Valor].filter(Boolean).join(' · '),
+      locationId: f.locationId,
+      local: f.local?.nombre,
+      stock: f.stock,
+      // Lo que hay que cargar para volver a cero.
+      faltan: Math.abs(f.stock),
+    }));
+
+    res.json({ data, total: data.length, unidades: data.reduce((s, x) => s + x.faltan, 0) });
+  } catch (error) { next(error); }
+};
+
+module.exports = { getProducts, buscarVariantes, stockARegularizar, agregarVariantesMasivo, getProductPadreBySkuVariante, getProduct, createProduct, updateProduct, deleteProduct, addVariant, updateVariant, deleteVariant, adjustStock, getVariantMovements, getStockMovements, getStockPorLocal, getProductosPorLocal, getVariantesPorLocal, transferirStock, getIngresosDelDia, ajusteMasivo, preciosMasivo, generarEtiquetasPdf, exportProducts, importProducts, scanLookup, scanAdjustStock };

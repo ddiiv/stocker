@@ -7,6 +7,7 @@
 
 const { Op } = require('sequelize');
 const { Sale, SaleItem, BusinessLocation, ProductVariant, Product } = require('../models');
+const analytics = require('../services/analyticsService');
 
 // Filtro de fechas reutilizable. Sin parámetros, devuelve todo el historial.
 function rangoFechas(query) {
@@ -280,4 +281,42 @@ const products = async (req, res, next) => {
   } catch (e) { next(e); }
 };
 
-module.exports = { timeline, products };
+/*
+ * GET /api/metrics/panel
+ *
+ * La foto analítica del negocio: resumen del período contra el anterior, serie
+ * mensual, tendencia y los rankings de producto padre.
+ *
+ * Todo se agrega en la base. El dashboard viejo traía a memoria las ventas
+ * enteras del negocio —y una segunda consulta sin filtro de fecha, o sea el
+ * historial completo— para sumar en JavaScript; eso crece con los años y esta
+ * pantalla se abre todo el tiempo.
+ */
+const panel = async (req, res, next) => {
+  try {
+    const hoy = new Date();
+    /*
+     * Por defecto, los últimos 12 meses cerrados.
+     *
+     * Es el rango en el que un comercio de indumentaria se lee: hay que ver el
+     * mismo mes del año pasado para saber si un enero flojo es un problema o
+     * es enero.
+     */
+    const hasta = String(req.query.hasta || hoy.toISOString().slice(0, 10));
+    const pordefecto = new Date(hoy);
+    pordefecto.setMonth(pordefecto.getMonth() - 12);
+    const desde = String(req.query.desde || pordefecto.toISOString().slice(0, 10));
+
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(desde) || !/^\d{4}-\d{2}-\d{2}$/.test(hasta)) {
+      return res.status(400).json({ message: 'Las fechas van en formato AAAA-MM-DD.' });
+    }
+    if (desde > hasta) {
+      return res.status(400).json({ message: 'La fecha de inicio es posterior a la de fin.' });
+    }
+
+    const limite = Math.min(20, Math.max(3, Number(req.query.limite) || 8));
+    res.json(await analytics.panel({ businessId: req.auth.businessId, desde, hasta, limite }));
+  } catch (e) { next(e); }
+};
+
+module.exports = { timeline, products, panel };

@@ -115,6 +115,14 @@ const fallo = async (fn) => { try { await fn(); return null; } catch (e) { retur
     });
     await SaleItem.create({ saleId: venta2.id, productVariantId: v.id, sku: v.sku, titulo: prod.titulo, cantidad: 1, precioUnitario: 100, subtotal: 100 });
 
+    /*
+     * Con la política estricta la salida se frena.
+     *
+     * Por defecto el negocio deja vender sin stock —el mostrador no puede
+     * esperar a que se cargue la mercadería—, así que para probar el bloqueo
+     * hay que pedirlo explícitamente.
+     */
+    await negocio.update({ ventaSinStock: 'bloquear' });
     const t2 = await sequelize.transaction();
     const msg = await fallo(() => descontarStockVenta(venta2, t2, {}));
     await t2.rollback();
@@ -126,6 +134,21 @@ const fallo = async (fn) => { try { await fn(); return null; } catch (e) { retur
      * que corresponde es transferir y no reponer.
      */
     chk('y que hay en otros locales', true, /en total entre todos los locales/.test(msg || ''));
+
+    // Y con la política de mostrador sale igual, dejando el negativo a la vista.
+    await negocio.update({ ventaSinStock: 'permitir' });
+    const t2b = await sequelize.transaction();
+    await descontarStockVenta(venta2, t2b, {});
+    await t2b.commit();
+    chk('con "permitir" la salida se hace', -1, await enLocal(B));
+    chk('y el movimiento explica el negativo', true,
+      /por regularizar/.test((await StockMovement.findOne({
+        where: { productVariantId: v.id }, order: [['id', 'DESC']],
+      }))?.motivo || ''));
+    // Se deshace para no ensuciar las comprobaciones que siguen.
+    const t2c = await sequelize.transaction();
+    await devolverStockVenta(venta2, t2c, { motivo: 'QA deshacer' });
+    await t2c.commit();
 
     tit('7. ANULAR DEVUELVE AL MISMO LOCAL');
     const t3 = await sequelize.transaction();

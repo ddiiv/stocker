@@ -21,6 +21,16 @@ const stockService = require('./stockService');
 async function descontarStockVenta(sale, t, { employeeId = null, motivo = null } = {}) {
   if (sale.stockDescontado) return false;
 
+  /*
+   * Qué hace el negocio cuando falta stock: la venta pasa igual (por defecto) o
+   * se frena. Se lee una vez, no por línea.
+   */
+  const { Business } = require('../models');
+  const negocio = await Business.findByPk(sale.businessId, {
+    attributes: ['id', 'ventaSinStock'], transaction: t,
+  });
+  const politica = negocio?.ventaSinStock === 'bloquear' ? 'bloquear' : 'permitir';
+
   const items = sale.items?.length
     ? sale.items
     : await SaleItem.findAll({ where: { saleId: sale.id }, transaction: t });
@@ -53,7 +63,9 @@ async function descontarStockVenta(sale, t, { employeeId = null, motivo = null }
      * stock de acá en negativo y a un cliente esperando algo que no está.
      */
     const disponible = await stockService.stockEn(variant.id, local, t);
-    if (disponible < item.cantidad) {
+    const falta = item.cantidad - disponible;
+
+    if (falta > 0 && politica === 'bloquear') {
       const nombreLocal = local ? await nombreDeLocal(local, t) : 'este local';
       throw Object.assign(
         new Error(
@@ -72,10 +84,21 @@ async function descontarStockVenta(sale, t, { employeeId = null, motivo = null }
       locationId: local,
       delta: -item.cantidad,
       tipo: 'egreso',
-      motivo: motivo || `Venta ${sale.numero}`,
+      /*
+       * El motivo dice que quedó en negativo, y eso es a propósito.
+       *
+       * El libro de movimientos es donde alguien va a mirar cuando el conteo
+       * no cierre: que ahí diga "quedó en -3 por regularizar" convierte un
+       * número raro en una tarea concreta.
+       */
+      motivo: falta > 0
+        ? `${motivo || `Venta ${sale.numero}`} · sin stock cargado: quedan ${disponible - item.cantidad} por regularizar`.slice(0, 255)
+        : (motivo || `Venta ${sale.numero}`),
       employeeId,
       saleItemId: item.id,
       transaction: t,
+      // Vender lo que el sistema no tiene deja el stock en negativo, marcado.
+      permitirNegativo: politica !== 'bloquear',
     });
   }
 

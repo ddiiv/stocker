@@ -26,12 +26,27 @@ const { ProductVariant, VariantStock, BusinessLocation, StockMovement } = requir
  * total, que es lo que había antes de esta función y sigue siendo correcto.
  */
 async function localPorDefecto(businessId, transaction = null) {
+  /*
+   * Se prefiere un local de venta antes que un depósito.
+   *
+   * Los caminos que caen acá —un ajuste sin local elegido, una importación,
+   * una venta vieja— hablan de mercadería que está en el salón. Si el depósito
+   * quedó creado con un id más bajo, el orden por id lo elegía a él y el stock
+   * aparecía en la bodega. Sólo se cae al depósito cuando no hay otra cosa.
+   */
   const local = await BusinessLocation.findOne({
+    where: { businessId, activo: true, tipo: { [Op.ne]: 'deposito' } },
+    order: [['id', 'ASC']],
+    transaction,
+  });
+  if (local) return local.id;
+
+  const cualquiera = await BusinessLocation.findOne({
     where: { businessId, activo: true },
     order: [['id', 'ASC']],
     transaction,
   });
-  return local?.id || null;
+  return cualquiera?.id || null;
 }
 
 /*

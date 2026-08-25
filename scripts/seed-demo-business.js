@@ -15,12 +15,16 @@ const {
   StockMovement, Invoice, InvoiceItem, PaymentMethod, CashShift, CashMovement,
   ClientAccountEntry, VariantType, BusinessArcaConfig, Subscription,
   SubscriptionPayment, MercadoLibreAccount, MercadoLibreLink,
+  StockIngreso, StockIngresoItem, PedidoReposicion, PedidoReposicionItem,
 } = require('../src/models');
 const skuService = require('../src/services/skuService');
+const { PRESETS } = require('../src/config/permisos');
 
 const DEMO_EMAIL = 'demo@stocker.app';
 const DEMO_PASSWORD = 'Demo2026!!';
 const EMPLEADO_PASSWORD = 'Vendedor2026!';
+// Meses de historia. Dos años para que la comparación interanual tenga sentido.
+const MESES_HISTORIA = 24;
 
 const rand = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
 const pick = (arr) => arr[rand(0, arr.length - 1)];
@@ -77,6 +81,28 @@ async function reset() {
   }
   await Sale.destroy({ where: { businessId: id } });
 
+  /*
+   * Los documentos del circuito depósito → local.
+   *
+   * Van antes que las variantes, los locales y los empleados: sus items
+   * apuntan a `product_variants` y las cabeceras a `business_locations`, así
+   * que borrar primero aquéllas deja el DELETE frenado por la clave foránea y
+   * el reset a medias.
+   *
+   * Y los ingresos antes que los pedidos, porque un ingreso puede haber nacido
+   * para cubrir un pedido y lo referencia.
+   */
+  const ingresos = await StockIngreso.findAll({ where: { businessId: id }, attributes: ['id'] });
+  if (ingresos.length) {
+    await StockIngresoItem.destroy({ where: { ingresoId: ingresos.map((i) => i.id) } });
+    await StockIngreso.destroy({ where: { businessId: id } });
+  }
+  const pedidos = await PedidoReposicion.findAll({ where: { businessId: id }, attributes: ['id'] });
+  if (pedidos.length) {
+    await PedidoReposicionItem.destroy({ where: { pedidoId: pedidos.map((p) => p.id) } });
+    await PedidoReposicion.destroy({ where: { businessId: id } });
+  }
+
   if (variantIds.length) {
     await StockMovement.destroy({ where: { productVariantId: variantIds } });
     await VariantStock.destroy({ where: { productVariantId: variantIds } });
@@ -117,7 +143,9 @@ async function seed() {
     nombreNegocio: 'Boutique Almendra',
     ownerNombre: 'Julieta',
     ownerApellido: 'Fernández',
-    cuit: '20345678901',
+    // CUIT con dígito verificador correcto: el demo tiene que poder emitir
+    // facturas de prueba sin que ARCA lo rechace por el formato.
+    cuit: '20345678906',
     telefono: '11 4555-2231',
     ownerTelefono: '11 6644-8890',
     email: DEMO_EMAIL,
@@ -128,19 +156,35 @@ async function seed() {
     businessId: business.id, nombre: business.nombreNegocio, cuit: business.cuit, esPrincipal: true,
   });
 
-  const roles = await Role.bulkCreate([
-    { businessId: business.id, nombre: 'Administrador', permisos: { stock:'editar', ventas:'editar', facturacion:'editar', empleados:'editar', dashboard:'editar', cotizaciones:'editar', caja:'editar', clientes:'editar', pagos:'editar' } },
-    { businessId: business.id, nombre: 'Vendedor', permisos: { stock:'ver', ventas:'editar', facturacion:'ver', empleados:'ninguno', dashboard:'ver', cotizaciones:'editar', caja:'editar', clientes:'editar', pagos:'ver' } },
-  ], { returning: true });
+  /*
+   * Los cargos salen de PRESETS, que es la lista que usa el alta de cualquier
+   * negocio. Antes estaban escritos a mano acá y quedaron viejos: al sumarse
+   * los módulos del circuito depósito → local, el demo mostraba cargos sin
+   * esos permisos y el circuito no se podía recorrer con un empleado.
+   */
+  const roles = await Role.bulkCreate(
+    Object.entries(PRESETS).map(([nombre, permisos]) => ({ businessId: business.id, nombre, permisos })),
+    { returning: true },
+  );
   const rolVendedor = roles.find((r) => r.nombre === 'Vendedor');
   const rolAdmin = roles.find((r) => r.nombre === 'Administrador');
+  const rolDeposito = roles.find((r) => r.nombre === 'Depósito');
 
   console.log('→ Creando locales…');
   const locales = await BusinessLocation.bulkCreate([
     { businessId: business.id, nombre: 'Local Palermo', direccion: 'Av. Santa Fe 3421, CABA', telefono: '11 4555-2231' },
     { businessId: business.id, nombre: 'Local Belgrano', direccion: 'Av. Cabildo 1876, CABA', telefono: '11 4555-9087' },
     { businessId: business.id, nombre: 'Online / Envíos', direccion: 'Envíos a domicilio', telefono: business.telefono },
+    /*
+     * El depósito, que es de donde sale todo.
+     *
+     * Va último a propósito: `locales[0..2]` son los locales de venta y varias
+     * partes del seed reparten stock por índice. Un depósito metido en el medio
+     * les daría mercadería de salón a la bodega.
+     */
+    { businessId: business.id, nombre: 'Depósito Central', direccion: 'Av. Warnes 1200, CABA', telefono: business.telefono, tipo: 'deposito' },
   ], { returning: true });
+  const deposito = locales[3];
 
   console.log('→ Creando empleados…');
   const empPass = await bcrypt.hash(EMPLEADO_PASSWORD, 10);
@@ -150,6 +194,8 @@ async function seed() {
     // Ayelén es administradora: el demo tiene que mostrar los dos niveles de
     // permiso, no tres vendedores iguales.
     { businessId: business.id, roleId: rolAdmin.id, locationId: locales[2].id, dni: '40112365', nombre: 'Ayelén', apellido: 'Gómez', email: 'ayelen@boutiquealmendra.demo', passwordHash: empPass, activo: true },
+    // Del depósito: ingresa mercadería y prepara los envíos, no vende ni aprueba.
+    { businessId: business.id, roleId: rolDeposito.id, locationId: deposito.id, dni: '35990412', nombre: 'Martín', apellido: 'Quiroga', email: 'martin@boutiquealmendra.demo', passwordHash: empPass, activo: true },
   ], { returning: true });
 
   console.log('→ Creando medios de pago…');
@@ -295,48 +341,82 @@ async function seed() {
    * número en los tres locales no muestra el problema que el stock por local
    * viene a resolver: que la prenda esté en la sucursal equivocada.
    */
-  console.log('→ Repartiendo stock inicial entre los locales…');
+  console.log('→ Repartiendo stock inicial entre los locales y el depósito…');
+  /*
+   * Los pesos son de los LOCALES DE VENTA, no de todos los lugares.
+   *
+   * El depósito se carga aparte y con su propia cantidad: no es un local más
+   * que se lleva una tajada de la góndola, es la reserva de la que después
+   * salen las reposiciones. Cuando esto recorría `locales` entero, los tres
+   * pesos sumaban 1 y al depósito —que quedó último— le tocaba el resto, o
+   * sea cero: el circuito de reposición no se podía ni probar porque no había
+   * nada que mandar.
+   */
+  const deVenta = locales.filter((l) => l.tipo !== 'deposito');
   const PESO = [0.55, 0.32, 0.13];   // Palermo · Belgrano · Online
-  const hace12Meses = new Date(); hace12Meses.setMonth(hace12Meses.getMonth() - 12);
+  // Anterior a la primera venta: el inventario existía antes de venderse.
+  const inicioHistoria = new Date(); inicioHistoria.setMonth(inicioHistoria.getMonth() - MESES_HISTORIA - 1);
 
   // variantId → { locationId → unidades }
   const stockMem = new Map();
   const movimientos = [];
 
+  const anotarIngreso = (variantId, locationId, n, motivo) => {
+    if (n <= 0) return;
+    movimientos.push({
+      productVariantId: variantId, locationId, employeeId: null,
+      tipo: 'ingreso', cantidad: n, stockAnterior: 0, stockNuevo: n,
+      motivo, fechaMovimiento: inicioHistoria,
+    });
+  };
+
   for (const { variant } of variantesCreadas) {
     const total = rand(6, 45);
     const porLocal = new Map();
     let repartido = 0;
-    locales.forEach((l, i) => {
-      // El último local se lleva el resto, así no se pierden unidades por
-      // redondeo y la suma da exactamente el total.
-      const n = i === locales.length - 1 ? total - repartido : Math.round(total * PESO[i]);
+    deVenta.forEach((l, i) => {
+      // El último se lleva el resto, así no se pierden unidades por redondeo y
+      // la suma da exactamente el total.
+      const n = i === deVenta.length - 1 ? total - repartido : Math.round(total * PESO[i]);
       repartido += n;
       porLocal.set(l.id, n);
-      if (n > 0) {
-        movimientos.push({
-          productVariantId: variant.id, locationId: l.id, employeeId: null,
-          tipo: 'ingreso', cantidad: n, stockAnterior: 0, stockNuevo: n,
-          motivo: 'Carga inicial de inventario', fechaMovimiento: hace12Meses,
-        });
-      }
+      anotarIngreso(variant.id, l.id, n, 'Carga inicial de inventario');
     });
+
+    // La reserva del depósito: más que cualquier local suelto, que es lo que
+    // hace que tenga sentido pedirle reposición.
+    const enDeposito = rand(8, 60);
+    porLocal.set(deposito.id, enDeposito);
+    anotarIngreso(variant.id, deposito.id, enDeposito, 'Ingreso de mercadería al depósito');
+
     stockMem.set(variant.id, porLocal);
   }
 
-  console.log('→ Generando 12 meses de ventas…');
+  console.log(`→ Generando ${MESES_HISTORIA} meses de ventas…`);
   // Estacionalidad simple: más ventas en los últimos 2 meses (efecto "creciendo"),
   // caída leve en enero/febrero (temporada baja típica de indumentaria en AR).
   const hoy = new Date();
   let numeroVenta = 1;
   let totalVentas = 0, totalUnidades = 0;
 
-  for (let mesesAtras = 11; mesesAtras >= 0; mesesAtras--) {
+  /*
+   * Dos años de historia.
+   *
+   * Con doce meses la comparación interanual —el mismo mes del año pasado, que
+   * en indumentaria dice más que el mes contra mes— no tiene contra qué
+   * comparar y el panel muestra guiones. Con veinticuatro se puede ver.
+   */
+  const crecimientoAnual = 1.35;   // el negocio creció un tercio de un año al otro
+
+  for (let mesesAtras = MESES_HISTORIA - 1; mesesAtras >= 0; mesesAtras--) {
     const fechaBase = new Date(hoy.getFullYear(), hoy.getMonth() - mesesAtras, 1);
     const mesNum = fechaBase.getMonth(); // 0=ene
     const esBaja = mesNum === 0 || mesNum === 1; // ene/feb
     const esPico = mesesAtras <= 1; // últimos 2 meses: negocio "creciendo"
-    const ventasDelMes = esBaja ? rand(14, 20) : esPico ? rand(34, 44) : rand(22, 32);
+    const base = esBaja ? rand(14, 20) : esPico ? rand(34, 44) : rand(22, 32);
+    // El año anterior vendía menos: es lo que hace que la comparación
+    // interanual muestre crecimiento en vez de ruido.
+    const ventasDelMes = mesesAtras >= 12 ? Math.max(6, Math.round(base / crecimientoAnual)) : base;
 
     for (let v = 0; v < ventasDelMes; v++) {
       const dia = rand(1, 27);
@@ -351,7 +431,14 @@ async function seed() {
 
       const cantidadTotal = itemsSeleccionados.reduce((s) => s + rand(1, 2), 0);
       const esMayorista = cantidadTotal >= 3;
-      const local = pick(locales);
+      /*
+       * La venta sale de un local de venta, nunca del depósito.
+       *
+       * Cuando esto elegía sobre `locales` entero, un cuarto de las ventas del
+       * demo salían de la bodega —justo lo que el sistema ahora prohíbe— y el
+       * análisis por local mostraba al depósito facturando.
+       */
+      const local = pick(deVenta);
       const empleado = pick(empleados);
       const conCliente = Math.random() < 0.55;
       const cliente = conCliente ? pick(clientes) : null;
@@ -518,7 +605,22 @@ async function seed() {
   console.log(`    Contraseña: ${DEMO_PASSWORD}`);
   console.log('');
   console.log('  EMPLEADOS (pestaña "Empleado" del login)');
-  console.log(`    Contraseña de los tres: ${EMPLEADO_PASSWORD}`);
+  /*
+   * Se comprueban antes de imprimirlas.
+   *
+   * Un demo que se entrega con una contraseña que no entra es peor que no
+   * entregarlo: la persona prueba, falla, y no sabe si es la clave o el
+   * sistema. Pasó una vez —un empleado quedó con otro hash— y el listado se
+   * imprimió igual, tan seguro como siempre.
+   */
+  for (const e of empleados) {
+    const anda = e.passwordHash && await bcrypt.compare(EMPLEADO_PASSWORD, e.passwordHash);
+    if (!anda) {
+      console.log(`    ✖ ATENCIÓN: la contraseña de ${e.email} no valida. Revisá antes de entregar el demo.`);
+    }
+  }
+
+  console.log(`    Contraseña de todos: ${EMPLEADO_PASSWORD}`);
   for (const e of empleados) {
     const rol = roles.find((r) => r.id === e.roleId)?.nombre || '—';
     const loc = locales.find((l) => l.id === e.locationId)?.nombre || 'sin local';

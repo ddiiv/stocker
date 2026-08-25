@@ -1,13 +1,15 @@
 const path = require('path');
+const { Op } = require('sequelize');
 const sequelize = require('../config/database');
 const { Sale, SaleItem, SalePayment, PaymentMethod, ProductVariant, Product, Employee, BusinessLocation, Business, BusinessCuit } = require('../models');
 const { citar } = require('../utils/sqlHelpers');
-const { nextSaleNumber } = require('../services/invoiceNumberService');
+const { nextSaleNumber, crearConNumero } = require('../services/invoiceNumberService');
 const { calcularPagos } = require('../services/paymentService');
 const { cargarVenta, registrarMovimiento, redondear } = require('../services/creditService');
 const { descontarStockVenta, devolverStockVenta } = require('../services/saleStockService');
 const stockService = require('../services/stockService');
 const { precioDeVenta } = require('../services/precioService');
+const precioService = require('../services/precioService');
 const { generateSalePdf, generateSaleTicketPdf } = require('../services/pdfService');
 const fse = require('fs-extra');
 const { sendSaleReceiptToCustomer, sendSaleNotificationToBusiness } = require('../services/emailService');
@@ -390,6 +392,23 @@ const createSale = async (req, res, next) => {
       // Un empleado sin local asignado no puede vender: no hay de dónde sacar
       // la mercadería. Es un error de configuración y hay que decirlo, no
       // taparlo descontando del principal.
+      /*
+       * Un empleado asignado a un depósito no vende.
+       *
+       * Es el caso del chico que cuenta bultos: tiene local asignado, así que
+       * la comprobación de abajo lo dejaba pasar, y la venta le descontaba
+       * mercadería a la bodega. Se corta acá con el motivo dicho.
+       */
+      if (locationId && tipo !== 'cotizacion') {
+        const suyo = await BusinessLocation.findByPk(locationId, { transaction: t });
+        if (suyo?.tipo === 'deposito') {
+          throw Object.assign(
+            new Error(`Estás asignado a "${suyo.nombre}", que es un depósito, y desde un depósito no se vende.`),
+            { status: 409 },
+          );
+        }
+      }
+
       if (!locationId && tipo !== 'cotizacion') {
         throw Object.assign(
           new Error('Tu usuario no tiene un local asignado, así que no se puede saber de dónde sale la mercadería. Pedile al dueño que te asigne uno desde Empleados.'),
@@ -418,20 +437,34 @@ const createSale = async (req, res, next) => {
           transaction: t,
         });
         if (!local) throw Object.assign(new Error('El local indicado no pertenece a este negocio o está inactivo.'), { status: 400 });
+        if (local.tipo === 'deposito' && tipo !== 'cotizacion') {
+          throw Object.assign(
+            new Error(`"${local.nombre}" es un depósito y de un depósito no se vende. La mercadería sale por transferencia a un local.`),
+            { status: 400 },
+          );
+        }
       } else if (tipo !== 'cotizacion') {
         /*
          * Sin elegir: con un solo local no hay ambigüedad y se usa ése. Con
          * varios hay que decidir, porque el sistema no puede adivinar de cuál
          * salió la prenda y elegir mal descuadra dos inventarios.
          */
+        /*
+         * Sólo locales de venta: de un depósito no se vende.
+         *
+         * Incluirlos acá hacía que un negocio con un local y un depósito
+         * cayera en la rama de "elegí cuál" para una decisión que en realidad
+         * no existe, y peor, con un solo depósito y ningún local habría
+         * elegido la bodega en silencio.
+         */
         const activos = await BusinessLocation.findAll({
-          where: { businessId: req.auth.businessId, activo: true },
+          where: { businessId: req.auth.businessId, activo: true, tipo: { [Op.ne]: 'deposito' } },
           order: [['id', 'ASC']], transaction: t,
         });
         if (activos.length === 1) locationId = activos[0].id;
         else if (activos.length === 0) {
           throw Object.assign(
-            new Error('No hay ningún local cargado. Creá al menos uno antes de vender.'),
+            new Error('No hay ningún local de venta cargado. Un depósito no vende: creá al menos un local.'),
             { status: 409 }
           );
         } else {
@@ -455,9 +488,65 @@ const createSale = async (req, res, next) => {
       if (l) nombreLocalVenta = l.nombre;
     }
 
+    /*
+     * Las cantidades y el precio se validan ANTES de calcular nada.
+     *
+     * Sin esto entraba cualquier cosa y la venta se guardaba igual:
+     *
+     *   cantidad -5      → total -$59.500, y al descontar stock lo SUMABA.
+     *   cantidad 2,7     → la columna es entera y guardaba 2, pero el subtotal
+     *                      se calculaba con 2,7: se cobraba una unidad que no
+     *                      salía del inventario.
+     *   precio negativo  → total negativo.
+     *
+     * Un total negativo no es un caso raro de laboratorio: entra en las
+     * métricas, en el arqueo de caja y en la cuenta corriente del cliente, y
+     * ahí ya no hay forma de distinguirlo de una devolución real.
+     */
+    for (const item of items) {
+      const cant = Number(item.cantidad);
+      if (!Number.isInteger(cant) || cant <= 0) {
+        throw Object.assign(
+          new Error(`La cantidad de cada artículo tiene que ser un número entero mayor a cero (llegó ${item.cantidad}).`),
+          { status: 400 },
+        );
+      }
+      if (item.precioUnitario !== undefined && item.precioUnitario !== null) {
+        const precio = Number(item.precioUnitario);
+        if (!Number.isFinite(precio) || precio < 0) {
+          throw Object.assign(new Error('El precio de un artículo no puede ser negativo.'), { status: 400 });
+        }
+      }
+    }
+
+    /*
+     * El descuento va entre 0 y 100.
+     *
+     * Con 150 el total quedaba negativo; con -50 el descuento sumaba en vez de
+     * restar y la venta salía más cara que la suma de sus artículos.
+     */
+    const pct = Number(descuentoPct) || 0;
+    if (!Number.isFinite(pct) || pct < 0 || pct > 100) {
+      throw Object.assign(new Error('El descuento tiene que estar entre 0 y 100.'), { status: 400 });
+    }
+
     // Determinar si es mayorista: total de unidades >= 3
-    const totalUnidades = items.reduce((s, i) => s + i.cantidad, 0);
+    const totalUnidades = items.reduce((s, i) => s + Number(i.cantidad), 0);
     const esMayorista   = totalUnidades >= 3;
+
+    /*
+     * Política del negocio ante la falta de stock.
+     *
+     * Se lee una vez por venta y no por línea: son decenas de líneas y el dato
+     * es el mismo para todas.
+     */
+    const negocio = await Business.findByPk(req.auth.businessId, {
+      attributes: ['id', 'ventaSinStock'], transaction: t,
+    });
+    const politicaSinStock = negocio?.ventaSinStock === 'bloquear' ? 'bloquear' : 'permitir';
+
+    // Lo que se vendió sin tener: se devuelve con la venta para poder avisarlo.
+    const faltantes = [];
 
     // Construir sale items
     const enrichedItems = [];
@@ -499,17 +588,38 @@ const createSale = async (req, res, next) => {
             .filter(Boolean).join(' · ');
           const total = Number(variant.stock) || 0;
           const enOtros = total - disponible;
-          throw Object.assign(
-            new Error(
-              (disponible === 0
-                ? `No queda stock de ${nombre} (${variant.sku}) en ${nombreLocalVenta}.`
-                : `Sólo quedan ${disponible} de ${nombre} (${variant.sku}) en ${nombreLocalVenta} y estás vendiendo ${item.cantidad}.`)
-              + (enOtros > 0 ? ` Hay ${enOtros} en total entre todos los locales: transferilo desde Stock.` : '')
-            ),
-            // La pantalla lo usa para ofrecer registrarla como cotización en
-            // vez de dejar al cajero sin salida con el cliente enfrente.
-            { status: 409, detalles: { codigo: 'SIN_STOCK' } }
-          );
+
+          /*
+           * La venta pasa igual, salvo que el negocio pida lo contrario.
+           *
+           * En el mostrador la prenda está en la mano del cliente y el sistema
+           * va atrás: frenar por un dato que todavía no se cargó pierde la
+           * venta o empuja al cajero a inventar una vuelta. Lo que sí no puede
+           * pasar es que el faltante se pierda, así que la línea queda marcada
+           * y el stock queda en negativo A LA VISTA, como pendiente de
+           * regularizar.
+           */
+          if (politicaSinStock === 'bloquear') {
+            throw Object.assign(
+              new Error(
+                (disponible === 0
+                  ? `No queda stock de ${nombre} (${variant.sku}) en ${nombreLocalVenta}.`
+                  : `Sólo quedan ${disponible} de ${nombre} (${variant.sku}) en ${nombreLocalVenta} y estás vendiendo ${item.cantidad}.`)
+                + (enOtros > 0 ? ` Hay ${enOtros} en total entre todos los locales: transferilo desde Stock.` : '')
+              ),
+              // La pantalla lo usa para ofrecer registrarla como cotización en
+              // vez de dejar al cajero sin salida con el cliente enfrente.
+              { status: 409, detalles: { codigo: 'SIN_STOCK' } }
+            );
+          }
+
+          faltantes.push({
+            sku: variant.sku, nombre,
+            vendido: item.cantidad,
+            habia: disponible,
+            falta: item.cantidad - disponible,
+            enOtrosLocales: enOtros > 0 ? enOtros : 0,
+          });
         }
       }
 
@@ -527,16 +637,23 @@ const createSale = async (req, res, next) => {
         variante2Valor:   variant.variante2Valor,
         cantidad:         item.cantidad,
         precioUnitario,
+        /*
+         * El costo del día, congelado en la línea.
+         *
+         * Es lo que después permite decir qué margen dejó ESTA venta. Leerlo
+         * del producto al analizar hace que una suba del proveedor cambie los
+         * márgenes de todos los meses anteriores.
+         */
+        costoUnitario:    precioService.costo(variant, variant.producto),
         subtotal,
         esMayorista,
       });
     }
 
     const subtotal  = enrichedItems.reduce((s, i) => s + i.subtotal, 0);
-    const descuento = Math.round(subtotal * Number(descuentoPct) / 100 * 100) / 100;
+    const descuento = Math.round(subtotal * pct / 100 * 100) / 100;
     const total     = subtotal - descuento;
 
-    const numero = await nextSaleNumber(req.auth.businessId, tipo);
 
     // Los recargos y descuentos por medio de pago se calculan sobre el total
     // de mercadería. `total` no se toca: sobre él se apoyan la facturación y
@@ -550,7 +667,14 @@ const createSale = async (req, res, next) => {
     const { lineas, recargoPagos, totalCobrado, resumen } =
       await calcularPagos(esFiado || tipo === 'cotizacion' ? null : pagos, total, req.auth.businessId);
 
-    const sale = await Sale.create({
+    /*
+     * El número se toma reintentando: dos cajas cobrando a la vez leían el
+     * mismo último número y la segunda moría contra el índice único con un
+     * error de base en crudo.
+     */
+    const sale = await crearConNumero(
+      () => nextSaleNumber(req.auth.businessId, tipo),
+      (numero, sp) => Sale.create({
       businessId:  req.auth.businessId,
       locationId:  locationId || null,
       employeeId,
@@ -559,7 +683,7 @@ const createSale = async (req, res, next) => {
       estado:      finalEstado,
       condicionPago,
       esMayorista,
-      subtotal, descuentoPct, descuento, total,
+      subtotal, descuentoPct: pct, descuento, total,
       medioPago:   finalEstado === 'pagado' ? (resumen || medioPago || null) : null,
       recargoPagos: finalEstado === 'pagado' ? recargoPagos : 0,
       // Lo cobrado sólo tiene sentido cuando efectivamente se cobró. Una venta
@@ -575,7 +699,10 @@ const createSale = async (req, res, next) => {
       notas,
       cotizacionId: cotizacionId || null,
       fecha:       fecha || new Date().toISOString().slice(0, 10),
-    }, { transaction: t });
+      }, { transaction: sp || t }),
+      { transaction: t },
+    );
+    const numero = sale.numero;
 
     await SaleItem.bulkCreate(enrichedItems.map((i) => ({ ...i, saleId: sale.id })), { transaction: t });
 
@@ -623,7 +750,26 @@ const createSale = async (req, res, next) => {
     });
     // Notificaciones (asíncrono, no bloquea la respuesta)
     notifySaleAsync(sale.id, req.auth.businessId);
-    res.status(201).json(full);
+
+    /*
+     * El aviso de lo que se vendió sin tener.
+     *
+     * Va en la respuesta de la venta y no en un endpoint aparte: el momento en
+     * que sirve es justo después de cobrar, con la persona todavía en la
+     * pantalla. Un aviso que hay que ir a buscar no lo ve nadie.
+     */
+    res.status(201).json({
+      ...full.toJSON(),
+      ...(faltantes.length ? {
+        avisoStock: {
+          codigo: 'VENDIDO_SIN_STOCK',
+          mensaje: faltantes.length === 1
+            ? `Vendiste ${faltantes[0].vendido} de ${faltantes[0].nombre} y el sistema tenía ${faltantes[0].habia}. Quedó en negativo hasta que cargues la mercadería.`
+            : `${faltantes.length} artículos se vendieron sin stock cargado. Quedaron en negativo hasta que los regularices.`,
+          faltantes,
+        },
+      } : {}),
+    });
   } catch (error) {
     /*
      * El rollback no puede tumbar el servidor.
@@ -757,13 +903,151 @@ const cobrarSale = async (req, res, next) => {
  * sin detalle de medios de pago y sin cancelar la deuda del cliente, así que
  * ese camino es sólo el de arriba.
  */
+/*
+ * POST /api/sales/:id/anular
+ *
+ * Anula una venta y deshace todo lo que dejó: la mercadería vuelve al local
+ * del que salió, la plata deja de figurar como cobrada y la deuda del cliente
+ * se cancela.
+ *
+ * Antes esto se hacía con un PATCH de estado. Devolvía el stock, pero dejaba
+ * `totalCobrado` con el importe: la venta figuraba anulada y cobrada a la vez,
+ * y ese número lo leen las métricas.
+ *
+ * Dos cosas que NO hace, a propósito:
+ *
+ *   - No anula una venta facturada con CAE. Ese comprobante ya está en AFIP y
+ *     borrarlo de este lado no lo borra de allá: lo que corresponde es una nota
+ *     de crédito. Anular en silencio deja al negocio declarando una venta que
+ *     su propio sistema dice que no existió.
+ *   - No saca la plata de la caja por su cuenta. El arqueo cuenta las ventas
+ *     en estado 'pagado', así que al anularla sale sola del turno; si el
+ *     efectivo ya se entregó al cliente, eso es un egreso de caja que registra
+ *     quien lo entrega.
+ */
+const anularSale = async (req, res, next) => {
+  const t = await sequelize.transaction();
+  try {
+    const motivo = String(req.body?.motivo || '').trim();
+    if (!motivo) {
+      throw Object.assign(
+        new Error('Poné el motivo de la anulación: es lo que explica la devolución de stock en el historial.'),
+        { status: 400 },
+      );
+    }
+
+    const sale = await Sale.findOne({
+      where: { id: req.params.id, businessId: req.auth.businessId },
+      include: [{ model: SaleItem, as: 'items' }],
+      transaction: t, lock: t.LOCK.UPDATE,
+    });
+    if (!sale) throw Object.assign(new Error('Venta no encontrada.'), { status: 404 });
+    if (sale.estado === 'cancelado') {
+      throw Object.assign(new Error('Esta venta ya está anulada.'), { status: 409 });
+    }
+
+    /*
+     * Facturada con CAE: no se toca.
+     *
+     * El comprobante está autorizado por AFIP y sigue existiendo aunque acá se
+     * marque otra cosa. La salida es la nota de crédito.
+     */
+    const { Invoice } = require('../models');
+    const factura = await Invoice.findOne({
+      where: { saleId: sale.id, businessId: req.auth.businessId },
+      transaction: t,
+    });
+    if (factura && factura.cae) {
+      throw Object.assign(
+        new Error(
+          `La venta ${sale.numero} está facturada (${factura.numero}, CAE ${factura.cae}). `
+          + 'Ese comprobante ya está autorizado en ARCA: para revertirlo hace falta una nota de crédito, '
+          + 'no alcanza con anular la venta acá.',
+        ),
+        { status: 409, detalles: { codigo: 'VENTA_FACTURADA', factura: factura.numero, cae: factura.cae } },
+      );
+    }
+
+    // La deuda de una venta fiada se cancela: el cliente no se llevó nada.
+    const pendiente = redondear(sale.saldoPendiente);
+    if (sale.condicionPago === 'cuenta_corriente' && sale.clientId && pendiente > 0) {
+      await registrarMovimiento({
+        businessId: req.auth.businessId,
+        clientId:   sale.clientId,
+        saleId:     sale.id,
+        employeeId: req.auth.employeeId || null,
+        tipo:       'pago',
+        monto:      pendiente,
+        notas:      `Anulación venta ${sale.numero}: ${motivo}`.slice(0, 255),
+      }, t);
+    }
+
+    const devolvio = await devolverStockVenta(sale, t, {
+      employeeId: req.auth.employeeId || null,
+      motivo: `Anulación venta ${sale.numero}: ${motivo}`.slice(0, 255),
+    });
+
+    await sale.update({
+      estado: 'cancelado',
+      saldoPendiente: 0,
+      /*
+       * La plata deja de figurar como cobrada. Si el arqueo del turno ya se
+       * cerró con ese efectivo adentro, el ajuste es un egreso de caja hecho
+       * por quien devuelve el dinero, no un número que se cambie por atrás.
+       */
+      totalCobrado: 0,
+      recargoPagos: 0,
+      notas: [sale.notas, `ANULADA: ${motivo}`].filter(Boolean).join(' · ').slice(0, 500),
+    }, { transaction: t });
+
+    await t.commit();
+
+    const full = await Sale.findByPk(sale.id, {
+      include: [{ model: SaleItem, as: 'items' }, { association: 'empleado', attributes: ['id', 'nombre', 'apellido'] }],
+    });
+    res.json({
+      ok: true,
+      venta: full,
+      devolvioStock: devolvio,
+      mensaje: devolvio
+        ? `Venta ${sale.numero} anulada. La mercadería volvió al stock.`
+        : `Venta ${sale.numero} anulada. No había stock que devolver: nunca llegó a descontarse.`,
+    });
+  } catch (error) {
+    await t.rollback().catch(() => {});
+    next(error);
+  }
+};
+
+/*
+ * Los únicos estados que una venta puede tener.
+ *
+ * Sin esta lista se guardaba cualquier texto: un PATCH con estado "banana"
+ * devolvía 200 y dejaba la venta en un estado que ninguna pantalla sabe
+ * dibujar y que ningún filtro encuentra. Peor todavía, salía del arqueo de
+ * caja —que busca 'pagado'— sin quedar como cancelada.
+ */
+const ESTADOS_VENTA = ['pendiente', 'pagado', 'cancelado'];
+
 const updateSaleStatus = async (req, res, next) => {
   const t = await sequelize.transaction();
   try {
     const { estado } = req.body;
+    if (!ESTADOS_VENTA.includes(estado)) {
+      throw Object.assign(
+        new Error(`Estado inválido. Los posibles son: ${ESTADOS_VENTA.join(', ')}.`),
+        { status: 400 }
+      );
+    }
     if (estado === 'pagado') {
       throw Object.assign(
         new Error('Para cobrar una venta usá el cobro, que registra con qué se pagó.'),
+        { status: 400 }
+      );
+    }
+    if (estado === 'cancelado') {
+      throw Object.assign(
+        new Error('Para anular una venta usá la anulación, que pide el motivo y devuelve el stock.'),
         { status: 400 }
       );
     }
@@ -773,28 +1057,6 @@ const updateSaleStatus = async (req, res, next) => {
       transaction: t, lock: t.LOCK.UPDATE,
     });
     if (!sale) throw Object.assign(new Error('Venta no encontrada.'), { status: 404 });
-
-    /*
-     * Cancelar una venta fiada tiene que borrar la deuda que dejó: si no, el
-     * cliente sigue debiendo por mercadería que nunca se llevó. Y si el stock
-     * había salido, vuelve al inventario.
-     */
-    if (estado === 'cancelado' && sale.estado !== 'cancelado') {
-      const pendiente = redondear(sale.saldoPendiente);
-      if (sale.condicionPago === 'cuenta_corriente' && sale.clientId && pendiente > 0) {
-        await registrarMovimiento({
-          businessId: req.auth.businessId,
-          clientId:   sale.clientId,
-          saleId:     sale.id,
-          employeeId: req.auth.employeeId || null,
-          tipo:       'pago',
-          monto:      pendiente,
-          notas:      `Anulación venta ${sale.numero}`,
-        }, t);
-      }
-      await devolverStockVenta(sale, t, { employeeId: req.auth.employeeId || null });
-      await sale.update({ saldoPendiente: 0 }, { transaction: t });
-    }
 
     await sale.update({ estado }, { transaction: t });
     await t.commit();
@@ -819,16 +1081,146 @@ const updateSaleStatus = async (req, res, next) => {
 
 // POST /api/sales/cotizacion/:id/convertir
 // Convierte una cotización en venta sin facturar
+/*
+ * POST /api/sales/cotizacion/:id/convertir
+ *
+ * Pasa un presupuesto a venta: comprueba el stock, lo descuenta y le da número
+ * de venta.
+ *
+ * Antes esto sólo cambiaba `tipo` de cotizacion a venta. Nada más. La
+ * cotización se puede hacer sin stock —es justamente para lo que sirve, cotizar
+ * algo que todavía no llegó—, así que convertirla sin mirar dejaba la venta
+ * hecha, la mercadería sin descontar y el inventario diciendo que había una
+ * prenda que ya se había entregado. La diferencia recién aparecía contando a
+ * mano.
+ *
+ * El stock sale acá y no al cobrar: convertir un presupuesto en venta es el
+ * momento en que el cliente se lleva la mercadería, aunque pague después.
+ */
 const convertQuoteToSale = async (req, res, next) => {
+  const t = await sequelize.transaction();
   try {
-    const quote = await Sale.findOne({ where: { id: req.params.id, tipo: 'cotizacion', businessId: req.auth.businessId } });
-    if (!quote) return res.status(404).json({ message: 'Cotización no encontrada.' });
+    const quote = await Sale.findOne({
+      where: { id: req.params.id, tipo: 'cotizacion', businessId: req.auth.businessId },
+      include: [{ model: SaleItem, as: 'items' }],
+      transaction: t, lock: t.LOCK.UPDATE,
+    });
+    if (!quote) {
+      await t.rollback();
+      return res.status(404).json({ message: 'Cotización no encontrada.' });
+    }
+    if (quote.estado === 'cancelado') {
+      await t.rollback();
+      return res.status(409).json({ message: 'Esta cotización está anulada.' });
+    }
+
+    /*
+     * De qué local sale la mercadería.
+     *
+     * El de la cotización si lo tiene; si no, el del empleado. Una cotización
+     * puede haberse hecho sin local —no descuenta nada, así que no hacía
+     * falta—, pero la venta sí necesita saberlo.
+     */
+    let locationId = Number(req.body?.locationId) || quote.locationId || null;
+
+    if (req.auth.employeeId && !Number(req.body?.locationId)) {
+      const empleado = await Employee.findOne({
+        where: { id: req.auth.employeeId, businessId: req.auth.businessId }, transaction: t,
+      });
+      locationId = empleado?.locationId || locationId;
+    }
+
+    if (!locationId) {
+      const activos = await BusinessLocation.findAll({
+        where: { businessId: req.auth.businessId, activo: true, tipo: { [Op.ne]: 'deposito' } },
+        order: [['id', 'ASC']], transaction: t,
+      });
+      if (activos.length === 1) locationId = activos[0].id;
+      else if (activos.length === 0) {
+        await t.rollback();
+        return res.status(409).json({ message: 'No hay ningún local de venta cargado.' });
+      } else {
+        await t.rollback();
+        return res.status(400).json({ message: 'Elegí de qué local sale la mercadería al convertir la cotización.' });
+      }
+    }
+
+    const local = await BusinessLocation.findOne({
+      where: { id: locationId, businessId: req.auth.businessId, activo: true }, transaction: t,
+    });
+    if (!local) {
+      await t.rollback();
+      return res.status(400).json({ message: 'El local indicado no pertenece a este negocio o está inactivo.' });
+    }
+    if (local.tipo === 'deposito') {
+      await t.rollback();
+      return res.status(400).json({
+        message: `"${local.nombre}" es un depósito y de un depósito no se vende. Transferí la mercadería a un local primero.`,
+      });
+    }
+
+    /*
+     * Se comprueba TODO antes de descontar nada.
+     *
+     * Frenar en la mitad dejaría media cotización convertida, con parte del
+     * stock ya descontado y un documento que sigue diciendo "cotización".
+     */
+    const faltantes = [];
+    for (const item of quote.items || []) {
+      if (!item.productVariantId) continue;
+      const disponible = await stockService.stockEn(item.productVariantId, locationId, t);
+      if (disponible < item.cantidad) {
+        const variante = await ProductVariant.findByPk(item.productVariantId, {
+          include: [{ model: Product, as: 'producto', attributes: ['titulo'] }], transaction: t,
+        });
+        const nombre = [variante?.producto?.titulo, variante?.variante1Valor, variante?.variante2Valor]
+          .filter(Boolean).join(' · ');
+        faltantes.push({
+          sku: variante?.sku || String(item.productVariantId),
+          nombre, pide: item.cantidad, hay: disponible,
+          total: Number(variante?.stock) || 0,
+        });
+      }
+    }
+
+    if (faltantes.length) {
+      await t.rollback();
+      const detalle = faltantes
+        .map((f) => `${f.nombre || f.sku} (${f.sku}): ${f.hay === 0 ? 'no queda nada' : `quedan ${f.hay}`} y la cotización pide ${f.pide}`)
+        .join('; ');
+      const enOtros = faltantes.some((f) => f.total > f.hay);
+      return res.status(409).json({
+        message: `No se puede convertir en venta: falta stock en ${local.nombre}. ${detalle}.`
+          + (enOtros ? ' Hay unidades en otros locales: transferilas desde Stock.' : ''),
+        codigo: 'SIN_STOCK',
+        faltantes,
+      });
+    }
 
     const numero = await nextSaleNumber(req.auth.businessId, 'venta');
     // Nace como venta abierta: se debe entera hasta que se cobre.
-    await quote.update({ tipo: 'venta', estado: 'pendiente', numero, saldoPendiente: quote.total });
-    res.json(quote);
-  } catch (error) { next(error); }
+    await quote.update({
+      tipo: 'venta', estado: 'pendiente', numero,
+      saldoPendiente: quote.total,
+      locationId,
+      employeeId: quote.employeeId || req.auth.employeeId || null,
+    }, { transaction: t });
+
+    await descontarStockVenta(quote, t, {
+      employeeId: req.auth.employeeId || null,
+      motivo: `Conversión de cotización a venta ${numero}`,
+    });
+
+    await t.commit();
+
+    const full = await Sale.findByPk(quote.id, {
+      include: [{ model: SaleItem, as: 'items' }, { association: 'empleado', attributes: ['id', 'nombre', 'apellido'] }],
+    });
+    res.json(full);
+  } catch (error) {
+    await t.rollback().catch(() => {});
+    next(error);
+  }
 };
 
 // GET /api/sales/:id/ticket → devuelve PDF de ticket 80mm inline
@@ -854,4 +1246,4 @@ const downloadTicket = async (req, res, next) => {
   } catch (error) { next(error); }
 };
 
-module.exports = { getSales, getSale, createSale, cobrarSale, updateSaleStatus, convertQuoteToSale, downloadTicket };
+module.exports = { getSales, getSale, createSale, cobrarSale, updateSaleStatus, anularSale, convertQuoteToSale, downloadTicket };

@@ -52,21 +52,26 @@ const { Business, Subscription, Plan } = require('./src/models');
 })();
 " > /dev/null 2>&1
 
-# Variante con stock de sobra para no chocar con validaciones de inventario.
-PROD=$(C "$API/products?limit=50")
-SEL=".data.flatMap(p=>p.productVariants.map(v=>({...v,precio:p.precioMinorista}))).filter(v=>v.stock>=6)[0]"
-VID=$(echo "$PROD" | J "$SEL.id")
-SKU=$(echo "$PROD" | J "$SEL.sku")
-PRECIO=$(echo "$PROD" | J "$SEL.precio")
+# De qué local sale la mercadería. Nunca un depósito: de ahí no se vende.
+LOC=$(C "$API/deposito/lugares" | J ".locales.sort((a,b)=>a.id-b.id)[0].id")
+
+# La variante se elige por el stock EN ESE LOCAL, no por el total.
+#
+# Antes se filtraba por v.stock>=6, que es la suma de todos lados. Con un
+# depósito en el medio eso elige variantes con 41 unidades guardadas y cero en
+# la góndola, y las 26 comprobaciones de fiado fallaban por falta de stock
+# mucho antes de llegar a probar nada de cuenta corriente.
+PORLOC=$(C "$API/stock/por-local?limit=300")
+SEL=".data.filter(v=>(v.porLocal.find(l=>l.locationId===$LOC)||{}).stock>=6)[0]"
+VID=$(echo "$PORLOC" | J "$SEL.variantId")
+SKU=$(echo "$PORLOC" | J "$SEL.sku")
+PRECIO=$(C "$API/products/scan/$SKU" | J .precioMinorista)
 stock() { C "$API/products/scan/$SKU" | J .stock; }
 STOCK0=$(stock)
 echo "variante=$VID sku=$SKU precio=$PRECIO stock=$STOCK0"
 
 CID=$(C -X POST $API/clients -d '{"nombre":"Fiado","apellido":"QA"}' | J .id)
 MEF=$(C "$API/payment-methods?activos=true" | J ".filter(m=>m.esEfectivo)[0].id")
-# Desde que el stock es por local, la venta tiene que decir de cuál sale: con
-# varios locales el servidor ya no elige por su cuenta.
-LOC=$(C "$API/locations" | J ".sort((a,b)=>a.id-b.id)[0].id")
 MTR=$(C "$API/payment-methods?activos=true" | J ".filter(m=>!m.esEfectivo)[0].id")
 echo "cliente=$CID efectivo=$MEF otro=$MTR"
 

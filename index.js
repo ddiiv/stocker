@@ -410,6 +410,27 @@ async function start() {
         console.log('  ── Mercado Pago ──');
         for (const p of problemasMp) console.log(`    ✖ ${p}`);
       }
+
+      /*
+       * Correo: las tres casillas y si el dominio cierra.
+       *
+       * Un dominio mal configurado no falla, manda igual y cae en spam — que
+       * es peor, porque nadie se entera hasta que un cliente dice que no le
+       * llegó el comprobante. Decirlo en el log del deploy es la única forma
+       * de que alguien lo mire.
+       */
+      const correo = require('./src/config/correo').estado();
+      console.log('  ── Correo ──');
+      console.log(`    Envía todo (ventas, facturas, caja, códigos) .. ${correo.casillas.noreply}`
+        + `${correo.credencialPropia ? ' · credencial propia' : ' · SIN credencial propia'}`);
+      console.log(`    Recibe reportes de soporte ................... ${correo.casillas.soporte}`
+        + `${correo.soporteConCredencial ? ' · con credencial' : ''}`);
+      console.log(`    Cuenta principal (admin, SPF/DKIM) .......... ${correo.casillas.oficial}`);
+      if (correo.avisos.length) {
+        for (const a of correo.avisos) console.log(`    ✖ ${a}`);
+      } else {
+        console.log('    ✔ La cuenta que autentica es la que figura como remitente: Gmail no lo reescribe.');
+      }
     });
 
     server.on('error', (err) => {

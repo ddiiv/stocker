@@ -28,6 +28,17 @@ const MODULOS = [
   { key: 'caja',         label: 'Caja',           descripcion: 'Turnos de caja, movimientos de efectivo y arqueo.' },
   { key: 'empleados',    label: 'Empleados',      descripcion: 'Empleados, cargos y locales del negocio.' },
   { key: 'integraciones',label: 'Integraciones',  descripcion: 'Conexión con MercadoLibre y sincronización de stock.' },
+  /*
+   * Los tres del circuito depósito → local.
+   *
+   * Van separados de `stock` porque son trabajos distintos hechos por gente
+   * distinta: quien cuenta bultos en el depósito no tiene por qué poder editar
+   * precios del catálogo, y quien pide reposición desde el local no tiene por
+   * qué poder aprobar su propio pedido.
+   */
+  { key: 'deposito',     label: 'Depósito',       descripcion: 'Ingreso de mercadería nueva al depósito, conteo y etiquetado.' },
+  { key: 'reposicion',   label: 'Reposición',     descripcion: 'Pedidos de reposición del local y preparación de los envíos.' },
+  { key: 'aprobaciones', label: 'Aprobaciones',   descripcion: 'Aprobar o rechazar pedidos de reposición e ingresos de mercadería, y anular ingresos mal cargados.' },
 ];
 
 const CLAVES = MODULOS.map((m) => m.key);
@@ -47,6 +58,16 @@ const HEREDA_DE = {
   integraciones: 'stock',
   cotizaciones:  'ventas',
   caja:          'ventas',
+  /*
+   * Depósito y reposición heredan de stock: quien ya movía stock a mano sigue
+   * pudiendo hacerlo por el circuito nuevo el día que se despliega.
+   *
+   * Aprobaciones NO hereda de nada, y es a propósito. Es la firma que separa a
+   * quien carga del que autoriza; dársela por herencia a todo el que tenía
+   * stock:editar anularía el control el mismo día que se enciende.
+   */
+  deposito:      'stock',
+  reposicion:    'stock',
 };
 
 /** Nivel efectivo de un cargo para un módulo, aplicando la herencia. */
@@ -84,21 +105,37 @@ const PRESETS = {
     dashboard: 'editar', stock: 'editar', ventas: 'editar', cotizaciones: 'editar',
     clientes: 'editar', facturacion: 'editar', pagos: 'editar', caja: 'editar',
     empleados: 'editar', integraciones: 'editar',
+    deposito: 'editar', reposicion: 'editar', aprobaciones: 'editar',
   },
   Vendedor: {
     dashboard: 'ver', stock: 'ver', ventas: 'editar', cotizaciones: 'editar',
     clientes: 'editar', facturacion: 'ver', pagos: 'ver', caja: 'editar',
     empleados: 'ninguno', integraciones: 'ninguno',
+    // Pide reposición para su local, no aprueba ni toca el depósito.
+    deposito: 'ninguno', reposicion: 'editar', aprobaciones: 'ninguno',
   },
   'Depósito': {
-    dashboard: 'ver', stock: 'editar', ventas: 'ninguno', cotizaciones: 'ninguno',
+    dashboard: 'ver', stock: 'ver', ventas: 'ninguno', cotizaciones: 'ninguno',
     clientes: 'ninguno', facturacion: 'ninguno', pagos: 'ninguno', caja: 'ninguno',
     empleados: 'ninguno', integraciones: 'ver',
+    // Ingresa mercadería y prepara envíos. No aprueba: para eso está oficina.
+    deposito: 'editar', reposicion: 'editar', aprobaciones: 'ninguno',
+  },
+  /*
+   * Oficina: no carga mercadería, autoriza. Ve todo para poder decidir y tiene
+   * la firma; el trabajo de contar y etiquetar es de depósito.
+   */
+  Oficina: {
+    dashboard: 'ver', stock: 'ver', ventas: 'ver', cotizaciones: 'ver',
+    clientes: 'ver', facturacion: 'ver', pagos: 'ver', caja: 'ver',
+    empleados: 'ninguno', integraciones: 'ninguno',
+    deposito: 'ver', reposicion: 'ver', aprobaciones: 'editar',
   },
   Cajero: {
     dashboard: 'ver', stock: 'ver', ventas: 'editar', cotizaciones: 'ver',
     clientes: 'editar', facturacion: 'editar', pagos: 'ver', caja: 'editar',
     empleados: 'ninguno', integraciones: 'ninguno',
+    deposito: 'ninguno', reposicion: 'ver', aprobaciones: 'ninguno',
   },
 };
 

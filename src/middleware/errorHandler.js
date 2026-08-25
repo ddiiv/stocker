@@ -33,11 +33,19 @@ const errorHandler = (err, req, res, next) => { // eslint-disable-line no-unused
   else log.warn('http', mensajeSeguro(err), contexto);
 
   if (err.name === 'SequelizeValidationError' || err.name === 'SequelizeUniqueConstraintError') {
-    // Los mensajes de validación de Sequelize son de campo ("email debe ser
-    // único"), no traen el valor: se pueden mostrar.
+    /*
+     * Los mensajes de validación de Sequelize son de campo ("email debe ser
+     * único"), no traen el valor: se pueden mostrar.
+     *
+     * Y se muestran en `message`, no sólo en `errors`. Antes el cuerpo decía
+     * "Error de validación" a secas y el detalle viajaba en un array que
+     * ninguna pantalla leía: quien vendía veía un error sin causa y no tenía
+     * forma de saber qué corregir.
+     */
+    const detalles = (err.errors || []).map((e) => e.message).filter(Boolean);
     return res.status(400).json({
-      message: 'Error de validación',
-      errors: err.errors?.map((e) => e.message),
+      message: detalles.length ? detalles.join(' · ') : 'Error de validación',
+      errors: detalles,
     });
   }
 

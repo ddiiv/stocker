@@ -36,6 +36,23 @@ const Business = db.define('Business', {
     get() { try { return JSON.parse(this.getDataValue('reglaSku')); } catch { return null; } },
     set(val) { this.setDataValue('reglaSku', val == null ? null : JSON.stringify(val)); },
   },
+  /*
+   * Qué hacer cuando se vende algo que el sistema no tiene en stock.
+   *
+   *   permitir  (por defecto) → la venta pasa y el stock queda en negativo,
+   *                             marcado para regularizar.
+   *   bloquear                → no se vende hasta cargar la mercadería.
+   *
+   * El default es permitir porque en el mostrador la mercadería está en la
+   * mano del cliente y el sistema va atrás: frenar la venta por un dato que
+   * todavía no se cargó pierde la venta o empuja a inventar una vuelta rara.
+   *
+   * El negativo NO es un error tapado: queda a la vista como faltante por
+   * regularizar. Un negativo avisado dice "vendiste 3 más de las que sabía";
+   * uno silencioso convierte el inventario en ficción, y por eso la venta que
+   * lo genera se marca y se lista aparte.
+   */
+  ventaSinStock: { type: DataTypes.STRING(10), allowNull: false, defaultValue: 'permitir' },
 }, { tableName: 'businesses' });
 
 /* ─── Plan (catálogo comercial) ────────────────────────────────────
@@ -383,6 +400,17 @@ const BusinessLocation = db.define('BusinessLocation', {
   nombre:     { type: DataTypes.STRING(150), allowNull: false },
   direccion:  { type: DataTypes.STRING(255), allowNull: false },
   telefono:   { type: DataTypes.STRING(30) },
+  /*
+   * Local o depósito, y no es una etiqueta decorativa.
+   *
+   * La mercadería nueva entra por el depósito y de ahí se transfiere; de un
+   * depósito no se vende. Sin distinguirlos, el punto de venta ofrecía
+   * descontar de la bodega y el stock del salón quedaba mintiendo.
+   *
+   * Un negocio puede tener varios depósitos. Los que ya existían son locales:
+   * es lo que eran hasta ahora y cambiarlos por adivinanza rompería sus ventas.
+   */
+  tipo:       { type: DataTypes.STRING(20), allowNull: false, defaultValue: 'local' }, // local|deposito
   activo:     { type: DataTypes.BOOLEAN, defaultValue: true },
 }, { tableName: 'business_locations' });
 
@@ -605,6 +633,141 @@ const StockMovement = db.define('StockMovement', {
   fechaMovimiento:  { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
 }, { tableName: 'stock_movements', timestamps: false });
 
+/* ═══════════════════════════════════════════════════════════════════
+ * Circuito depósito → local
+ *
+ * Dos documentos, cada uno con su hoja de items, que juntos cubren el camino
+ * de la mercadería desde que baja del camión hasta que está en la góndola:
+ *
+ *   StockIngreso       mercadería nueva que entra al depósito.
+ *   PedidoReposicion   lo que un local pide y el depósito le manda.
+ *
+ * Los dos guardan quién hizo cada paso y cuándo, porque son justamente los
+ * papeles que alguien va a querer revisar cuando las cantidades no cierren.
+ * Nada se borra: rechazar y anular son estados, no un DELETE.
+ * ═══════════════════════════════════════════════════════════════════ */
+
+// ─── StockIngreso ─────────────────────────────────────────────────
+const StockIngreso = db.define('StockIngreso', {
+  id:         { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
+  businessId: { type: DataTypes.INTEGER, allowNull: false },
+  // Siempre un depósito: la mercadería cruda no entra por el salón.
+  locationId: { type: DataTypes.INTEGER, allowNull: false },
+  employeeId: { type: DataTypes.INTEGER, allowNull: true },
+  numero:     { type: DataTypes.STRING(25), allowNull: false },
+  /*
+   * Cómo se contó, que es lo que decide si el stock sube solo o espera firma.
+   *
+   *   etiquetas → se contó una vez y se imprimieron etiquetas en el acto. El
+   *               stock sube ahí mismo: la etiqueta impresa ya es la prueba
+   *               física de la cuenta y hacerlo contar de nuevo para "confirmar"
+   *               es el error que este circuito viene a sacar.
+   *   conteo    → se contó a mano, sin etiquetas. Queda pendiente de que
+   *               oficina lo acepte.
+   */
+  origen:     { type: DataTypes.STRING(20), allowNull: false, defaultValue: 'etiquetas' },
+  // aplicado|pendiente|rechazado|anulado
+  estado:     { type: DataTypes.STRING(20), allowNull: false, defaultValue: 'pendiente' },
+  // Cuando el ingreso nace para cubrir un pedido del local.
+  pedidoId:   { type: DataTypes.INTEGER, allowNull: true },
+  notas:      { type: DataTypes.STRING(500) },
+  /*
+   * El porqué del rechazo o de la anulación. Es obligatorio en el controller:
+   * un ingreso que desaparece sin explicación es exactamente el agujero por el
+   * que después nadie puede reconstruir qué pasó.
+   */
+  motivo:     { type: DataTypes.STRING(500) },
+  resueltoPorEmployeeId: { type: DataTypes.INTEGER, allowNull: true },
+  resueltoEn:            { type: DataTypes.DATE, allowNull: true },
+}, { tableName: 'stock_ingresos' });
+
+const StockIngresoItem = db.define('StockIngresoItem', {
+  id:               { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
+  ingresoId:        { type: DataTypes.INTEGER, allowNull: false },
+  productVariantId: { type: DataTypes.INTEGER, allowNull: false },
+  cantidad:         { type: DataTypes.INTEGER, allowNull: false },
+  /*
+   * Copia del SKU y la descripción al momento del ingreso.
+   *
+   * El remito tiene que poder leerse dentro de un año aunque la variante se
+   * haya renombrado o dado de baja. Sin la copia, el historial muestra filas
+   * vacías justo cuando se lo consulta para discutir un faltante.
+   */
+  sku:              { type: DataTypes.STRING(100) },
+  descripcion:      { type: DataTypes.STRING(255) },
+}, { tableName: 'stock_ingreso_items' });
+
+// ─── PedidoReposicion ─────────────────────────────────────────────
+const PedidoReposicion = db.define('PedidoReposicion', {
+  id:          { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
+  businessId:  { type: DataTypes.INTEGER, allowNull: false },
+  numero:      { type: DataTypes.STRING(25), allowNull: false },
+  // Quién pide (local) y de dónde sale (depósito).
+  locationId:  { type: DataTypes.INTEGER, allowNull: false },
+  depositoId:  { type: DataTypes.INTEGER, allowNull: true },
+  solicitadoPorEmployeeId: { type: DataTypes.INTEGER, allowNull: true },
+  /*
+   * pendiente → aprobado → enviado → recibido | recibido_parcial
+   *           ↘ rechazado                      ↘ (faltantes con nota)
+   *
+   * `enviado` es el estado en el que la mercadería ya salió del depósito y
+   * todavía no llegó: en tránsito. Existe porque el stock sale al despachar,
+   * así que durante el viaje no está en ningún lado y tiene que poder verse.
+   */
+  estado:      { type: DataTypes.STRING(20), allowNull: false, defaultValue: 'pendiente' },
+  notas:       { type: DataTypes.STRING(500) },
+
+  aprobadoPorEmployeeId: { type: DataTypes.INTEGER, allowNull: true },
+  aprobadoEn:            { type: DataTypes.DATE, allowNull: true },
+  motivoRechazo:         { type: DataTypes.STRING(500) },
+
+  enviadoPorEmployeeId:  { type: DataTypes.INTEGER, allowNull: true },
+  enviadoEn:             { type: DataTypes.DATE, allowNull: true },
+
+  recibidoPorEmployeeId: { type: DataTypes.INTEGER, allowNull: true },
+  recibidoEn:            { type: DataTypes.DATE, allowNull: true },
+  notaRecepcion:         { type: DataTypes.STRING(500) },
+
+  /*
+   * El saldo: lo que se pidió y nunca salió del depósito.
+   *
+   * Es `pedida - enviada`, y NO `pedida - recibida`. La diferencia importa:
+   * lo que salió y no llegó es una pérdida en tránsito que hay que investigar,
+   * no mercadería para volver a mandar. Confundirlas haría despachar dos veces
+   * la misma prenda.
+   *
+   * Un pedido con saldo queda esperando una decisión —mandarlo o darlo de
+   * baja— y se muestra primero en la bandeja para que nadie se olvide. La
+   * alternativa, cerrarlo en silencio, obliga al local a darse cuenta solo y a
+   * pedir todo de nuevo.
+   */
+  saldoEstado:    { type: DataTypes.STRING(20), allowNull: true },  // pendiente|aceptado|rechazado
+  saldoMotivo:    { type: DataTypes.STRING(500) },
+  saldoResueltoPorEmployeeId: { type: DataTypes.INTEGER, allowNull: true },
+  saldoResueltoEn:            { type: DataTypes.DATE, allowNull: true },
+  // El pedido que continúa a éste, cuando el saldo se acepta y se rearma.
+  pedidoOrigenId: { type: DataTypes.INTEGER, allowNull: true },
+}, { tableName: 'pedidos_reposicion' });
+
+const PedidoReposicionItem = db.define('PedidoReposicionItem', {
+  id:               { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
+  pedidoId:         { type: DataTypes.INTEGER, allowNull: false },
+  productVariantId: { type: DataTypes.INTEGER, allowNull: false },
+  /*
+   * Las tres cantidades del circuito, y las tres hacen falta.
+   *
+   * Pedida vs enviada muestra qué no había en el depósito; enviada vs recibida
+   * muestra qué se perdió en el camino. Guardando una sola, cualquier faltante
+   * es indistinguible de un error de carga.
+   */
+  cantidadPedida:   { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
+  cantidadEnviada:  { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
+  cantidadRecibida: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
+  notaFaltante:     { type: DataTypes.STRING(300) },
+  sku:              { type: DataTypes.STRING(100) },
+  descripcion:      { type: DataTypes.STRING(255) },
+}, { tableName: 'pedido_reposicion_items' });
+
 // ─── Sale ────────────────────────────────────────────────────────
 const Sale = db.define('Sale', {
   id:           { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
@@ -764,6 +927,15 @@ const SaleItem = db.define('SaleItem', {
   variante2Valor:   { type: DataTypes.STRING(80) },
   cantidad:         { type: DataTypes.INTEGER, allowNull: false },
   precioUnitario:   { type: DataTypes.DECIMAL(12,2), allowNull: false },
+  /*
+   * El costo de la mercadería el día que se vendió, congelado acá.
+   *
+   * Sin esta copia el margen se calcula contra el costo actual del producto, y
+   * entonces una suba del proveedor reescribe el resultado de todos los meses
+   * anteriores. Para un panel que se mira a varios años, el pasado tiene que
+   * quedarse quieto.
+   */
+  costoUnitario:    { type: DataTypes.DECIMAL(12,2), allowNull: true },
   subtotal:         { type: DataTypes.DECIMAL(12,2), allowNull: false },
   esMayorista:      { type: DataTypes.BOOLEAN, defaultValue: false },
 }, { tableName: 'sale_items', timestamps: false });
@@ -949,6 +1121,43 @@ SalePayment.belongsTo(Sale, { foreignKey: 'saleId' });
 // paymentMethodId colgado.
 SalePayment.belongsTo(PaymentMethod, { foreignKey: 'paymentMethodId', as: 'metodo', onDelete: 'NO ACTION' });
 
+/* ─── Circuito depósito → local: asociaciones ──────────────────────
+ *
+ * Todo lo que apunta a `business_locations`, `employees` o `product_variants`
+ * va en NO ACTION. Las tres cuelgan de `businesses` igual que estos
+ * documentos, así que borrar un negocio llegaría a la misma tabla por dos
+ * caminos y SQL Server rechaza crearla ("multiple cascade paths"). El único
+ * CASCADE es el de cada documento hacia sus propios items, que sin la cabecera
+ * no significan nada.
+ */
+Business.hasMany(StockIngreso, { foreignKey: 'businessId', as: 'ingresos', onDelete: 'CASCADE' });
+StockIngreso.belongsTo(Business, { foreignKey: 'businessId' });
+StockIngreso.belongsTo(BusinessLocation, { foreignKey: 'locationId', as: 'deposito', onDelete: 'NO ACTION' });
+StockIngreso.belongsTo(Employee, { foreignKey: 'employeeId', as: 'empleado', onDelete: 'NO ACTION' });
+StockIngreso.belongsTo(Employee, { foreignKey: 'resueltoPorEmployeeId', as: 'resueltoPor', onDelete: 'NO ACTION' });
+
+StockIngreso.hasMany(StockIngresoItem, { foreignKey: 'ingresoId', as: 'items', onDelete: 'CASCADE' });
+StockIngresoItem.belongsTo(StockIngreso, { foreignKey: 'ingresoId', as: 'ingreso' });
+StockIngresoItem.belongsTo(ProductVariant, { foreignKey: 'productVariantId', as: 'variante', onDelete: 'NO ACTION' });
+
+Business.hasMany(PedidoReposicion, { foreignKey: 'businessId', as: 'pedidosReposicion', onDelete: 'CASCADE' });
+PedidoReposicion.belongsTo(Business, { foreignKey: 'businessId' });
+PedidoReposicion.belongsTo(BusinessLocation, { foreignKey: 'locationId', as: 'local', onDelete: 'NO ACTION' });
+PedidoReposicion.belongsTo(BusinessLocation, { foreignKey: 'depositoId', as: 'deposito', onDelete: 'NO ACTION' });
+PedidoReposicion.belongsTo(Employee, { foreignKey: 'solicitadoPorEmployeeId', as: 'solicitadoPor', onDelete: 'NO ACTION' });
+PedidoReposicion.belongsTo(Employee, { foreignKey: 'aprobadoPorEmployeeId', as: 'aprobadoPor', onDelete: 'NO ACTION' });
+PedidoReposicion.belongsTo(Employee, { foreignKey: 'enviadoPorEmployeeId', as: 'enviadoPor', onDelete: 'NO ACTION' });
+PedidoReposicion.belongsTo(Employee, { foreignKey: 'recibidoPorEmployeeId', as: 'recibidoPor', onDelete: 'NO ACTION' });
+
+PedidoReposicion.hasMany(PedidoReposicionItem, { foreignKey: 'pedidoId', as: 'items', onDelete: 'CASCADE' });
+PedidoReposicionItem.belongsTo(PedidoReposicion, { foreignKey: 'pedidoId', as: 'pedido' });
+PedidoReposicionItem.belongsTo(ProductVariant, { foreignKey: 'productVariantId', as: 'variante', onDelete: 'NO ACTION' });
+
+// El ingreso que se generó para cubrir un pedido. Sin cascada: el remito de
+// entrada al depósito sobrevive aunque el pedido se dé de baja.
+PedidoReposicion.hasMany(StockIngreso, { foreignKey: 'pedidoId', as: 'ingresos', onDelete: 'NO ACTION' });
+StockIngreso.belongsTo(PedidoReposicion, { foreignKey: 'pedidoId', as: 'pedido', onDelete: 'NO ACTION' });
+
 // ─── Suscripciones ───────────────────────────────────────────────
 Business.hasOne(Subscription, { foreignKey: 'businessId', as: 'suscripcion', onDelete: 'CASCADE' });
 Subscription.belongsTo(Business, { foreignKey: 'businessId' });
@@ -962,6 +1171,7 @@ SubscriptionPayment.belongsTo(Business, { foreignKey: 'businessId' });
 SubscriptionPayment.belongsTo(Plan, { foreignKey: 'planId', as: 'plan', onDelete: 'NO ACTION' });
 
 module.exports = {
+  StockIngreso, StockIngresoItem, PedidoReposicion, PedidoReposicionItem,
   db,
   Plan, Subscription, SubscriptionPayment, PlatformAdmin, PlatformSetting, AuthAttempt,
   Business, BusinessLocation, BusinessCuit, BusinessArcaConfig, ArcaToken, VariantType, VariantStock,

@@ -38,8 +38,22 @@ const datosLanding = async (_req, res, next) => {
     const guardado = Object.fromEntries(filas.map((f) => [f.clave, f.valor]).filter(([, v]) => v != null && v !== ''));
     const ajustes = { ...POR_DEFECTO, ...guardado };
 
-    // Cache corta: los precios cambian poco y la página no puede depender de
-    // que la API responda rápido en cada visita.
+    /*
+     * Sin cache compartida, y es el punto de todo esto.
+     *
+     * Antes iba `public, max-age=300`. Con `public`, cualquier intermediario
+     * —el proxy de Railway, un CDN, el proxy de una oficina— se queda con una
+     * copia y la sirve cinco minutos. El `cache: "no-store"` de la página no
+     * lo evita: sólo salta la cache DEL NAVEGADOR, no la de un tercero que ya
+     * guardó la respuesta.
+     *
+     * El resultado era que un cambio hecho en el backoffice no se veía y no
+     * había forma de saber por qué: la base ya tenía el valor nuevo y la
+     * página seguía mostrando el viejo.
+     *
+     * `no-cache` no significa "no guardar": significa revalidar siempre antes
+     * de usar. La respuesta pesa un kilobyte, así que el costo es nulo al lado
+     * de que un precio quede desactualizado.
     /*
      * URL del sistema para el botón «Entrar».
      *
@@ -51,7 +65,7 @@ const datosLanding = async (_req, res, next) => {
                     || (process.env.FRONTEND_DOMAIN || '').trim();
     const urlSistema = (ajustes.urlSistema || delEntorno || '').replace(/\/+$/, '');
 
-    res.set('Cache-Control', 'public, max-age=300');
+    res.set('Cache-Control', 'no-cache, must-revalidate');
     res.json({
       sistema: urlSistema
         ? (/^https?:\/\//i.test(urlSistema) ? urlSistema : `https://${urlSistema}`)

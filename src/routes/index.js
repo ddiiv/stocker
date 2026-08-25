@@ -28,6 +28,9 @@ const metricsCtrl = require('../controllers/metricsController');
 const creditCtrl = require('../controllers/creditController');
 const paymentCtrl = require('../controllers/paymentMethodController');
 const cashCtrl = require('../controllers/cashController');
+const depositoCtrl = require('../controllers/depositoController');
+const soporteCtrl = require('../controllers/soporteController');
+const reposicionCtrl = require('../controllers/reposicionController');
 const accountCtrl = require('../controllers/accountController');
 const billingCtrl = require('../controllers/billingController');
 const { exigirOperativa, requireFeature } = require('../middleware/plan');
@@ -279,6 +282,8 @@ r.get   ('/stock/por-local/producto/:id',                 requireAuth, requirePe
 r.get   ('/stock/por-local',                              requireAuth, requirePermission('stock','ver'),    productCtrl.getStockPorLocal);
 r.post  ('/stock/transferir',                             requireAuth, requirePermission('stock','editar'), productCtrl.transferirStock);
 
+// Lo vendido sin stock cargado, que quedó en negativo esperando conteo.
+r.get   ('/stock/a-regularizar',                          requireAuth, requirePermission('stock','ver'),    productCtrl.stockARegularizar);
 r.get   ('/stock/movimientos',                            requireAuth, requirePermission('stock','ver'),    productCtrl.getStockMovements);
 r.get   ('/products/variants/:variantId/movements',       requireAuth, requirePermission('stock','ver'),    productCtrl.getVariantMovements);
 
@@ -291,6 +296,9 @@ r.post  ('/sales',                      requireAuth, requirePermission('ventas',
 // quedó fiado. Fijar los límites de crédito, en cambio, sigue siendo de pagos.
 r.post  ('/sales/:id/cobrar',           requireAuth, requirePermission('ventas','editar'), saleCtrl.cobrarSale);
 r.patch ('/sales/:id/estado',           requireAuth, requirePermission('ventas','editar'), saleCtrl.updateSaleStatus);
+// Anular: devuelve el stock, cancela la deuda y exige el motivo. Separado del
+// cambio de estado porque deshace cosas, no sólo mueve una etiqueta.
+r.post  ('/sales/:id/anular',           requireAuth, requirePermission('ventas','editar'), saleCtrl.anularSale);
 r.post  ('/sales/cotizacion/:id/convertir', requireAuth, requirePermission('cotizaciones','editar'), saleCtrl.convertQuoteToSale);
 
 // ── Invoices ─────────────────────────────────────────────────────
@@ -307,6 +315,53 @@ r.put   ('/payment-methods/:id', requireAuth, requirePermission('pagos','editar'
 r.delete('/payment-methods/:id', requireAuth, requirePermission('pagos','editar'), paymentCtrl.remove);
 
 // ── Caja / arqueo ────────────────────────────────────────────────
+/* ─── Circuito depósito → local ────────────────────────────────────
+ *
+ * Tres permisos distintos porque son tres trabajos distintos:
+ *   deposito     cuenta e ingresa mercadería nueva.
+ *   reposicion   pide desde el local y prepara los envíos.
+ *   aprobaciones firma. Es el control que separa a quien carga de quien
+ *                autoriza, así que no se hereda de ninguno de los otros dos.
+ */
+r.get   ('/deposito/lugares',                requireAuth, requireAnyPermission(['deposito','reposicion','stock'],'ver'), depositoCtrl.lugares);
+r.get   ('/deposito/ingresos',               requireAuth, requireAnyPermission(['deposito','aprobaciones'],'ver'),       depositoCtrl.listar);
+r.post  ('/deposito/ingresos',               requireAuth, requirePermission('deposito','editar'),                        depositoCtrl.crear);
+r.post  ('/deposito/ingresos/:id/etiquetas', requireAuth, requirePermission('deposito','ver'),                           depositoCtrl.etiquetas);
+r.post  ('/deposito/ingresos/:id/aceptar',   requireAuth, requirePermission('aprobaciones','editar'),                    depositoCtrl.aceptar);
+r.post  ('/deposito/ingresos/:id/rechazar',  requireAuth, requirePermission('aprobaciones','editar'),                    depositoCtrl.rechazar);
+r.post  ('/deposito/ingresos/:id/anular',    requireAuth, requirePermission('aprobaciones','editar'),                    depositoCtrl.anular);
+
+// El contador de bandejas lo mira cualquiera de los tres roles: es lo que
+// hace que un pedido aprobado no se quede esperando a que alguien pregunte.
+r.get   ('/reposicion/pendientes',           requireAuth, requireAnyPermission(['reposicion','deposito','aprobaciones'],'ver'), reposicionCtrl.pendientes);
+// Los saldos sin resolver: lo que se pidió, no salió del depósito y espera
+// que alguien decida. Va primero en la pantalla para que no se olvide.
+r.get   ('/reposicion/saldos',               requireAuth, requireAnyPermission(['reposicion','deposito','aprobaciones'],'ver'), reposicionCtrl.saldos);
+r.post  ('/reposicion/pedidos/:id/saldo',    requireAuth, requirePermission('aprobaciones','editar'), reposicionCtrl.resolverSaldo);
+r.get   ('/reposicion/en-transito',          requireAuth, requireAnyPermission(['reposicion','deposito','stock'],'ver'),        reposicionCtrl.transito);
+r.get   ('/reposicion/pedidos',              requireAuth, requireAnyPermission(['reposicion','deposito','aprobaciones'],'ver'), reposicionCtrl.listar);
+r.get   ('/reposicion/pedidos/:id',          requireAuth, requireAnyPermission(['reposicion','deposito','aprobaciones'],'ver'), reposicionCtrl.detalle);
+// Qué hay en el depósito de lo que este pedido pide. La miran oficina para
+// aprobar y el depósito para armar: el mismo número para los dos.
+r.get   ('/reposicion/pedidos/:id/disponibilidad', requireAuth, requireAnyPermission(['reposicion','deposito','aprobaciones'],'ver'), reposicionCtrl.disponibilidad);
+// Cargar mercadería que estaba en el estante sin registrar, para completar el
+// pedido. Es un ingreso al depósito y por eso pide permiso de depósito.
+r.post  ('/reposicion/pedidos/:id/registrar-faltante', requireAuth, requirePermission('deposito','editar'), reposicionCtrl.registrarFaltante);
+r.post  ('/reposicion/pedidos',              requireAuth, requirePermission('reposicion','editar'),   reposicionCtrl.crear);
+r.post  ('/reposicion/pedidos/:id/cancelar', requireAuth, requirePermission('reposicion','editar'),   reposicionCtrl.cancelar);
+r.post  ('/reposicion/pedidos/:id/despachar',requireAuth, requirePermission('reposicion','editar'),   reposicionCtrl.despachar);
+r.post  ('/reposicion/pedidos/:id/recibir',  requireAuth, requirePermission('reposicion','editar'),   reposicionCtrl.recibir);
+r.post  ('/reposicion/pedidos/:id/aprobar',  requireAuth, requirePermission('aprobaciones','editar'), reposicionCtrl.aprobar);
+r.post  ('/reposicion/pedidos/:id/rechazar', requireAuth, requirePermission('aprobaciones','editar'), reposicionCtrl.rechazar);
+
+/* ─── Soporte ──────────────────────────────────────────────────────
+ *
+ * Reportar un problema desde adentro del sistema. Cualquiera con sesión puede:
+ * el que se topa con el bug suele ser quien está atendiendo, no el dueño.
+ */
+r.get ('/soporte/info',    requireAuth, soporteCtrl.info);
+r.post('/soporte/reporte', requireAuth, soporteCtrl.reportar);
+
 r.get ('/cash/turno-actual',   requireAuth, requirePermission('caja','ver'),    cashCtrl.turnoActual);
 r.post('/cash/abrir',          requireAuth, requirePermission('caja','editar'), cashCtrl.abrir);
 r.post('/cash/cerrar',         requireAuth, requirePermission('caja','editar'), cashCtrl.cerrar);
@@ -319,6 +374,9 @@ r.get ('/cash/turnos/:id',     requireAuth, requirePermission('caja','ver'),    
 r.get('/dashboard', requireAuth, requirePermission('dashboard','ver'), getDashboard);
 
 // ── Métricas analíticas (histórico + rendimiento por producto) ───
+// El panel analítico: todo agregado en la base, para que el costo no crezca
+// con los años de historia del negocio.
+r.get('/metrics/panel',    requireAuth, requirePermission('dashboard','ver'), metricsCtrl.panel);
 r.get('/metrics/timeline', requireAuth, requirePermission('dashboard','ver'), metricsCtrl.timeline);
 r.get('/metrics/products', requireAuth, requirePermission('dashboard','ver'), metricsCtrl.products);
 

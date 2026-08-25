@@ -135,6 +135,28 @@ const registrarMovimiento = async (req, res, next) => {
         });
       }
       cashShiftId = turno.id;
+
+      /*
+       * No se puede sacar más plata de la que hay.
+       *
+       * Sin este control, un cero de más en un retiro dejaba el arqueo en
+       * negativo —"debería haber -$99.994.999"—, que es un número que no
+       * existe y que quien cierra la caja no tiene forma de justificar. El
+       * error de tipeo es el caso común; el arqueo imposible, la consecuencia.
+       *
+       * Los ingresos no se validan: meter plata en la caja siempre se puede.
+       */
+      if (tipo === 'retiro' || tipo === 'egreso') {
+        const { desglose } = await caja.estadoDeTurno(turno);
+        if (importe > desglose.montoEsperado) {
+          return res.status(409).json({
+            message: `En la caja hay $${desglose.montoEsperado.toLocaleString('es-AR')} y estás sacando `
+              + `$${importe.toLocaleString('es-AR')}. Si el número de la caja está mal, registrá primero el ingreso que falta.`,
+            disponible: desglose.montoEsperado,
+            solicitado: importe,
+          });
+        }
+      }
     }
 
     const mov = await CashMovement.create({

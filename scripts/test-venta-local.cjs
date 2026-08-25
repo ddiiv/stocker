@@ -140,21 +140,38 @@ function sesion() {
     chk('no movió stock', [6, 6], [await enA(), await enB()]);
     await turno2.destroy();
 
-    tit('6. NO SE VENDE LO QUE ESTÁ EN OTRO LOCAL');
-    // Se vacía A: el dueño intenta vender desde A teniendo stock sólo en B.
+    tit('6. VENDER LO QUE NO HAY, SEGÚN LA POLÍTICA DEL NEGOCIO');
+    /*
+     * El mostrador manda: por defecto la venta pasa igual.
+     *
+     * La mercadería está en la mano del cliente y el sistema va atrás, así que
+     * frenar por un dato sin cargar pierde la venta. Lo que no puede perderse
+     * es el faltante: queda en negativo, avisado y listado para regularizar.
+     */
     await stock.mover({ variantId: v.id, businessId: negocio.id, locationId: A.id, fijar: 0, tipo: 'ajuste', motivo: 'QA' });
+
+    await negocio.update({ ventaSinStock: 'permitir' });
+    const pasa = await dueno('POST', '/api/sales', { tipo: 'venta', estado: 'pagado', locationId: A.id, items: [item], pagos: pago(200) });
+    chk('con "permitir" la venta pasa', 201, pasa.status);
+    chk('y avisa lo que se vendió sin tener', 'VENDIDO_SIN_STOCK', pasa.json?.avisoStock?.codigo);
+    chk('el aviso dice cuánto falta', 2, pasa.json?.avisoStock?.faltantes?.[0]?.falta);
+    chk('el local quedó en negativo, a la vista', -2, await enA());
+    chk('el stock de B quedó intacto', 6, await enB());
+
+    // Y con la política estricta se frena, con el mensaje de siempre.
+    await negocio.update({ ventaSinStock: 'bloquear' });
     const falta = await dueno('POST', '/api/sales', { tipo: 'venta', estado: 'pagado', locationId: A.id, items: [item], pagos: pago(200) });
-    chk('la venta se frena', 409, falta.status);
+    chk('con "bloquear" la venta se frena', 409, falta.status);
     chk('nombra el local',   true, new RegExp(A.nombre).test(falta.json?.message || ''));
     chk('y dice que hay en otro lado', true, /en total entre todos los locales/.test(falta.json?.message || ''));
-    chk('el stock de B quedó intacto', 6, await enB());
+    await negocio.update({ ventaSinStock: 'permitir' });
 
     tit('7. LOS MOVIMIENTOS QUEDAN CON SU LOCAL Y SU EMPLEADO');
     const movs = await StockMovement.findAll({
       where: { productVariantId: v.id, tipo: 'egreso' },
       order: [['id', 'ASC']],
     });
-    chk('hay dos egresos (las dos ventas)', 2, movs.length);
+    chk('hay tres egresos (las dos ventas y la que pasó sin stock)', 3, movs.length);
     chk('el primero, del local del dueño', B.id, movs[0]?.locationId);
     chk('el segundo, del local del empleado', A.id, movs[1]?.locationId);
     chk('y con el empleado que vendió', conLocal.id, movs[1]?.employeeId);

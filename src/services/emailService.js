@@ -1,4 +1,5 @@
 const nodemailer = require('nodemailer');
+const correo = require('../config/correo');
 const { log, mask } = require('../utils/logger');
 
 // Paleta espejo del frontend
@@ -29,29 +30,54 @@ function variantDesc(item) {
   ].filter(Boolean).join(' · ') || '—';
 }
 
-let transportSingleton = null;
-function transport() {
-  if (transportSingleton) return transportSingleton;
+/*
+ * Un transporte por cuenta.
+ *
+ * Antes era uno solo, porque había una sola credencial y las demás casillas
+ * eran alias. Ahora cada cuenta autentica con la suya, que es lo que hace que
+ * el remitente sobreviva a la entrega: el que se conecta al SMTP es el mismo
+ * que figura en el From, así que Gmail no tiene nada que reescribir.
+ *
+ * Se cachean por cuenta para no rearmar la conexión en cada mail.
+ */
+const transportes = new Map();
+
+function transport(cuenta = correo.CUENTA_ENVIO) {
+  if (transportes.has(cuenta)) return transportes.get(cuenta);
+
+  const datos = correo.CUENTAS[cuenta];
+  if (!datos?.pass) throw new Error(`Sin credenciales para la cuenta de correo "${cuenta}".`);
+
   // Defaults sensatos: si no seteás MAIL_PORT usa 465, y `secure` se deriva
   // del puerto (465 = TLS directo, 587 = STARTTLS). En Railway pasa esto
   // seguido: MAIL_PORT / MAIL_SECURE no seteadas → sin defaults, NaN, timeout.
-  const port     = parseInt(process.env.MAIL_PORT, 10) || 465;
-  const secure   = process.env.MAIL_SECURE === 'true' || (process.env.MAIL_SECURE == null && port === 465);
-  transportSingleton = nodemailer.createTransport({
-    host:   process.env.MAIL_HOST || 'smtp.gmail.com',
+  const port   = parseInt(process.env.MAIL_PORT, 10) || 465;
+  const secure = process.env.MAIL_SECURE === 'true' || (process.env.MAIL_SECURE == null && port === 465);
+
+  const t = nodemailer.createTransport({
+    host: process.env.MAIL_HOST || 'smtp.gmail.com',
     port,
     secure,
-    auth:   { user: process.env.MAIL_USER, pass: process.env.MAIL_PASS },
+    /*
+     * La contraseña de aplicación de Google se muestra en grupos de cuatro.
+     * Con los espacios funciona, pero algunos paneles recortan al pegar y el
+     * fallo se ve como "contraseña equivocada": se limpian acá y deja de
+     * importar cómo la hayan copiado.
+     */
+    auth: { user: datos.user, pass: String(datos.pass).replace(/\s+/g, '') },
     connectionTimeout: 15000,
     greetingTimeout:   10000,
     socketTimeout:     20000,
   });
-  return transportSingleton;
+
+  transportes.set(cuenta, t);
+  return t;
 }
 
 function mailReady() {
-  if (!process.env.MAIL_USER || !process.env.MAIL_PASS) {
-    console.warn('[email] MAIL_USER/MAIL_PASS no configurado — email omitido');
+  const envio = correo.CUENTAS[correo.CUENTA_ENVIO];
+  if (!envio?.pass) {
+    console.warn('[email] sin credenciales para la cuenta de envío — email omitido');
     return false;
   }
   return true;
@@ -136,7 +162,7 @@ async function sendInvoiceEmail({ to, clienteNombre, invoice, pdfPath, business 
     <p>Adjuntamos el PDF de tu factura.</p>`;
 
   await transport().sendMail({
-    from: process.env.MAIL_FROM || `"${emisorNombre}" <${process.env.MAIL_USER}>`,
+    from: correo.remitente(),
     to,
     subject: `Factura ${invoice.numero} · ${emisorNombre}`,
     html: shell({ title: `Factura ${invoice.tipo}`, businessName: emisorNombre, cuit: emisorCuit, bodyHtml: body }),
@@ -163,7 +189,7 @@ async function sendSaleReceiptToCustomer({ to, cliente, sale, items, business, p
     <p>Adjuntamos el comprobante en PDF.</p>`;
 
   await transport().sendMail({
-    from: process.env.MAIL_FROM || `"${emisorNombre}" <${process.env.MAIL_USER}>`,
+    from: correo.remitente(),
     to,
     subject: `${sale.tipo === 'cotizacion' ? 'Cotización' : 'Comprobante'} ${sale.numero} · ${emisorNombre}`,
     html: shell({
@@ -200,7 +226,7 @@ async function sendSaleNotificationToBusiness({ to, cliente, sale, items, busine
     <p style="color:${C.ink400};font-size:12px;">Adjuntamos el PDF con el detalle completo.</p>`;
 
   await transport().sendMail({
-    from: process.env.MAIL_FROM || `"${business.nombreNegocio}" <${process.env.MAIL_USER}>`,
+    from: correo.remitente(),
     to,
     subject: `[Nueva ${sale.tipo === 'cotizacion' ? 'cotización' : 'venta'}] ${sale.numero} · ${money(sale.total)}`,
     html: shell({ title: 'Nueva operación', businessName: business.nombreNegocio, cuit: business.cuit, bodyHtml: body }),
@@ -235,9 +261,9 @@ Si vos no pediste este cambio, ignorá este mensaje.
 — Stocker`;
 
   const info = await transport().sendMail({
-    from: process.env.MAIL_FROM || `"Stocker" <${process.env.MAIL_USER}>`,
+    from: correo.remitente(),
     to,
-    replyTo: process.env.MAIL_FROM || process.env.MAIL_USER,
+    replyTo: correo.CASILLAS.soporte,
     // Subject sin el código dentro (Gmail marca como phishing "your code is XXX").
     // Formato con brackets tipo el de venta que sí llega bien al inbox.
     subject: `[Stocker] Recuperar contraseña de ${businessName}`,
@@ -279,9 +305,9 @@ Si NO fuiste vos, cambiá la contraseña y revisá las sesiones activas.
 — Stocker`;
 
   const info = await transport().sendMail({
-    from: process.env.MAIL_FROM || `"Stocker" <${process.env.MAIL_USER}>`,
+    from: correo.remitente(),
     to,
-    replyTo: process.env.MAIL_FROM || process.env.MAIL_USER,
+    replyTo: correo.CASILLAS.soporte,
     subject: `Alerta de seguridad en tu cuenta de Stocker`,
     html: shell({ title: 'Alerta de seguridad', businessName: 'Stocker', bodyHtml: body }),
     text,
@@ -347,7 +373,7 @@ Sólo se cuenta efectivo.
 — Stocker`;
 
   const info = await transport().sendMail({
-    from: process.env.MAIL_FROM || `"Stocker" <${process.env.MAIL_USER}>`,
+    from: correo.remitente(),
     to,
     subject: `${titulo} de ${money(Math.abs(dif))} — ${businessName}`,
     html: shell({ title: titulo, businessName, bodyHtml: body }),
@@ -389,9 +415,9 @@ Si vos no pediste este cambio, ignoralo y revisá tu contraseña.
 — Stocker`;
 
   const info = await transport().sendMail({
-    from: process.env.MAIL_FROM || `"Stocker" <${process.env.MAIL_USER}>`,
+    from: correo.remitente(),
     to,
-    replyTo: process.env.MAIL_FROM || process.env.MAIL_USER,
+    replyTo: correo.CASILLAS.soporte,
     subject: `[Stocker] Confirmar cambio en tu cuenta de ${businessName}`,
     html: shell({ title: 'Confirmar cambio', businessName: businessName || 'Stocker', bodyHtml: body }),
     text,
@@ -415,7 +441,7 @@ Si vos no pediste este cambio, ignoralo y revisá tu contraseña.
  * La casilla se toma de BACKOFFICE_EMAIL para poder mudarla al dominio propio
  * sin tocar el código.
  */
-const CASILLA_BACKOFFICE = process.env.BACKOFFICE_EMAIL || 'stockerbackofficenoreply@gmail.com';
+const CASILLA_BACKOFFICE = process.env.BACKOFFICE_EMAIL || correo.CASILLAS.soporte;
 
 async function sendAccountDeletionRequest({ negocio, plan, motivo }) {
   if (!mailReady()) return;
@@ -456,7 +482,7 @@ No se borró nada: la cuenta sigue operativa hasta que se procese la baja a mano
 — Stocker`;
 
   const info = await transport().sendMail({
-    from: process.env.MAIL_FROM || `"Stocker" <${process.env.MAIL_USER}>`,
+    from: correo.remitente(),
     to: CASILLA_BACKOFFICE,
     replyTo: negocio.email,
     subject: `[Stocker] Baja de cuenta — ${negocio.nombreNegocio} (${negocio.cuit})`,
@@ -468,4 +494,59 @@ No se borró nada: la cuenta sigue operativa hasta que se procese la baja a mano
   return info;
 }
 
-module.exports = { sendInvoiceEmail, sendSaleReceiptToCustomer, sendSaleNotificationToBusiness, sendPasswordResetCode, sendPasswordResetAlert, sendCashDiscrepancyAlert, sendAccountChangeCode, sendAccountDeletionRequest, CASILLA_BACKOFFICE };
+/*
+ * Reporte de un problema, del dueño a soporte.
+ *
+ * Es el único mail que va en sentido contrario: acá Stocker recibe. Sale desde
+ * noreply —que es la casilla autenticada— pero con `replyTo` al que reporta,
+ * así contestarle es darle responder y no copiar la dirección de adentro del
+ * cuerpo.
+ *
+ * El contexto se arma solo y no se le pide a la persona: quién es, qué plan
+ * tiene, en qué pantalla estaba y con qué navegador. "No me anda" sin eso
+ * arranca con dos idas y vueltas antes de poder mirar nada.
+ */
+async function sendReporteProblema({ negocio, quien, email, tipo, asunto, detalle, contexto = {} }) {
+  if (!mailReady()) return { enviado: false, motivo: 'correo no configurado' };
+
+  const filas = [
+    ['Negocio', `${negocio?.nombreNegocio || '—'}${negocio?.cuit ? ` · CUIT ${negocio.cuit}` : ''}`],
+    ['Plan', contexto.plan || '—'],
+    ['Reporta', `${quien || '—'} <${email || 'sin email'}>`],
+    ['Tipo', tipo || 'problema'],
+    ['Pantalla', contexto.pantalla || '—'],
+    ['Navegador', contexto.navegador || '—'],
+    ['Cuándo', new Intl.DateTimeFormat('es-AR', { dateStyle: 'short', timeStyle: 'short' }).format(new Date())],
+  ];
+
+  const body = `
+    <p style="margin:0 0 12px;">${escapeHtml(detalle).replace(/\n/g, '<br>')}</p>
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border:1px solid ${C.line};border-radius:6px;overflow:hidden;margin:14px 0;">
+      ${filas.map(([k, v], i) => `
+        <tr style="background:${i % 2 ? C.paper100 : C.paper50};">
+          <td style="padding:7px 10px;color:${C.ink600};width:120px;">${escapeHtml(k)}</td>
+          <td style="padding:7px 10px;color:${C.ink950};">${escapeHtml(v)}</td>
+        </tr>`).join('')}
+    </table>`;
+
+  const { from, to } = correo.haciaSoporte();
+  const info = await transport().sendMail({
+    from, to,
+    // Responder le contesta a quien reportó, no a la casilla automática.
+    replyTo: email || correo.CASILLAS.soporte,
+    subject: `[${(tipo || 'problema').toUpperCase()}] ${asunto} — ${negocio?.nombreNegocio || 'Stocker'}`,
+    html: shell({
+      title: 'Reporte de problema',
+      businessName: negocio?.nombreNegocio || 'Stocker',
+      bodyHtml: body,
+    }),
+    text: `${detalle}\n\n${filas.map(([k, v]) => `${k}: ${v}`).join('\n')}`,
+  });
+
+  log.info('email', 'reporte enviado a soporte', {
+    negocio: negocio?.id, tipo, destino: mask.email(to),
+  });
+  return { enviado: true, messageId: info.messageId };
+}
+
+module.exports = { sendInvoiceEmail, sendSaleReceiptToCustomer, sendSaleNotificationToBusiness, sendPasswordResetCode, sendPasswordResetAlert, sendCashDiscrepancyAlert, sendAccountChangeCode, sendAccountDeletionRequest, sendReporteProblema, CASILLA_BACKOFFICE };
