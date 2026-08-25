@@ -21,6 +21,9 @@ const TABS = [
   { to: "/stock/sku", label: "Confección de SKU" },
   { to: "/stock/escanear", label: "Escanear stock", nivel: "editar" },
   { to: "/stock/movimientos", label: "Movimientos" },
+  // Va acá y no escondida: un negativo sin regularizar hace que el inventario
+  // de ese artículo no sirva para decidir reposición.
+  { to: "/stock/a-regularizar", label: "A regularizar" },
   { to: "/stock/etiquetas", label: "Etiquetas" },
 ];
 

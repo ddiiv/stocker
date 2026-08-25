@@ -1,13 +1,15 @@
 import { useEffect, useState } from "react";
-import { useNavigate, Link } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import { Trash2, UserPlus, UserCircle2, Check } from "lucide-react";
 import ProductPicker from "../components/sales/ProductPicker";
-import { fetchEmployees, fetchPos, fetchClients, createClient } from "../services/employeeService";
+import { fetchEmployees, fetchLocalesDeVenta, fetchClients, createClient } from "../services/employeeService";
 import { createSale } from "../services/salesService";
 import { fetchPaymentMethods } from "../services/paymentMethodService";
 import PaymentSplit, { lineasParaApi, calcularTotales } from "../components/sales/PaymentSplit";
 import { formatCurrency } from "../utils/formatters";
 import { PageHeader, Card } from "../components/ui/Layout";
+import AvisoError from "../components/ui/AvisoError";
+import { analizarError } from "../utils/errores";
 import { useAuth } from "../context/AuthContext";
 import { esAdministradorTotal } from "../utils/permissions";
 
@@ -32,9 +34,8 @@ export default function NewSalePage() {
   const [marcarPagada, setMarcarPagada] = useState(false);
   const [notas, setNotas] = useState("");
   const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState("");
-  const [faltaTurno, setFaltaTurno] = useState(false);
-  const { user } = useAuth();
+  const [error, setError] = useState(null);
+    const { user } = useAuth();
   const puedeElegirVendedor = esAdministradorTotal(user);
 
   useEffect(() => {
@@ -44,7 +45,7 @@ export default function NewSalePage() {
     // El servidor asigna el vendedor y el local desde la sesión de todos modos.
     if (puedeElegirVendedor) {
       fetchEmployees().then((emps) => { setEmployees(emps.filter((e) => e.activo)); if (emps[0]) setEmployeeId(emps[0].id); });
-      fetchPos().then((pos) => {
+      fetchLocalesDeVenta().then((pos) => {
         setLocations(pos);
         /*
          * Sólo se preselecciona si hay uno.
@@ -100,9 +101,9 @@ export default function NewSalePage() {
 
   async function handleSubmit(e) {
     e.preventDefault();
-    setError("");
-    if (!items.length) return setError("Agregá al menos un producto.");
-    if (puedeElegirVendedor && !employeeId) return setError("Seleccioná el empleado que realiza la venta.");
+    setError(null);
+    if (!items.length) return setError({ tipo: "validacion", titulo: "Agregá al menos un producto." });
+    if (puedeElegirVendedor && !employeeId) return setError({ tipo: "validacion", titulo: "Seleccioná el empleado que realiza la venta." });
     setSubmitting(true);
     try {
       const sale = await createSale({
@@ -117,27 +118,22 @@ export default function NewSalePage() {
       });
       navigate(`/ventas/${sale.id}`);
     } catch (err) {
-      // 409 con este texto = no hay turno de caja abierto. En vez de un error
-      // suelto se ofrece el atajo para abrirlo, que es lo único que destraba.
-      const msg = err.response?.data?.message || "No se pudo registrar la venta.";
-      setFaltaTurno(err.response?.status === 409 && /turno de caja/i.test(msg));
-      setError(msg);
+      /*
+       * El error se clasifica antes de mostrarlo.
+       *
+       * "No se pudo registrar la venta" no distingue entre quedarse sin stock,
+       * no tener turno de caja, haber perdido la sesión o que el servidor esté
+       * caído — y cada una se arregla distinto. `analizarError` devuelve la
+       * causa concreta y, cuando existe, el atajo que la destraba.
+       */
+      setError(analizarError(err, "No se pudo registrar la venta."));
     } finally { setSubmitting(false); }
   }
 
   return (
     <form onSubmit={handleSubmit}>
       <PageHeader title="Nueva venta / cotización" subtitle="Seleccioná los productos, el cliente y el empleado" />
-      {error && (
-        <div className="mb-4 rounded-md bg-brick-50 px-3 py-2 text-sm text-brick-500">
-          <p>{error}</p>
-          {faltaTurno && (
-            <Link to="/caja" className="mt-1 inline-block font-medium underline">
-              Abrir mi turno de caja
-            </Link>
-          )}
-        </div>
-      )}
+      <AvisoError error={error} className="mb-4" />
 
       <div className="grid gap-5 lg:grid-cols-3">
         <div className="space-y-5 lg:col-span-2">

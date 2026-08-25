@@ -31,6 +31,11 @@ import StockMovementsPage from "./pages/StockMovementsPage";
 import SkuBuilderPage from "./pages/SkuBuilderPage";
 import LabelsPage from "./pages/LabelsPage";
 import StockByLocationPage from "./pages/StockByLocationPage";
+import DepositoPage from "./pages/DepositoPage";
+import AnalisisPage from "./pages/AnalisisPage";
+import SoportePage from "./pages/SoportePage";
+import StockARegularizarPage from "./pages/StockARegularizarPage";
+import ReposicionPage from "./pages/ReposicionPage";
 import ScanStockPage from "./pages/ScanStockPage";
 import PosPage from "./pages/PosPage";
 import BusinessCuitsPage from "./pages/BusinessCuitsPage";
@@ -56,6 +61,7 @@ export default function App() {
             <Route path="/dashboard"                    element={<PermissionRoute permission="dashboard"><DashboardPage /></PermissionRoute>} />
             <Route path="/dashboard/ventas"             element={<PermissionRoute permission="dashboard"><SalesTimelinePage /></PermissionRoute>} />
             <Route path="/dashboard/productos"          element={<PermissionRoute permission="dashboard"><ProductMetricsPage /></PermissionRoute>} />
+            <Route path="/dashboard/analisis"           element={<PermissionRoute permission="dashboard"><AnalisisPage /></PermissionRoute>} />
             <Route path="/stock"                        element={<PermissionRoute permission="stock"><StockPage /></PermissionRoute>} />
             <Route path="/stock/variantes"              element={<PermissionRoute permission="stock" level="editar"><VariantTypesPage /></PermissionRoute>} />
             <Route path="/stock/escanear"               element={<PermissionRoute permission="stock" level="editar"><ScanStockPage /></PermissionRoute>} />
@@ -65,6 +71,11 @@ export default function App() {
             <Route path="/stock/sku"                    element={<PermissionRoute permission="stock"><SkuBuilderPage /></PermissionRoute>} />
             <Route path="/stock/etiquetas"              element={<PermissionRoute permission="stock"><LabelsPage /></PermissionRoute>} />
             <Route path="/stock/por-local"              element={<PermissionRoute permission="stock"><StockByLocationPage /></PermissionRoute>} />
+            <Route path="/stock/a-regularizar"          element={<PermissionRoute permission="stock"><StockARegularizarPage /></PermissionRoute>} />
+            {/* El circuito depósito → local. Van fuera de /stock a propósito:
+                son el trabajo de otra gente, con su propio permiso. */}
+            <Route path="/deposito"                     element={<PermissionRoute permission="deposito"><DepositoPage /></PermissionRoute>} />
+            <Route path="/reposicion"                   element={<PermissionRoute permission="reposicion"><ReposicionPage /></PermissionRoute>} />
             <Route path="/stock/:skuAgrupador"          element={<PermissionRoute permission="stock"><ProductDetailPage /></PermissionRoute>} />
             <Route path="/ventas"                       element={<PermissionRoute permission="ventas"><SalesPage /></PermissionRoute>} />
             <Route path="/ventas/nueva"                 element={<PermissionRoute permission="ventas" level="editar"><NewSalePage /></PermissionRoute>} />
@@ -76,6 +87,9 @@ export default function App() {
             <Route path="/clientes"                     element={<PermissionRoute permission="clientes"><ClientsPage /></PermissionRoute>} />
             <Route path="/clientes/cuentas"             element={<PermissionRoute permission="clientes"><ClientAccountsPage /></PermissionRoute>} />
             <Route path="/cuenta"                       element={<OwnerRoute><AccountPage /></OwnerRoute>} />
+            {/* Soporte lo ve cualquiera con sesión: el que se topa con el bug
+                suele ser quien está atendiendo, no el dueño. */}
+            <Route path="/soporte"                      element={<SoportePage />} />
             {/* Suscripción: la ve el dueño, no los empleados. */}
             <Route path="/cuenta/suscripcion"           element={<OwnerRoute><SubscriptionPage /></OwnerRoute>} />
             <Route path="/pagos"                        element={<PermissionRoute permission="pagos"><PaymentMethodsPage /></PermissionRoute>} />

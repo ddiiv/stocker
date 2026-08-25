@@ -73,3 +73,15 @@ export async function printSaleTicket(sale) {
   }
   setTimeout(() => window.URL.revokeObjectURL(url), 5000);
 }
+
+/*
+ * Anula una venta: devuelve el stock al local del que salió, cancela la deuda
+ * si estaba fiada y deja de contarla como cobrada.
+ *
+ * Exige motivo. No es burocracia: es lo que después explica un ingreso de
+ * stock que nadie recuerda haber hecho.
+ */
+export async function anularSale(id, motivo) {
+  const { data } = await http.post(`/sales/${id}/anular`, { motivo });
+  return data;
+}

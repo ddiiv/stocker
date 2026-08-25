@@ -10,6 +10,21 @@ export async function fetchPos() {
   return data;
 }
 
+/*
+ * Sólo los locales donde se vende.
+ *
+ * El punto de venta y el alta de ventas ofrecen elegir de dónde sale la
+ * mercadería, y desde un depósito no se vende: mostrarlo en el desplegable
+ * termina en un rechazo del servidor con el cliente esperando en la caja.
+ *
+ * El resto de las pantallas —movimientos, etiquetas, carga de stock— sí los
+ * necesita: ahí el depósito es un lugar más donde hay mercadería.
+ */
+export async function fetchLocalesDeVenta() {
+  const locs = await fetchPos();
+  return (locs || []).filter((l) => l.tipo !== "deposito");
+}
+
 export async function fetchRoles() {
   const { data } = await http.get("/roles");
   return data;
@@ -41,6 +56,18 @@ export async function fetchEmployeeSessions(id) {
 
 export async function createLocation(payload) {
   const { data } = await http.post("/locations", payload);
+  return data;
+}
+
+/*
+ * Cambia datos de un local, incluido su tipo.
+ *
+ * Convertir un local con mercadería en depósito devuelve 409 con
+ * `codigo: 'LOCAL_CON_STOCK'`: desde un depósito no se vende, así que hay que
+ * confirmarlo a sabiendas y no descubrirlo con un cliente adelante.
+ */
+export async function updateLocation(id, payload) {
+  const { data } = await http.put(`/locations/${id}`, payload);
   return data;
 }
 

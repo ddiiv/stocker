@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Plus, Users, PencilLine, Power, MapPin, ShieldCheck, Activity, Monitor, Lock, LockOpen } from "lucide-react";
-import { fetchEmployees, fetchPos, fetchRoles, createEmployee, updateEmployee, toggleEmployeeActive, createLocation, createRole, updateRole, fetchEmployeeSessions, desbloquearEmpleado } from "../services/employeeService";
+import { fetchEmployees, fetchPos, fetchRoles, createEmployee, updateEmployee, toggleEmployeeActive, createLocation, createRole, updateRole, fetchEmployeeSessions, desbloquearEmpleado, updateLocation } from "../services/employeeService";
 import { initials, formatDateTime } from "../utils/formatters";
 import { PageHeader, EmptyState, Card } from "../components/ui/Layout";
 import EmployeeFormModal from "../components/employees/EmployeeFormModal";
@@ -222,7 +222,85 @@ export default function EmployeesPage() {
       <NewLocationModal open={locationModal} onClose={() => { setLocationModal(false); load(); }} />
       <RoleModal open={roleModal} role={roleEditando} onClose={() => { setRoleModal(false); setRoleEditando(null); load(); }} />
       <SessionsModal employee={sessionsFor} onClose={() => setSessionsFor(null)} />
+
+      <LocalesCard locations={locations} onChange={load} />
     </div>
+  );
+}
+
+/*
+ * Locales y depósitos, con su tipo editable.
+ *
+ * Sin esta tabla, un negocio que ya tenía sus locales cargados no tenía cómo
+ * marcar cuál es el depósito, y el circuito de reposición quedaba inalcanzable
+ * salvo creando un local nuevo.
+ */
+function LocalesCard({ locations, onChange }) {
+  const [guardando, setGuardando] = useState(null);
+  const [error, setError] = useState("");
+
+  async function cambiarTipo(loc, tipo) {
+    if (tipo === loc.tipo) return;
+    setGuardando(loc.id); setError("");
+    try {
+      await updateLocation(loc.id, { tipo });
+      await onChange();
+    } catch (e) {
+      const r = e.response?.data;
+      /*
+       * El backend frena la conversión si el local tiene mercadería. Se
+       * pregunta y se reintenta con `confirmar`, en vez de dejar que el cambio
+       * pase en silencio y que alguien lo descubra en la caja.
+       */
+      if (r?.codigo === "LOCAL_CON_STOCK" && confirm(`${r.message}\n\n¿Convertirlo igual?`)) {
+        try {
+          await updateLocation(loc.id, { tipo, confirmar: true });
+          await onChange();
+        } catch (e2) {
+          setError(e2.response?.data?.message || "No se pudo cambiar el tipo.");
+        }
+      } else if (r?.codigo !== "LOCAL_CON_STOCK") {
+        setError(r?.message || "No se pudo cambiar el tipo.");
+      }
+    }
+    setGuardando(null);
+  }
+
+  if (!locations?.length) return null;
+
+  return (
+    <Card className="mt-5">
+      <h3 className="mb-1 font-display text-base font-semibold text-ink-950">Locales y depósitos</h3>
+      <p className="mb-3 text-xs text-ink-500">
+        La mercadería nueva entra por un depósito y de ahí se transfiere a los locales. Desde un depósito no se vende.
+      </p>
+      {error && <p className="mb-3 rounded-md bg-brick-50 px-3 py-2 text-sm text-brick-500">{error}</p>}
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-[420px] text-sm">
+          <tbody>
+            {locations.map((l) => (
+              <tr key={l.id} className="border-b border-line last:border-0">
+                <td className="py-2">
+                  <p className="text-ink-900">{l.nombre}</p>
+                  <p className="text-xs text-ink-500">{l.direccion}</p>
+                </td>
+                <td className="py-2 text-right">
+                  <select
+                    className="input w-auto py-1 text-sm"
+                    value={l.tipo || "local"}
+                    disabled={guardando === l.id}
+                    onChange={(e) => cambiarTipo(l, e.target.value)}
+                  >
+                    <option value="local">Local de venta</option>
+                    <option value="deposito">Depósito</option>
+                  </select>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </Card>
   );
 }
 
@@ -297,14 +375,31 @@ function shortUA(ua) {
 }
 
 function NewLocationModal({ open, onClose }) {
-  const { register, handleSubmit, reset, formState: { isSubmitting } } = useForm();
-  async function onSubmit(v) { await createLocation(v); reset(); onClose(); }
+  const { register, handleSubmit, reset, watch, formState: { isSubmitting } } = useForm({
+    defaultValues: { tipo: "local" },
+  });
+  const tipo = watch("tipo");
+  async function onSubmit(v) { await createLocation(v); reset({ tipo: "local" }); onClose(); }
   return (
-    <Modal open={open} onClose={onClose} title="Nuevo local / sucursal">
+    <Modal open={open} onClose={onClose} title="Nuevo local / depósito">
       <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
         <div>
           <label className="label">Nombre del local *</label>
           <input className="input" required minLength={2} maxLength={150} {...register("nombre", { required: "Obligatorio" })} />
+        </div>
+        <div>
+          {/* No es una etiqueta: de un depósito no se vende, y la mercadería
+              nueva entra sólo por ahí. */}
+          <label className="label">Tipo *</label>
+          <select className="input" {...register("tipo")}>
+            <option value="local">Local de venta</option>
+            <option value="deposito">Depósito</option>
+          </select>
+          <p className="mt-1 text-xs text-ink-500">
+            {tipo === "deposito"
+              ? "Recibe la mercadería nueva y la transfiere a los locales. No se puede vender desde acá."
+              : "Vende al público. Recibe mercadería por transferencia desde un depósito."}
+          </p>
         </div>
         <div>
           <label className="label">Dirección *</label>

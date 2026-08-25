@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
-import { ArrowLeft, ReceiptText, CheckCircle2, RefreshCw, Printer, NotebookPen } from "lucide-react";
-import { getSale, cobrarSale, convertQuote, printSaleTicket } from "../services/salesService";
+import { ArrowLeft, ReceiptText, CheckCircle2, RefreshCw, Printer, NotebookPen, Ban } from "lucide-react";
+import { getSale, cobrarSale, convertQuote, printSaleTicket, anularSale } from "../services/salesService";
+import { mensajeDeError } from "../utils/errores";
 import { generateInvoiceFromSale } from "../services/invoiceService";
 import { fetchBusinessCuits } from "../services/businessCuitService";
 import { fetchPaymentMethods } from "../services/paymentMethodService";
@@ -110,6 +111,33 @@ export default function SaleDetailPage() {
 
   const items = sale.items || [];
 
+  /*
+   * Anulación.
+   *
+   * Se confirma con el detalle de lo que va a pasar, porque son tres efectos a
+   * la vez y ninguno es evidente desde el botón: vuelve la mercadería, deja de
+   * contarse el cobro y se borra la deuda si estaba fiada.
+   */
+  async function handleAnular() {
+    const vuelve = sale.stockDescontado
+      ? "La mercadería vuelve al stock del local."
+      : "No hay stock que devolver: en esta venta nunca llegó a descontarse.";
+    const deuda = sale.condicionPago === "cuenta_corriente" && Number(sale.saldoPendiente) > 0
+      ? " Se cancela la deuda del cliente." : "";
+    const motivo = prompt(`Anular la venta ${sale.numero}.\n\n${vuelve}${deuda}\n\n¿Por qué se anula?`);
+    if (!motivo?.trim()) return;
+
+    setBusy(true);
+    try {
+      const r = await anularSale(sale.id, motivo.trim());
+      alert(r.mensaje);
+      await load();
+    } catch (e) {
+      alert(mensajeDeError(e, "No se pudo anular la venta."));
+    }
+    setBusy(false);
+  }
+
   return (
     <div>
       <Link to="/ventas" className="mb-4 inline-flex items-center gap-1 text-sm text-ink-600 hover:text-ink-950">
@@ -139,6 +167,13 @@ export default function SaleDetailPage() {
               <button className="btn-accent" onClick={() => setInvoiceModal(true)} disabled={busy}><ReceiptText size={15} /> Generar factura</button>
             )}
             {sale.factura && <Link to="/facturacion" className="btn-ghost text-xs">Ver factura {sale.factura.numero}</Link>}
+            {/* Anular va último y en tono de alerta: deshace cosas —stock,
+                deuda, cobro— y no debería quedar al lado de "Cobrar". */}
+            {sale.tipo === "venta" && sale.estado !== "cancelado" && (
+              <button className="btn-ghost text-brick-500" onClick={handleAnular} disabled={busy}>
+                <Ban size={15} /> Anular venta
+              </button>
+            )}
           </div>
         }
       />

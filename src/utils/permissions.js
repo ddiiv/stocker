@@ -20,6 +20,12 @@ export const PERM_MODULES = [
   { key: "caja",          label: "Caja",            descripcion: "Turnos de caja, movimientos de efectivo y arqueo." },
   { key: "empleados",     label: "Empleados",       descripcion: "Empleados, cargos y locales del negocio." },
   { key: "integraciones", label: "Integraciones",   descripcion: "Conexión con MercadoLibre y sincronización de stock." },
+  // Los tres del circuito depósito → local. Debe coincidir con el backend
+  // (config/permisos.js): un módulo que exista sólo de un lado no da acceso
+  // pero sí ocupa un renglón en la matriz de cargos, y confunde.
+  { key: "deposito",     label: "Depósito",       descripcion: "Ingreso de mercadería nueva al depósito, conteo y etiquetado." },
+  { key: "reposicion",   label: "Reposición",     descripcion: "Pedidos de reposición del local y preparación de los envíos." },
+  { key: "aprobaciones", label: "Aprobaciones",   descripcion: "Aprobar o rechazar pedidos e ingresos, y anular ingresos mal cargados." },
 ];
 
 export const NIVELES = [
@@ -41,6 +47,11 @@ const HEREDA_DE = {
   integraciones: "stock",
   cotizaciones:  "ventas",
   caja:          "ventas",
+  // Igual que en el backend: depósito y reposición heredan de stock para que
+  // nadie se quede afuera el día del despliegue. Aprobaciones no hereda: es la
+  // firma que separa a quien carga del que autoriza.
+  deposito:      "stock",
+  reposicion:    "stock",
 };
 
 export function nivelDe(user, moduleKey) {

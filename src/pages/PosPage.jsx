@@ -6,7 +6,7 @@ import {
 } from "lucide-react";
 import { scanProduct } from "../services/productService";
 import { createSale, printSaleTicket } from "../services/salesService";
-import { fetchEmployees, fetchPos } from "../services/employeeService";
+import { fetchEmployees, fetchLocalesDeVenta } from "../services/employeeService";
 import { fetchClients } from "../services/clientService";
 import { fetchPaymentMethods } from "../services/paymentMethodService";
 import { useBarcodeScanner } from "../hooks/useBarcodeScanner";
@@ -47,6 +47,7 @@ export default function PosPage() {
   const [faltaTurno, setFaltaTurno] = useState(false);
   // El backend rechazó la venta por stock: se ofrece pasarla a cotización.
   const [sinStockServidor, setSinStockServidor] = useState(false);
+  const [avisoStock, setAvisoStock] = useState(null);
   const [resaltado, setResaltado] = useState(null);
   const inputRef = useRef(null);
   const resaltadoTimer = useRef(null);
@@ -58,7 +59,7 @@ export default function PosPage() {
     // de locales para elegir, así que esas dos sólo se piden si va a usarlas.
     if (puedeElegirVendedor) {
       fetchEmployees().then(setEmployees).catch(() => {});
-      fetchPos().then((ls) => {
+      fetchLocalesDeVenta().then((ls) => {
         setLocations(ls);
         // Un solo local no es una decisión: se elige solo y el dueño no tiene
         // que tocar un desplegable de una sola opción en cada venta.
@@ -228,6 +229,9 @@ export default function PosPage() {
         items: items.map((i) => ({ productVariantId: i.id, cantidad: i.cantidad })),
       });
       setUltimaVenta(venta);
+      // Lo que se vendió sin tener cargado. Se muestra en la pantalla de venta
+      // cerrada: es el único momento en que la persona lo va a leer.
+      setAvisoStock(venta.avisoStock || null);
       setItems([]);
       setClientId("");
       setBuscarCliente("");
@@ -291,6 +295,25 @@ export default function PosPage() {
               {formatCurrency(Math.abs(Number(ultimaVenta.recargoPagos)))}
             </p>
           )}
+          {/* Vendido sin stock cargado: la venta se hizo igual —el cliente no
+              puede esperar— pero alguien tiene que ir a contar eso. */}
+          {avisoStock && (
+            <div className="mt-4 rounded-md border border-brass-300 bg-brass-50 px-3 py-2 text-left text-xs text-brass-800">
+              <p className="font-medium">{avisoStock.mensaje}</p>
+              <ul className="mt-1 space-y-0.5">
+                {(avisoStock.faltantes || []).map((f) => (
+                  <li key={f.sku}>
+                    <span className="font-mono">{f.sku}</span> — faltan {f.falta}
+                    {f.enOtrosLocales > 0 ? ` · hay ${f.enOtrosLocales} en otros locales` : ""}
+                  </li>
+                ))}
+              </ul>
+              <Link to="/stock/a-regularizar" className="mt-1 inline-block font-medium underline">
+                Ver todo lo que falta cargar
+              </Link>
+            </div>
+          )}
+
           <div className="mt-6 flex flex-col gap-2">
             <button className="btn-accent justify-center" onClick={() => printSaleTicket(ultimaVenta)}>
               <Receipt size={15} /> Imprimir ticket

@@ -12,6 +12,9 @@ import {
   Wallet,
   CreditCard,
   BadgeCheck,
+  Warehouse,
+  Truck,
+  LifeBuoy,
 } from "lucide-react";
 import { useAuth } from "../../context/AuthContext";
 import { canView, esAdministradorTotal } from "../../utils/permissions";
@@ -19,6 +22,8 @@ import { canView, esAdministradorTotal } from "../../utils/permissions";
 const ALL_LINKS = [
   { to: "/dashboard",   label: "Dashboard",             icon: LayoutDashboard, permission: "dashboard" },
   { to: "/stock",       label: "Stock",                 icon: Boxes,           permission: "stock" },
+  { to: "/deposito",    label: "Depósito",              icon: Warehouse,       permission: "deposito" },
+  { to: "/reposicion",  label: "Reposición",            icon: Truck,           permission: "reposicion" },
   { to: "/ventas/pos",  label: "Punto de venta",        icon: ScanLine,        permission: "ventas" },
   { to: "/ventas",      label: "Ventas y cotizaciones", icon: ShoppingCart,    permission: "ventas" },
   { to: "/facturacion", label: "Facturación",           icon: Receipt,         permission: "facturacion" },
@@ -30,6 +35,10 @@ const ALL_LINKS = [
   // La suscripción es del titular de la cuenta: un empleado no decide qué plan
   // paga el negocio, así que se filtra por dueño y no por permiso.
   { to: "/cuenta/suscripcion", label: "Suscripción", icon: BadgeCheck, soloDuenio: true },
+  // Soporte va para todos y sin permiso: el que se topa con el problema suele
+  // ser quien está atendiendo, y hacerle pedir permiso para avisarlo no tiene
+  // sentido.
+  { to: "/soporte", label: "Soporte", icon: LifeBuoy, siempre: true },
 ];
 
 export default function Sidebar({ open, onClose }) {
@@ -38,7 +47,8 @@ export default function Sidebar({ open, onClose }) {
   // así que preguntar por `employeeId` daba dueño siempre y todos veían el link
   // de Suscripción, que después les respondía 403.
   const esDuenio = esAdministradorTotal(user);
-  const links = ALL_LINKS.filter((l) => (l.soloDuenio ? esDuenio : canView(user, l.permission)));
+  const links = ALL_LINKS.filter((l) =>
+    l.siempre ? true : l.soloDuenio ? esDuenio : canView(user, l.permission));
   return (
     <>
       {open && (
