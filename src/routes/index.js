@@ -289,17 +289,17 @@ r.get   ('/products/variants/:variantId/movements',       requireAuth, requirePe
 
 // ── Sales & Quotes ───────────────────────────────────────────────
 r.get   ('/sales',                      requireAuth, requirePermission('ventas','ver'),    saleCtrl.getSales);
-r.get   ('/sales/:id',                  requireAuth, requirePermission('ventas','ver'),    saleCtrl.getSale);
-r.get   ('/sales/:id/ticket',           requireAuth, requirePermission('ventas','ver'),    saleCtrl.downloadTicket);
+r.get   ('/sales/:numero',                  requireAuth, requirePermission('ventas','ver'),    saleCtrl.getSale);
+r.get   ('/sales/:numero/ticket',           requireAuth, requirePermission('ventas','ver'),    saleCtrl.downloadTicket);
 r.post  ('/sales',                      requireAuth, requirePermission('ventas','editar'), saleCtrl.createSale);
 // Mismo permiso que vender: quien atiende el mostrador es quien cobra lo que
 // quedó fiado. Fijar los límites de crédito, en cambio, sigue siendo de pagos.
-r.post  ('/sales/:id/cobrar',           requireAuth, requirePermission('ventas','editar'), saleCtrl.cobrarSale);
-r.patch ('/sales/:id/estado',           requireAuth, requirePermission('ventas','editar'), saleCtrl.updateSaleStatus);
+r.post  ('/sales/:numero/cobrar',           requireAuth, requirePermission('ventas','editar'), saleCtrl.cobrarSale);
+r.patch ('/sales/:numero/estado',           requireAuth, requirePermission('ventas','editar'), saleCtrl.updateSaleStatus);
 // Anular: devuelve el stock, cancela la deuda y exige el motivo. Separado del
 // cambio de estado porque deshace cosas, no sólo mueve una etiqueta.
-r.post  ('/sales/:id/anular',           requireAuth, requirePermission('ventas','editar'), saleCtrl.anularSale);
-r.post  ('/sales/cotizacion/:id/convertir', requireAuth, requirePermission('cotizaciones','editar'), saleCtrl.convertQuoteToSale);
+r.post  ('/sales/:numero/anular',           requireAuth, requirePermission('ventas','editar'), saleCtrl.anularSale);
+r.post  ('/sales/cotizacion/:numero/convertir', requireAuth, requirePermission('cotizaciones','editar'), saleCtrl.convertQuoteToSale);
 
 // ── Invoices ─────────────────────────────────────────────────────
 r.get   ('/invoices',           requireAuth, requirePermission('facturacion','ver'),    invoiceCtrl.getInvoices);

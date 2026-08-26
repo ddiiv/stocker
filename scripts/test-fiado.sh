@@ -89,7 +89,7 @@ chk "se pasa del límite rechaza" "si" "$(fiar $CID true | J ".message.includes(
 tit "2. VENTA FIADA (se lleva la mercadería)"
 C -X PUT $API/clients/$CID/cuenta -d '{"cuentaHabilitada":true,"limiteCredito":9999999}' -o /dev/null
 V1=$(fiar $CID true)
-S1=$(echo "$V1" | J .id)
+S1=$(echo "$V1" | J .numero)
 chk "queda pendiente"            "pendiente"        "$(echo "$V1" | J .estado)"
 chk "condición cuenta corriente" "cuenta_corriente" "$(echo "$V1" | J .condicionPago)"
 chk "sin medio de pago todavía"  "null"             "$(echo "$V1" | J .medioPago)"
@@ -101,7 +101,7 @@ chk "la venta figura sin pagos"  "0"                "$(C $API/sales/$S1 | J .pag
 
 tit "3. VENTA FIADA SEÑADA (no se la lleva)"
 V2=$(fiar $CID false)
-S2=$(echo "$V2" | J .id)
+S2=$(echo "$V2" | J .numero)
 chk "stock NO salió"        "$((STOCK0-1))" "$(stock)"
 chk "marcada sin descontar" "false"         "$(echo "$V2" | J .stockDescontado)"
 chk "deuda acumulada"       "$((PRECIO*2))" "$(C $API/clients/$CID/cuenta | J .cuenta.saldoCuenta)"
@@ -129,10 +129,10 @@ chk "cliente sin deuda"         "0"           "$(C $API/clients/$CID/cuenta | J 
 tit "6. REGLAS DEL COBRO"
 chk "no se cobra dos veces" "409" "$(curl -s -o /dev/null -w '%{http_code}' -b $T/o.txt -X POST $API/sales/$S1/cobrar -H 'Content-Type: application/json' -d "{\"pagos\":[{\"paymentMethodId\":$MEF,\"monto\":$PRECIO}]}")"
 chk "no se marca pagada a mano" "400" "$(curl -s -o /dev/null -w '%{http_code}' -b $T/o.txt -X PATCH $API/sales/$S2/estado -H 'Content-Type: application/json' -d '{"estado":"pagado"}')"
-chk "los pagos deben cuadrar" "400" "$(curl -s -o /dev/null -w '%{http_code}' -b $T/o.txt -X POST $API/sales/$(fiar $CID true | J .id)/cobrar -H 'Content-Type: application/json' -d "{\"pagos\":[{\"paymentMethodId\":$MEF,\"monto\":1}]}")"
+chk "los pagos deben cuadrar" "400" "$(curl -s -o /dev/null -w '%{http_code}' -b $T/o.txt -X POST $API/sales/$(fiar $CID true | J .numero)/cobrar -H 'Content-Type: application/json' -d "{\"pagos\":[{\"paymentMethodId\":$MEF,\"monto\":1}]}")"
 
 tit "7. PAGO A CUENTA: SE IMPUTA A LAS VENTAS MÁS VIEJAS"
-V3=$(fiar $CID true); S3=$(echo "$V3" | J .id)
+V3=$(fiar $CID true); S3=$(echo "$V3" | J .numero)
 DEUDA=$(C $API/clients/$CID/cuenta | J .cuenta.saldoCuenta)
 PAGO=$(C -X POST $API/clients/$CID/cuenta/pagos -d "{\"monto\":$DEUDA,\"paymentMethodId\":$MEF}")
 chk "saldo en cero"             "0"       "$(echo "$PAGO" | J .saldo)"

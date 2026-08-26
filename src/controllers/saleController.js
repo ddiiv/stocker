@@ -275,11 +275,32 @@ const getSales = async (req, res, next) => {
   } catch (error) { next(error); }
 };
 
-// GET /api/sales/:id
+/*
+ * La venta que pide la URL, ubicada por su número.
+ *
+ * El id de la base dejó de viajar en la ruta. Un id autoincremental es
+ * información del sistema, no del negocio: numera TODAS las ventas de TODOS
+ * los negocios de la plataforma, así que dos ventas consecutivas dicen cuánto
+ * se vendió en el medio, y probar /sales/1, /sales/2… recorre la tabla.
+ *
+ * El número de comprobante ya es único por negocio —lo garantiza
+ * uq_sales_biz_numero— y es el que el cliente tiene impreso en el ticket, así
+ * que además es el que alguien va a querer escribir en la barra de direcciones.
+ *
+ * Se normaliza a mayúsculas porque Postgres compara texto con
+ * distinción de mayúsculas y el número se emite siempre en mayúscula.
+ */
+const dondeVenta = (req, extra = {}) => ({
+  numero: String(req.params.numero || '').trim().toUpperCase(),
+  businessId: req.auth.businessId,
+  ...extra,
+});
+
+// GET /api/sales/:numero
 const getSale = async (req, res, next) => {
   try {
     const sale = await Sale.findOne({
-      where: { id: req.params.id, businessId: req.auth.businessId },
+      where: dondeVenta(req),
       include: [
         { model: SaleItem, as: 'items' },
         { association: 'pagos' },
@@ -802,7 +823,7 @@ const cobrarSale = async (req, res, next) => {
     // ítems. El helper de stock los busca por su cuenta dentro de la misma
     // transacción.
     const sale = await Sale.findOne({
-      where: { id: req.params.id, businessId: req.auth.businessId },
+      where: dondeVenta(req),
       transaction: t, lock: t.LOCK.UPDATE,
     });
     if (!sale) throw Object.assign(new Error('Venta no encontrada.'), { status: 404 });
@@ -904,7 +925,7 @@ const cobrarSale = async (req, res, next) => {
  * ese camino es sólo el de arriba.
  */
 /*
- * POST /api/sales/:id/anular
+ * POST /api/sales/:numero/anular
  *
  * Anula una venta y deshace todo lo que dejó: la mercadería vuelve al local
  * del que salió, la plata deja de figurar como cobrada y la deuda del cliente
@@ -936,9 +957,15 @@ const anularSale = async (req, res, next) => {
       );
     }
 
+    /*
+     * Sin `include`: Postgres rechaza `FOR UPDATE` sobre el lado nulo de un
+     * LEFT JOIN ("FOR UPDATE cannot be applied to the nullable side of an
+     * outer join"), y traer los ítems asociados arma exactamente ese join. En
+     * SQL Server pasa sin chistar, así que el error sólo aparece en
+     * producción. Los ítems se cargan aparte, dentro de la misma transacción.
+     */
     const sale = await Sale.findOne({
-      where: { id: req.params.id, businessId: req.auth.businessId },
-      include: [{ model: SaleItem, as: 'items' }],
+      where: dondeVenta(req),
       transaction: t, lock: t.LOCK.UPDATE,
     });
     if (!sale) throw Object.assign(new Error('Venta no encontrada.'), { status: 404 });
@@ -1053,7 +1080,7 @@ const updateSaleStatus = async (req, res, next) => {
     }
 
     const sale = await Sale.findOne({
-      where: { id: req.params.id, businessId: req.auth.businessId },
+      where: dondeVenta(req),
       transaction: t, lock: t.LOCK.UPDATE,
     });
     if (!sale) throw Object.assign(new Error('Venta no encontrada.'), { status: 404 });
@@ -1079,10 +1106,10 @@ const updateSaleStatus = async (req, res, next) => {
   }
 };
 
-// POST /api/sales/cotizacion/:id/convertir
+// POST /api/sales/cotizacion/:numero/convertir
 // Convierte una cotización en venta sin facturar
 /*
- * POST /api/sales/cotizacion/:id/convertir
+ * POST /api/sales/cotizacion/:numero/convertir
  *
  * Pasa un presupuesto a venta: comprueba el stock, lo descuenta y le da número
  * de venta.
@@ -1100,9 +1127,15 @@ const updateSaleStatus = async (req, res, next) => {
 const convertQuoteToSale = async (req, res, next) => {
   const t = await sequelize.transaction();
   try {
+    /*
+     * Sin `include`: Postgres rechaza `FOR UPDATE` sobre el lado nulo de un
+     * LEFT JOIN ("FOR UPDATE cannot be applied to the nullable side of an
+     * outer join"), y traer los ítems asociados arma exactamente ese join. En
+     * SQL Server pasa sin chistar, así que el error sólo aparece en
+     * producción. Los ítems se cargan aparte, dentro de la misma transacción.
+     */
     const quote = await Sale.findOne({
-      where: { id: req.params.id, tipo: 'cotizacion', businessId: req.auth.businessId },
-      include: [{ model: SaleItem, as: 'items' }],
+      where: dondeVenta(req, { tipo: 'cotizacion' }),
       transaction: t, lock: t.LOCK.UPDATE,
     });
     if (!quote) {
@@ -1165,8 +1198,10 @@ const convertQuoteToSale = async (req, res, next) => {
      * Frenar en la mitad dejaría media cotización convertida, con parte del
      * stock ya descontado y un documento que sigue diciendo "cotización".
      */
+    const lineas = await SaleItem.findAll({ where: { saleId: quote.id }, transaction: t });
+
     const faltantes = [];
-    for (const item of quote.items || []) {
+    for (const item of lineas) {
       if (!item.productVariantId) continue;
       const disponible = await stockService.stockEn(item.productVariantId, locationId, t);
       if (disponible < item.cantidad) {
@@ -1239,11 +1274,11 @@ const convertQuoteToSale = async (req, res, next) => {
   }
 };
 
-// GET /api/sales/:id/ticket → devuelve PDF de ticket 80mm inline
+// GET /api/sales/:numero/ticket → devuelve PDF de ticket 80mm inline
 const downloadTicket = async (req, res, next) => {
   try {
     const sale = await Sale.findOne({
-      where: { id: req.params.id, businessId: req.auth.businessId },
+      where: dondeVenta(req),
       // `pagos` alimenta el desglose por medio de pago del ticket.
       include: [{ model: SaleItem, as: 'items' }, { association: 'cliente' }, { association: 'pagos' }],
     });

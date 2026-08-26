@@ -361,7 +361,9 @@ if [ -n "$VARIANTE" ]; then
     -d "{\"items\":[{\"productVariantId\":$VARIANTE,\"cantidad\":1}],\"tipo\":\"venta\",\"estado\":\"pendiente\",\"locationId\":$LOCAL_ID}")
   contiene "venta legítima con producto propio"  '"id"' "$VENTA"
   VENTA_ID=$(echo "$VENTA" | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{console.log(JSON.parse(d).id)}catch{console.log('')}})")
-  [ -n "$VENTA_ID" ] && check "ticket PDF de la venta" "200" "$(code -b "$TMP/duenio.txt" "$API/api/sales/$VENTA_ID/ticket")"
+  # El ticket se pide por número de comprobante: el id no viaja más en la ruta.
+  VENTA_NRO=$(echo "$VENTA" | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{console.log(JSON.parse(d).numero)}catch{console.log('')}})")
+  [ -n "$VENTA_NRO" ] && check "ticket PDF de la venta" "200" "$(code -b "$TMP/duenio.txt" "$API/api/sales/$VENTA_NRO/ticket")"
   # Deja la base como estaba.
   [ -n "$VENTA_ID" ] && node -e "
     require('dotenv').config();

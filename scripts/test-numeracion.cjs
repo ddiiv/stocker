@@ -92,7 +92,7 @@ const correlativo = (numero) => Number(String(numero || '').split('-').pop());
   const entremedio = await vender();
   chk('una venta entremedio', 201, entremedio.status);
 
-  const conv = await api('POST', `/api/sales/cotizacion/${cot.json.id}/convertir`, { locationId: local.id });
+  const conv = await api('POST', `/api/sales/cotizacion/${encodeURIComponent(cot.json.numero)}/convertir`, { locationId: local.id });
   chk('la cotización se convierte', 200, conv.status);
   chk('conserva su id', cot.json.id, conv.json.id);
   chk('y estrena número de venta', true, /^V-/.test(conv.json.numero || ''));
