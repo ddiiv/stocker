@@ -20,7 +20,25 @@ export default function EditProductModal({ open, onClose, group, onSaved }) {
   // de un producto, pero el alta desde el sistema siempre crea uno solo.
   const base = group?.variants?.[0];
 
-  const { register, handleSubmit, reset, formState: { errors, isSubmitting } } = useForm();
+  const { register, handleSubmit, reset, watch, formState: { errors, isSubmitting } } = useForm();
+
+  // Mismo tope y mismos avisos que en el alta: ver NewProductModal en StockPage.
+  const MAX_PRECIO = 9999999999.99;
+  const reglaPrecio = {
+    min: { value: 0, message: "No puede ser negativo" },
+    max: { value: MAX_PRECIO, message: `Máximo ${MAX_PRECIO.toLocaleString("es-AR")} — ¿se coló un cero?` },
+  };
+
+  const costo = Number(watch("costo"));
+  const minorista = Number(watch("precioMinorista"));
+  const mayorista = Number(watch("precioMayorista"));
+  const avisos = [];
+  if (costo > 0 && minorista > 0 && minorista < costo) {
+    avisos.push(`El precio minorista ($ ${minorista.toLocaleString("es-AR")}) es menor que el costo ($ ${costo.toLocaleString("es-AR")}): cada venta pierde $ ${(costo - minorista).toLocaleString("es-AR")}.`);
+  }
+  if (minorista > 0 && mayorista > 0 && mayorista > minorista) {
+    avisos.push(`El precio mayorista ($ ${mayorista.toLocaleString("es-AR")}) es más caro que el minorista ($ ${minorista.toLocaleString("es-AR")}). ¿Están al revés?`);
+  }
 
   useEffect(() => {
     if (!open || !group) return;
@@ -85,22 +103,31 @@ export default function EditProductModal({ open, onClose, group, onSaved }) {
           <div>
             <label className="label">Costo</label>
             <input className="input" type="number" min="0" step="0.01" inputMode="decimal"
-              {...register("costo", { min: { value: 0, message: "No puede ser negativo" } })} />
+              {...register("costo", reglaPrecio)} />
             {errors.costo && <p className="field-error">{errors.costo.message}</p>}
           </div>
           <div>
             <label className="label">Precio minorista</label>
             <input className="input" type="number" min="0" step="0.01" inputMode="decimal"
-              {...register("precioMinorista", { min: { value: 0, message: "No puede ser negativo" } })} />
+              {...register("precioMinorista", reglaPrecio)} />
             {errors.precioMinorista && <p className="field-error">{errors.precioMinorista.message}</p>}
           </div>
           <div>
             <label className="label">Precio mayorista</label>
             <input className="input" type="number" min="0" step="0.01" inputMode="decimal"
-              {...register("precioMayorista", { min: { value: 0, message: "No puede ser negativo" } })} />
+              {...register("precioMayorista", reglaPrecio)} />
             {errors.precioMayorista && <p className="field-error">{errors.precioMayorista.message}</p>}
           </div>
         </div>
+
+        {avisos.length > 0 && (
+          <div className="rounded-md border border-brass-500/40 bg-brass-50 px-3 py-2">
+            {avisos.map((a) => (
+              <p key={a} className="text-xs text-brass-800">{a}</p>
+            ))}
+            <p className="mt-1 text-xs text-ink-600">Si es a propósito, seguí: no te lo va a impedir.</p>
+          </div>
+        )}
 
         <div>
           <label className="label">Descripción</label>

@@ -185,7 +185,7 @@ export default function StockPage() {
 }
 
 function NewProductModal({ open, onClose, onCreated }) {
-  const { register, handleSubmit, formState: { errors, isSubmitting }, reset } = useForm();
+  const { register, handleSubmit, formState: { errors, isSubmitting }, reset, watch } = useForm();
   const [serverError, setServerError] = useState("");
   const [variantTypes, setVariantTypes] = useState([]);
   const [dim1TypeId, setDim1TypeId] = useState("");
@@ -200,6 +200,41 @@ function NewProductModal({ open, onClose, onCreated }) {
       setServerError("");
     }
   }, [open]);
+
+  /*
+   * Tope de las columnas de dinero: DECIMAL(12,2).
+   *
+   * Sin esto, un cero de más viaja a la base, desborda la columna y vuelve
+   * como "Error interno del servidor" — que no le dice a nadie que el
+   * problema era el precio.
+   */
+  const MAX_PRECIO = 9999999999.99;
+  const reglaPrecio = (nombre, { obligatorio = false } = {}) => ({
+    ...(obligatorio ? { required: "Obligatorio" } : {}),
+    min: { value: 0, message: "No puede ser negativo" },
+    max: { value: MAX_PRECIO, message: `Máximo ${MAX_PRECIO.toLocaleString("es-AR")} — ¿se coló un cero?` },
+    ...(obligatorio ? { validate: (v) => Number(v) > 0 || "Poné el precio de venta" } : {}),
+  });
+
+  /*
+   * Avisos, no bloqueos.
+   *
+   * Vender bajo el costo es una decisión válida —liquidación, saldo de
+   * temporada— así que el sistema no puede impedirlo. Pero tampoco puede
+   * dejarlo pasar en silencio: son dos números que se tipean seguidos y es
+   * fácil invertirlos o comerse un dígito, y el error recién se nota cuando
+   * el mes cierra con pérdida.
+   */
+  const costo = Number(watch("costo"));
+  const minorista = Number(watch("precioMinorista"));
+  const mayorista = Number(watch("precioMayorista"));
+  const avisos = [];
+  if (costo > 0 && minorista > 0 && minorista < costo) {
+    avisos.push(`El precio minorista ($ ${minorista.toLocaleString("es-AR")}) es menor que el costo ($ ${costo.toLocaleString("es-AR")}): cada venta pierde $ ${(costo - minorista).toLocaleString("es-AR")}.`);
+  }
+  if (minorista > 0 && mayorista > 0 && mayorista > minorista) {
+    avisos.push(`El precio mayorista ($ ${mayorista.toLocaleString("es-AR")}) es más caro que el minorista ($ ${minorista.toLocaleString("es-AR")}). ¿Están al revés?`);
+  }
 
   const dim1Type = variantTypes.find((v) => String(v.id) === String(dim1TypeId));
   const dim2Type = variantTypes.find((v) => String(v.id) === String(dim2TypeId));
@@ -253,20 +288,29 @@ function NewProductModal({ open, onClose, onCreated }) {
           <div><label className="label">Género</label><input className="input" maxLength={40} {...register("genero")} /></div>
           <div>
             <label className="label">Costo</label>
-            <input className="input" type="number" min="0" step="0.01" inputMode="decimal" {...register("costo", { min: { value: 0, message: "No puede ser negativo" } })} />
+            <input className="input" type="number" min="0" step="0.01" inputMode="decimal" {...register("costo", reglaPrecio("costo"))} />
             {errors.costo && <p className="field-error">{errors.costo.message}</p>}
           </div>
           <div>
-            <label className="label">Precio minorista</label>
-            <input className="input" type="number" min="0" step="0.01" inputMode="decimal" {...register("precioMinorista", { min: { value: 0, message: "No puede ser negativo" } })} />
+            <label className="label">Precio minorista *</label>
+            <input className="input" type="number" min="0" step="0.01" inputMode="decimal" {...register("precioMinorista", reglaPrecio("precio minorista", { obligatorio: true }))} />
             {errors.precioMinorista && <p className="field-error">{errors.precioMinorista.message}</p>}
           </div>
           <div>
             <label className="label">Precio mayorista (≥3 prendas)</label>
-            <input className="input" type="number" min="0" step="0.01" inputMode="decimal" {...register("precioMayorista", { min: { value: 0, message: "No puede ser negativo" } })} />
+            <input className="input" type="number" min="0" step="0.01" inputMode="decimal" {...register("precioMayorista", reglaPrecio("precio mayorista"))} />
             {errors.precioMayorista && <p className="field-error">{errors.precioMayorista.message}</p>}
           </div>
         </div>
+        {avisos.length > 0 && (
+          <div className="rounded-md border border-brass-500/40 bg-brass-50 px-3 py-2">
+            {avisos.map((a) => (
+              <p key={a} className="text-xs text-brass-800">{a}</p>
+            ))}
+            <p className="mt-1 text-xs text-ink-600">Si es a propósito, seguí: no te lo va a impedir.</p>
+          </div>
+        )}
+
         <div><label className="label">Descripción</label><textarea className="input min-h-16" {...register("descripcion")} /></div>
 
         <div className="rounded-md border border-line bg-paper-50 p-4">
