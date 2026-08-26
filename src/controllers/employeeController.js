@@ -3,6 +3,7 @@ const { Employee, BusinessLocation, Role, EmployeeSession } = require('../models
 const identidad = require('../services/identityRegistry');
 const { exigirCupo } = require('../services/planService');
 const bloqueo = require('../services/bloqueoService');
+const { emailValido, soloDigitos } = require('../utils/identificadores');
 
 const sanitize = (e) => { const { passwordHash, ...s } = e.toJSON(); return s; };
 
@@ -84,12 +85,38 @@ const getEmployee = async (req, res, next) => {
   } catch (error) { next(error); }
 };
 
+/*
+ * Email y DNI, comprobados también acá.
+ *
+ * El formulario los frena con `type="email"` y un placeholder, pero la API es
+ * la que guarda: sin esto entra "no-es-email" y un DNI "abc" con un POST
+ * directo, y el error recién aparece cuando hay que mandarle el recibo de
+ * sueldo o cargar el alta en AFIP.
+ *
+ * El DNI se guarda como venga —con puntos o sin ellos— pero se cuenta en
+ * dígitos: los documentos argentinos tienen 7 u 8.
+ */
+function validarIdentidad({ email, dni }) {
+  if (email !== undefined && !emailValido(email)) {
+    return 'El email no tiene un formato válido.';
+  }
+  if (dni !== undefined) {
+    const d = soloDigitos(dni);
+    if (!d) return 'El DNI tiene que ser un número.';
+    if (d.length < 7 || d.length > 8) return 'El DNI tiene que tener 7 u 8 dígitos.';
+  }
+  return null;
+}
+
 // POST /api/employees
 const createEmployee = async (req, res, next) => {
   try {
     const { nombre, apellido, email, telefono, dni, roleId, locationId, password } = req.body;
     if (!nombre || !apellido || !email || !dni)
       return res.status(400).json({ message: 'Nombre, apellido, email y DNI son obligatorios.' });
+
+    const errIdent = validarIdentidad({ email, dni });
+    if (errIdent) return res.status(400).json({ message: errIdent });
 
     // El tope de usuarios es lo que se vende en cada plan, así que se controla
     // antes de crear nada. Se cuentan los activos: dar de baja libera el lugar.
@@ -159,6 +186,11 @@ const updateEmployee = async (req, res, next) => {
   try {
     const e = await Employee.findOne({ where: { id: req.params.id, businessId: req.auth.businessId } });
     if (!e) return res.status(404).json({ message: 'Empleado no encontrado.' });
+
+    // Mismo control que en el alta: editar no puede ser la puerta de atrás
+    // para dejar un email o un DNI que el alta habría rechazado.
+    const errIdent = validarIdentidad(req.body || {});
+    if (errIdent) return res.status(400).json({ message: errIdent });
 
     const patch = {};
     for (const campo of CAMPOS_EDITABLES) {

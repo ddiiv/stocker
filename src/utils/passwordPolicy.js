@@ -19,12 +19,24 @@ function evaluate(password) {
   return { valid: failed.length === 0, failed, passed };
 }
 
-// Middleware pensado para validar `password` (o el campo indicado) en req.body.
-// Uso: router.post('/x', validatePasswordBody(), handler)
-function validatePasswordBody(field = 'password') {
+/*
+ * Middleware para validar `password` (o el campo indicado) en req.body.
+ *
+ * Uso: router.post('/x', validatePasswordBody(), handler)
+ *
+ * `opcional: true` es para las ediciones, donde el campo ausente significa
+ * "no la cambies". Si viene, igual tiene que cumplir: dejar que una edición
+ * pise una contraseña buena por una débil sería la misma puerta de atrás.
+ */
+function validatePasswordBody(field = 'password', { opcional = false, mensajeFalta = null } = {}) {
   return (req, res, next) => {
     const pass = req.body?.[field];
-    if (!pass) return res.status(400).json({ message: `Falta el campo "${field}".` });
+    if (!pass) {
+      if (opcional) return next();
+      // `mensajeFalta` existe porque "Falta el campo password" es un mensaje
+      // para quien escribe el cliente, no para quien está cargando un alta.
+      return res.status(400).json({ message: mensajeFalta || `Falta el campo "${field}".` });
+    }
     const result = evaluate(pass);
     if (!result.valid) {
       return res.status(400).json({

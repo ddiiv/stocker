@@ -372,6 +372,42 @@ if [ -n "$VARIANTE" ]; then
   " >/dev/null 2>&1
 fi
 
+titulo "8.b ALTA DE EMPLEADOS: LA MISMA PUERTA QUE EL LOGIN"
+# El empleado entra al sistema con esta contraseña, así que el alta tiene que
+# exigir lo mismo que el registro del dueño. Antes no exigía nada: "123" se
+# aceptaba, y sin contraseña se creaba una cuenta que no podía entrar.
+login_duenio
+EMP_BASE='"nombre":"QASeg","apellido":"Prueba","dni":"90000077"'
+emp() { codeP -b "$TMP/duenio.txt" -X POST "$API/api/employees" -H 'Content-Type: application/json' -d "$1"; }
+
+check "sin contraseña no se crea"      "400" "$(emp "{$EMP_BASE,\"email\":\"qaseg1@test.local\"}")"
+check "contraseña débil rechazada"     "400" "$(emp "{$EMP_BASE,\"email\":\"qaseg2@test.local\",\"password\":\"123\"}")"
+check "sin mayúscula ni símbolo, igual" "400" "$(emp "{$EMP_BASE,\"email\":\"qaseg3@test.local\",\"password\":\"abcdefgh12\"}")"
+check "email inválido rechazado"       "400" "$(emp "{$EMP_BASE,\"email\":\"no-es-email\",\"password\":\"QaSeg2026!\"}")"
+check "DNI con letras rechazado"       "400" "$(codeP -b "$TMP/duenio.txt" -X POST "$API/api/employees" -H 'Content-Type: application/json' -d '{"nombre":"QASeg","apellido":"Prueba","dni":"abc","email":"qaseg4@test.local","password":"QaSeg2026!"}')"
+
+# Y el alta válida sigue entrando, para que las de arriba no pasen por un
+# motivo distinto del que se está midiendo.
+EMP_OK=$(curl -s -b "$TMP/duenio.txt" -X POST "$API/api/employees" -H 'Content-Type: application/json' \
+  -d "{$EMP_BASE,\"email\":\"qaseg.ok@test.local\",\"password\":\"QaSeg2026!\"}")
+EMP_ID=$(echo "$EMP_OK" | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{console.log(JSON.parse(d).id)}catch{console.log('')}})")
+check "el alta bien formada entra" "si" "$([ -n "$EMP_ID" ] && echo si || echo no)"
+
+# Editar tampoco puede ser la puerta de atrás.
+if [ -n "$EMP_ID" ]; then
+  check "editar con contraseña débil se rechaza" "400" \
+    "$(codeP -b "$TMP/duenio.txt" -X PUT "$API/api/employees/$EMP_ID" -H 'Content-Type: application/json' -d '{"password":"123"}')"
+  check "editar sin tocar la contraseña se permite" "200" \
+    "$(codeP -b "$TMP/duenio.txt" -X PUT "$API/api/employees/$EMP_ID" -H 'Content-Type: application/json' -d '{"telefono":"11 5555 0000"}')"
+  curl -s -b "$TMP/duenio.txt" -X DELETE "$API/api/employees/$EMP_ID" -o /dev/null
+fi
+# Los rechazados no se crean, pero si alguno se creó queda basura: se limpia.
+node -e "
+  const { Employee } = require('./src/models');
+  const { Op } = require('sequelize');
+  (async()=>{ await Employee.destroy({where:{email:{[Op.like]:'qaseg%@test.local'}}}); process.exit(0); })();
+" >/dev/null 2>&1
+
 titulo "9. LOGOUT"
 login_duenio
 curl -s -b "$TMP/duenio.txt" -c "$TMP/duenio.txt" -X POST "$API/api/auth/logout" -o /dev/null

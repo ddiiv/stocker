@@ -166,8 +166,15 @@ r.delete('/roles/:id', requireAuth, requirePermission('empleados','editar'), del
 r.get   ('/employees',              requireAuth, requirePermission('empleados','ver'),    employeeCtrl.getEmployees);
 r.get   ('/employees/:id',          requireAuth, requirePermission('empleados','ver'),    employeeCtrl.getEmployee);
 r.get   ('/employees/:id/sessions', requireAuth, requirePermission('empleados','ver'),    employeeCtrl.getSessions);
-r.post  ('/employees',              requireAuth, requirePermission('empleados','editar'), employeeCtrl.createEmployee);
-r.put   ('/employees/:id',          requireAuth, requirePermission('empleados','editar'), employeeCtrl.updateEmployee);
+/*
+ * El empleado entra al sistema con esta contraseña, así que pasa por la misma
+ * política que la del dueño. Antes no pasaba por ninguna: `123` se aceptaba, y
+ * sin contraseña se creaba una cuenta que no podía entrar y nadie avisaba.
+ */
+r.post  ('/employees',              requireAuth, requirePermission('empleados','editar'), validatePasswordBody('password', {
+  mensajeFalta: 'Poné una contraseña: es con la que el empleado va a entrar al sistema.',
+}), employeeCtrl.createEmployee);
+r.put   ('/employees/:id',          requireAuth, requirePermission('empleados','editar'), validatePasswordBody('password', { opcional: true }), employeeCtrl.updateEmployee);
 r.patch ('/employees/:id/toggle',   requireAuth, requirePermission('empleados','editar'), employeeCtrl.toggleActive);
 // Levantar el bloqueo por intentos fallidos: sólo el dueño. Es una decisión de
 // seguridad —si fue un ataque o alguien que se equivocó de tecla—, y no algo

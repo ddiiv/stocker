@@ -71,13 +71,13 @@ CREADOS=()
 i=0
 while [ "$USADOS" -lt "$TOPE" ]; do
   i=$((i+1))
-  ID=$(C -X POST $API/employees -d "{\"nombre\":\"Cupo\",\"apellido\":\"QA$i\",\"email\":\"cupo.qa$i@test.local\",\"dni\":\"9000000$i\"}" | J .id)
+  ID=$(C -X POST $API/employees -d "{\"nombre\":\"Cupo\",\"apellido\":\"QA$i\",\"email\":\"cupo.qa$i@test.local\",\"dni\":\"9000000$i\",\"password\":\"CupoQa2026!\"}" | J .id)
   CREADOS+=("$ID")
   USADOS=$((USADOS+1))
 done
 chk "el empleado que pasa el tope se rechaza" "409" \
-  "$(CC -X POST $API/employees -d '{"nombre":"Sobra","apellido":"QA","email":"sobra.qa@test.local","dni":"90000099"}')"
-MSG=$(C -X POST $API/employees -d '{"nombre":"Sobra","apellido":"QA","email":"sobra.qa@test.local","dni":"90000099"}' | J .message)
+  "$(CC -X POST $API/employees -d '{"nombre":"Sobra","apellido":"QA","email":"sobra.qa@test.local","dni":"90000099","password":"CupoQa2026!"}')"
+MSG=$(C -X POST $API/employees -d '{"nombre":"Sobra","apellido":"QA","email":"sobra.qa@test.local","dni":"90000099","password":"CupoQa2026!"}' | J .message)
 chk "el mensaje ofrece subir de plan" "si" "$(node -e "console.log(/plan superior/.test(process.argv[1])?'si':'no')" "$MSG")"
 
 tit "4. UN EMAIL, UNA SOLA PERSONA"
@@ -90,7 +90,7 @@ if [ "${#CREADOS[@]}" -gt 0 ]; then
        -d '{"nombreNegocio":"Trucho","ownerNombre":"A","ownerApellido":"B","cuit":"20111111112","email":"cupo.qa1@test.local","password":"Prueba2026!!"}')"
 fi
 chk "no se da de alta un empleado con el mail del dueño" "409" \
-  "$(CC -X POST $API/employees -d '{"nombre":"X","apellido":"Y","email":"demo@stocker.app","dni":"90000098"}')"
+  "$(CC -X POST $API/employees -d '{"nombre":"X","apellido":"Y","email":"demo@stocker.app","dni":"90000098","password":"CupoQa2026!"}')"
 
 tit "5. UN CUIT, UN SOLO NEGOCIO"
 CUIT=$(C $API/business-cuits | J '[0].cuit')
