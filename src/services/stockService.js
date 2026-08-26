@@ -145,6 +145,27 @@ async function mover({
     }, { transaction: t });
   }
 
+  /*
+   * MercadoLibre se entera de que este SKU cambió.
+   *
+   * Va acá porque es el único lugar donde se escribe stock: enganchado en el
+   * controlador de ventas se perdería lo que mueven las transferencias, los
+   * ingresos y los ajustes, y la publicación quedaría desactualizada
+   * justamente cuando entra mercadería nueva.
+   *
+   * Sin await y con el error atrapado: la venta no puede depender de que
+   * MercadoLibre responda. Adentro se agrupa unos segundos y se descarta solo
+   * si el negocio no tiene la integración conectada.
+   */
+  if (registrarMovimiento) {
+    try {
+      const variante = await ProductVariant.findByPk(variantId, {
+        attributes: ['id', 'sku'], transaction: t,
+      });
+      if (variante?.sku) require('./mercadolibreService').marcarParaSync(businessId, variante.sku);
+    } catch { /* avisarle a ML nunca puede tumbar un movimiento de stock */ }
+  }
+
   return { stockAnterior, stockNuevo, total, locationId: local };
 }
 

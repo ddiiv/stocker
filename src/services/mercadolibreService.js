@@ -21,8 +21,10 @@
  */
 
 const axios = require('axios');
-const { MercadoLibreAccount, MercadoLibreLink, ProductVariant, Product } = require('../models');
+const { MercadoLibreAccount, MercadoLibreLink, ProductVariant, Product, BusinessLocation } = require('../models');
+const stockService = require('./stockService');
 const { signToken, verifyToken } = require('../utils/jwt');
+const { log } = require('../utils/logger');
 
 const ML_AUTH = 'https://auth.mercadolibre.com.ar';
 const ML_API  = 'https://api.mercadolibre.com';
@@ -255,9 +257,48 @@ async function actualizarStock(token, { mlItemId, mlVariationId, cantidad }) {
  * @param {boolean} opts.simular  Si es true, calcula los cambios pero no los envía.
  * @param {string[]} opts.skus    Si viene, sincroniza solo esos SKUs.
  */
+/*
+ * De qué lugar sale el stock que se publica.
+ *
+ * El elegido en la cuenta; si no hay, el primero de tipo `online`. Nunca el
+ * total de la variante: desde que el stock es por local, ese total incluye el
+ * depósito, donde la mercadería rota todo el tiempo y puede salir para una
+ * sucursal en cualquier momento. Publicarlo es ofrecer online algo que quizá
+ * ya no esté para despachar.
+ *
+ * Sin ningún lugar designado devuelve null y la sincronización se frena con un
+ * mensaje, en vez de caer al total en silencio y volver al problema de antes.
+ */
+async function lugarDePublicacion(businessId, cuenta = null) {
+  const acc = cuenta || await MercadoLibreAccount.findOne({ where: { businessId } });
+
+  if (acc?.locationId) {
+    const elegido = await BusinessLocation.findOne({
+      where: { id: acc.locationId, businessId, activo: true },
+    });
+    if (elegido) return elegido;
+  }
+
+  return BusinessLocation.findOne({
+    where: { businessId, activo: true, tipo: 'online' },
+    order: [['id', 'ASC']],
+  });
+}
+
 async function sincronizarStock(businessId, { simular = false, skus = null } = {}) {
   const cuenta = await MercadoLibreAccount.findOne({ where: { businessId } });
   if (!cuenta) throw Object.assign(new Error('No hay una cuenta de MercadoLibre conectada.'), { status: 400 });
+
+  const lugar = await lugarDePublicacion(businessId, cuenta);
+  if (!lugar) {
+    throw Object.assign(
+      new Error(
+        'No hay un lugar designado para publicar en MercadoLibre. Marcá uno de tus locales como "Online / Envíos" '
+        + 'desde Empleados → Locales: es el stock que se va a publicar.',
+      ),
+      { status: 409, detalles: { codigo: 'SIN_LUGAR_ONLINE' } },
+    );
+  }
 
   const token = await tokenValido(cuenta);
   const publicaciones = await listarPublicaciones(cuenta);
@@ -280,11 +321,20 @@ async function sincronizarStock(businessId, { simular = false, skus = null } = {
     const destino = porSku.get(v.sku);
     if (!destino) continue; // el SKU no está publicado en ML
 
-    const cantidad = Math.max(0, Number(v.stock) || 0);
+    /*
+     * El stock DEL LUGAR de publicación, no el total.
+     *
+     * El negativo se publica como cero: un artículo que quedó en -3 por
+     * venderse sin cargar no tiene nada para despachar, y mandar el negativo
+     * a ML sería pedirle que ofrezca deuda.
+     */
+    const enLugar = await stockService.stockEn(v.id, lugar.id);
+    const cantidad = Math.max(0, Number(enLugar) || 0);
     const fila = {
       sku: v.sku, titulo: v.producto.titulo,
       mlItemId: destino.mlItemId, mlVariationId: destino.mlVariationId,
       stockStocker: cantidad, stockMl: destino.stockActual ?? null,
+      lugar: lugar.nombre,
       manual: Boolean(destino.manual),
     };
 
@@ -327,6 +377,7 @@ async function sincronizarStock(businessId, { simular = false, skus = null } = {
 
   return {
     simulado: simular,
+    lugar: { id: lugar.id, nombre: lugar.nombre, tipo: lugar.tipo },
     publicacionesEncontradas: publicaciones.length,
     skusEnMl: porSku.size,
     resultados,
@@ -340,8 +391,86 @@ async function sincronizarStock(businessId, { simular = false, skus = null } = {
   };
 }
 
+/* ── Sincronización automática ─────────────────────────────────────
+ *
+ * Cada movimiento que toca el lugar de publicación deja ese SKU marcado, y
+ * unos segundos después se manda a MercadoLibre.
+ *
+ * Tres decisiones que valen la pena explicar:
+ *
+ * 1. NUNCA rompe la operación que la disparó. Se llama sin await y todo error
+ *    queda adentro: si ML no responde, la venta se hace igual. Un inventario
+ *    desactualizado en la publicación se arregla con la próxima pasada; una
+ *    venta que no se pudo cobrar porque ML estaba caído, no.
+ *
+ * 2. Se agrupa con una demora corta. Una venta de cinco artículos son cinco
+ *    movimientos en el mismo segundo: sin agrupar serían cinco pedidos a ML
+ *    con el mismo token, y la API tiene límites.
+ *
+ * 3. Sólo mira los SKU marcados. Sincronizar el catálogo entero después de
+ *    cada venta sería pedirle a ML cientos de publicaciones para actualizar
+ *    una.
+ */
+const DEMORA_SYNC_MS = Number(process.env.ML_SYNC_DEMORA_MS) || 6000;
+
+// businessId → { skus: Set, timer }
+const pendientesSync = new Map();
+
+async function correrSyncPendiente(businessId) {
+  const entrada = pendientesSync.get(businessId);
+  if (!entrada) return;
+  pendientesSync.delete(businessId);
+
+  const skus = [...entrada.skus];
+  if (!skus.length) return;
+
+  try {
+    const r = await sincronizarStock(businessId, { skus });
+    if (r.resumen.actualizados || r.resumen.errores) {
+      log.info('mercadolibre', 'sincronización automática', {
+        businessId, skus: skus.length,
+        actualizados: r.resumen.actualizados, errores: r.resumen.errores,
+      });
+    }
+  } catch (e) {
+    /*
+     * Se avisa y se sigue. Los casos comunes —cuenta desconectada, sin lugar
+     * online, token vencido— no son errores de la venta que lo disparó, y el
+     * botón de sincronizar manual sigue estando para cuando se resuelvan.
+     */
+    log.warn('mercadolibre', 'no se pudo sincronizar automáticamente', {
+      businessId, motivo: e.message?.slice(0, 200),
+    });
+  }
+}
+
+/*
+ * Marca un SKU para sincronizar. La llama stockService en cada movimiento.
+ *
+ * Devuelve enseguida: lo único que hace es anotar y programar. Comprobar si el
+ * negocio tiene ML conectado se deja para el momento del envío, porque hacerlo
+ * acá sería una consulta a la base por cada línea de cada venta.
+ */
+function marcarParaSync(businessId, sku) {
+  if (!businessId || !sku || !estaConfigurado()) return;
+
+  let entrada = pendientesSync.get(businessId);
+  if (!entrada) {
+    entrada = { skus: new Set(), timer: null };
+    pendientesSync.set(businessId, entrada);
+  }
+  entrada.skus.add(sku);
+
+  clearTimeout(entrada.timer);
+  entrada.timer = setTimeout(() => { correrSyncPendiente(businessId); }, DEMORA_SYNC_MS);
+  // Que un envío pendiente no impida cerrar el proceso en un deploy.
+  entrada.timer.unref?.();
+}
+
 module.exports = {
   estaConfigurado,
+  lugarDePublicacion,
+  marcarParaSync,
   urlAutorizacion,
   leerState,
   conectarConCodigo,

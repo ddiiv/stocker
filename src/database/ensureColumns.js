@@ -38,6 +38,11 @@ const COLUMNAS_ESPERADAS = {
     saldoResueltoEn:            { type: DataTypes.DATE, allowNull: true },
     pedidoOrigenId: { type: DataTypes.INTEGER, allowNull: true },
   },
+  mercadolibre_accounts: {
+    // De qué lugar sale el stock que se publica. Nulo hasta que el negocio lo
+    // elija; ahí se resuelve al primero de tipo `online`.
+    locationId: { type: DataTypes.INTEGER, allowNull: true },
+  },
   sale_items: {
     /*
      * El costo de la mercadería al momento de venderla.

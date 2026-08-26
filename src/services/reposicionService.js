@@ -27,6 +27,7 @@ const {
   BusinessLocation, Employee, sequelize,
 } = require('../models');
 const stockService = require('./stockService');
+const { ultimoCorrelativo } = require('./invoiceNumberService');
 const depositoService = require('./depositoService');
 
 const ABIERTOS = ['pendiente', 'aprobado', 'enviado'];
@@ -37,12 +38,9 @@ const error = (mensaje, status = 400, extra = {}) =>
 async function siguienteNumero(businessId, t = null) {
   const now = new Date();
   const prefijo = `REP-${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-`;
-  const ultimo = await PedidoReposicion.findOne({
-    where: { businessId, numero: { [Op.like]: `${prefijo}%` } },
-    order: [['id', 'DESC']],
-    transaction: t,
-  });
-  const seq = ultimo ? parseInt(ultimo.numero.split('-').pop(), 10) + 1 : 1;
+  // El máximo emitido, no la última fila: el orden de los ids no garantiza el
+  // orden de los números en cuanto algo reescribe un `numero` ya guardado.
+  const seq = await ultimoCorrelativo(PedidoReposicion, businessId, prefijo, t) + 1;
   return `${prefijo}${String(seq).padStart(5, '0')}`;
 }
 

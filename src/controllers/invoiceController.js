@@ -2,7 +2,7 @@ const path = require('path');
 const fse = require('fs-extra');
 const sequelize = require('../config/database');
 const { Invoice, InvoiceItem, Sale, SaleItem, Business, Client, BusinessCuit, BusinessArcaConfig } = require('../models');
-const { nextInvoiceNumber } = require('../services/invoiceNumberService');
+const { nextInvoiceNumber, crearConNumero } = require('../services/invoiceNumberService');
 const { tipoComprobante, solicitarCAE, determineInvoiceType, calcularIVA } = require('../services/arcaService');
 const { lookupCuit } = require('../services/arcaLookupService');
 const { generateInvoicePdf, generateInvoicePdfBuffer } = require('../services/pdfService');
@@ -172,9 +172,6 @@ const createInvoice = async (req, res, next) => {
     const totalAFacturar = Number(sale.totalCobrado) || Number(sale.total);
     const { neto, iva } = calcularIVA(totalAFacturar, tipo);
 
-    // Número de factura
-    const numero = await nextInvoiceNumber(req.auth.businessId);
-
     // La config del emisor ya se leyó arriba para decidir la letra.
     const arcaConfig = configEmisor;
     const { cae, caeVencimiento, respuesta: arcaRespuesta } = await solicitarCAE({
@@ -186,26 +183,38 @@ const createInvoice = async (req, res, next) => {
       items: sale.items,
     });
 
-    // Crear Invoice en BD
-    const invoice = await Invoice.create({
-      businessId:    req.auth.businessId,
-      saleId:        sale.id,
-      clientId:      sale.clientId || null,
-      employeeId:    req.auth.employeeId || sale.employeeId,
-      numero, tipo,
-      clienteNombre, clienteCuit: finalCuit,
-      clienteEmail:  finalEmail,
-      clienteDireccion: finalDireccion,
-      subtotal:      Number(sale.subtotal),
-      iva, total:    totalAFacturar,
-      esMayorista:   sale.esMayorista,
-      cae, caeVencimiento,
-      arcaRespuesta,
-      businessCuitId: emisor?.id || null,
-      emisorCuit, emisorNombre,
-      fechaEmision:  new Date(),
-      estado:        'emitida',
-    }, { transaction: t });
+    /*
+     * Crear Invoice en BD.
+     *
+     * El número se calcula acá adentro, después del CAE y no antes: entre
+     * pedirle el CAE a ARCA y guardar pueden pasar varios segundos, y en esa
+     * ventana otra caja factura y se lleva el número. El CAE queda afuera del
+     * reintento a propósito —se pide una sola vez, pase lo que pase con la
+     * numeración—; lo único que se repite es el INSERT.
+     */
+    const invoice = await crearConNumero(
+      (saltar) => nextInvoiceNumber(req.auth.businessId, saltar),
+      (numero, sp) => Invoice.create({
+        businessId:    req.auth.businessId,
+        saleId:        sale.id,
+        clientId:      sale.clientId || null,
+        employeeId:    req.auth.employeeId || sale.employeeId,
+        numero, tipo,
+        clienteNombre, clienteCuit: finalCuit,
+        clienteEmail:  finalEmail,
+        clienteDireccion: finalDireccion,
+        subtotal:      Number(sale.subtotal),
+        iva, total:    totalAFacturar,
+        esMayorista:   sale.esMayorista,
+        cae, caeVencimiento,
+        arcaRespuesta,
+        businessCuitId: emisor?.id || null,
+        emisorCuit, emisorNombre,
+        fechaEmision:  new Date(),
+        estado:        'emitida',
+      }, { transaction: sp || t }),
+      { transaction: t },
+    );
 
     // InvoiceItems: snapshot completo de cada variante
     const invoiceItems = sale.items.map((i) => ({

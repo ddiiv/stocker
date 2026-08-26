@@ -40,14 +40,14 @@ const getLocations = async (req, res, next) => {
  * escrito haría que el lugar no aparezca ni como local de venta ni como
  * depósito, y sería invisible en las dos pantallas a la vez.
  */
-const TIPOS_LOCAL = ['local', 'deposito'];
+const TIPOS_LOCAL = ['local', 'deposito', 'online'];
 
 const createLocation = async (req, res, next) => {
   try {
     const { nombre, direccion, telefono, tipo } = req.body;
     if (!nombre || !direccion) return res.status(400).json({ message: 'Nombre y dirección son obligatorios.' });
     if (tipo && !TIPOS_LOCAL.includes(tipo)) {
-      return res.status(400).json({ message: 'El tipo tiene que ser "local" o "deposito".' });
+      return res.status(400).json({ message: 'El tipo tiene que ser "local", "deposito" u "online".' });
     }
     const loc = await BusinessLocation.create({
       businessId: req.auth.businessId, nombre, direccion, telefono, tipo: tipo || 'local',
@@ -62,7 +62,7 @@ const updateLocation = async (req, res, next) => {
 
     const { tipo } = req.body;
     if (tipo && !TIPOS_LOCAL.includes(tipo)) {
-      return res.status(400).json({ message: 'El tipo tiene que ser "local" o "deposito".' });
+      return res.status(400).json({ message: 'El tipo tiene que ser "local", "deposito" u "online".' });
     }
     /*
      * Convertir un local de venta en depósito no es un cambio de etiqueta: de

@@ -27,6 +27,7 @@ const {
   BusinessLocation, Employee,
 } = require('../models');
 const stockService = require('./stockService');
+const { ultimoCorrelativo } = require('./invoiceNumberService');
 
 const ESTADOS = ['pendiente', 'aplicado', 'rechazado', 'anulado'];
 
@@ -42,7 +43,14 @@ async function depositos(businessId, t = null) {
   });
 }
 
-/** Los locales de venta activos (todo lo que no es depósito). */
+/*
+ * Los lugares donde se vende: locales y el de ventas web.
+ *
+ * Todo lo que no sea depósito. El de tipo `online` entra acá porque vende
+ * igual que una sucursal —descuenta al despachar un pedido web— y también
+ * pide reposición; lo único que lo distingue es que su stock es el que se
+ * publica en MercadoLibre.
+ */
 async function locales(businessId, t = null) {
   return BusinessLocation.findAll({
     where: { businessId, activo: true, tipo: { [Op.ne]: 'deposito' } },
@@ -76,12 +84,9 @@ async function exigirDeposito(locationId, businessId, t = null) {
 async function siguienteNumero(businessId, t = null) {
   const now = new Date();
   const prefijo = `ING-${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-`;
-  const ultimo = await StockIngreso.findOne({
-    where: { businessId, numero: { [Op.like]: `${prefijo}%` } },
-    order: [['id', 'DESC']],
-    transaction: t,
-  });
-  const seq = ultimo ? parseInt(ultimo.numero.split('-').pop(), 10) + 1 : 1;
+  // El máximo emitido, no la última fila: el orden de los ids no garantiza el
+  // orden de los números en cuanto algo reescribe un `numero` ya guardado.
+  const seq = await ultimoCorrelativo(StockIngreso, businessId, prefijo, t) + 1;
   return `${prefijo}${String(seq).padStart(5, '0')}`;
 }
 

@@ -316,6 +316,18 @@ const MercadoLibreAccount = db.define('MercadoLibreAccount', {
   tokenExpiraEn:   { type: DataTypes.DATE },
   // sincronizacion
   syncActiva:      { type: DataTypes.BOOLEAN, defaultValue: true },
+  /*
+   * De qué lugar sale el stock que se publica.
+   *
+   * Antes se mandaba el total de la variante, que desde que el stock es por
+   * local incluye el depósito: ML ofrecía mercadería que estaba en la bodega
+   * y podía salir para una sucursal en cualquier momento. Ahora publica un
+   * lugar concreto —normalmente el de tipo `online`— y lo que se ve en la
+   * publicación es lo que se puede despachar.
+   *
+   * Nulo: se resuelve solo al primer lugar de tipo `online`.
+   */
+  locationId:      { type: DataTypes.INTEGER, allowNull: true },
   ultimaSync:      { type: DataTypes.DATE },
   ultimoError:     { type: DataTypes.STRING(500) },
 }, { tableName: 'mercadolibre_accounts' });
@@ -401,16 +413,29 @@ const BusinessLocation = db.define('BusinessLocation', {
   direccion:  { type: DataTypes.STRING(255), allowNull: false },
   telefono:   { type: DataTypes.STRING(30) },
   /*
-   * Local o depósito, y no es una etiqueta decorativa.
+   * Qué es este lugar. No es una etiqueta decorativa: de cada tipo depende
+   * qué se puede hacer con su stock.
    *
-   * La mercadería nueva entra por el depósito y de ahí se transfiere; de un
-   * depósito no se vende. Sin distinguirlos, el punto de venta ofrecía
-   * descontar de la bodega y el stock del salón quedaba mintiendo.
+   *   local     Sucursal que atiende público. Vende y recibe reposición.
+   *
+   *   deposito  Entra la mercadería nueva y de ahí se transfiere. NO vende.
+   *             Sin distinguirlo, el punto de venta ofrecía descontar de la
+   *             bodega y el stock del salón quedaba mintiendo.
+   *
+   *   online    El stock reservado para las ventas web. Vende como un local,
+   *             pero además es el único que se publica en MercadoLibre.
+   *
+   * Por qué online es un tipo aparte y no un local más: lo que se publica
+   * tiene que ser stock contado y quieto. En los locales el conteo es
+   * confiable; en el depósito la mercadería rota todo el tiempo, así que
+   * publicar su stock es ofrecer online algo que quizá ya salió para una
+   * sucursal. Separándolo, lo que ML muestra es lo que realmente se puede
+   * despachar.
    *
    * Un negocio puede tener varios depósitos. Los que ya existían son locales:
    * es lo que eran hasta ahora y cambiarlos por adivinanza rompería sus ventas.
    */
-  tipo:       { type: DataTypes.STRING(20), allowNull: false, defaultValue: 'local' }, // local|deposito
+  tipo:       { type: DataTypes.STRING(20), allowNull: false, defaultValue: 'local' }, // local|deposito|online
   activo:     { type: DataTypes.BOOLEAN, defaultValue: true },
 }, { tableName: 'business_locations' });
 

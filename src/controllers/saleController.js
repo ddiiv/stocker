@@ -673,7 +673,7 @@ const createSale = async (req, res, next) => {
      * error de base en crudo.
      */
     const sale = await crearConNumero(
-      () => nextSaleNumber(req.auth.businessId, tipo),
+      (saltar) => nextSaleNumber(req.auth.businessId, tipo, saltar),
       (numero, sp) => Sale.create({
       businessId:  req.auth.businessId,
       locationId:  locationId || null,
@@ -1197,14 +1197,30 @@ const convertQuoteToSale = async (req, res, next) => {
       });
     }
 
-    const numero = await nextSaleNumber(req.auth.businessId, 'venta');
-    // Nace como venta abierta: se debe entera hasta que se cobre.
-    await quote.update({
-      tipo: 'venta', estado: 'pendiente', numero,
-      saldoPendiente: quote.total,
-      locationId,
-      employeeId: quote.employeeId || req.auth.employeeId || null,
-    }, { transaction: t });
+    /*
+     * El número va por el mismo camino que el de una venta nueva.
+     *
+     * Acá el `numero` se escribe sobre una fila que ya existe, y eso es
+     * exactamente lo que rompía la numeración: una venta convertida queda con
+     * número alto sobre un id viejo. Con el máximo como fuente eso ya no
+     * confunde a nadie, y el reintento cubre que otra caja esté cobrando en
+     * este mismo momento.
+     */
+    let numero;
+    await crearConNumero(
+      (saltar) => nextSaleNumber(req.auth.businessId, 'venta', saltar),
+      // Nace como venta abierta: se debe entera hasta que se cobre.
+      (n, sp) => {
+        numero = n;
+        return quote.update({
+          tipo: 'venta', estado: 'pendiente', numero: n,
+          saldoPendiente: quote.total,
+          locationId,
+          employeeId: quote.employeeId || req.auth.employeeId || null,
+        }, { transaction: sp || t });
+      },
+      { transaction: t },
+    );
 
     await descontarStockVenta(quote, t, {
       employeeId: req.auth.employeeId || null,
