@@ -1,6 +1,6 @@
-import { NavLink } from "react-router-dom";
 import { useAuth } from "../../context/AuthContext";
 import { canEdit } from "../../utils/permissions";
+import SectionTabs from "../ui/SectionTabs";
 
 /*
  * Pestañas de Stock, filtradas por permiso.
@@ -32,23 +32,5 @@ export default function StockTabs() {
   const puedeEditar = canEdit(user, "stock");
   const visibles = TABS.filter((t) => t.nivel !== "editar" || puedeEditar);
 
-  return (
-    <div className="mb-5 flex w-fit max-w-full overflow-x-auto rounded-md border border-line bg-paper-50 p-1
-                    [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-      {visibles.map((t) => (
-        <NavLink
-          key={t.to}
-          to={t.to}
-          end={t.end}
-          className={({ isActive }) =>
-            `shrink-0 whitespace-nowrap rounded px-3 py-1.5 text-xs font-medium transition-colors ${
-              isActive ? "bg-ink-950 text-paper-50" : "text-ink-600 hover:bg-paper-200"
-            }`
-          }
-        >
-          {t.label}
-        </NavLink>
-      ))}
-    </div>
-  );
+  return <SectionTabs tabs={visibles} />;
 }
