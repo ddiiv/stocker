@@ -143,6 +143,59 @@ function sesion() {
     const ajeno = await api('POST', '/api/products/precios-masivo', { items: [{ variantId: 1, precioMinorista: 1 }] });
     chk('una variante de otro negocio, también', 404, ajeno.status);
 
+    /*
+     * El tope de las columnas de dinero: DECIMAL(12,2).
+     *
+     * Un número más grande no daba un error de validación, daba un desborde en
+     * la base — un 500 con "Error interno del servidor" en la cara del que
+     * estaba cargando un producto. El alta lo mostró en el QA manual; acá
+     * queda cubierto en los tres caminos que escriben precios.
+     */
+    const DESMEDIDO = 999999999999;
+    const topeMasivo = await api('POST', '/api/products/precios-masivo', {
+      items: [{ variantId: grande.id, precioMinorista: DESMEDIDO }],
+    });
+    chk('precio desmedido en la carga masiva', 400, topeMasivo.status);
+
+    const topeVariante = await api('PUT', `/api/products/variants/${grande.id}`, { precioMinorista: DESMEDIDO });
+    chk('precio desmedido al editar la variante', 400, topeVariante.status);
+
+    const topeAlta = await api('POST', '/api/products', {
+      titulo: 'QA tope', sku: 'QA-TOPE-P', skuAgrupador: 'QA-TOPE-P',
+      precioMinorista: 1000, precioMayorista: DESMEDIDO,
+    });
+    chk('precio desmedido en el alta', 400, topeAlta.status);
+    chk('y lo dice sin hablar de la base', false,
+      /internal|Sequelize|EREQUEST|overflow/i.test(topeAlta.json?.message || ''));
+
+    tit('8. UN PRODUCTO NO NACE SIN PRECIO');
+    /*
+     * Sin precio de venta el producto se puede agregar a una venta en $ 0, y
+     * nada avisa. Es el agujero que encontró el plan de pruebas manual.
+     */
+    const sinPrecio = await api('POST', '/api/products', {
+      titulo: 'QA sin precio', sku: 'QA-SINP-P', skuAgrupador: 'QA-SINP-P',
+    });
+    chk('sin precio no se crea', 400, sinPrecio.status);
+    const conCero = await api('POST', '/api/products', {
+      titulo: 'QA cero', sku: 'QA-CERO-P', skuAgrupador: 'QA-CERO-P', precioMinorista: 0,
+    });
+    chk('con precio 0 tampoco', 400, conCero.status);
+
+    // Y los faltantes se dicen todos juntos, no de a uno por viaje.
+    const vacio = await api('POST', '/api/products', {});
+    const dice = vacio.json?.message || '';
+    chk('el cuerpo vacío nombra los cuatro faltantes', true,
+      ['título', 'SKU padre', 'SKU agrupador', 'precio minorista'].every((x) => dice.includes(x)));
+    chk('y no muestra nombres del modelo', false, /cannot be null|Product\./i.test(dice));
+
+    tit('9. EL SKU REPETIDO NO MUESTRA EL ÍNDICE');
+    const repetido = await api('POST', '/api/products', {
+      titulo: 'QA repetido', sku: prod.sku, skuAgrupador: 'QA-REPE-P', precioMinorista: 1000,
+    });
+    chk('se rechaza', 400, repetido.status);
+    chk('sin nombrar el índice', false, /uq_|must be unique/i.test(repetido.json?.message || ''));
+
   } finally {
     for (const id of creadas) {
       await SalePayment.destroy({ where: { saleId: id } });
@@ -154,6 +207,9 @@ function sesion() {
     await VariantStock.destroy({ where: { productVariantId: [chico.id, grande.id] } });
     await ProductVariant.destroy({ where: { id: [chico.id, grande.id] } });
     await Product.destroy({ where: { id: prod.id } });
+    // Ninguno de estos debería existir: si alguno se creó, la prueba falló y
+    // además dejó basura. Se limpia igual.
+    await Product.destroy({ where: { sku: ['QA-TOPE-P', 'QA-SINP-P', 'QA-CERO-P', 'QA-REPE-P'] } });
   }
 
   console.log(`\n\x1b[1m─────────────────────────────\x1b[0m\n  \x1b[32mPasaron: ${ok}\x1b[0m   \x1b[31mFallaron: ${ko}\x1b[0m`);

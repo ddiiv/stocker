@@ -46,6 +46,75 @@ function validateVariantes(variantes) {
   return null;
 }
 
+/*
+ * Tope de las columnas de dinero.
+ *
+ * Todas son DECIMAL(12,2): diez dígitos enteros y dos decimales. Un número
+ * más grande no da un error de validación, da un desborde en la base — un 500
+ * con "Error interno del servidor" en la cara del que estaba cargando un
+ * producto. Se corta acá, con el número dicho.
+ */
+const MAX_MONEDA = 9999999999.99;
+
+const PRECIOS = {
+  costo: 'El costo',
+  precioMinorista: 'El precio minorista',
+  precioMayorista: 'El precio mayorista',
+  costoVariante: 'El costo de la variante',
+  precioMinoristaVariante: 'El precio minorista de la variante',
+  precioMayoristaVariante: 'El precio mayorista de la variante',
+  precio: 'El precio',
+};
+
+/**
+ * Revisa los importes que vengan en el cuerpo.
+ *
+ * Sólo mira los que están presentes: un campo ausente es "no lo toques", que
+ * es distinto de "ponelo en cero". Que el precio de venta exista o no lo
+ * decide `faltantesDeProducto`, que sólo corre en el alta.
+ */
+function validarPrecios(cuerpo) {
+  for (const [campo, nombre] of Object.entries(PRECIOS)) {
+    const crudo = cuerpo?.[campo];
+    if (crudo === undefined || crudo === null || crudo === '') continue;
+
+    const n = Number(crudo);
+    if (!Number.isFinite(n)) return `${nombre} tiene que ser un número.`;
+    if (n < 0) return `${nombre} no puede ser negativo.`;
+    if (n > MAX_MONEDA) {
+      return `${nombre} no puede pasar de ${MAX_MONEDA.toLocaleString('es-AR')}. `
+        + 'Si el número es correcto, revisá que no se haya colado un cero de más.';
+    }
+  }
+
+  return null;
+}
+
+/*
+ * Lo que un producto necesita sí o sí, en un solo mensaje.
+ *
+ * Van juntos a propósito: con el cuerpo vacío, contestar sólo "falta el
+ * precio" manda a alguien a cargar el precio para que después le falte el
+ * título, y el título para que le falte el SKU. Se dice todo de una.
+ *
+ * El precio está en la lista porque un producto sin precio se puede vender
+ * en $ 0 sin que nada avise.
+ */
+function faltantesDeProducto(cuerpo) {
+  const falta = [];
+  if (!String(cuerpo?.titulo || '').trim()) falta.push('el título');
+  if (!String(cuerpo?.sku || '').trim()) falta.push('el SKU padre');
+  if (!String(cuerpo?.skuAgrupador || '').trim()) falta.push('el SKU agrupador');
+
+  const p = Number(cuerpo?.precioMinorista);
+  if (!Number.isFinite(p) || p <= 0) falta.push('el precio minorista');
+
+  if (!falta.length) return null;
+  const lista = falta.length === 1 ? falta[0] : `${falta.slice(0, -1).join(', ')} y ${falta[falta.length - 1]}`;
+  return `${falta.length === 1 ? 'Falta' : 'Faltan'} ${lista}.`
+    + (falta.includes('el precio minorista') ? ' Sin precio el producto se puede vender en $ 0.' : '');
+}
+
 // ── GET /api/products ──────────────────────────────────────────────
 const getProducts = async (req, res, next) => {
   try {
@@ -233,7 +302,7 @@ const createProduct = async (req, res, next) => {
   try {
     const { sku, skuAgrupador, titulo, descripcion, precioMinorista, precioMayorista, costo, variantes = {}, modelo, categoria, genero } = req.body;
 
-    const err = validateVariantes(variantes);
+    const err = faltantesDeProducto(req.body) || validateVariantes(variantes) || validarPrecios(req.body);
     if (err) { await t.rollback(); return res.status(400).json({ message: err }); }
 
     /*
@@ -339,10 +408,8 @@ const updateProduct = async (req, res, next) => {
     if (!product) return res.status(404).json({ message: 'Producto no encontrado.' });
 
     const { variantes } = req.body;
-    if (variantes) {
-      const err = validateVariantes(variantes);
-      if (err) return res.status(400).json({ message: err });
-    }
+    const err = (variantes ? validateVariantes(variantes) : null) || validarPrecios(req.body);
+    if (err) return res.status(400).json({ message: err });
 
     await product.update({
       ...soloCampos(req.body, CAMPOS_PRODUCTO),
@@ -895,6 +962,9 @@ const updateVariant = async (req, res, next) => {
     const variant = await ProductVariant.findByPk(req.params.variantId, { include: [{ model: Product, as: 'producto' }] });
     if (!variant || variant.producto.businessId !== req.auth.businessId)
       return res.status(404).json({ message: 'Variante no encontrada.' });
+
+    const errPrecio = validarPrecios(req.body);
+    if (errPrecio) return res.status(400).json({ message: errPrecio });
 
     /*
      * El SKU se puede editar a mano, pero tiene que quedar libre en el negocio.
@@ -1668,6 +1738,14 @@ const preciosMasivo = async (req, res, next) => {
         if (!Number.isFinite(n) || n < 0) {
           await t.rollback();
           return res.status(400).json({ message: `Precio inválido para ${v.sku}: ${bruto}` });
+        }
+        // El tope de la columna. Sin esto una lista de precios con un cero de
+        // más aborta la actualización entera con un error de base.
+        if (n > MAX_MONEDA) {
+          await t.rollback();
+          return res.status(400).json({
+            message: `El precio de ${v.sku} (${bruto}) pasa el máximo de ${MAX_MONEDA.toLocaleString('es-AR')}.`,
+          });
         }
         patch[campo] = n;
       }
