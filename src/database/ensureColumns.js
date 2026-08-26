@@ -374,11 +374,19 @@ const RELLENOS = [
     descripcion: 'items de venta anteriores: costo del producto',
     cuandoSeAgrega: 'sale_items.costoUnitario',
     reintentable: true,
-    sql: `UPDATE si SET si."costoUnitario" = p.costo
-          FROM sale_items si
-          JOIN product_variants pv ON pv.id = si."productVariantId"
-          JOIN products p ON p.id = pv."productId"
-          WHERE si."costoUnitario" IS NULL`,
+    /*
+     * Postgres y SQL Server escriben el UPDATE con JOIN distinto, y no es un
+     * detalle de estilo: en Postgres la tabla que se actualiza NO se repite en
+     * el FROM —la relación va en el WHERE— y el SET no lleva el alias adelante.
+     * Escrito a la manera de SQL Server, Postgres responde
+     * `relation "si" does not exist` y el relleno no corre nunca.
+     */
+    sql: `UPDATE sale_items si
+             SET "costoUnitario" = p.costo
+            FROM product_variants pv
+            JOIN products p ON p.id = pv."productId"
+           WHERE pv.id = si."productVariantId"
+             AND si."costoUnitario" IS NULL`,
     sqlMssql: `UPDATE si SET si.costoUnitario = p.costo
                FROM sale_items si
                JOIN product_variants pv ON pv.id = si.productVariantId
