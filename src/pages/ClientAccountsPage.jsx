@@ -165,8 +165,16 @@ export default function ClientAccountsPage() {
                             <HandCoins size={14} /> Cobrar
                           </button>
                         )}
+                        {/* Trece engranajes iguales en la tabla: el rótulo
+                            tiene que decir de qué cliente es el crédito que se
+                            va a tocar. */}
                         {puedeFijarTope && (
-                          <button className="btn btn-ghost !px-2 !py-1 text-xs" onClick={() => setModalConfig(c)}>
+                          <button
+                            className="btn btn-ghost !px-2 !py-1 text-xs"
+                            onClick={() => setModalConfig(c)}
+                            aria-label={`Configurar el crédito de ${c.nombre} ${c.apellido || ""}`.trim()}
+                            title="Configurar crédito"
+                          >
                             <Settings2 size={14} />
                           </button>
                         )}

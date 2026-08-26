@@ -20,7 +20,16 @@ export default function Topbar({ title, onMenuClick }) {
   return (
     <header className="sticky top-0 z-20 flex items-center justify-between border-b border-line bg-paper-50/90 px-4 py-3 backdrop-blur md:px-8">
       <div className="flex items-center gap-3">
-        <button className="rounded-md p-1.5 text-ink-700 hover:bg-paper-200 md:hidden" onClick={onMenuClick}>
+        {/* En un teléfono este botón es la ÚNICA forma de llegar a la
+            navegación, y sin nombre un lector de pantalla lo anuncia como
+            "botón" a secas. */}
+        <button
+          type="button"
+          className="rounded-md p-1.5 text-ink-700 hover:bg-paper-200 md:hidden"
+          onClick={onMenuClick}
+          aria-label="Abrir el menú de secciones"
+          title="Menú"
+        >
           <Menu size={20} />
         </button>
         <h1 className="font-display text-lg font-semibold text-ink-950 md:text-xl">{title}</h1>

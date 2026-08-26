@@ -35,8 +35,29 @@ export default function ClientsPage() {
     }
   }
 
-  useEffect(() => { load(); }, []);
-  useEffect(() => { const t = setTimeout(() => load(search), 300); return () => clearTimeout(t); }, [search]);
+  /*
+   * Una sola carga, no dos.
+   *
+   * Antes había dos efectos: uno que cargaba al montar y otro con debounce
+   * atado a `search`. El segundo también dispara al montar —con la búsqueda
+   * vacía— así que cada visita a la pantalla pedía la misma lista dos veces.
+   *
+   * Acá el debounce se saltea en la primera vuelta: al entrar la lista tiene
+   * que aparecer ya, y esperar 300 ms para mostrar algo que no depende de lo
+   * que el usuario escriba es tiempo regalado. De la segunda en adelante sí
+   * espera, que es para lo que estaba: no pedirle al servidor una consulta por
+   * cada tecla.
+   */
+  const yaCargo = useRef(false);
+  useEffect(() => {
+    if (!yaCargo.current) {
+      yaCargo.current = true;
+      load(search);
+      return undefined;
+    }
+    const t = setTimeout(() => load(search), 300);
+    return () => clearTimeout(t);
+  }, [search]);
 
   async function handleDelete(c) {
     if (!confirm(`¿Eliminar cliente "${c.nombre} ${c.apellido || ""}"? Esta acción no se puede deshacer.`)) return;

@@ -159,7 +159,15 @@ export default function PaymentMethodsPage() {
                           <button className="btn-ghost text-xs" onClick={() => abrirEdicion(m)}>
                             <PencilLine size={13} /> Editar
                           </button>
-                          <button className="btn-ghost ml-1 text-xs text-brick-500" onClick={() => eliminar(m)}>
+                          {/* El nombre del medio va en el rótulo: en una tabla
+                              de cinco papeleras iguales, "Eliminar" a secas no
+                              dice cuál se está por borrar. */}
+                          <button
+                            className="btn-ghost ml-1 text-xs text-brick-500"
+                            onClick={() => eliminar(m)}
+                            aria-label={`Eliminar el medio de pago ${m.nombre}`}
+                            title={`Eliminar ${m.nombre}`}
+                          >
                             <Trash2 size={13} />
                           </button>
                         </td>

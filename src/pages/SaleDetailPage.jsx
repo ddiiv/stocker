@@ -168,12 +168,25 @@ export default function SaleDetailPage() {
    * contarse el cobro y se borra la deuda si estaba fiada.
    */
   async function handleAnular() {
-    const vuelve = sale.stockDescontado
-      ? "La mercadería vuelve al stock del local."
-      : "No hay stock que devolver: en esta venta nunca llegó a descontarse.";
-    const deuda = sale.condicionPago === "cuenta_corriente" && Number(sale.saldoPendiente) > 0
+    const esCotizacion = sale.tipo === "cotizacion";
+    /*
+     * Se dice qué se deshace, y en una cotización lo que se deshace es otra
+     * cosa: no hay stock ni deuda, pero sí un número de venta apartado que
+     * vuelve a quedar libre. Es lo único que se pierde y conviene decirlo
+     * antes, no después.
+     */
+    const vuelve = esCotizacion
+      ? (sale.numeroVenta
+        ? `Se suelta el número de venta que tenía apartado (${sale.numeroVenta}).`
+        : "No tiene número de venta apartado.")
+      : sale.stockDescontado
+        ? "La mercadería vuelve al stock del local."
+        : "No hay stock que devolver: en esta venta nunca llegó a descontarse.";
+    const deuda = !esCotizacion && sale.condicionPago === "cuenta_corriente" && Number(sale.saldoPendiente) > 0
       ? " Se cancela la deuda del cliente." : "";
-    const motivo = prompt(`Anular la venta ${sale.numero}.\n\n${vuelve}${deuda}\n\n¿Por qué se anula?`);
+    const motivo = prompt(
+      `Anular ${esCotizacion ? "la cotización" : "la venta"} ${sale.numero}.\n\n${vuelve}${deuda}\n\n¿Por qué se anula?`,
+    );
     if (!motivo?.trim()) return;
 
     setBusy(true);
@@ -232,9 +245,12 @@ export default function SaleDetailPage() {
             {sale.factura && <Link to="/facturacion" className="btn-ghost text-xs">Ver factura {sale.factura.numero}</Link>}
             {/* Anular va último y en tono de alerta: deshace cosas —stock,
                 deuda, cobro— y no debería quedar al lado de "Cobrar". */}
-            {sale.tipo === "venta" && sale.estado !== "cancelado" && (
+            {/* También se anulan cotizaciones: es lo que suelta el número de
+                venta que tenían apartado. Sin esto la reserva quedaba tomada
+                para siempre por un presupuesto que ya nadie iba a convertir. */}
+            {sale.estado !== "cancelado" && (
               <button className="btn-ghost text-brick-500" onClick={handleAnular} disabled={busy}>
-                <Ban size={15} /> Anular venta
+                <Ban size={15} /> {sale.tipo === "venta" ? "Anular venta" : "Anular cotización"}
               </button>
             )}
           </div>
