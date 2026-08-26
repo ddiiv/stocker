@@ -53,7 +53,7 @@ export default function AjustesPage() {
     setGuardando(true); setError(""); setOk("");
     try {
       await api.editarAjustes(form);
-      setOk("Guardado. La página lo toma en la próxima visita.");
+      setOk("Guardado. La página pública ya lo muestra: recargala para verlo.");
       await cargar();
     } catch (err) {
       setError(mensajeDe(err, "No se pudo guardar."));
