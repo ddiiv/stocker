@@ -272,7 +272,9 @@ function LocalesCard({ locations, onChange }) {
     <Card className="mt-5">
       <h3 className="mb-1 font-display text-base font-semibold text-ink-950">Locales y depósitos</h3>
       <p className="mb-3 text-xs text-ink-500">
-        La mercadería nueva entra por un depósito y de ahí se transfiere a los locales. Desde un depósito no se vende.
+        La mercadería nueva entra por un <strong>depósito</strong> y de ahí se transfiere a los locales; desde un
+        depósito no se vende. El de <strong>Online / Envíos</strong> vende como un local, y su stock es el que se
+        publica en MercadoLibre.
       </p>
       {error && <p className="mb-3 rounded-md bg-brick-50 px-3 py-2 text-sm text-brick-500">{error}</p>}
       <div className="overflow-x-auto">
@@ -293,6 +295,7 @@ function LocalesCard({ locations, onChange }) {
                   >
                     <option value="local">Local de venta</option>
                     <option value="deposito">Depósito</option>
+                    <option value="online">Online / Envíos</option>
                   </select>
                 </td>
               </tr>
@@ -394,11 +397,14 @@ function NewLocationModal({ open, onClose }) {
           <select className="input" {...register("tipo")}>
             <option value="local">Local de venta</option>
             <option value="deposito">Depósito</option>
+            <option value="online">Online / Envíos</option>
           </select>
           <p className="mt-1 text-xs text-ink-500">
             {tipo === "deposito"
               ? "Recibe la mercadería nueva y la transfiere a los locales. No se puede vender desde acá."
-              : "Vende al público. Recibe mercadería por transferencia desde un depósito."}
+              : tipo === "online"
+                ? "El stock reservado para las ventas web: es el único que se publica en MercadoLibre. Vende y pide reposición como un local."
+                : "Vende al público. Recibe mercadería por transferencia desde un depósito."}
           </p>
         </div>
         <div>

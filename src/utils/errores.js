@@ -75,6 +75,20 @@ export function analizarError(err, fallback = "No se pudo completar la operació
         accion: { texto: "Ver stock por local", href: "/stock/por-local" },
       };
     }
+    /*
+     * Numeración ocupada. Lo importante del aviso es la última línea: que la
+     * venta NO quedó guardada. Sin eso el cajero no sabe si reintentar le va a
+     * cobrar dos veces al cliente, y ante la duda lo más probable es que
+     * termine anotando la venta a mano.
+     */
+    if (data?.codigo === "NUMERO_OCUPADO") {
+      return {
+        tipo: "numero",
+        titulo: "Otra caja está emitiendo en este mismo momento.",
+        detalle: "La venta no se guardó. Volvé a registrarla: el número se asigna solo.",
+        accion: null,
+      };
+    }
     if (data?.codigo === "VENTA_FACTURADA") {
       return { tipo: "facturada", titulo: msg, detalle: null, accion: { texto: "Ver facturación", href: "/facturacion" } };
     }

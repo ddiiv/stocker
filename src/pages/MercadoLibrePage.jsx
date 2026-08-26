@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import {
   RefreshCw, Link2, Unlink, AlertCircle, CheckCircle2, ExternalLink,
-  ArrowUpDown, PackageSearch, Trash2, Plus,
+  ArrowUpDown, PackageSearch, Trash2, Plus, Store,
 } from "lucide-react";
 import {
   getMlStatus, getMlAuthUrl, disconnectMl, previewMlSync, runMlSync,
@@ -185,6 +185,18 @@ export default function MercadoLibrePage() {
 
           {preview && (
             <>
+              {/* De dónde sale lo que se publica. Sin esto, un número que no
+                  coincide con el catálogo parece un error de la integración
+                  cuando en realidad es stock que está en otro lado. */}
+              {preview.lugar && (
+                <p className="mb-4 rounded-md bg-paper-100 px-3 py-2 text-xs text-ink-600">
+                  <Store size={13} className="mr-1 inline" />
+                  Se publica el stock de <strong className="text-ink-900">{preview.lugar.nombre}</strong>, no el total
+                  del negocio. Lo que está en el depósito o en las otras sucursales no se ofrece en MercadoLibre:
+                  así lo que se ve en la publicación es lo que se puede despachar.
+                </p>
+              )}
+
               <div className="mb-5 grid gap-4 sm:grid-cols-4">
                 <Card><p className="text-xs uppercase tracking-wide text-ink-600">Publicaciones</p><p className="mt-2 font-display text-xl font-semibold">{preview.publicacionesEncontradas}</p></Card>
                 <Card><p className="text-xs uppercase tracking-wide text-ink-600">{preview.simulado ? "A actualizar" : "Actualizadas"}</p><p className="mt-2 font-display text-xl font-semibold text-brass-600">{preview.simulado ? preview.resumen.pendientes : preview.resumen.actualizados}</p></Card>
