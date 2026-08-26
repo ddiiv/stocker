@@ -176,6 +176,39 @@ const { nextSaleNumber } = require('../src/services/invoiceNumberService');
   const proximoTrasReserva = await nextSaleNumber(negocio.id, 'venta');
   chk('el generador no lo ofrece', false, correlativo(proximoTrasReserva) === quemado);
 
+  tit('Anular la cotización suelta el número');
+  /*
+   * La reserva existe para que el presupuesto pueda convertirse más adelante.
+   * Anulado, esa conversión no va a pasar nunca, así que retener el número es
+   * guardarle lugar a algo que no viene.
+   *
+   * Ojo con qué significa "soltarlo": el próximo número sale del máximo, así
+   * que sólo vuelve al uso si era el más alto. Si quedó en el medio de la
+   * serie, el hueco queda igual — y está bien, porque este número es interno.
+   */
+  const aAnular = await cotizar();
+  const suNumero = aAnular.json.numeroVenta;
+  chk('reserva al crearse', true, /^V-/.test(suNumero || ''));
+  chk('mientras vive, el generador no lo entrega', false,
+    (await nextSaleNumber(negocio.id, 'venta')) === suNumero);
+
+  const anulada = await api('POST',
+    `/api/sales/${encodeURIComponent(aAnular.json.numero)}/anular`, { motivo: 'Prueba de numeración' });
+  chk('la cotización se anula', 200, anulada.status);
+
+  const trasAnular = await Sale.findByPk(aAnular.json.id);
+  chk('la reserva quedó vacía', null, trasAnular?.numeroVenta ?? null);
+  chk('y el número vuelve a estar disponible', suNumero, await nextSaleNumber(negocio.id, 'venta'));
+
+  tit('Borrar la cotización también se lleva su reserva');
+  // La reserva vive en la misma fila, así que se va con ella. Se comprueba
+  // porque es la garantía de que borrar no deja un número tomado por nadie.
+  const aBorrar = await cotizar();
+  const numeroPerdido = aBorrar.json.numeroVenta;
+  await SaleItem.destroy({ where: { saleId: aBorrar.json.id } });
+  await (await Sale.findByPk(aBorrar.json.id)).destroy();
+  chk('el número queda libre otra vez', numeroPerdido, await nextSaleNumber(negocio.id, 'venta'));
+
   tit('Cotizaciones simultáneas: cada una con su reserva');
   const aLaVez = await Promise.all([cotizar(), cotizar(), cotizar(), cotizar()]);
   chk('las cuatro se crean', 4, aLaVez.filter((r) => r.status === 201).length);

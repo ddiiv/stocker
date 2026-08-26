@@ -1036,6 +1036,20 @@ const anularSale = async (req, res, next) => {
        */
       totalCobrado: 0,
       recargoPagos: 0,
+      /*
+       * Una cotización anulada suelta el número de venta que tenía apartado.
+       *
+       * La reserva existe para que un presupuesto pueda convertirse más
+       * adelante sin pelear por el número. Anulada, esa conversión no va a
+       * pasar nunca, y seguir reteniéndolo es guardar un lugar para algo que
+       * ya no viene.
+       *
+       * Soltarlo no siempre lo devuelve al uso: el próximo número sale del
+       * máximo, así que sólo se recupera de verdad si era el más alto. Si
+       * quedó en el medio de la serie, el hueco queda — y está bien, porque
+       * este número es interno y el correlativo fiscal lo lleva la factura.
+       */
+      numeroVenta: sale.tipo === 'cotizacion' ? null : sale.numeroVenta,
       notas: [sale.notas, `ANULADA: ${motivo}`].filter(Boolean).join(' · ').slice(0, 500),
     }, { transaction: t });
 
