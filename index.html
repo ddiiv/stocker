@@ -372,9 +372,15 @@ header {
 /* ── Precios ─────────────────────────────────────────────────
    Alineado como una boleta: importes tabulares, líneas punteadas
    y el total en versales. */
-.plans { display: grid; gap: 1.15rem; grid-template-columns: 1fr; align-items: start; }
-@media (min-width: 700px)  { .plans { grid-template-columns: repeat(2, 1fr); } }
-@media (min-width: 1060px) { .plans { grid-template-columns: repeat(4, 1fr); } }
+/* minmax(0, 1fr) y no 1fr a secas.
+   `1fr` equivale a `minmax(auto, 1fr)`, y ese `auto` deja que una tarjeta con
+   texto largo estire su columna por encima de la parte que le toca. Con cuatro
+   planes las columnas salían de 232, 248, 333 y 348 px: el grid terminaba
+   midiendo 1218 dentro de 1024 y la página entera scrolleaba de costado, ya en
+   escritorio. Con el mínimo en 0 las cuatro miden igual y el texto envuelve. */
+.plans { display: grid; gap: 1.15rem; grid-template-columns: minmax(0, 1fr); align-items: start; }
+@media (min-width: 700px)  { .plans { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (min-width: 1060px) { .plans { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
 
 /* Selector de moneda. Los precios están en pesos; el dólar es una referencia
    para quien compara contra software de afuera, no una opción de cobro. */
@@ -441,6 +447,10 @@ header {
 .plan dl { margin: 0; display: flex; flex-direction: column; gap: .38rem; font-size: .84rem; }
 .plan dl > div {
   display: flex;
+  /* La fila envuelve: en una pantalla de 320 el concepto y el valor no entran
+     en un renglón, y sin envolver uno de los dos se aplasta hasta desaparecer.
+     Envolviendo, el valor baja de línea y los dos se leen enteros. */
+  flex-wrap: wrap;
   align-items: baseline;
   gap: .4rem;
   font-family: var(--mono);
@@ -451,7 +461,11 @@ header {
   font-size: .76rem;
   letter-spacing: .02em;
   white-space: nowrap;
-  flex: 1;
+  /* Nunca por debajo de su propio texto: la etiqueta es nowrap, así que
+     encogerla más que su contenido no la acorta, la corta. Lo que da el aire
+     necesario es que la fila envuelva, no que la etiqueta se achique. */
+  flex: 1 1 auto;
+  min-width: max-content;
   display: flex;
   align-items: baseline;
   gap: .45rem;
@@ -464,7 +478,10 @@ header {
   border-bottom: 1px dotted var(--line);
   transform: translateY(-.24em);
 }
-.plan dd { margin: 0; font-size: .8rem; white-space: nowrap; }
+/* El valor puede envolver: es la parte larga de la fila y en una tarjeta
+   angosta —cuatro planes en una tablet— no siempre entra en un renglón.
+   Antes, con nowrap, se salía de la tarjeta en vez de bajar de línea. */
+.plan dd { margin: 0; font-size: .8rem; text-align: right; }
 
 .plan-feats { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: .4rem; font-size: .87rem; }
 .plan-feats li { display: flex; gap: .55rem; align-items: baseline; }
