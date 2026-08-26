@@ -15,7 +15,8 @@ import Modal from "../components/ui/Modal";
 const ESTADO_BADGE = { pagado: "badge-ok", pendiente: "badge-low", cancelado: "badge-out", vencida: "badge-out" };
 
 export default function SaleDetailPage() {
-  const { id } = useParams();
+  // La URL lleva el número de comprobante, no el id de la base.
+  const { numero } = useParams();
   const navigate = useNavigate();
   const [sale, setSale] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -31,13 +32,13 @@ export default function SaleDetailPage() {
 
   async function load() {
     setLoading(true);
-    const s = await getSale(id);
+    const s = await getSale(numero);
     setSale(s);
     if (s?.cliente) setInvoiceForm((f) => ({ ...f, clienteCuit: s.cliente.cuit || "", clienteEmail: s.cliente.email || "" }));
     setLoading(false);
   }
 
-  useEffect(() => { load(); }, [id]);
+  useEffect(() => { load(); }, [numero]);
 
   useEffect(() => {
     if (invoiceModal) {
@@ -77,7 +78,7 @@ export default function SaleDetailPage() {
   async function confirmarCobro() {
     setBusy(true); setPayError("");
     try {
-      await cobrarSale(id, lineasParaApi(pagos, metodos, aCobrar));
+      await cobrarSale(numero, lineasParaApi(pagos, metodos, aCobrar));
       setPayModal(false);
       await load();
     } catch (e) {
@@ -89,7 +90,7 @@ export default function SaleDetailPage() {
 
   async function handleConvertQuote() {
     setBusy(true);
-    await convertQuote(id);
+    await convertQuote(numero);
     await load();
     setBusy(false);
   }
@@ -129,7 +130,7 @@ export default function SaleDetailPage() {
 
     setBusy(true);
     try {
-      const r = await anularSale(sale.id, motivo.trim());
+      const r = await anularSale(sale.numero, motivo.trim());
       alert(r.mensaje);
       await load();
     } catch (e) {

@@ -238,7 +238,7 @@ export default function SalesPage() {
               {sales.map((s) => (
                 <tr key={s.id} className="border-b border-line last:border-0 hover:bg-paper-100/70">
                   <td className="px-4 py-3">
-                    <Link to={`/ventas/${s.id}`} className="font-mono text-xs text-brass-600 hover:underline">
+                    <Link to={`/ventas/${encodeURIComponent(s.numero)}`} className="font-mono text-xs text-brass-600 hover:underline">
                       {s.numero}
                     </Link>
                   </td>

@@ -116,7 +116,7 @@ export default function NewSalePage() {
         pagos: tipo === "venta" && marcarPagada ? lineasParaApi(pagos, metodos, total) : undefined,
         notas,
       });
-      navigate(`/ventas/${sale.id}`);
+      navigate(`/ventas/${encodeURIComponent(sale.numero)}`);
     } catch (err) {
       /*
        * El error se clasifica antes de mostrarlo.

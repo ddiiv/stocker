@@ -25,8 +25,19 @@ export async function fetchSales({ tipo, estado, medioPago, desde, hasta, limit 
   };
 }
 
-export async function getSale(id) {
-  const { data } = await http.get(`/sales/${id}`);
+/*
+ * Las ventas se piden por su NÚMERO de comprobante, no por el id de la base.
+ *
+ * El número ya es único dentro del negocio y es el que el cliente tiene
+ * impreso en el ticket; el id, en cambio, es un contador global de la
+ * plataforma y no tiene por qué salir a la URL.
+ */
+const ref = (venta) => encodeURIComponent(
+  typeof venta === 'object' ? venta.numero : venta,
+);
+
+export async function getSale(numero) {
+  const { data } = await http.get(`/sales/${ref(numero)}`);
   return data;
 }
 
@@ -35,8 +46,8 @@ export async function createSale(payload) {
   return data;
 }
 
-export async function updateSaleStatus(id, estado, medioPago) {
-  const { data } = await http.patch(`/sales/${id}/estado`, { estado, medioPago });
+export async function updateSaleStatus(numero, estado, medioPago) {
+  const { data } = await http.patch(`/sales/${ref(numero)}/estado`, { estado, medioPago });
   return data;
 }
 
@@ -47,19 +58,19 @@ export async function updateSaleStatus(id, estado, medioPago) {
  * registra con qué se pagó: el reparto entre medios, sus recargos, y la
  * cancelación de la deuda si la venta era fiada.
  */
-export async function cobrarSale(id, pagos) {
-  const { data } = await http.post(`/sales/${id}/cobrar`, { pagos });
+export async function cobrarSale(numero, pagos) {
+  const { data } = await http.post(`/sales/${ref(numero)}/cobrar`, { pagos });
   return data;
 }
 
-export async function convertQuote(id) {
-  const { data } = await http.post(`/sales/cotizacion/${id}/convertir`);
+export async function convertQuote(numero) {
+  const { data } = await http.post(`/sales/cotizacion/${ref(numero)}/convertir`);
   return data;
 }
 
 // Descarga el PDF del ticket 80mm y lo abre en una nueva pestaña (para imprimir)
 export async function printSaleTicket(sale) {
-  const { data } = await http.get(`/sales/${sale.id}/ticket`, { responseType: "blob" });
+  const { data } = await http.get(`/sales/${ref(sale)}/ticket`, { responseType: "blob" });
   const url = window.URL.createObjectURL(new Blob([data], { type: "application/pdf" }));
   const win = window.open(url, "_blank");
   // Si el navegador bloquea popups, forzamos descarga
@@ -81,7 +92,7 @@ export async function printSaleTicket(sale) {
  * Exige motivo. No es burocracia: es lo que después explica un ingreso de
  * stock que nadie recuerda haber hecho.
  */
-export async function anularSale(id, motivo) {
-  const { data } = await http.post(`/sales/${id}/anular`, { motivo });
+export async function anularSale(numero, motivo) {
+  const { data } = await http.post(`/sales/${ref(numero)}/anular`, { motivo });
   return data;
 }

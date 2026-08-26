@@ -321,7 +321,7 @@ export default function PosPage() {
             <button className="btn-ghost justify-center" onClick={() => { setUltimaVenta(null); inputRef.current?.focus(); }}>
               <ScanLine size={15} /> Nueva venta
             </button>
-            <button className="btn-ghost justify-center text-xs" onClick={() => navigate(`/ventas/${ultimaVenta.id}`)}>
+            <button className="btn-ghost justify-center text-xs" onClick={() => navigate(`/ventas/${encodeURIComponent(ultimaVenta.numero)}`)}>
               {esCotizacion ? "Ver detalle de la cotización" : "Ver detalle de la venta"}
             </button>
           </div>

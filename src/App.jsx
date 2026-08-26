@@ -80,7 +80,7 @@ export default function App() {
             <Route path="/ventas"                       element={<PermissionRoute permission="ventas"><SalesPage /></PermissionRoute>} />
             <Route path="/ventas/nueva"                 element={<PermissionRoute permission="ventas" level="editar"><NewSalePage /></PermissionRoute>} />
             <Route path="/ventas/pos"                   element={<PermissionRoute permission="ventas" level="editar"><PosPage /></PermissionRoute>} />
-            <Route path="/ventas/:id"                   element={<PermissionRoute permission="ventas"><SaleDetailPage /></PermissionRoute>} />
+            <Route path="/ventas/:numero"                   element={<PermissionRoute permission="ventas"><SaleDetailPage /></PermissionRoute>} />
             <Route path="/facturacion"                  element={<PermissionRoute permission="facturacion"><BillingPage /></PermissionRoute>} />
             <Route path="/facturacion/cuits"            element={<PermissionRoute permission="facturacion" level="editar"><BusinessCuitsPage /></PermissionRoute>} />
             <Route path="/facturacion/cuits/:cuitId/arca" element={<PermissionRoute permission="facturacion" level="editar"><ArcaConfigPage /></PermissionRoute>} />

@@ -5,20 +5,56 @@ import Sidebar from "./Sidebar";
 import Topbar from "./Topbar";
 import { useAuth } from "../../context/AuthContext";
 
+/*
+ * El título de la barra superior, por ruta.
+ *
+ * Están TODAS las rutas, una por una. Antes había seis y el resto caía en
+ * reglas por prefijo: cualquier cosa bajo /stock/ se anunciaba como "Detalle
+ * de producto", así que Etiquetas, Movimientos y Escanear stock decían ser una
+ * ficha de producto, y el punto de venta —/ventas/pos— decía "Detalle de
+ * venta". Las que no entraban en ningún prefijo mostraban "Stocker", que no
+ * dice nada.
+ *
+ * El orden importa: las rutas con parámetro se resuelven al final, después de
+ * que fallaron todas las exactas.
+ */
 const TITLES = {
   "/dashboard": "Dashboard",
+  "/dashboard/ventas": "Ventas en el tiempo",
+  "/dashboard/productos": "Métricas por producto",
+  "/dashboard/analisis": "Análisis del negocio",
   "/stock": "Stock",
+  "/stock/por-local": "Stock por local",
+  "/stock/variantes": "Tipos de variante",
+  "/stock/sku": "Confección de SKU",
+  "/stock/escanear": "Escanear stock",
+  "/stock/movimientos": "Movimientos de stock",
+  "/stock/a-regularizar": "Stock a regularizar",
+  "/stock/etiquetas": "Etiquetas",
+  "/deposito": "Depósito",
+  "/reposicion": "Reposición",
   "/ventas": "Ventas y cotizaciones",
   "/ventas/nueva": "Nueva venta / cotización",
+  "/ventas/pos": "Punto de venta",
   "/facturacion": "Facturación",
+  "/facturacion/cuits": "CUITs del negocio",
+  "/clientes": "Clientes",
+  "/clientes/cuentas": "Cuentas corrientes",
+  "/caja": "Caja",
+  "/pagos": "Métodos de pago",
   "/empleados": "Empleados",
+  "/integraciones/mercadolibre": "MercadoLibre",
+  "/cuenta": "Mi cuenta",
+  "/cuenta/suscripcion": "Suscripción",
+  "/soporte": "Soporte",
 };
 
 function titleFor(pathname) {
   if (TITLES[pathname]) return TITLES[pathname];
-  if (pathname.startsWith("/stock/")) return "Detalle de producto";
+  if (pathname.startsWith("/facturacion/cuits/")) return "Configuración de ARCA";
   if (pathname.startsWith("/empleados/")) return "Perfil de empleado";
   if (pathname.startsWith("/ventas/")) return "Detalle de venta";
+  if (pathname.startsWith("/stock/")) return "Detalle de producto";
   return "Stocker";
 }
 
