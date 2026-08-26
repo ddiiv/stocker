@@ -63,8 +63,19 @@ export async function cobrarSale(numero, pagos) {
   return data;
 }
 
-export async function convertQuote(numero) {
-  const { data } = await http.post(`/sales/cotizacion/${ref(numero)}/convertir`);
+/*
+ * Pasa la cotización a venta.
+ *
+ * `locationId` va explícito: la cotización pudo haberse hecho sin local
+ * —no descuenta stock, así que no hacía falta— pero la venta necesita saber
+ * de dónde sale la mercadería. Sin esto el backend contestaba 400 pidiendo el
+ * local y la pantalla no tenía forma de darlo.
+ */
+export async function convertQuote(numero, locationId) {
+  const { data } = await http.post(
+    `/sales/cotizacion/${ref(numero)}/convertir`,
+    locationId ? { locationId } : {},
+  );
   return data;
 }
 

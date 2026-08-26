@@ -6,6 +6,7 @@ import { mensajeDeError } from "../utils/errores";
 import { generateInvoiceFromSale } from "../services/invoiceService";
 import { fetchBusinessCuits } from "../services/businessCuitService";
 import { fetchPaymentMethods } from "../services/paymentMethodService";
+import { fetchLocalesDeVenta } from "../services/employeeService";
 import PaymentSplit, { lineasParaApi, calcularTotales } from "../components/sales/PaymentSplit";
 import { medioPagoBadge } from "../utils/paymentBadge";
 import { formatCurrency, formatDate } from "../utils/formatters";
@@ -27,6 +28,11 @@ export default function SaleDetailPage() {
   const [businessCuits, setBusinessCuits] = useState([]);
   const [payModal, setPayModal] = useState(false);
   const [payError, setPayError] = useState("");
+  // La conversión puede fallar por stock, por número tomado o porque falta
+  // decir de qué local sale. Antes ninguno de esos motivos se veía.
+  const [convertError, setConvertError] = useState("");
+  const [locales, setLocales] = useState([]);
+  const [localElegido, setLocalElegido] = useState("");
   const [metodos, setMetodos] = useState([]);
   const [pagos, setPagos] = useState([]);
 
@@ -88,11 +94,53 @@ export default function SaleDetailPage() {
     }
   }
 
-  async function handleConvertQuote() {
+  /*
+   * Convertir la cotización en venta.
+   *
+   * El `finally` no es decorativo: sin él, cualquier rechazo cortaba la
+   * función antes del `setBusy(false)` y el botón quedaba en "Convirtiendo…"
+   * para siempre. El motivo real —falta stock, el número está tomado, falta
+   * elegir el local— se perdía en la consola y quien vendía sólo veía un
+   * spinner eterno.
+   *
+   * El local va explícito: la cotización puede haberse hecho sin uno (no
+   * descuenta nada), pero la venta necesita saber de dónde sale la mercadería.
+   */
+  async function handleConvertQuote(locationId = null) {
     setBusy(true);
-    await convertQuote(numero);
-    await load();
-    setBusy(false);
+    setConvertError("");
+    try {
+      const convertida = await convertQuote(numero, locationId || sale?.locationId || undefined);
+      setLocales([]);
+      /*
+       * Al convertirse, el documento cambia de número: deja de ser
+       * COT-2026-08-000002 y pasa a ser la venta que tenía reservada. La URL
+       * lleva el número, así que recargar la misma dirección pide una
+       * cotización que ya no existe y la pantalla queda en blanco. Hay que
+       * mudarse a la nueva.
+       *
+       * `replace` para que el botón "atrás" no vuelva a una dirección muerta.
+       */
+      if (convertida?.numero && convertida.numero !== numero) {
+        navigate(`/ventas/${encodeURIComponent(convertida.numero)}`, { replace: true });
+      } else {
+        await load();
+      }
+    } catch (err) {
+      // `mensajeDeError` ya devuelve el texto armado (título + detalle).
+      setConvertError(mensajeDeError(err, "No se pudo convertir la cotización en venta."));
+
+      /*
+       * Si lo único que falta es decir de qué local sale, se ofrece elegirlo
+       * en el momento. Mandar a la persona a editar la cotización para volver
+       * después es pedirle que resuelva sola algo que la pantalla ya sabe.
+       */
+      if (err.response?.status === 400 && /local/i.test(err.response?.data?.message || "")) {
+        try { setLocales(await fetchLocalesDeVenta()); } catch { /* si falla, queda el mensaje */ }
+      }
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function handleGenerateInvoice() {
@@ -146,7 +194,19 @@ export default function SaleDetailPage() {
       </Link>
       <PageHeader
         title={sale.numero}
-        subtitle={`${sale.tipo === "venta" ? "Venta" : "Cotización"} · ${formatDate(sale.fecha)}`}
+        /*
+         * En una cotización se dice qué número de venta tiene apartado.
+         *
+         * La reserva es lo que garantiza que convertirla más tarde no choque
+         * con las ventas de mientras tanto, pero si no se muestra en ningún
+         * lado nadie sabe que existe — y el salto en la numeración de ventas
+         * parece un error en vez de un número guardado.
+         */
+        subtitle={
+          sale.tipo === "cotizacion"
+            ? `Cotización · ${formatDate(sale.fecha)}${sale.numeroVenta ? ` · al convertirse va a ser la venta ${sale.numeroVenta}` : ""}`
+            : `Venta · ${formatDate(sale.fecha)}`
+        }
         actions={
           <div className="flex items-center gap-2 flex-wrap">
             <span className={`badge ${ESTADO_BADGE[sale.estado]}`}>{sale.estado}</span>
@@ -161,7 +221,9 @@ export default function SaleDetailPage() {
               </button>
             )}
             {sale.tipo === "cotizacion" && (
-              <button className="btn-ghost" onClick={handleConvertQuote} disabled={busy}><RefreshCw size={15} /> Convertir a venta</button>
+              <button className="btn-ghost" onClick={() => handleConvertQuote()} disabled={busy}>
+                <RefreshCw size={15} /> {busy ? "Convirtiendo…" : "Convertir a venta"}
+              </button>
             )}
             <button className="btn-ghost" onClick={() => printSaleTicket(sale)} title="Imprimir ticket 80mm"><Printer size={15} /> Ticket</button>
             {sale.tipo === "venta" && sale.estado === "pagado" && !sale.factura && (
@@ -178,6 +240,40 @@ export default function SaleDetailPage() {
           </div>
         }
       />
+
+      {/*
+        * El motivo del rechazo, a la vista.
+        *
+        * Antes esto no existía: el error se perdía y el botón quedaba girando.
+        * Cuando lo único que falta es el local, se ofrece elegirlo acá mismo en
+        * vez de mandar a editar la cotización y volver.
+        */}
+      {convertError && (
+        <div className="mb-4 rounded-md border border-brick-500/30 bg-brick-50 px-3 py-2">
+          <p className="text-sm text-brick-500">{convertError}</p>
+          {locales.length > 0 && (
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <select
+                className="input w-auto py-1 text-sm"
+                value={localElegido}
+                onChange={(e) => setLocalElegido(e.target.value)}
+              >
+                <option value="">Elegí el local…</option>
+                {locales.map((l) => (
+                  <option key={l.id} value={l.id}>{l.nombre}</option>
+                ))}
+              </select>
+              <button
+                className="btn-accent py-1 text-sm"
+                disabled={!localElegido || busy}
+                onClick={() => handleConvertQuote(Number(localElegido))}
+              >
+                Convertir desde este local
+              </button>
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="grid gap-5 lg:grid-cols-3">
         <Card className="lg:col-span-2">
@@ -258,7 +354,7 @@ export default function SaleDetailPage() {
                   <div className="flex items-baseline justify-between gap-3 border-t border-ink-100 pt-2">
                     <span className="text-ink-600">Total cobrado</span>
                     <span className="font-semibold tabular-nums text-ink-950">
-                      {formatCurrency(sale.totalCobrado || sale.total)}
+                      {formatCurrency(Number(sale.totalCobrado) || Number(sale.total))}
                     </span>
                   </div>
                 )}

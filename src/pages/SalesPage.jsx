@@ -249,7 +249,10 @@ export default function SalesPage() {
                   <td className="px-4 py-3 font-medium text-ink-900">
                     {/* Con recargo, lo cobrado difiere del neto: se muestran los
                         dos para que el número no parezca un error de cálculo. */}
-                    {formatCurrency(s.totalCobrado || s.total)}
+                    {/* Number(): en Postgres los DECIMAL vuelven como texto, y "0.00" es
+                        truthy. Sin esto una cotización —que nunca se cobró— figuraba
+                        en $ 0 en la lista y con su total real en el detalle. */}
+                    {formatCurrency(Number(s.totalCobrado) || Number(s.total))}
                     {Number(s.recargoPagos) !== 0 && (
                       <span className="ml-1 block text-xs font-normal text-ink-500">
                         neto {formatCurrency(s.total)}
