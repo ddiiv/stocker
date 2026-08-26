@@ -695,12 +695,24 @@ const createSale = async (req, res, next) => {
      */
     const sale = await crearConNumero(
       (saltar) => nextSaleNumber(req.auth.businessId, tipo, saltar),
-      (numero, sp) => Sale.create({
+      /*
+       * Una cotización aparta su número de venta al nacer.
+       *
+       * Se calcula acá adentro, dentro del reintento, y no una vez afuera: si
+       * dos cotizaciones se crean en el mismo instante y reservan el mismo
+       * número, la segunda choca contra uq_sales_biz_numero_venta, el
+       * reintento vuelve a leer el máximo —que ya incluye la reserva de la
+       * primera— y sale con el siguiente.
+       */
+      async (numero, sp) => Sale.create({
       businessId:  req.auth.businessId,
       locationId:  locationId || null,
       employeeId,
       clientId:    clientId || null,
       numero, tipo,
+      numeroVenta: tipo === 'cotizacion'
+        ? await nextSaleNumber(req.auth.businessId, 'venta')
+        : null,
       estado:      finalEstado,
       condicionPago,
       esMayorista,
@@ -1233,29 +1245,48 @@ const convertQuoteToSale = async (req, res, next) => {
     }
 
     /*
-     * El número va por el mismo camino que el de una venta nueva.
+     * El número ya estaba apartado desde que se hizo la cotización.
      *
-     * Acá el `numero` se escribe sobre una fila que ya existe, y eso es
-     * exactamente lo que rompía la numeración: una venta convertida queda con
-     * número alto sobre un id viejo. Con el máximo como fuente eso ya no
-     * confunde a nadie, y el reintento cubre que otra caja esté cobrando en
-     * este mismo momento.
+     * Ese es el punto de la reserva: entre el presupuesto y la conversión
+     * pueden haber pasado cincuenta ventas, y ninguna le tocó este número. No
+     * hay nada que calcular ni contra qué competir, así que tampoco hay
+     * reintento: se escribe el que estaba guardado.
+     *
+     * `numeroVenta` se conserva después de usarlo. Es la misma fila que era la
+     * cotización, y dejarlo permite ver que esta venta salió de un presupuesto
+     * y con qué número se lo había prometido.
      */
-    let numero;
-    await crearConNumero(
-      (saltar) => nextSaleNumber(req.auth.businessId, 'venta', saltar),
-      // Nace como venta abierta: se debe entera hasta que se cobre.
-      (n, sp) => {
-        numero = n;
-        return quote.update({
-          tipo: 'venta', estado: 'pendiente', numero: n,
-          saldoPendiente: quote.total,
-          locationId,
-          employeeId: quote.employeeId || req.auth.employeeId || null,
-        }, { transaction: sp || t });
-      },
-      { transaction: t },
-    );
+    let numero = quote.numeroVenta;
+
+    if (numero) {
+      await quote.update({
+        tipo: 'venta', estado: 'pendiente', numero,
+        saldoPendiente: quote.total,
+        locationId,
+        employeeId: quote.employeeId || req.auth.employeeId || null,
+      }, { transaction: t });
+    } else {
+      /*
+       * Cotizaciones anteriores a la reserva, o a las que el relleno no llegó.
+       * Ahí sí hay que pedir número y competir con las ventas del momento, que
+       * es como funcionaba antes: con reintento, porque otra caja puede estar
+       * cobrando en este mismo instante.
+       */
+      await crearConNumero(
+        (saltar) => nextSaleNumber(req.auth.businessId, 'venta', saltar),
+        (n, sp) => {
+          numero = n;
+          return quote.update({
+            tipo: 'venta', estado: 'pendiente', numero: n,
+            numeroVenta: n,
+            saldoPendiente: quote.total,
+            locationId,
+            employeeId: quote.employeeId || req.auth.employeeId || null,
+          }, { transaction: sp || t });
+        },
+        { transaction: t },
+      );
+    }
 
     await descontarStockVenta(quote, t, {
       employeeId: req.auth.employeeId || null,

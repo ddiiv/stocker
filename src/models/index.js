@@ -801,6 +801,22 @@ const Sale = db.define('Sale', {
   employeeId:   { type: DataTypes.INTEGER, allowNull: true },
   clientId:     { type: DataTypes.INTEGER, allowNull: true },
   numero:       { type: DataTypes.STRING(25), allowNull: false },
+  /*
+   * El número de venta que la cotización tiene reservado.
+   *
+   * Una cotización se numera COT-… porque es un presupuesto y así lo tiene que
+   * ver el cliente, pero desde que nace se le aparta el próximo número de
+   * venta. Si más tarde se convierte, ya lo tiene: no compite con las ventas
+   * que se hicieron mientras tanto ni le pisa el número a ninguna.
+   *
+   * Si nunca se convierte, ese número queda reservado igual y nadie lo toma.
+   * La serie de ventas queda con saltos y está bien: es el número interno de
+   * Stocker, no el del comprobante fiscal —ese lo numera ARCA con su propio
+   * correlativo, en `invoices`.
+   *
+   * En una venta normal es null: su número vive en `numero` y punto.
+   */
+  numeroVenta:  { type: DataTypes.STRING(25), allowNull: true },
   tipo:         { type: DataTypes.STRING(15), defaultValue: 'venta' },    // venta|cotizacion
   estado:       { type: DataTypes.STRING(15), defaultValue: 'pendiente' }, // pendiente|pagado|cancelado|vencida
   /*

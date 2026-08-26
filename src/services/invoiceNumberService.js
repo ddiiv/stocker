@@ -34,15 +34,23 @@ const mesActual = () => {
  * mirar exactamente lo mismo que el índice protege. Los prefijos ya separan
  * las ventas (V-) de las cotizaciones (COT-).
  */
-async function ultimoCorrelativo(Modelo, businessId, prefijo, transaction = null) {
-  const max = await Modelo.max('numero', {
-    where: { businessId, numero: { [Op.like]: `${prefijo}%` } },
-    transaction,
-  });
-  if (!max) return 0;
-  const cola = String(max).split('-').pop();
-  const n = parseInt(cola, 10);
-  return Number.isFinite(n) ? n : 0;
+async function ultimoCorrelativo(Modelo, businessId, prefijo, transaction = null, columnas = ['numero']) {
+  let mayor = 0;
+  /*
+   * Se mira una columna por vez y se toma el mayor, en vez de un GREATEST en
+   * SQL: SQL Server no lo tiene hasta 2022 y esto corre en los dos motores.
+   * Son dos agregados sobre el mismo índice, no una lectura de tabla.
+   */
+  for (const col of columnas) {
+    const max = await Modelo.max(col, {
+      where: { businessId, [col]: { [Op.like]: `${prefijo}%` } },
+      transaction,
+    });
+    if (!max) continue;
+    const n = parseInt(String(max).split('-').pop(), 10);
+    if (Number.isFinite(n) && n > mayor) mayor = n;
+  }
+  return mayor;
 }
 
 const armar = (prefijo, seq) => `${prefijo}${String(seq).padStart(6, '0')}`;
@@ -57,9 +65,24 @@ async function nextInvoiceNumber(businessId, saltar = 0) {
   return armar(prefijo, ultimo + 1 + saltar);
 }
 
-async function nextSaleNumber(businessId, tipo, saltar = 0) {
-  const prefijo = (tipo === 'cotizacion' ? 'COT-' : 'V-') + mesActual();
-  const ultimo = await ultimoCorrelativo(Sale, businessId, prefijo);
+/*
+ * El próximo número de venta mira DOS columnas: las ventas emitidas
+ * (`numero`) y los números que las cotizaciones tienen reservados
+ * (`numeroVenta`).
+ *
+ * Sin la segunda, una venta nueva tomaría el número que una cotización ya
+ * tiene apartado, y al convertirla esa cotización chocaría contra el índice
+ * único sin forma de destrabarse. Que es exactamente el problema que la
+ * reserva viene a evitar.
+ *
+ * Para las cotizaciones alcanza con `numero`: su serie es la COT-, y ninguna
+ * reserva empieza con ese prefijo.
+ */
+async function nextSaleNumber(businessId, tipo, saltar = 0, transaction = null) {
+  const esCotizacion = tipo === 'cotizacion';
+  const prefijo = (esCotizacion ? 'COT-' : 'V-') + mesActual();
+  const columnas = esCotizacion ? ['numero'] : ['numero', 'numeroVenta'];
+  const ultimo = await ultimoCorrelativo(Sale, businessId, prefijo, transaction, columnas);
   return armar(prefijo, ultimo + 1 + saltar);
 }
 

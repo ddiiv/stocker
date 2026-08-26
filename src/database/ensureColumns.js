@@ -13,7 +13,7 @@
  * Al agregar un campo nuevo a un modelo, sumalo también a la lista de abajo.
  */
 
-const { DataTypes } = require('sequelize');
+const { DataTypes, Op } = require('sequelize');
 
 // tabla → { columna: definición }
 const COLUMNAS_ESPERADAS = {
@@ -102,6 +102,8 @@ const COLUMNAS_ESPERADAS = {
     ventaSinStock: { type: DataTypes.STRING(10), allowNull: false, defaultValue: 'permitir' },
   },
   sales: {
+    // El número de venta que una cotización tiene apartado. Ver el modelo.
+    numeroVenta: { type: DataTypes.STRING(25), allowNull: true },
     // Recargos/descuentos por medio de pago. `total` sigue siendo el neto de
     // mercadería, así que las ventas anteriores quedan con 0 y totalCobrado
     // se rellena abajo con el total que ya tenían.
@@ -189,6 +191,24 @@ const INDICES = [
     nombre: 'idx_sale_items_venta',
     columnas: ['saleId'],
     unico: false,
+  },
+  {
+    /*
+     * El número reservado también es único, y por el mismo motivo que el otro:
+     * es el que la venta va a usar cuando la cotización se convierta. Si dos
+     * cotizaciones reservaran el mismo, la segunda en convertirse chocaría
+     * contra uq_sales_biz_numero y quedaría trabada sin forma de destrabarse.
+     *
+     * Va filtrado por IS NOT NULL porque las ventas normales lo tienen vacío:
+     * los dos motores tratan al NULL como un valor más y sin el filtro no
+     * podría haber dos ventas sin reserva. Postgres y SQL Server escriben el
+     * índice parcial igual, así que alcanza con el `where`.
+     */
+    tabla: 'sales',
+    nombre: 'uq_sales_biz_numero_venta',
+    columnas: ['businessId', 'numeroVenta'],
+    unico: true,
+    where: { numeroVenta: { [Op.not]: null } },
   },
 ];
 
@@ -446,9 +466,55 @@ async function ensureColumns(sequelize) {
     }
   }
 
+  await reservarNumeroACotizaciones(sequelize);
   await asegurarIndices(sequelize, esPostgres);
 
   return agregadas;
+}
+
+/*
+ * Le aparta su número de venta a las cotizaciones que quedaron sin reserva.
+ *
+ * Va en JavaScript y no en un RELLENO de SQL porque cada fila necesita un
+ * número distinto y correlativo, y eso en SQL portable entre Postgres y SQL
+ * Server no se escribe una sola vez.
+ *
+ * Corre en cada arranque pero no cuesta: la consulta que las busca usa el
+ * índice y en cuanto no hay ninguna sin reservar termina sin escribir nada.
+ * Es reintentable a propósito — si el proceso se cae a la mitad, el arranque
+ * siguiente sigue por donde iba.
+ *
+ * El orden por id importa: la cotización más vieja se lleva el número más
+ * bajo, que es lo que alguien espera al mirar la lista.
+ */
+async function reservarNumeroACotizaciones(sequelize) {
+  const { Sale } = require('../models');
+  const { nextSaleNumber } = require('../services/invoiceNumberService');
+
+  let pendientes;
+  try {
+    pendientes = await Sale.findAll({
+      where: { tipo: 'cotizacion', numeroVenta: null },
+      attributes: ['id', 'businessId'],
+      order: [['id', 'ASC']],
+    });
+  } catch {
+    // La columna todavía no existe (primer arranque del deploy). El próximo la
+    // encuentra.
+    return;
+  }
+  if (!pendientes.length) return;
+
+  let hechas = 0;
+  for (const cot of pendientes) {
+    try {
+      await cot.update({ numeroVenta: await nextSaleNumber(cot.businessId, 'venta') });
+      hechas += 1;
+    } catch (err) {
+      console.warn(`[schema] no se pudo reservar número para la cotización ${cot.id}: ${err.message}`);
+    }
+  }
+  if (hechas) console.log(`[schema] número de venta reservado para ${hechas} cotización(es) que no lo tenían`);
 }
 
 /*
@@ -493,7 +559,7 @@ async function asegurarIndices(sequelize, esPostgres) {
             continue;
           }
         }
-        await qi.addIndex(idx.tabla, idx.columnas, { name: idx.nombre, unique: idx.unico });
+        await qi.addIndex(idx.tabla, idx.columnas, { name: idx.nombre, unique: idx.unico, where: idx.where });
         console.log(`[schema] índice ${idx.nombre} creado`);
       }
 
