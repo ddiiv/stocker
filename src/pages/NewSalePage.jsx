@@ -4,6 +4,7 @@ import { Trash2, UserPlus, UserCircle2, Check } from "lucide-react";
 import ProductPicker from "../components/sales/ProductPicker";
 import { fetchEmployees, fetchLocalesDeVenta, fetchClients, createClient } from "../services/employeeService";
 import { createSale } from "../services/salesService";
+import ModalStockFaltante from "../components/sales/ModalStockFaltante";
 import { fetchPaymentMethods } from "../services/paymentMethodService";
 import PaymentSplit, { lineasParaApi, calcularTotales } from "../components/sales/PaymentSplit";
 import { formatCurrency } from "../utils/formatters";
@@ -36,6 +37,8 @@ export default function NewSalePage() {
   const [notas, setNotas] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
+  // Lo que el servidor dijo que falta. Misma pregunta que en el POS.
+  const [faltantesServidor, setFaltantesServidor] = useState(null);
     const { user } = useAuth();
   const puedeElegirVendedor = esAdministradorTotal(user);
 
@@ -105,8 +108,8 @@ export default function NewSalePage() {
   const { ajusteTotal, totalCobro } = calcularTotales(pagos, metodos, total);
   const cobraAhora = tipo === "venta" && marcarPagada && metodos.length > 0;
 
-  async function handleSubmit(e) {
-    e.preventDefault();
+  async function handleSubmit(e, { confirmarAltaStock = false } = {}) {
+    e?.preventDefault?.();
     setError(null);
     if (!items.length) return setError({ tipo: "validacion", titulo: "Agregá al menos un producto." });
     if (puedeElegirVendedor && !employeeId) return setError({ tipo: "validacion", titulo: "Seleccioná el empleado que realiza la venta." });
@@ -114,6 +117,7 @@ export default function NewSalePage() {
     try {
       const sale = await createSale({
         tipo, fecha, clientId: selectedClientId || null,
+        confirmarAltaStock,
         locationId: locationId || null,
         employeeId,
         items: items.map((i) => ({ productVariantId: i.productVariantId, cantidad: i.cantidad })),
@@ -122,22 +126,49 @@ export default function NewSalePage() {
         pagos: tipo === "venta" && marcarPagada ? lineasParaApi(pagos, metodos, total) : undefined,
         notas,
       });
+      setFaltantesServidor(null);
       navigate(`/ventas/${encodeURIComponent(sale.numero)}`);
     } catch (err) {
       /*
-       * El error se clasifica antes de mostrarlo.
+       * Falta stock declarado: se pregunta, no se rechaza.
        *
-       * "No se pudo registrar la venta" no distingue entre quedarse sin stock,
-       * no tener turno de caja, haber perdido la sesión o que el servidor esté
-       * caído — y cada una se arregla distinto. `analizarError` devuelve la
-       * causa concreta y, cuando existe, el atajo que la destraba.
+       * Es la misma pantalla que usa el punto de venta, a propósito. Cargar
+       * una venta sin stock funcionaba en un lado y fallaba en el otro, que es
+       * justo la clase de diferencia que nadie puede explicarle a un cliente.
        */
-      setError(analizarError(err, "No se pudo registrar la venta."));
+      const d = err.response?.data;
+      if (d?.codigo === "SIN_STOCK" && d.faltantes?.length) {
+        setFaltantesServidor({
+          faltantes: d.faltantes,
+          puedeConfirmar: d.puedeConfirmar !== false,
+          local: d.local || null,
+        });
+      } else {
+        /*
+         * El error se clasifica antes de mostrarlo.
+         *
+         * "No se pudo registrar la venta" no distingue entre no tener turno de
+         * caja, haber perdido la sesión o que el servidor esté caído — y cada
+         * una se arregla distinto. `analizarError` devuelve la causa concreta
+         * y, cuando existe, el atajo que la destraba.
+         */
+        setError(analizarError(err, "No se pudo registrar la venta."));
+      }
     } finally { setSubmitting(false); }
   }
 
   return (
     <form onSubmit={handleSubmit}>
+      <ModalStockFaltante
+        open={Boolean(faltantesServidor)}
+        onClose={() => setFaltantesServidor(null)}
+        faltantes={faltantesServidor?.faltantes || []}
+        puedeConfirmar={faltantesServidor?.puedeConfirmar !== false}
+        local={faltantesServidor?.local}
+        confirmando={submitting}
+        accion="registrar"
+        onConfirmar={() => handleSubmit(null, { confirmarAltaStock: true })}
+      />
       <PageHeader title="Nueva venta / cotización" subtitle="Seleccioná los productos, el cliente y el empleado" />
       <AvisoError error={error} className="mb-4" />
 

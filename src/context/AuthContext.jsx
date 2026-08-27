@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useState } from "react";
 import * as authService from "../services/authService";
 import { useIdleLogout } from "../hooks/useIdleLogout";
+import { limpiarPorCierreDeSesion } from "../utils/carritoPos";
 
 const AuthContext = createContext(null);
 
@@ -45,6 +46,9 @@ export function AuthProvider({ children }) {
     onTimeout: async () => {
       setAvisoInactividad(null);
       await authService.logout();
+      // El carrito a medio armar es lo primero que queda a la vista de
+      // cualquiera en el mostrador de un local.
+      limpiarPorCierreDeSesion();
       setSession(null);
       window.location.href = "/login?motivo=inactividad";
     },
@@ -83,6 +87,15 @@ export function AuthProvider({ children }) {
   async function logout() {
     // Esperamos al backend: es el único que puede borrar la cookie httpOnly.
     await authService.logout();
+    /*
+     * El carrito del POS se borra SIEMPRE al salir.
+     *
+     * En un local la misma terminal la usan varias personas, y el que entra
+     * después no tiene por qué encontrarse el carrito a medio armar del
+     * anterior. carritoPos igual comprueba de quién es al leerlo, pero eso
+     * evita mostrarlo, no que el dato quede escrito en la máquina.
+     */
+    limpiarPorCierreDeSesion();
     setSession(null);
     setAvisoInactividad(null);
   }

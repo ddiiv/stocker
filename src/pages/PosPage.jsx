@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import {
   ScanLine, Trash2, Plus, Minus, XCircle, ShoppingCart,
@@ -17,6 +17,8 @@ import { useAuth } from "../context/AuthContext";
 import { esAdministradorTotal } from "../utils/permissions";
 import PaymentSplit, { lineasParaApi, calcularTotales } from "../components/sales/PaymentSplit";
 import AvisoCredito from "../components/sales/AvisoCredito";
+import ModalStockFaltante from "../components/sales/ModalStockFaltante";
+import { leerCarrito, guardarCarrito, borrarCarrito, LATIDO_MS } from "../utils/carritoPos";
 
 export default function PosPage() {
   const navigate = useNavigate();
@@ -44,9 +46,18 @@ export default function PosPage() {
   const [cobrando, setCobrando] = useState(false);
   const [ultimaVenta, setUltimaVenta] = useState(null);
   const [faltaTurno, setFaltaTurno] = useState(false);
-  // El backend rechazó la venta por stock: se ofrece pasarla a cotización.
-  const [sinStockServidor, setSinStockServidor] = useState(false);
-  const [avisoStock, setAvisoStock] = useState(null);
+  /*
+   * Lo que el servidor dijo que falta.
+   *
+   * Se guarda tal cual vino y no se recalcula acá: el servidor mira el stock
+   * con la fila trabada, y es el único que sabe lo que va a haber cuando
+   * escriba. La pantalla puede tener un número viejo de hace treinta segundos.
+   */
+  const [faltantesServidor, setFaltantesServidor] = useState(null);
+  // Lo que hubo que dar de alta, para avisarlo en la pantalla de venta cerrada.
+  const [altaStock, setAltaStock] = useState(null);
+  // Aviso de que el carrito se recuperó de la vez anterior.
+  const [avisoCarrito, setAvisoCarrito] = useState(null);
   const [resaltado, setResaltado] = useState(null);
   const inputRef = useRef(null);
   const resaltadoTimer = useRef(null);
@@ -105,6 +116,100 @@ export default function PosPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [localEfectivo]);
 
+  /*
+   * ── El carrito, entre pantallas ──────────────────────────────────
+   *
+   * Esta página se desmonta entera al ir a otra sección, así que el carrito se
+   * guarda afuera (ver utils/carritoPos). Acá sólo se decide QUÉ se guarda y
+   * CUÁNDO.
+   *
+   * Qué: las líneas y las decisiones que ya tomó la persona —cliente,
+   * condición, si se la lleva, local y vendedor—. Los medios de pago NO: son
+   * importes a medio repartir contra un total que puede haber cambiado, y
+   * restaurarlos daría una suma que no cuadra sin que se entienda por qué.
+   */
+  const carritoActual = useCallback(() => ({
+    items, clientId, buscarCliente, condicionPago, seLoLleva,
+    locationId, employeeId,
+  }), [items, clientId, buscarCliente, condicionPago, seLoLleva, locationId, employeeId]);
+
+  // Guardado inicial: sólo después de restaurar, para no pisar lo guardado con
+  // el carrito vacío del primer render.
+  const restaurado = useRef(false);
+
+  useEffect(() => {
+    const guardado = leerCarrito(user);
+    restaurado.current = true;
+    if (!guardado) return;
+
+    const c = guardado.carrito;
+    setItems(c.items || []);
+    setClientId(c.clientId || "");
+    setBuscarCliente(c.buscarCliente || "");
+    setCondicionPago(c.condicionPago || "contado");
+    setSeLoLleva(c.seLoLleva !== false);
+    if (c.locationId) setLocationId(c.locationId);
+    if (c.employeeId) setEmployeeId(c.employeeId);
+    setAvisoCarrito({ minutos: guardado.minutos, revisando: true });
+
+    /*
+     * Lo guardado se vuelve a preguntar antes de mostrarlo como bueno.
+     *
+     * Entre que se guardó y ahora pudo haberse vendido en otra caja o
+     * cambiado un precio. Mostrar el precio de hace cuatro minutos y cobrar
+     * otro es la clase de diferencia que el cliente descubre en el ticket.
+     */
+    const local = c.locationId || user?.local?.id || null;
+    (async () => {
+      const frescos = await Promise.all((c.items || []).map(async (i) => {
+        try {
+          const fresco = await scanProduct(i.sku, local);
+          return { ...i, ...fresco, cantidad: i.cantidad, _precioViejo: i.precioMinorista };
+        } catch {
+          return i;
+        }
+      }));
+      const cambiaron = frescos.filter(
+        (i) => i._precioViejo !== undefined && Number(i._precioViejo) !== Number(i.precioMinorista),
+      );
+      setItems(frescos.map(({ _precioViejo, ...i }) => i));
+      setAvisoCarrito({ minutos: guardado.minutos, revisando: false, cambiaron: cambiaron.length });
+    })();
+    // Sólo al montar: restaurar es una vez.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Cada cambio se guarda, y guardar además corre el reloj de los 5 minutos.
+  useEffect(() => {
+    if (!restaurado.current) return;
+    if (items.length) guardarCarrito(user, carritoActual());
+    else borrarCarrito();
+  }, [user, carritoActual, items.length]);
+
+  /*
+   * El latido, y el guardado al salir.
+   *
+   * El latido dice "la pantalla sigue abierta": sin él, un carrito con el POS
+   * a la vista se vencería a los cinco minutos de la última prenda escaneada.
+   * El guardado del `return` marca el momento exacto en que se sale, que es
+   * cuando arranca de verdad la cuenta.
+   */
+  useEffect(() => {
+    if (!items.length) return undefined;
+    const id = setInterval(() => guardarCarrito(user, carritoActual()), LATIDO_MS);
+    return () => {
+      clearInterval(id);
+      guardarCarrito(user, carritoActual());
+    };
+  }, [user, carritoActual, items.length]);
+
+  function vaciarCarrito() {
+    setItems([]);
+    setFaltantesServidor(null);
+    setAvisoCarrito(null);
+    borrarCarrito();
+  }
+
   const totalUnidades = items.reduce((s, i) => s + i.cantidad, 0);
 
   /*
@@ -153,19 +258,18 @@ export default function PosPage() {
     (i) => i.enLocal !== null && i.enLocal !== undefined && i.cantidad > Number(i.enLocal)
   );
   /*
-   * Sin stock la operación pasa a ser cotización.
+   * Faltar stock ya no cambia lo que se está haciendo.
    *
-   * Puede pasar que la mercadería esté en el local pero todavía no cargada en
-   * el sistema, y el cliente está esperando. En vez de frenar la venta se deja
-   * el comprobante hecho como presupuesto, que después se convierte en venta
-   * desde Ventas y cotizaciones cuando el stock aparezca.
+   * Antes, si faltaba, la operación se convertía sola en cotización: la venta
+   * no se cobraba y quedaba un presupuesto para convertir más tarde. Eso se
+   * terminó — el POS sólo hace ventas. Cuando falta, se pregunta si dar de
+   * alta la diferencia, y esa pregunta la dispara el servidor, no esta cuenta.
+   *
+   * `faltantes` sigue existiendo pero sólo para pintar el aviso en la línea:
+   * es una ayuda visual, no una decisión.
    */
-  const seraCotizacion = faltantes.length > 0 || sinStockServidor;
-
-  const puedeCobrar = items.length > 0 && !cobrando && hayLocal && (
-    // Una cotización no cobra: no necesita medios de pago ni cliente.
-    seraCotizacion ? true : (esFiado ? Boolean(clientId) : (metodos.length > 0 && pagosCuadran))
-  );
+  const puedeCobrar = items.length > 0 && !cobrando && hayLocal
+    && (esFiado ? Boolean(clientId) : (metodos.length > 0 && pagosCuadran));
 
   // El botón muestra lo que hay que pedirle al cliente, recargo incluido.
   // Fiando no se cobra nada ahora: lo que se anota es el neto de mercadería.
@@ -173,7 +277,7 @@ export default function PosPage() {
   const totalBoton = esFiado ? total : totalCobro;
 
   async function procesarCodigo(codigo) {
-    setError(""); setSinStockServidor(false);
+    setError("");
     try {
       const p = await scanProduct(codigo, localEfectivo || null);
       setItems((prev) => {
@@ -210,47 +314,53 @@ export default function PosPage() {
   }
 
   function cambiarCantidad(id, delta) {
-    setSinStockServidor(false);
     setItems((prev) => prev
       .map((i) => (i.id === id ? { ...i, cantidad: i.cantidad + delta } : i))
       .filter((i) => i.cantidad > 0));
   }
 
-  function quitar(id) { setSinStockServidor(false); setItems((prev) => prev.filter((i) => i.id !== id)); }
+  function quitar(id) { setItems((prev) => prev.filter((i) => i.id !== id)); }
 
-  async function cobrar(forzarCotizacion = false) {
+  /*
+   * Registrar la venta.
+   *
+   * `confirmarAltaStock` viaja sólo cuando la persona ya vio el modal y dijo
+   * que sí. El servidor no hace nada con las cantidades que mandemos: recalcula
+   * él lo que falta con las filas trabadas y da de alta esa diferencia. Acá
+   * viaja un sí, y nada más.
+   */
+  async function cobrar({ confirmarAltaStock = false } = {}) {
     if (!items.length) return;
-    const cotiza = forzarCotizacion === true || seraCotizacion;
     setCobrando(true); setError("");
     try {
       const venta = await createSale({
-        tipo: cotiza ? "cotizacion" : "venta",
+        tipo: "venta",
+        confirmarAltaStock,
         fecha: new Date().toISOString().slice(0, 10),
         // Sin cliente elegido la venta es a consumidor final. Fiando el
         // backend la rechaza, porque la deuda necesita dueño.
         clientId: clientId ? Number(clientId) : null,
         locationId: locationId || null,
         employeeId: employeeId || null,
-        // Una cotización no se fía ni se cobra: queda como presupuesto y el
-        // local se guarda igual, para que al convertirla el stock salga de acá.
-        condicionPago: cotiza ? "contado" : condicionPago,
-        ...(cotiza
-          ? {}
-          : esFiado
-            ? { descontarStock: seLoLleva }
-            : { estado: "pagado", pagos: lineasParaApi(pagos, metodos, total) }),
+        condicionPago,
+        ...(esFiado
+          ? { descontarStock: seLoLleva }
+          : { estado: "pagado", pagos: lineasParaApi(pagos, metodos, total) }),
         items: items.map((i) => ({ productVariantId: i.id, cantidad: i.cantidad })),
       });
       setUltimaVenta(venta);
-      // Lo que se vendió sin tener cargado. Se muestra en la pantalla de venta
+      // Lo que hubo que dar de alta. Se muestra en la pantalla de venta
       // cerrada: es el único momento en que la persona lo va a leer.
-      setAvisoStock(venta.avisoStock || null);
+      setAltaStock(venta.altaStock || null);
+      setFaltantesServidor(null);
       setItems([]);
       setClientId("");
       setBuscarCliente("");
       setCondicionPago("contado");
       setSeLoLleva(true);
-      setSinStockServidor(false);
+      setAvisoCarrito(null);
+      // El carrito se resolvió: lo guardado ya no sirve para nada.
+      borrarCarrito();
       if (metodos.length) setPagos([{ paymentMethodId: metodos[0].id, monto: 0, ajusteManual: "" }]);
       inputRef.current?.focus();
     } catch (e) {
@@ -259,13 +369,26 @@ export default function PosPage() {
       // abrirlo en vez de dejar al cajero adivinando qué falta.
       setFaltaTurno(e.response?.status === 409 && /turno de caja/i.test(msg));
       /*
-       * Stock que se fue entre el escaneo y el cobro —lo vendió otra caja, o
-       * nunca estuvo cargado—. El backend lo marca con SIN_STOCK y acá se
-       * ofrece dejarla como cotización, que es la salida que sirve con el
-       * cliente esperando.
+       * Falta stock declarado.
+       *
+       * En vez de dejar el error en rojo y a la cajera sin salida, se abre el
+       * modal con la lista y la pregunta. El carrito no se toca: si dice que
+       * no, sigue todo como estaba.
+       *
+       * Se abre sólo si el servidor mandó la lista. Un SIN_STOCK sin faltantes
+       * sería un contrato roto, y mostrar un modal vacío es peor que el error.
        */
-      setSinStockServidor(e.response?.data?.codigo === "SIN_STOCK");
-      setError(msg);
+      const d = e.response?.data;
+      if (d?.codigo === "SIN_STOCK" && d.faltantes?.length) {
+        setFaltantesServidor({
+          faltantes: d.faltantes,
+          puedeConfirmar: d.puedeConfirmar !== false,
+          local: d.local || null,
+        });
+        setError("");
+      } else {
+        setError(msg);
+      }
     } finally {
       setCobrando(false);
     }
@@ -274,26 +397,20 @@ export default function PosPage() {
   // ── Pantalla de venta cerrada ───────────────────────────────────
   if (ultimaVenta) {
     const ventaFiada = ultimaVenta.condicionPago === "cuenta_corriente";
-    const esCotizacion = ultimaVenta.tipo === "cotizacion";
     return (
       <div>
         <PageHeader
-          title={esCotizacion ? "Cotización registrada" : ventaFiada ? "Venta fiada" : "Venta registrada"}
+          title={ventaFiada ? "Venta fiada" : "Venta registrada"}
           subtitle={`Comprobante ${ultimaVenta.numero}`}
         />
         <Card className="mx-auto max-w-md text-center">
           {/* Lo cobrado, no el neto: con recargo son importes distintos y el
               cajero necesita ver el que le pidió al cliente. Fiando no entró
               nada, así que se muestra lo que quedó anotado como deuda. */}
-          <p className={`font-display text-4xl font-semibold ${esCotizacion || ventaFiada ? "text-brass-700" : "text-teal-600"}`}>
-            {formatCurrency(esCotizacion || ventaFiada ? ultimaVenta.total : (ultimaVenta.totalCobrado || ultimaVenta.total))}
+          <p className={`font-display text-4xl font-semibold ${ventaFiada ? "text-brass-700" : "text-teal-600"}`}>
+            {formatCurrency(ventaFiada ? ultimaVenta.total : (ultimaVenta.totalCobrado || ultimaVenta.total))}
           </p>
-          {esCotizacion ? (
-            <p className="mt-1 text-sm text-ink-600">
-              No se cobró ni se descontó stock. Cuando cargues la mercadería,
-              convertila en venta desde Ventas y cotizaciones.
-            </p>
-          ) : ventaFiada ? (
+          {ventaFiada ? (
             <p className="mt-1 text-sm text-ink-600">
               Queda en la cuenta de {ultimaVenta.cliente?.nombre} {ultimaVenta.cliente?.apellido || ""}.
               El medio de pago se elige al cobrarla.
@@ -308,21 +425,21 @@ export default function PosPage() {
               {formatCurrency(Math.abs(Number(ultimaVenta.recargoPagos)))}
             </p>
           )}
-          {/* Vendido sin stock cargado: la venta se hizo igual —el cliente no
-              puede esperar— pero alguien tiene que ir a contar eso. */}
-          {avisoStock && (
+          {/* Lo que se dio de alta al confirmar. Se muestra acá y no antes
+              porque es el resultado, no una advertencia: el stock ya entró y
+              ya salió con la venta. Sirve para que quede claro qué se tocó. */}
+          {altaStock && (
             <div className="mt-4 rounded-md border border-brass-300 bg-brass-50 px-3 py-2 text-left text-xs text-brass-800">
-              <p className="font-medium">{avisoStock.mensaje}</p>
+              <p className="font-medium">{altaStock.mensaje}</p>
               <ul className="mt-1 space-y-0.5">
-                {(avisoStock.faltantes || []).map((f) => (
-                  <li key={f.sku}>
-                    <span className="font-mono">{f.sku}</span> — faltan {f.falta}
-                    {f.enOtrosLocales > 0 ? ` · hay ${f.enOtrosLocales} en otros locales` : ""}
+                {(altaStock.altas || []).map((a) => (
+                  <li key={a.sku}>
+                    <span className="font-mono">{a.sku}</span> — se dieron de alta {a.unidades}
                   </li>
                 ))}
               </ul>
-              <Link to="/stock/a-regularizar" className="mt-1 inline-block font-medium underline">
-                Ver todo lo que falta cargar
+              <Link to="/stock/movimientos" className="mt-1 inline-block font-medium underline">
+                Ver el movimiento en el libro de stock
               </Link>
             </div>
           )}
@@ -335,7 +452,7 @@ export default function PosPage() {
               <ScanLine size={15} /> Nueva venta
             </button>
             <button className="btn-ghost justify-center text-xs" onClick={() => navigate(`/ventas/${encodeURIComponent(ultimaVenta.numero)}`)}>
-              {esCotizacion ? "Ver detalle de la cotización" : "Ver detalle de la venta"}
+              Ver detalle de la venta
             </button>
           </div>
         </Card>
@@ -346,6 +463,44 @@ export default function PosPage() {
   return (
     <div>
       <PageHeader title="Punto de venta" subtitle="Escaneá los productos y cobrá" />
+
+      {/* Que el carrito reaparezca sin decir nada es peor que perderlo: la
+          cajera no sabe si es de ella, de hace un minuto o de hace una hora, y
+          termina cobrando algo que no armó. */}
+      {avisoCarrito && items.length > 0 && (
+        <div className="mb-4 flex items-start justify-between gap-3 rounded-md border border-line bg-paper-50 px-3 py-2 text-xs text-ink-600">
+          <p>
+            Recuperamos el carrito que tenías armado
+            {avisoCarrito.minutos > 0 ? ` hace ${avisoCarrito.minutos} minuto${avisoCarrito.minutos === 1 ? "" : "s"}` : " recién"}.
+            {avisoCarrito.revisando
+              ? " Revisando precios y stock…"
+              : avisoCarrito.cambiaron > 0
+                ? ` Ojo: ${avisoCarrito.cambiaron} ${avisoCarrito.cambiaron === 1 ? "producto cambió" : "productos cambiaron"} de precio y ya está actualizado.`
+                : " Precios y stock al día."}
+          </p>
+          <button type="button" className="shrink-0 font-medium underline" onClick={() => setAvisoCarrito(null)}>
+            Ok
+          </button>
+        </div>
+      )}
+
+      {/*
+        * La pregunta por el stock que falta.
+        *
+        * La abre el servidor, no esta pantalla: acá el stock que se ve puede
+        * ser de hace medio minuto. Cancelar no toca el carrito — la salida
+        * natural es ir a contar y volver.
+        */}
+      <ModalStockFaltante
+        open={Boolean(faltantesServidor)}
+        onClose={() => setFaltantesServidor(null)}
+        faltantes={faltantesServidor?.faltantes || []}
+        puedeConfirmar={faltantesServidor?.puedeConfirmar !== false}
+        local={faltantesServidor?.local}
+        confirmando={cobrando}
+        accion={esFiado ? "fiar" : "cobrar"}
+        onConfirmar={() => cobrar({ confirmarAltaStock: true })}
+      />
 
       <div className="grid gap-5 lg:grid-cols-3">
         {/* Carrito */}
@@ -630,36 +785,31 @@ export default function PosPage() {
             </Card>
           )}
 
-          {/* Sin stock no se puede vender, pero sí dejar el comprobante hecho.
-              El aviso va pegado al botón, que es donde se decide. */}
-          {seraCotizacion && items.length > 0 && (
+          {/* Aviso, no freno: la venta se puede cobrar igual y al hacerlo el
+              servidor va a preguntar si dar de alta la diferencia. Decirlo
+              antes evita que el modal aparezca de la nada. */}
+          {faltantes.length > 0 && items.length > 0 && (
             <div className="rounded-md border border-brass-300 bg-brass-50 px-3 py-2 text-xs text-brass-800">
-              <p className="font-medium">Se va a registrar como cotización.</p>
+              <p className="font-medium">Falta stock cargado de {faltantes.map((i) => i.sku).join(", ")}.</p>
               <p className="mt-1">
-                {sinStockServidor
-                  ? "No hay stock suficiente para descontar, así que no se puede cerrar como venta."
-                  : `No hay stock en este local de ${faltantes.map((i) => i.sku).join(", ")}.`}
-                {" "}Queda como presupuesto, sin cobrar y sin descontar stock; cuando cargues
-                la mercadería la convertís en venta desde Ventas y cotizaciones.
+                Al cobrar se te va a preguntar si querés darlo de alta. La venta no se frena.
               </p>
             </div>
           )}
 
           <button
-            className={`w-full justify-center py-3 text-base ${seraCotizacion ? "btn-primary" : "btn-accent"}`}
+            className="btn-accent w-full justify-center py-3 text-base"
             disabled={!puedeCobrar}
             onClick={() => cobrar()}
           >
             {cobrando
               ? <><Loader2 size={16} className="animate-spin" /> Registrando…</>
-              : seraCotizacion
-                ? <><NotebookPen size={16} /> Guardar cotización {formatCurrency(total)}</>
-                : esFiado
-                  ? <><NotebookPen size={16} /> Fiar {formatCurrency(totalBoton)}</>
-                  : <>Cobrar {formatCurrency(totalBoton)}</>}
+              : esFiado
+                ? <><NotebookPen size={16} /> Fiar {formatCurrency(totalBoton)}</>
+                : <>Cobrar {formatCurrency(totalBoton)}</>}
           </button>
           {items.length > 0 && (
-            <button className="btn-ghost w-full justify-center text-xs text-brick-500" onClick={() => setItems([])}>
+            <button className="btn-ghost w-full justify-center text-xs text-brick-500" onClick={vaciarCarrito}>
               Vaciar carrito
             </button>
           )}

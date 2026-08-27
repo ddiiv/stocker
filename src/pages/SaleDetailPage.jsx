@@ -1,17 +1,17 @@
 import { useEffect, useState } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
 import { ArrowLeft, ReceiptText, CheckCircle2, RefreshCw, Printer, NotebookPen, Ban } from "lucide-react";
-import { getSale, cobrarSale, convertQuote, printSaleTicket, anularSale } from "../services/salesService";
+import { getSale, cobrarSale, printSaleTicket, anularSale } from "../services/salesService";
 import { mensajeDeError } from "../utils/errores";
 import { generateInvoiceFromSale } from "../services/invoiceService";
 import { fetchBusinessCuits } from "../services/businessCuitService";
 import { fetchPaymentMethods } from "../services/paymentMethodService";
-import { fetchLocalesDeVenta } from "../services/employeeService";
 import PaymentSplit, { lineasParaApi, calcularTotales } from "../components/sales/PaymentSplit";
 import { medioPagoBadge } from "../utils/paymentBadge";
 import { formatCurrency, formatDate } from "../utils/formatters";
 import { Card, PageHeader } from "../components/ui/Layout";
 import Modal from "../components/ui/Modal";
+import ModalStockFaltante from "../components/sales/ModalStockFaltante";
 
 const ESTADO_BADGE = { pagado: "badge-ok", pendiente: "badge-low", cancelado: "badge-out", vencida: "badge-out" };
 
@@ -31,9 +31,8 @@ export default function SaleDetailPage() {
   const [loadError, setLoadError] = useState("");
   // La conversión puede fallar por stock, por número tomado o porque falta
   // decir de qué local sale. Antes ninguno de esos motivos se veía.
-  const [convertError, setConvertError] = useState("");
-  const [locales, setLocales] = useState([]);
-  const [localElegido, setLocalElegido] = useState("");
+  // Lo que el servidor dijo que falta al intentar cobrar.
+  const [faltantesServidor, setFaltantesServidor] = useState(null);
   const [metodos, setMetodos] = useState([]);
   const [pagos, setPagos] = useState([]);
 
@@ -104,68 +103,37 @@ export default function SaleDetailPage() {
    * veces al cliente. Separarlos es lo único que evita eso: el catch de acá
    * habla sólo del cobro, y `load` ya muestra sus propios errores.
    */
-  async function confirmarCobro() {
+  async function confirmarCobro({ confirmarAltaStock = false } = {}) {
     setBusy(true); setPayError("");
     let cobrado = false;
     try {
-      await cobrarSale(numero, lineasParaApi(pagos, metodos, aCobrar));
+      await cobrarSale(numero, lineasParaApi(pagos, metodos, aCobrar), { confirmarAltaStock });
       cobrado = true;
       setPayModal(false);
+      setFaltantesServidor(null);
     } catch (e) {
-      setPayError(mensajeDeError(e, "No se pudo cobrar la venta."));
+      /*
+       * Falta stock declarado, igual que en el punto de venta.
+       *
+       * Pasa con las fiadas que quedaron señadas: la mercadería sale recién
+       * ahora y en el medio pudo haberse vendido en otra caja. Se pregunta lo
+       * mismo y con la misma pantalla, porque es la misma situación.
+       */
+      const d = e.response?.data;
+      if (d?.codigo === "SIN_STOCK" && d.faltantes?.length) {
+        setFaltantesServidor({
+          faltantes: d.faltantes,
+          puedeConfirmar: d.puedeConfirmar !== false,
+          local: d.local || null,
+        });
+        setPayError("");
+      } else {
+        setPayError(mensajeDeError(e, "No se pudo cobrar la venta."));
+      }
     } finally {
       setBusy(false);
     }
     if (cobrado) await load();
-  }
-
-  /*
-   * Convertir la cotización en venta.
-   *
-   * El `finally` no es decorativo: sin él, cualquier rechazo cortaba la
-   * función antes del `setBusy(false)` y el botón quedaba en "Convirtiendo…"
-   * para siempre. El motivo real —falta stock, el número está tomado, falta
-   * elegir el local— se perdía en la consola y quien vendía sólo veía un
-   * spinner eterno.
-   *
-   * El local va explícito: la cotización puede haberse hecho sin uno (no
-   * descuenta nada), pero la venta necesita saber de dónde sale la mercadería.
-   */
-  async function handleConvertQuote(locationId = null) {
-    setBusy(true);
-    setConvertError("");
-    try {
-      const convertida = await convertQuote(numero, locationId || sale?.locationId || undefined);
-      setLocales([]);
-      /*
-       * Al convertirse, el documento cambia de número: deja de ser
-       * COT-2026-08-000002 y pasa a ser la venta que tenía reservada. La URL
-       * lleva el número, así que recargar la misma dirección pide una
-       * cotización que ya no existe y la pantalla queda en blanco. Hay que
-       * mudarse a la nueva.
-       *
-       * `replace` para que el botón "atrás" no vuelva a una dirección muerta.
-       */
-      if (convertida?.numero && convertida.numero !== numero) {
-        navigate(`/ventas/${encodeURIComponent(convertida.numero)}`, { replace: true });
-      } else {
-        await load();
-      }
-    } catch (err) {
-      // `mensajeDeError` ya devuelve el texto armado (título + detalle).
-      setConvertError(mensajeDeError(err, "No se pudo convertir la cotización en venta."));
-
-      /*
-       * Si lo único que falta es decir de qué local sale, se ofrece elegirlo
-       * en el momento. Mandar a la persona a editar la cotización para volver
-       * después es pedirle que resuelva sola algo que la pantalla ya sabe.
-       */
-      if (err.response?.status === 400 && /local/i.test(err.response?.data?.message || "")) {
-        try { setLocales(await fetchLocalesDeVenta()); } catch { /* si falla, queda el mensaje */ }
-      }
-    } finally {
-      setBusy(false);
-    }
   }
 
   async function handleGenerateInvoice() {
@@ -209,15 +177,12 @@ export default function SaleDetailPage() {
   async function handleAnular() {
     const esCotizacion = sale.tipo === "cotizacion";
     /*
-     * Se dice qué se deshace, y en una cotización lo que se deshace es otra
-     * cosa: no hay stock ni deuda, pero sí un número de venta apartado que
-     * vuelve a quedar libre. Es lo único que se pierde y conviene decirlo
-     * antes, no después.
+     * Se dice qué se deshace, y en una cotización no se deshace casi nada: es
+     * un presupuesto, no movió stock ni plata. Decirlo evita que alguien
+     * dude antes de anular algo que no tiene consecuencias.
      */
     const vuelve = esCotizacion
-      ? (sale.numeroVenta
-        ? `Se suelta el número de venta que tenía apartado (${sale.numeroVenta}).`
-        : "No tiene número de venta apartado.")
+      ? "Es un presupuesto: no movió stock ni plata. Queda anulado y nada más."
       : sale.stockDescontado
         ? "La mercadería vuelve al stock del local."
         : "No hay stock que devolver: en esta venta nunca llegó a descontarse.";
@@ -247,16 +212,16 @@ export default function SaleDetailPage() {
       <PageHeader
         title={sale.numero}
         /*
-         * En una cotización se dice qué número de venta tiene apartado.
+         * Una cotización es un presupuesto y nada más.
          *
-         * La reserva es lo que garantiza que convertirla más tarde no choque
-         * con las ventas de mientras tanto, pero si no se muestra en ningún
-         * lado nadie sabe que existe — y el salto en la numeración de ventas
-         * parece un error en vez de un número guardado.
+         * Se dice explícitamente porque durante un tiempo no lo fue: se
+         * convertía en venta y apartaba un número. Quien vio esa versión
+         * necesita leer que ya no, y quien no la vio necesita saber qué es lo
+         * que tiene delante.
          */
         subtitle={
           sale.tipo === "cotizacion"
-            ? `Cotización · ${formatDate(sale.fecha)}${sale.numeroVenta ? ` · al convertirse va a ser la venta ${sale.numeroVenta}` : ""}`
+            ? `Presupuesto · ${formatDate(sale.fecha)} · no descuenta stock ni se cobra`
             : `Venta · ${formatDate(sale.fecha)}`
         }
         actions={
@@ -272,11 +237,6 @@ export default function SaleDetailPage() {
                 <CheckCircle2 size={15} /> Cobrar {formatCurrency(aCobrar)}
               </button>
             )}
-            {sale.tipo === "cotizacion" && (
-              <button className="btn-ghost" onClick={() => handleConvertQuote()} disabled={busy}>
-                <RefreshCw size={15} /> {busy ? "Convirtiendo…" : "Convertir a venta"}
-              </button>
-            )}
             <button className="btn-ghost" onClick={() => printSaleTicket(sale)} title="Imprimir ticket 80mm"><Printer size={15} /> Ticket</button>
             {sale.tipo === "venta" && sale.estado === "pagado" && !sale.factura && (
               <button className="btn-accent" onClick={() => setInvoiceModal(true)} disabled={busy}><ReceiptText size={15} /> Generar factura</button>
@@ -284,9 +244,8 @@ export default function SaleDetailPage() {
             {sale.factura && <Link to="/facturacion" className="btn-ghost text-xs">Ver factura {sale.factura.numero}</Link>}
             {/* Anular va último y en tono de alerta: deshace cosas —stock,
                 deuda, cobro— y no debería quedar al lado de "Cobrar". */}
-            {/* También se anulan cotizaciones: es lo que suelta el número de
-                venta que tenían apartado. Sin esto la reserva quedaba tomada
-                para siempre por un presupuesto que ya nadie iba a convertir. */}
+            {/* También se anulan cotizaciones: un presupuesto que ya no vale
+                tiene que poder cerrarse, aunque no haya nada que devolver. */}
             {sale.estado !== "cancelado" && (
               <button className="btn-ghost text-brick-500" onClick={handleAnular} disabled={busy}>
                 <Ban size={15} /> {sale.tipo === "venta" ? "Anular venta" : "Anular cotización"}
@@ -295,40 +254,6 @@ export default function SaleDetailPage() {
           </div>
         }
       />
-
-      {/*
-        * El motivo del rechazo, a la vista.
-        *
-        * Antes esto no existía: el error se perdía y el botón quedaba girando.
-        * Cuando lo único que falta es el local, se ofrece elegirlo acá mismo en
-        * vez de mandar a editar la cotización y volver.
-        */}
-      {convertError && (
-        <div className="mb-4 rounded-md border border-brick-500/30 bg-brick-50 px-3 py-2">
-          <p className="text-sm text-brick-500">{convertError}</p>
-          {locales.length > 0 && (
-            <div className="mt-2 flex flex-wrap items-center gap-2">
-              <select
-                className="input w-auto py-1 text-sm"
-                value={localElegido}
-                onChange={(e) => setLocalElegido(e.target.value)}
-              >
-                <option value="">Elegí el local…</option>
-                {locales.map((l) => (
-                  <option key={l.id} value={l.id}>{l.nombre}</option>
-                ))}
-              </select>
-              <button
-                className="btn-accent py-1 text-sm"
-                disabled={!localElegido || busy}
-                onClick={() => handleConvertQuote(Number(localElegido))}
-              >
-                Convertir desde este local
-              </button>
-            </div>
-          )}
-        </div>
-      )}
 
       <div className="grid gap-5 lg:grid-cols-3">
         <Card className="lg:col-span-2">
@@ -435,6 +360,17 @@ export default function SaleDetailPage() {
           </Card>
         </div>
       </div>
+
+      <ModalStockFaltante
+        open={Boolean(faltantesServidor)}
+        onClose={() => setFaltantesServidor(null)}
+        faltantes={faltantesServidor?.faltantes || []}
+        puedeConfirmar={faltantesServidor?.puedeConfirmar !== false}
+        local={faltantesServidor?.local}
+        confirmando={busy}
+        accion="cobrar"
+        onConfirmar={() => confirmarCobro({ confirmarAltaStock: true })}
+      />
 
       <Modal open={payModal} onClose={() => setPayModal(false)} title={`Cobrar venta ${sale.numero}`}>
         <div className="space-y-4">

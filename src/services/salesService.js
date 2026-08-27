@@ -58,26 +58,19 @@ export async function updateSaleStatus(numero, estado, medioPago) {
  * registra con qué se pagó: el reparto entre medios, sus recargos, y la
  * cancelación de la deuda si la venta era fiada.
  */
-export async function cobrarSale(numero, pagos) {
-  const { data } = await http.post(`/sales/${ref(numero)}/cobrar`, { pagos });
+export async function cobrarSale(numero, pagos, { confirmarAltaStock = false } = {}) {
+  /*
+   * `confirmarAltaStock` hace falta también acá.
+   *
+   * Una fiada que quedó señada descuenta el stock recién al cobrarla, y en el
+   * medio la mercadería pudo haberse vendido en otra caja. Sin poder confirmar
+   * desde esta pantalla, esa venta quedaba trabada sin salida.
+   */
+  const { data } = await http.post(`/sales/${ref(numero)}/cobrar`, { pagos, confirmarAltaStock });
   return data;
 }
 
-/*
- * Pasa la cotización a venta.
- *
- * `locationId` va explícito: la cotización pudo haberse hecho sin local
- * —no descuenta stock, así que no hacía falta— pero la venta necesita saber
- * de dónde sale la mercadería. Sin esto el backend contestaba 400 pidiendo el
- * local y la pantalla no tenía forma de darlo.
- */
-export async function convertQuote(numero, locationId) {
-  const { data } = await http.post(
-    `/sales/cotizacion/${ref(numero)}/convertir`,
-    locationId ? { locationId } : {},
-  );
-  return data;
-}
+
 
 // Descarga el PDF del ticket 80mm y lo abre en una nueva pestaña (para imprimir)
 export async function printSaleTicket(sale) {
