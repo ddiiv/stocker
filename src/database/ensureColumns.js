@@ -101,6 +101,12 @@ const COLUMNAS_ESPERADAS = {
     // 'permitir': es lo que pide el mostrador y lo que evita perder la venta.
     ventaSinStock: { type: DataTypes.STRING(10), allowNull: false, defaultValue: 'permitir' },
   },
+  products: {
+    // Producto de feria: se vende sin llevar inventario. Ver el modelo.
+    esFeria:         { type: DataTypes.BOOLEAN, allowNull: true, defaultValue: false },
+    origenProductId: { type: DataTypes.INTEGER, allowNull: true },
+  },
+
   sales: {
     // El número de venta que una cotización tiene apartado. Ver el modelo.
     numeroVenta: { type: DataTypes.STRING(25), allowNull: true },
@@ -213,6 +219,20 @@ const INDICES = [
 ];
 
 const RELLENOS = [
+  {
+    descripcion: 'productos anteriores a la feria marcados como catálogo normal',
+    cuandoSeAgrega: 'products.esFeria',
+    /*
+     * Reintentable y con guarda de NULL: la columna se agregó a una tabla que ya
+     * tenía filas, así que todo lo anterior quedó en NULL. Un NULL acá no es
+     * inocuo — en SQL, "no es de feria" preguntado sobre NULL da NULL, y la fila
+     * queda afuera del filtro sin que nadie se entere.
+     */
+    reintentable: true,
+    sql: 'UPDATE products SET "esFeria" = false WHERE "esFeria" IS NULL',
+    sqlMssql: 'UPDATE products SET esFeria = 0 WHERE esFeria IS NULL',
+  },
+
   {
     // Los medios que ya existen y se llaman "Efectivo" quedan marcados solos:
     // si no, al deployar el arqueo dejaría de contar las ventas en efectivo.

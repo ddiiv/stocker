@@ -40,7 +40,17 @@ const getLocations = async (req, res, next) => {
  * escrito haría que el lugar no aparezca ni como local de venta ni como
  * depósito, y sería invisible en las dos pantallas a la vez.
  */
-const TIPOS_LOCAL = ['local', 'deposito', 'online'];
+/*
+ * Los cuatro tipos de lugar, y qué puede hacer cada uno.
+ *
+ *   local     vende, recibe reposición, lleva stock.
+ *   deposito  no vende: es la puerta de entrada de la mercadería nueva.
+ *   online    vende y lleva stock; el suyo es el que se publica en MercadoLibre.
+ *   feria     vende SIN stock. Sólo se registra qué se vendió, no cuánto queda.
+ *             Queda afuera del depósito, de la reposición y de MercadoLibre, y
+ *             sólo admite productos de feria.
+ */
+const TIPOS_LOCAL = ['local', 'deposito', 'online', 'feria'];
 
 const createLocation = async (req, res, next) => {
   try {

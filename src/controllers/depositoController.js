@@ -74,17 +74,39 @@ const lugares = async (req, res, next) => {
  * Plan A (`origen: 'etiquetas'`): sube el stock en el acto.
  * Plan B (`origen: 'conteo'`): queda pendiente de que oficina lo acepte.
  */
+/*
+ * GET /api/deposito/curva?productId=..&valor=Negro
+ *
+ * Qué talles abre una curva de ese producto y ese color, para que la pantalla
+ * muestre la corrida antes de confirmar. Sin esto habría que adivinar cuántas
+ * unidades son 20 curvas.
+ */
+const curva = async (req, res, next) => {
+  try {
+    const productId = Number(req.query.productId);
+    if (!productId) return res.status(400).json({ message: 'Falta el producto.' });
+    const data = await deposito.ejeDeCurva(productId, req.auth.businessId, req.query.valor);
+    res.json({
+      ...data,
+      // Lo que entra si se cargan N curvas parejas, para poder mostrarlo antes.
+      unidadesPorCurva: data.valores.length,
+    });
+  } catch (e) { next(e); }
+};
+
 const crear = async (req, res, next) => {
   const t = await sequelize.transaction();
   try {
-    const { items = [], notas, origen = 'etiquetas', pedidoId = null } = req.body;
+    // `curvas` es la forma corta de cargar corridas completas; conviven con las
+    // líneas sueltas en el mismo remito. Ver expandirCurvas en el servicio.
+    const { items = [], curvas = [], notas, origen = 'etiquetas', pedidoId = null } = req.body;
     const locationId = await depositoDe(req, req.body.locationId);
 
     const { ingreso } = await deposito.registrarIngreso({
       businessId: req.auth.businessId,
       locationId,
       employeeId: req.auth.employeeId || null,
-      origen, items, notas, pedidoId,
+      origen, items, curvas, notas, pedidoId,
       transaction: t,
     });
     await t.commit();
@@ -205,4 +227,5 @@ const etiquetas = async (req, res, next) => {
   }
 };
 
-module.exports = { listar, lugares, crear, aceptar, rechazar, anular, etiquetas };
+module.exports = {
+  curva, listar, lugares, crear, aceptar, rechazar, anular, etiquetas };

@@ -593,6 +593,19 @@ const createSale = async (req, res, next) => {
     });
     const politicaSinStock = negocio?.ventaSinStock === 'bloquear' ? 'bloquear' : 'permitir';
 
+    /*
+     * Si se está vendiendo en un puesto de feria.
+     *
+     * Se resuelve una vez, acá, y no dentro del bucle de líneas: el lugar es el
+     * mismo para toda la venta y son decenas de líneas. Va después de que
+     * `locationId` quedó decidido —lo elige el empleado, el dueño o el sistema
+     * cuando hay uno solo—, que es el único momento en que se sabe cuál es.
+     */
+    const localDeLaVenta = locationId
+      ? await BusinessLocation.findByPk(locationId, { attributes: ['id', 'tipo'], transaction: t })
+      : null;
+    const esLocalDeFeria = localDeLaVenta?.tipo === 'feria';
+
     // Lo que se vendió sin tener: se devuelve con la venta para poder avisarlo.
     const faltantes = [];
 
@@ -620,7 +633,37 @@ const createSale = async (req, res, next) => {
        * Se exige cuando la mercadería sale ahora, esté cobrada o fiada: lo que
        * importa es que salga del depósito, no que haya entrado la plata.
        */
-      if (sacaMercaderia) {
+      /*
+       * Feria y catálogo normal no se mezclan.
+       *
+       * Un producto de feria tiene su propio precio y no lleva stock; uno
+       * normal lleva stock y tiene el precio del local. Venderlos en el lugar
+       * equivocado sería cobrar el precio de otro mundo, y en el caso del de
+       * feria en un local normal, además, sacar mercadería que nadie contó.
+       *
+       * Se comprueba por línea y no una sola vez: alcanza con que UNA línea
+       * esté cruzada para que la venta entera esté mal.
+       */
+      const productoEsFeria = Boolean(variant.producto?.esFeria);
+      if (productoEsFeria && !esLocalDeFeria) {
+        throw Object.assign(new Error(
+          `"${variant.producto.titulo}" es un producto de feria y sólo se vende en un puesto de feria.`,
+        ), { status: 400, codigo: 'FERIA_LOCAL_EQUIVOCADO' });
+      }
+      if (!productoEsFeria && esLocalDeFeria) {
+        throw Object.assign(new Error(
+          `En un puesto de feria sólo se venden productos de feria. "${variant.producto.titulo}" es del catálogo normal.`,
+        ), { status: 400, codigo: 'FERIA_LOCAL_EQUIVOCADO' });
+      }
+
+      /*
+       * Un producto de feria no consulta stock ni lo descuenta.
+       *
+       * Es el punto de la feria: se registra QUÉ se vendió, no cuánto queda.
+       * Comprobar disponibilidad acá daría siempre cero y frenaría —o marcaría
+       * como faltante— cada venta del puesto.
+       */
+      if (sacaMercaderia && !productoEsFeria) {
         /*
          * Se comprueba contra el stock DEL LOCAL de la venta.
          *

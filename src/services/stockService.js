@@ -12,7 +12,8 @@
  */
 
 const { Op } = require('sequelize');
-const { ProductVariant, VariantStock, BusinessLocation, StockMovement, Employee } = require('../models');
+const { ProductVariant, VariantStock, BusinessLocation, StockMovement, Employee, Product } = require('../models');
+const { CON_STOCK } = require('../config/lugares');
 
 /*
  * A qué local va un movimiento que no lo aclara.
@@ -66,6 +67,21 @@ async function resolverLocal({ locationId, businessId, employeeId = null, transa
   return localPorDefecto(businessId, transaction);
 }
 
+/*
+ * Si la variante pertenece a un producto de feria.
+ *
+ * Una sola lectura por id de producto. Se usa en el punto más caliente del
+ * sistema, así que se piden sólo las dos columnas que hacen falta.
+ */
+async function esVarianteDeFeria(variantId, transaction = null) {
+  const v = await ProductVariant.findByPk(variantId, {
+    attributes: ['id', 'productId'],
+    include: [{ model: Product, as: 'producto', attributes: ['id', 'esFeria'] }],
+    transaction,
+  });
+  return Boolean(v?.producto?.esFeria);
+}
+
 async function localPorDefecto(businessId, transaction = null) {
   /*
    * Se prefiere un local de venta antes que un depósito.
@@ -76,7 +92,10 @@ async function localPorDefecto(businessId, transaction = null) {
    * aparecía en la bodega. Sólo se cae al depósito cuando no hay otra cosa.
    */
   const local = await BusinessLocation.findOne({
-    where: { businessId, activo: true, tipo: { [Op.ne]: 'deposito' } },
+    // Sólo lugares que llevan inventario. Una feria no puede ser el destino por
+    // defecto de un movimiento: no anota stock, así que las unidades se
+    // perderían sin que nada avise.
+    where: { businessId, activo: true, tipo: { [Op.in]: CON_STOCK } },
     order: [['id', 'ASC']],
     transaction,
   });
@@ -145,6 +164,29 @@ async function mover({
   registrarMovimiento = true,
 }) {
   if (delta === null && fijar === null) throw new Error('mover() necesita delta o fijar.');
+
+  /*
+   * Un producto de feria no mueve stock. Nunca.
+   *
+   * Esta es la garantía, no una validación más: `mover` es el único lugar del
+   * sistema que escribe inventario, así que cortando acá ningún camino —venta,
+   * anulación, ajuste, escáner, importación, transferencia, reposición— puede
+   * dejarle stock a un producto que por definición no lo lleva. Los caminos
+   * normales ni siquiera llegan hasta acá: la venta saltea las líneas de feria
+   * antes. Esto es lo que atrapa al camino que alguien agregue mañana y se
+   * olvide de saltearlas.
+   *
+   * Corta con error y no en silencio: que un producto de feria llegue hasta acá
+   * significa que hay un camino mal escrito, y un no-op lo dejaría escondido
+   * hasta que alguien notara números raros meses después.
+   */
+  const deFeria = await esVarianteDeFeria(variantId, t);
+  if (deFeria) {
+    const err = new Error('Los productos de feria no llevan stock: no se les puede registrar un movimiento.');
+    err.status = 409;
+    err.codigo = 'FERIA_SIN_STOCK';
+    throw err;
+  }
 
   const local = locationId || await localPorDefecto(businessId, t);
   if (!local) {
@@ -275,4 +317,4 @@ async function transferir({ variantId, businessId, desde, hacia, cantidad, emplo
   return { salida, entrada };
 }
 
-module.exports = { mover, stockEn, desglosePorVariante, transferir, localPorDefecto, resolverLocal, recalcularTotal };
+module.exports = { mover, stockEn, desglosePorVariante, transferir, localPorDefecto, resolverLocal, recalcularTotal, esVarianteDeFeria };

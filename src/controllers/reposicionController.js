@@ -171,15 +171,27 @@ const registrarFaltante = async (req, res, next) => {
 const aprobar = async (req, res, next) => {
   const t = await sequelize.transaction();
   try {
-    const pedido = await reposicion.aprobar({
+    const { pedido, resumen, aviso } = await reposicion.aprobar({
       pedidoId: req.params.id, businessId: req.auth.businessId,
       employeeId: req.auth.employeeId || null,
-      // Aprobar sabiendo que falta es una decisión, y se toma explícitamente.
-      aceptarParcial: req.body?.aceptarParcial === true,
       transaction: t,
     });
     await t.commit();
-    res.json({ ok: true, pedido, mensaje: `Pedido ${pedido.numero} aprobado: ya lo ve el equipo de reposición.` });
+
+    /*
+     * El mensaje dice si se aprobó con faltante.
+     *
+     * Un "listo" a secas sobre un pedido que el depósito no puede cumplir es
+     * peor que no decir nada: el local se queda esperando mercadería que en los
+     * papeles no está. El aviso viaja aparte del mensaje para que la pantalla
+     * pueda mostrarlo en otro tono.
+     */
+    res.json({
+      ok: true, pedido, resumen, aviso,
+      mensaje: aviso
+        ? `Pedido ${pedido.numero} aprobado. ${aviso}`
+        : `Pedido ${pedido.numero} aprobado: ya lo ve el equipo de reposición.`,
+    });
   } catch (e) { await t.rollback().catch(() => {}); next(e); }
 };
 

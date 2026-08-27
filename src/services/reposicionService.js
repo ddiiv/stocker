@@ -197,7 +197,7 @@ async function disponibilidad(pedidoId, businessId, t = null) {
 }
 
 /** Oficina aprueba: recién ahí el pedido llega a reposición. */
-async function aprobar({ pedidoId, businessId, employeeId = null, aceptarParcial = false, transaction: t }) {
+async function aprobar({ pedidoId, businessId, employeeId = null, transaction: t }) {
   const pedido = await PedidoReposicion.findOne({ where: { id: pedidoId, businessId }, transaction: t });
   if (!pedido) throw error('Pedido no encontrado.', 404);
   if (pedido.estado !== 'pendiente') {
@@ -205,49 +205,44 @@ async function aprobar({ pedidoId, businessId, employeeId = null, aceptarParcial
   }
 
   /*
-   * No se aprueba a ciegas: se mira si la mercadería está.
+   * Se mira el stock, pero no frena.
    *
-   * Sin esta comprobación, oficina firmaba y el faltante se descubría recién
-   * en el depósito, con el pedido ya en marcha y el local esperando. Ahora la
-   * aprobación es una decisión tomada sobre el stock real.
+   * Antes, un pedido sin stock declarado se rechazaba de plano. La realidad del
+   * depósito es otra: hay mercadería física que todavía no se cargó, y frenar
+   * ahí obligaba a inventar un ingreso sólo para poder aprobar algo que ya
+   * estaba en el estante.
+   *
+   * Así que la aprobación pasa siempre, y lo que hace la disponibilidad es
+   * informar: oficina firma sabiendo qué falta según los papeles. El aviso
+   * queda escrito en el pedido, que es la diferencia entre "el depósito mandó
+   * de menos" y "se aprobó sabiendo que faltaba" — sin eso, el local reclama al
+   * depósito por una decisión que se tomó en oficina.
+   *
+   * Lo que sigue igual: nadie despacha lo que no está. El armado del pedido
+   * comprueba contra el stock real y lo que no aparece va a la lista de
+   * faltantes, con su propio circuito. La aprobación es un permiso, no una
+   * promesa de que la mercadería está.
    */
   const { resumen } = await disponibilidad(pedidoId, businessId, t);
 
-  if (resumen.estado === 'sin_stock') {
-    throw error(
-      'No hay nada de este pedido en el depósito. Lo que corresponde es rechazarlo, '
-      + 'o cargar primero la mercadería desde Depósito si está físicamente sin registrar.',
-      409,
-      // Va en `detalles`: es lo único que el manejador de errores reenvía al
-      // cliente, y la pantalla lo necesita para ofrecer la salida correcta.
-      { detalles: { codigo: 'SIN_STOCK_TOTAL', resumen } },
-    );
-  }
-
-  if (resumen.estado === 'parcial' && !aceptarParcial) {
-    throw error(
-      `De ${resumen.lineas} artículos hay ${resumen.completas} completos y ${resumen.conFalta} con faltante `
-      + `(${resumen.unidadesFaltantes} unidades). Podés aprobarlo igual como parcial —el depósito manda lo que hay— o rechazarlo.`,
-      409,
-      { detalles: { codigo: 'STOCK_PARCIAL', resumen } },
-    );
-  }
+  const aviso = resumen.estado === 'sin_stock'
+    ? `Aprobado sin stock declarado: los ${resumen.lineas} artículos figuran en cero en el depósito.`
+    : resumen.estado === 'parcial'
+      ? `Aprobado con faltante: ${resumen.unidadesFaltantes} unidades en ${resumen.conFalta} de ${resumen.lineas} artículo(s).`
+      : null;
 
   await pedido.update({
     estado: 'aprobado',
     aprobadoPorEmployeeId: employeeId,
     aprobadoEn: new Date(),
-    /*
-     * Queda anotado que se aprobó sabiendo que faltaba. Es la diferencia entre
-     * "el depósito mandó de menos" y "se aprobó así": sin la nota, el local
-     * reclama al depósito por algo que oficina ya había decidido.
-     */
-    notas: resumen.estado === 'parcial'
-      ? [pedido.notas, `Aprobado parcial: faltan ${resumen.unidadesFaltantes} unidades en ${resumen.conFalta} artículo(s).`]
-        .filter(Boolean).join(' · ').slice(0, 500)
+    notas: aviso
+      ? [pedido.notas, aviso].filter(Boolean).join(' · ').slice(0, 500)
       : pedido.notas,
   }, { transaction: t });
-  return pedido;
+
+  // El resumen vuelve con el pedido para que la pantalla muestre qué se aprobó
+  // sabiendo que faltaba, en vez de dar un "listo" que oculta el faltante.
+  return { pedido, resumen, aviso };
 }
 
 /** Oficina rechaza, siempre con el porqué. Queda en el historial. */

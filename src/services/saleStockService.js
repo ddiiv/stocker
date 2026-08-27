@@ -48,6 +48,17 @@ async function descontarStockVenta(sale, t, { employeeId = null, motivo = null }
   for (const item of items) {
     if (!item.productVariantId) continue;
 
+    /*
+     * Las líneas de feria no mueven inventario.
+     *
+     * Un producto de feria se vende sin llevar stock: lo único que importa es
+     * que quede registrado qué salió. Saltear acá es lo que hace que una venta
+     * mixta no rompa —aunque hoy no puedan mezclarse— y, sobre todo, que la
+     * venta nunca llegue a `stockService.mover`, que rechaza estas variantes
+     * como último resguardo.
+     */
+    if (await stockService.esVarianteDeFeria(item.productVariantId, t)) continue;
+
     // Con la fila bloqueada: dos cajas cobrando la última unidad a la vez no
     // pueden leer las dos el mismo stock y venderla dos veces.
     const variant = await ProductVariant.findByPk(item.productVariantId, {
@@ -122,6 +133,12 @@ async function devolverStockVenta(sale, t, { employeeId = null, motivo = null } 
 
   for (const item of items) {
     if (!item.productVariantId) continue;
+
+    // Si al vender no se descontó —porque es de feria— al anular no hay nada
+    // que devolver. Sin esto, anular una venta de feria le inventaría stock a
+    // un producto que no lleva.
+    if (await stockService.esVarianteDeFeria(item.productVariantId, t)) continue;
+
     const variant = await ProductVariant.findByPk(item.productVariantId, { transaction: t });
     if (!variant) continue;
 

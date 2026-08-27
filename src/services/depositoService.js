@@ -28,6 +28,7 @@ const {
 } = require('../models');
 const stockService = require('./stockService');
 const { ultimoCorrelativo } = require('./invoiceNumberService');
+const { RECIBEN_REPOSICION } = require('../config/lugares');
 
 const ESTADOS = ['pendiente', 'aplicado', 'rechazado', 'anulado'];
 
@@ -52,8 +53,11 @@ async function depositos(businessId, t = null) {
  * publica en MercadoLibre.
  */
 async function locales(businessId, t = null) {
+  // Los que reciben reposición, que NO es lo mismo que "los que no son
+  // depósito": un puesto de feria vende pero no lleva stock, así que mandarle
+  // mercadería desde el depósito no tendría a dónde anotarla.
   return BusinessLocation.findAll({
-    where: { businessId, activo: true, tipo: { [Op.ne]: 'deposito' } },
+    where: { businessId, activo: true, tipo: { [Op.in]: RECIBEN_REPOSICION } },
     order: [['nombre', 'ASC']],
     transaction: t,
   });
@@ -124,7 +128,7 @@ async function armarItems(items, businessId, t = null) {
   const ids = [...porVariante.keys()];
   const variantes = await ProductVariant.findAll({
     where: { id: { [Op.in]: ids }, businessId },
-    include: [{ model: Product, as: 'producto', attributes: ['titulo'] }],
+    include: [{ model: Product, as: 'producto', attributes: ['titulo', 'esFeria'] }],
     transaction: t,
   });
   if (variantes.length !== ids.length) {
@@ -133,12 +137,136 @@ async function armarItems(items, businessId, t = null) {
     throw error(`Hay ${faltan.length} artículo(s) que no pertenecen a este negocio.`, 400);
   }
 
+  // Un producto de feria no lleva inventario, así que no tiene nada que hacer
+  // en un remito de depósito. Se corta acá, que es por donde entran TODAS las
+  // líneas de un ingreso, vengan de una curva o cargadas a mano.
+  const feria = variantes.find((v) => v.producto?.esFeria);
+  if (feria) {
+    throw error(
+      `"${feria.producto.titulo}" es un producto de feria: no lleva stock y no entra al depósito.`,
+      400, { codigo: 'FERIA_SIN_STOCK' },
+    );
+  }
+
   return variantes.map((v) => ({
     productVariantId: v.id,
     cantidad: porVariante.get(v.id),
     sku: v.sku,
     descripcion: [v.producto?.titulo, v.variante1Valor, v.variante2Valor].filter(Boolean).join(' · ').slice(0, 255),
   }));
+}
+
+/*
+ * Ingreso por curvas.
+ *
+ * Una curva es cómo llega la mercadería del proveedor: no se compran unidades
+ * sueltas, se compran corridas. "20 curvas de pantalón recto negro" quiere
+ * decir 20 de cada talle de ese color — si el modelo tiene 5 talles, entran
+ * 100 unidades y 20 quedan en cada una.
+ *
+ * Cargarlo talle por talle es escribir cinco líneas para decir una sola cosa, y
+ * con veinte modelos por camión es donde aparecen los errores de tipeo.
+ *
+ * Se expande acá, en el servidor, y no en la pantalla: la regla queda escrita
+ * una sola vez, se puede probar, y el ingreso sigue guardándose como líneas
+ * planas — así todo lo que ya existe (el remito, las etiquetas, la aprobación
+ * de oficina) funciona sin enterarse de que hubo una curva.
+ */
+
+/*
+ * Sobre qué eje se abre la curva, y qué valores tiene.
+ *
+ * Con dos dimensiones —color y talle— se fija el color y la curva recorre los
+ * talles, que es el caso de indumentaria. Con una sola, la curva recorre esa:
+ * "20 curvas" de un producto que sólo tiene colores son 20 de cada color. Sin
+ * esta segunda forma, un producto de una dimensión no podría cargarse por
+ * curva y habría que explicar por qué.
+ */
+async function ejeDeCurva(productId, businessId, valorFijo, t = null) {
+  const variantes = await ProductVariant.findAll({
+    where: { productId, businessId, activo: true },
+    include: [{ model: Product, as: 'producto', attributes: ['id', 'titulo', 'esFeria'], required: true }],
+    transaction: t,
+  });
+  if (!variantes.length) throw error('Ese producto no tiene variantes activas.', 404);
+  if (variantes[0].producto?.esFeria) {
+    throw error('Los productos de feria no llevan stock: no entran al depósito.', 400, { codigo: 'FERIA_SIN_STOCK' });
+  }
+
+  const tieneDos = variantes.some((v) => v.variante2Valor);
+
+  if (!tieneDos) {
+    return {
+      titulo: variantes[0].producto.titulo,
+      eje: variantes[0].variante1Nombre || 'Variante',
+      fijo: null,
+      valores: variantes.map((v) => ({
+        variantId: v.id, valor: v.variante1Valor || '(única)', sku: v.sku,
+      })),
+    };
+  }
+
+  const fijo = String(valorFijo || '').trim();
+  if (!fijo) {
+    const opciones = [...new Set(variantes.map((v) => v.variante1Valor).filter(Boolean))];
+    throw error(
+      `Elegí ${(variantes[0].variante1Nombre || 'la variante').toLowerCase()} para armar la curva: ${opciones.join(', ')}.`,
+      400,
+    );
+  }
+
+  const dela = variantes.filter(
+    (v) => String(v.variante1Valor || '').toLowerCase() === fijo.toLowerCase(),
+  );
+  if (!dela.length) {
+    throw error(`No hay variantes de "${fijo}" en ese producto.`, 404);
+  }
+
+  return {
+    titulo: variantes[0].producto.titulo,
+    eje: dela[0].variante2Nombre || 'Talle',
+    fijo: dela[0].variante1Valor,
+    valores: dela.map((v) => ({ variantId: v.id, valor: v.variante2Valor || '(única)', sku: v.sku })),
+  };
+}
+
+/*
+ * Convierte curvas en líneas planas.
+ *
+ * `cantidad` reparte parejo, que es el caso de tu ejemplo. `porValor` permite
+ * la curva despareja —1-2-2-1 en S-M-L-XL— que es como suele venir realmente
+ * una compra de indumentaria; sin eso, la primera compra real no entraría.
+ */
+async function expandirCurvas(curvas, businessId, t = null) {
+  const lineas = [];
+  for (const c of Array.isArray(curvas) ? curvas : []) {
+    const productId = Number(c?.productId);
+    if (!productId) throw error('Cada curva necesita el producto.', 400);
+
+    const { valores, titulo } = await ejeDeCurva(productId, businessId, c?.valor, t);
+
+    const porValor = c?.porValor && typeof c.porValor === 'object' ? c.porValor : null;
+    const pareja = Number(c?.cantidad);
+
+    if (!porValor && (!Number.isInteger(pareja) || pareja <= 0)) {
+      throw error(`Poné cuántas curvas entran de "${titulo}".`, 400);
+    }
+
+    let algo = false;
+    for (const v of valores) {
+      const n = porValor
+        ? Number(porValor[v.valor] ?? porValor[String(v.valor)] ?? 0)
+        : pareja;
+      if (!n) continue;
+      if (!Number.isInteger(n) || n < 0) {
+        throw error(`La cantidad de "${v.valor}" tiene que ser un número entero.`, 400);
+      }
+      lineas.push({ productVariantId: v.variantId, cantidad: n });
+      algo = true;
+    }
+    if (!algo) throw error(`La curva de "${titulo}" quedó sin ninguna unidad.`, 400);
+  }
+  return lineas;
 }
 
 /** Sube al depósito todas las líneas de un ingreso, cada una con su movimiento. */
@@ -165,13 +293,23 @@ async function aplicarStock(ingreso, items, employeeId, t) {
  */
 async function registrarIngreso({
   businessId, locationId, employeeId = null, origen = 'etiquetas',
-  items = [], notas = null, pedidoId = null, transaction: t,
+  items = [], curvas = [], notas = null, pedidoId = null, transaction: t,
 }) {
   if (!['etiquetas', 'conteo'].includes(origen)) {
     throw error('El origen del ingreso tiene que ser "etiquetas" o "conteo".', 400);
   }
   await exigirDeposito(locationId, businessId, t);
-  const lineas = await armarItems(items, businessId, t);
+
+  /*
+   * Curvas y líneas sueltas conviven en el mismo ingreso.
+   *
+   * Un camión trae corridas completas de algunos modelos y unidades sueltas de
+   * otros; obligar a cargarlo en dos remitos separados sería partir en dos algo
+   * que llegó junto. `armarItems` ya suma las repetidas, así que si una curva y
+   * una línea suelta caen sobre la misma variante, quedan sumadas.
+   */
+  const deCurvas = await expandirCurvas(curvas, businessId, t);
+  const lineas = await armarItems([...(Array.isArray(items) ? items : []), ...deCurvas], businessId, t);
 
   const estado = origen === 'etiquetas' ? 'aplicado' : 'pendiente';
   const ingreso = await StockIngreso.create({
@@ -351,4 +489,5 @@ module.exports = {
   ESTADOS,
   depositos, locales, exigirDeposito, siguienteNumero, armarItems,
   registrarIngreso, aceptarIngreso, rechazarIngreso, anularIngreso, listarIngresos,
+  ejeDeCurva, expandirCurvas,
 };

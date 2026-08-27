@@ -8,6 +8,7 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 
 const { register, login, employeeLogin, logout, me, forgotPassword, verifyResetCode, resetPassword } = require('../controllers/authController');
 const { validatePasswordBody } = require('../utils/passwordPolicy');
 const productCtrl  = require('../controllers/productController');
+const feriaCtrl    = require('../controllers/feriaController');
 const employeeCtrl = require('../controllers/employeeController');
 const saleCtrl     = require('../controllers/saleController');
 const invoiceCtrl  = require('../controllers/invoiceController');
@@ -176,6 +177,18 @@ r.post('/account/password/confirmar', requireAuth, requireOwner, validatePasswor
 // El candado vive ahora dentro de requireAuth (middleware/auth.js): acá corría
 // antes de que existiera req.auth y por eso dejaba pasar todo. La lista de
 // rutas exentas está en middleware/plan.js.
+
+/*
+ * Feria.
+ *
+ * Preparar el catálogo de un puesto de feria es trabajo de stock: se eligen
+ * productos del catálogo normal y se genera su versión sin variantes. Vender en
+ * la feria, en cambio, es el punto de venta de siempre — no hay rutas de venta
+ * acá.
+ */
+r.get ('/feria/candidatos', requireAuth, requirePermission('stock', 'ver'),    feriaCtrl.getCandidatos);
+r.get ('/feria/productos',  requireAuth, requireAnyPermission(['stock', 'ventas'], 'ver'), feriaCtrl.getProductos);
+r.post('/feria/generar',    requireAuth, requirePermission('stock', 'editar'), feriaCtrl.postGenerar);
 
 // ── Locations ─────────────────────────────────────────────────────
 // El listado queda con requireAuth solo: lo necesitan casi todas las pantallas
@@ -362,6 +375,7 @@ r.delete('/payment-methods/:id', requireAuth, requirePermission('pagos','editar'
  */
 r.get   ('/deposito/lugares',                requireAuth, requireAnyPermission(['deposito','reposicion','stock'],'ver'), depositoCtrl.lugares);
 r.get   ('/deposito/ingresos',               requireAuth, requireAnyPermission(['deposito','aprobaciones'],'ver'),       depositoCtrl.listar);
+r.get   ('/deposito/curva',                  requireAuth, requirePermission('deposito','ver'),                          depositoCtrl.curva);
 r.post  ('/deposito/ingresos',               requireAuth, requirePermission('deposito','editar'),                        depositoCtrl.crear);
 r.post  ('/deposito/ingresos/:id/etiquetas', requireAuth, requirePermission('deposito','ver'),                           depositoCtrl.etiquetas);
 r.post  ('/deposito/ingresos/:id/aceptar',   requireAuth, requirePermission('aprobaciones','editar'),                    depositoCtrl.aceptar);

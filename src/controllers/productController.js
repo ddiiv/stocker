@@ -1,6 +1,7 @@
 const { Op, fn, col } = require('sequelize');
 const sequelize = require('../config/database');
 const { Product, ProductVariant, StockMovement, Employee, BusinessLocation, VariantStock } = require('../models');
+const { NO_ES_FERIA } = require('../utils/feria');
 const { ilikeOperator } = require('../utils/sqlHelpers');
 const { exportProductsXlsx, importProductsXlsx } = require('../services/productExcelService');
 const { exigirCupo } = require('../services/planService');
@@ -118,8 +119,18 @@ function faltantesDeProducto(cuerpo) {
 // ── GET /api/products ──────────────────────────────────────────────
 const getProducts = async (req, res, next) => {
   try {
-    const { search, categoria, genero, page = 1, limit = 20 } = req.query;
+    const { search, categoria, genero, page = 1, limit = 20, feria } = req.query;
     const where = { businessId: req.auth.businessId, activo: true };
+    /*
+     * Los de feria no se mezclan con el catálogo normal.
+     *
+     * Tienen su propia pantalla porque son otra cosa: sin variantes, sin stock
+     * y con otro precio. Metidos acá duplicarían la lista —un "Loan Pantalón"
+     * normal y otro de feria— y las columnas de stock quedarían en cero sin que
+     * eso signifique nada.
+     */
+    if (feria === '1' || feria === 'true') where.esFeria = true;
+    else Object.assign(where, NO_ES_FERIA);
     if (categoria) where.categoria = categoria;
     if (genero)    where.genero    = genero;
     if (search) {
@@ -245,6 +256,9 @@ const buscarVariantes = async (req, res, next) => {
         skuAgrupador: v.producto.skuAgrupador,
         categoria: v.producto.categoria,
         productId: v.producto.id,
+        // El punto de venta lo necesita para avisar antes de intentar la venta:
+        // un artículo de feria sólo se vende en un puesto de feria.
+        esFeria: Boolean(v.producto.esFeria),
         variante1Nombre: v.variante1Nombre, variante1Valor: v.variante1Valor,
         variante2Nombre: v.variante2Nombre, variante2Valor: v.variante2Valor,
         stock: Number(v.stock) || 0,
@@ -472,7 +486,16 @@ const scanLookup = async (req, res, next) => {
      * total hace creer que hay unidades cuando están en la otra sucursal.
      */
     const locationId = Number(req.query.locationId) || null;
-    const enLocal = locationId
+
+    /*
+     * Un artículo de feria no tiene stock que consultar.
+     *
+     * Preguntarlo devolvería cero y el punto de venta mostraría "sin stock"
+     * sobre algo que se vende igual. Se responde null, que es lo honesto: no es
+     * que no haya, es que no se lleva la cuenta.
+     */
+    const esFeria = Boolean(variant.producto.esFeria);
+    const enLocal = locationId && !esFeria
       ? await stockService.stockEn(variant.id, locationId)
       : null;
     res.json({
@@ -481,6 +504,9 @@ const scanLookup = async (req, res, next) => {
       codigoBarras: variant.codigoBarras,
       titulo: variant.producto.titulo,
       skuAgrupador: variant.producto.skuAgrupador,
+      // Lo mira el punto de venta para mostrar el cartel de feria y para no
+      // pedir talle ni color, que estos productos no tienen.
+      esFeria,
       variante1Nombre: variant.variante1Nombre,
       variante1Valor:  variant.variante1Valor,
       variante2Nombre: variant.variante2Nombre,

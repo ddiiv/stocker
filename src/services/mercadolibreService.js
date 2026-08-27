@@ -20,6 +20,7 @@
  *   ML_REDIRECT_URI    — Redirect URI registrada (ej. https://tu-back.railway.app/api/mercadolibre/callback)
  */
 
+const { NO_ES_FERIA } = require('../utils/feria');
 const axios = require('axios');
 const { MercadoLibreAccount, MercadoLibreLink, ProductVariant, Product, BusinessLocation } = require('../models');
 const stockService = require('./stockService');
@@ -312,7 +313,15 @@ async function sincronizarStock(businessId, { simular = false, skus = null } = {
 
   // Stock actual en Stocker
   const variantes = await ProductVariant.findAll({
-    include: [{ model: Product, as: 'producto', where: { businessId, activo: true } }],
+    /*
+     * Los de feria quedan afuera: no llevan stock, así que publicar el suyo
+     * sería anunciar cero unidades de algo que se vende igual, o peor, pisar la
+     * publicación de su equivalente del catálogo normal.
+     */
+    include: [{
+      model: Product, as: 'producto', required: true,
+      where: { businessId, activo: true, ...NO_ES_FERIA },
+    }],
   });
 
   const resultados = [];

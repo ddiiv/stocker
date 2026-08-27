@@ -435,7 +435,7 @@ const BusinessLocation = db.define('BusinessLocation', {
    * Un negocio puede tener varios depósitos. Los que ya existían son locales:
    * es lo que eran hasta ahora y cambiarlos por adivinanza rompería sus ventas.
    */
-  tipo:       { type: DataTypes.STRING(20), allowNull: false, defaultValue: 'local' }, // local|deposito|online
+  tipo:       { type: DataTypes.STRING(20), allowNull: false, defaultValue: 'local' }, // local|deposito|online|feria
   activo:     { type: DataTypes.BOOLEAN, defaultValue: true },
 }, { tableName: 'business_locations' });
 
@@ -548,6 +548,29 @@ const Product = db.define('Product', {
   genero:             { type: DataTypes.STRING(40) },
   activo:             { type: DataTypes.BOOLEAN, defaultValue: true },
   fechaActualizacion: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+  /*
+   * Producto de feria: se vende sin llevar inventario.
+   *
+   * Hay negocios con puestos de feria donde lo único que importa es registrar
+   * QUÉ se vendió, no cuánto queda. Estos productos tienen un solo SKU —el
+   * padre ES la variante, sin color ni talle—, precio propio, y su stock no se
+   * consulta ni se mueve nunca.
+   *
+   * Es una bandera y no una tabla aparte porque siguen siendo productos: se
+   * venden, se facturan y se cuentan en el total del negocio como cualquier
+   * otro. Lo único que cambia es que quedan afuera de todo lo que presupone un
+   * inventario — depósito, reposición, MercadoLibre y Stock a regularizar.
+   */
+  esFeria:        { type: DataTypes.BOOLEAN, defaultValue: false },
+  /*
+   * De qué producto del catálogo normal salió este de feria.
+   *
+   * Se guarda para poder decir "esto es el Loan Pantalón" cuando alguien mira
+   * el de feria, y para no generarlo dos veces. No arrastra cambios: si al
+   * original le cambian el título, el de feria conserva el suyo, que puede ser
+   * distinto a propósito.
+   */
+  origenProductId: { type: DataTypes.INTEGER, allowNull: true },
 }, { tableName: 'products' });
 
 // ─── ProductVariant ───────────────────────────────────────────────
