@@ -34,7 +34,7 @@ import StockByLocationPage from "./pages/StockByLocationPage";
 import DepositoPage from "./pages/DepositoPage";
 import AnalisisPage from "./pages/AnalisisPage";
 import SoportePage from "./pages/SoportePage";
-import FeriaPage from "./pages/FeriaPage";
+import EventoPage from "./pages/EventoPage";
 import StockARegularizarPage from "./pages/StockARegularizarPage";
 import ReposicionPage from "./pages/ReposicionPage";
 import ScanStockPage from "./pages/ScanStockPage";
@@ -75,7 +75,7 @@ export default function App() {
             <Route path="/stock/a-regularizar"          element={<PermissionRoute permission="stock"><StockARegularizarPage /></PermissionRoute>} />
             {/* El circuito depósito → local. Van fuera de /stock a propósito:
                 son el trabajo de otra gente, con su propio permiso. */}
-            <Route path="/feria"                        element={<PermissionRoute permission="stock"><FeriaPage /></PermissionRoute>} />
+            <Route path="/evento"                       element={<PermissionRoute permission="stock"><EventoPage /></PermissionRoute>} />
             <Route path="/deposito"                     element={<PermissionRoute permission="deposito"><DepositoPage /></PermissionRoute>} />
             <Route path="/reposicion"                   element={<PermissionRoute permission="reposicion"><ReposicionPage /></PermissionRoute>} />
             <Route path="/stock/:skuAgrupador"          element={<PermissionRoute permission="stock"><ProductDetailPage /></PermissionRoute>} />

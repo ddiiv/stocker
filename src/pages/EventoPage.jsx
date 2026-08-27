@@ -6,23 +6,23 @@ import { formatCurrency } from "../utils/formatters";
 import { mensajeDeError } from "../utils/errores";
 
 /*
- * Catálogo de feria.
+ * Catálogo de evento.
  *
- * Un puesto de feria vende sin llevar inventario: interesa registrar qué se
+ * Un local de evento vende sin llevar inventario: interesa registrar qué se
  * vendió, no cuánto queda. Para eso hace falta, una vez, generar desde el
  * catálogo normal una versión sin variantes y con precio propio.
  *
- * La pantalla es esa tarea y nada más. Vender en la feria es el punto de venta
+ * La pantalla es esa tarea y nada más. Vender en el evento es el punto de venta
  * de siempre: se escanea el código y aparece el precio, sin preguntar talle.
  */
 
 /*
- * Cada precio de feria se arma con tres cosas: sobre qué precio del producto
+ * Cada precio de evento se arma con tres cosas: sobre qué precio del producto
  * original se calcula, cómo, y con qué número.
  *
- * Son dos reglas independientes porque en la feria los dos precios no guardan
+ * Son dos reglas independientes porque en el evento los dos precios no guardan
  * la relación que tienen en el local. El caso que lo motivó: el mayorista de
- * feria es el mayorista del local tal cual, y el minorista de feria es ese
+ * evento es el mayorista del local tal cual, y el minorista de evento es ese
  * mismo mayorista más un fijo.
  */
 const BASES = [
@@ -74,7 +74,7 @@ function ReglaPrecio({ titulo, valor, onChange }) {
   );
 }
 
-export default function FeriaPage() {
+export default function EventoPage() {
   const [datos, setDatos] = useState(null);
   const [generados, setGenerados] = useState([]);
   const [cargando, setCargando] = useState(true);
@@ -82,7 +82,7 @@ export default function FeriaPage() {
   const [aviso, setAviso] = useState("");
   const [trabajando, setTrabajando] = useState(false);
 
-  const [prefijo, setPrefijo] = useState("FERIA");
+  const [prefijo, setPrefijo] = useState("EVENTO");
   const [elegidos, setElegidos] = useState(() => new Set());
   const [busqueda, setBusqueda] = useState("");
   const [rMinorista, setRMinorista] = useState({ base: "minorista", modo: "igual", valor: 0 });
@@ -150,7 +150,7 @@ export default function FeriaPage() {
       setAviso([r.mensaje, ...(r.avisos || [])].filter(Boolean).join(' · '));
       setElegidos(new Set());
     } catch (e) {
-      setError(mensajeDeError(e, "No se pudieron generar los productos de feria."));
+      setError(mensajeDeError(e, "No se pudieron generar los productos de evento."));
       setTrabajando(false);
       return;
     }
@@ -176,7 +176,7 @@ export default function FeriaPage() {
   return (
     <div>
       <PageHeader
-        title="Feria"
+        title="Evento"
         subtitle="Productos que se venden sin llevar stock: sólo queda registrado qué se vendió"
         actions={
           <button className="btn-ghost" onClick={cargar} disabled={cargando}>
@@ -185,13 +185,13 @@ export default function FeriaPage() {
         }
       />
 
-      {/* Sin un puesto cargado, generar el catálogo no sirve de nada: no hay
+      {/* Sin un local de evento cargado, generar el catálogo no sirve de nada: no hay
           dónde venderlo. Se dice antes de que la persona elija cincuenta
           productos y descubra al final que falta el lugar. */}
       {datos && !datos.hayPuestos && (
         <p className="mb-4 rounded-md border border-brass-500/40 bg-brass-50 px-3 py-2 text-sm text-brass-800">
           <AlertTriangle size={14} className="mr-1 inline" />
-          Todavía no tenés ningún puesto de feria. Creá un local y ponele tipo <strong>Feria</strong> desde
+          Todavía no tenés ningún local de evento. Creá un local y ponele tipo <strong>Evento</strong> desde
           Empleados → Locales y depósitos; si no, estos productos no se van a poder vender en ningún lado.
         </p>
       )}
@@ -205,25 +205,25 @@ export default function FeriaPage() {
         <>
           <Card className="mb-5">
             <h3 className="mb-1 font-display text-base font-semibold text-ink-950">
-              <Tag size={16} className="mr-1 inline text-ink-500" /> Generar catálogo de feria
+              <Tag size={16} className="mr-1 inline text-ink-500" /> Generar catálogo de evento
             </h3>
             <p className="mb-4 text-xs text-ink-500">
-              Cada producto elegido genera su versión de feria: una sola variante, sin color ni talle, con su
+              Cada producto elegido genera su versión de evento: una sola variante, sin color ni talle, con su
               propio código y su propio precio. El original no se toca.
             </p>
 
             <div className="mb-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
               <div>
-                <label className="label" htmlFor="feria-prefijo">Prefijo del código</label>
+                <label className="label" htmlFor="evento-prefijo">Prefijo del código</label>
                 <input
-                  id="feria-prefijo"
+                  id="evento-prefijo"
                   className="input font-mono uppercase"
                   value={prefijo}
                   maxLength={12}
                   onChange={(e) => setPrefijo(e.target.value)}
                 />
                 {/* Se recorta a tres para que el código quede legible y para que
-                    todos los de feria empiecen igual. */}
+                    todos los de evento empiecen igual. */}
                 <p className="mt-1 text-xs text-ink-500">
                   Se usan los primeros 3 caracteres: <span className="font-mono">{(datos?.prefijo || "FER")}</span>
                 </p>
@@ -231,13 +231,13 @@ export default function FeriaPage() {
             </div>
 
             <div className="mb-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <ReglaPrecio titulo="Precio minorista de feria" valor={rMinorista} onChange={setRMinorista} />
-              <ReglaPrecio titulo="Precio mayorista de feria" valor={rMayorista} onChange={setRMayorista} />
+              <ReglaPrecio titulo="Precio minorista de evento" valor={rMinorista} onChange={setRMinorista} />
+              <ReglaPrecio titulo="Precio mayorista de evento" valor={rMayorista} onChange={setRMayorista} />
             </div>
 
             {pendientes.length === 0 ? (
               <p className="rounded-md bg-paper-100 px-3 py-2 text-sm text-ink-600">
-                Todos los productos del catálogo ya tienen su versión de feria.
+                Todos los productos del catálogo ya tienen su versión de evento.
               </p>
             ) : (
               <>
@@ -264,8 +264,8 @@ export default function FeriaPage() {
                       <tr className="text-left text-xs uppercase tracking-wide text-ink-600">
                         <th className="px-3 py-2 font-medium"> </th>
                         <th className="px-3 py-2 font-medium">Producto</th>
-                        <th className="px-3 py-2 font-medium">Código de feria</th>
-                        <th className="px-3 py-2 text-right font-medium">Precios de feria</th>
+                        <th className="px-3 py-2 font-medium">Código de evento</th>
+                        <th className="px-3 py-2 text-right font-medium">Precios de evento</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -276,7 +276,7 @@ export default function FeriaPage() {
                               type="checkbox"
                               checked={elegidos.has(p.id)}
                               onChange={() => alternar(p.id)}
-                              aria-label={`Generar la versión de feria de ${p.titulo}`}
+                              aria-label={`Generar la versión de evento de ${p.titulo}`}
                             />
                           </td>
                           <td className="px-3 py-2">
@@ -311,7 +311,7 @@ export default function FeriaPage() {
           <Card className="p-0">
             <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line px-4 py-3">
               <h3 className="font-display text-base font-semibold text-ink-950">
-                <Store size={16} className="mr-1 inline text-ink-500" /> Catálogo de feria
+                <Store size={16} className="mr-1 inline text-ink-500" /> Catálogo de evento
                 <span className="ml-2 text-sm font-normal text-ink-500">{generados.length} producto(s)</span>
               </h3>
               {/*
@@ -331,8 +331,8 @@ export default function FeriaPage() {
             {generados.length === 0 ? (
               <EmptyState
                 icon={Store}
-                title="Todavía no generaste productos de feria"
-                description="Elegí arriba los del catálogo normal que vendés en el puesto."
+                title="Todavía no generaste productos de evento"
+                description="Elegí arriba los del catálogo normal que vendés en el evento."
               />
             ) : (
               <div className="overflow-x-auto">
@@ -366,9 +366,9 @@ export default function FeriaPage() {
 
           <p className="mt-4 flex items-start gap-2 text-xs text-ink-500">
             <Check size={14} className="mt-0.5 shrink-0" />
-            En el puesto se escanea el código y aparece el precio: no pregunta talle ni color, no descuenta stock
+            En el local de evento se escanea el código y aparece el precio: no pregunta talle ni color, no descuenta stock
             y no avisa faltantes. Estos productos no entran al depósito, no piden reposición y no se publican en
-            MercadoLibre.
+            Mercado Libre.
           </p>
         </>
       )}

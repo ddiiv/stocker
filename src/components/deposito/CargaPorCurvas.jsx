@@ -44,7 +44,7 @@ export default function CargaPorCurvas({ onAgregar }) {
        */
       const porProducto = new Map();
       for (const v of r || []) {
-        if (v.esFeria) continue;  // los de feria no llevan stock
+        if (v.esFeria) continue;  // los de evento no llevan stock
         if (!porProducto.has(v.productId)) {
           porProducto.set(v.productId, { id: v.productId, titulo: v.titulo, sku: v.skuAgrupador });
         }

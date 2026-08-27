@@ -231,6 +231,47 @@ export default function EmployeesPage() {
 }
 
 /*
+ * Los tipos de local, en un solo lugar.
+ *
+ * Estaban escritos dos veces —en esta tabla y en el alta— y se separaron: el
+ * alta nunca ofreció "evento", así que sólo se podía marcar un local como
+ * evento creándolo primero como local de venta y cambiándolo después. Con la
+ * lista acá, un tipo nuevo aparece en los dos lados o en ninguno.
+ *
+ * `ayuda` es la explicación que se muestra al elegirlo. El tipo define todo el
+ * circuito del lugar, y elegirlo a ciegas por el nombre es cómo se termina
+ * vendiendo desde un depósito.
+ *
+ * El valor guardado dice `feria` y la etiqueta dice `Evento`: en la interfaz se
+ * renombró, pero los locales ya creados tienen `feria` en la base.
+ */
+const TIPOS_LOCAL = [
+  {
+    value: "local",
+    label: "Local de venta",
+    ayuda: "Vende al público. Recibe mercadería por transferencia desde un depósito.",
+  },
+  {
+    value: "deposito",
+    label: "Depósito",
+    ayuda: "Recibe la mercadería nueva y la transfiere a los locales. No se puede vender desde acá.",
+  },
+  {
+    value: "online",
+    label: "Online / Envíos",
+    ayuda: "El stock reservado para las ventas web: es el único que se publica en Mercado Libre. Vende y pide reposición como un local.",
+  },
+  {
+    value: "feria",
+    label: "Evento (sin stock)",
+    ayuda: "Vende sin llevar inventario: sólo queda registrado qué se vendió. No recibe reposición ni entra al depósito, y sólo vende productos del catálogo de evento.",
+  },
+];
+
+const ayudaDeTipo = (tipo) =>
+  TIPOS_LOCAL.find((t) => t.value === tipo)?.ayuda || TIPOS_LOCAL[0].ayuda;
+
+/*
  * Locales y depósitos, con su tipo editable.
  *
  * Sin esta tabla, un negocio que ya tenía sus locales cargados no tenía cómo
@@ -392,13 +433,13 @@ function LocalesCard({ locations, onChange }) {
       <p className="mb-3 text-xs text-ink-500">
         La mercadería nueva entra por un <strong>depósito</strong> y de ahí se transfiere a los locales; desde un
         depósito no se vende. El de <strong>Online / Envíos</strong> vende como un local, y su stock es el que se
-        publica en MercadoLibre.
+        publica en Mercado Libre.
       </p>
-      {/* La feria es el único tipo que NO lleva inventario, y conviene decirlo
+      {/* El evento es el único tipo que NO lleva inventario, y conviene decirlo
           acá: es lo que explica por qué no aparece en depósito ni reposición. */}
       <p className="mb-3 text-xs text-ink-500">
-        Un puesto de <strong>Feria</strong> vende sin llevar stock: sólo queda registrado qué se vendió. No recibe
-        reposición ni entra al depósito, y sólo vende productos del catálogo de feria.
+        Un local de <strong>Evento</strong> vende sin llevar stock: sólo queda registrado qué se vendió. No recibe
+        reposición ni entra al depósito, y sólo vende productos del catálogo de evento.
       </p>
       {error && <p className="mb-3 rounded-md bg-brick-50 px-3 py-2 text-sm text-brick-500">{error}</p>}
       <div className="overflow-x-auto">
@@ -418,10 +459,9 @@ function LocalesCard({ locations, onChange }) {
                     onChange={(e) => cambiarTipo(l, e.target.value)}
                     aria-label={`Tipo de ${l.nombre}`}
                   >
-                    <option value="local">Local de venta</option>
-                    <option value="deposito">Depósito</option>
-                    <option value="online">Online / Envíos</option>
-                    <option value="feria">Feria (sin stock)</option>
+                    {TIPOS_LOCAL.map((t) => (
+                      <option key={t.value} value={t.value}>{t.label}</option>
+                    ))}
                   </select>
 
                   {/*
@@ -525,7 +565,7 @@ function NewLocationModal({ open, onClose }) {
   const tipo = watch("tipo");
   async function onSubmit(v) { await createLocation(v); reset({ tipo: "local" }); onClose(); }
   return (
-    <Modal open={open} onClose={onClose} title="Nuevo local / depósito">
+    <Modal open={open} onClose={onClose} title="Nuevo local, depósito o evento">
       <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
         <div>
           <label className="label">Nombre del local *</label>
@@ -536,17 +576,11 @@ function NewLocationModal({ open, onClose }) {
               nueva entra sólo por ahí. */}
           <label className="label">Tipo *</label>
           <select className="input" {...register("tipo")}>
-            <option value="local">Local de venta</option>
-            <option value="deposito">Depósito</option>
-            <option value="online">Online / Envíos</option>
+            {TIPOS_LOCAL.map((t) => (
+              <option key={t.value} value={t.value}>{t.label}</option>
+            ))}
           </select>
-          <p className="mt-1 text-xs text-ink-500">
-            {tipo === "deposito"
-              ? "Recibe la mercadería nueva y la transfiere a los locales. No se puede vender desde acá."
-              : tipo === "online"
-                ? "El stock reservado para las ventas web: es el único que se publica en MercadoLibre. Vende y pide reposición como un local."
-                : "Vende al público. Recibe mercadería por transferencia desde un depósito."}
-          </p>
+          <p className="mt-1 text-xs text-ink-500">{ayudaDeTipo(tipo)}</p>
         </div>
         <div>
           <label className="label">Dirección *</label>
