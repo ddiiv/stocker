@@ -25,6 +25,11 @@ const COLUMNAS_ESPERADAS = {
      * "Depósito Central" y le cortaría las ventas de un día para el otro.
      */
     tipo: { type: DataTypes.STRING(20), allowNull: false, defaultValue: 'local' },
+    // Cuándo una venta de este local va a precio mayorista. Ver el modelo y
+    // reglaMayoristaService: cada local tiene la suya.
+    mayoristaModo:     { type: DataTypes.STRING(10), allowNull: true, defaultValue: 'cantidad' },
+    mayoristaCantidad: { type: DataTypes.INTEGER, allowNull: true, defaultValue: 3 },
+    mayoristaMonto:    { type: DataTypes.DECIMAL(12, 2), allowNull: true },
   },
   pedidos_reposicion: {
     /*
@@ -219,6 +224,21 @@ const INDICES = [
 ];
 
 const RELLENOS = [
+  {
+    descripcion: 'locales anteriores a la regla mayorista quedan con las 3 prendas de siempre',
+    cuandoSeAgrega: 'business_locations.mayoristaModo',
+    /*
+     * Con NULL, la regla no existe y hay que decidir en cada consulta qué
+     * significa eso — que es como se cuelan dos interpretaciones distintas del
+     * mismo dato. Se deja escrito lo que el sistema venía haciendo.
+     */
+    reintentable: true,
+    sql: `UPDATE business_locations SET "mayoristaModo" = 'cantidad', "mayoristaCantidad" = 3
+           WHERE "mayoristaModo" IS NULL OR "mayoristaCantidad" IS NULL`,
+    sqlMssql: `UPDATE business_locations SET mayoristaModo = 'cantidad', mayoristaCantidad = 3
+                WHERE mayoristaModo IS NULL OR mayoristaCantidad IS NULL`,
+  },
+
   {
     descripcion: 'productos anteriores a la feria marcados como catálogo normal',
     cuandoSeAgrega: 'products.esFeria',

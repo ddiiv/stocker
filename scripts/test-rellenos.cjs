@@ -111,6 +111,28 @@ const { RELLENOS } = (() => {
   }
 
   console.log(`\n\x1b[1m─────────────────────────────\x1b[0m`);
+/*
+ * Claves de tabla repetidas en COLUMNAS_ESPERADAS.
+ *
+ * Un objeto literal de JavaScript acepta la misma clave dos veces sin decir
+ * nada: la segunda pisa a la primera y las columnas declaradas arriba
+ * desaparecen. Ya pasó dos veces en este archivo —una con `businesses` y otra
+ * con `business_locations`— y las dos veces el síntoma apareció lejos: una
+ * columna que en una base nueva no se creaba nunca.
+ *
+ * Para cuando el código corre, el duplicado ya no existe. Hay que mirarlo en el
+ * texto fuente.
+ */
+tit('CLAVES REPETIDAS EN COLUMNAS_ESPERADAS');
+{
+  const fuente = require('fs').readFileSync(__dirname + '/../src/database/ensureColumns.js', 'utf8');
+  const desde = fuente.indexOf('COLUMNAS_ESPERADAS');
+  const hasta = fuente.indexOf('const RELLENOS', desde);
+  const claves = [...fuente.slice(desde, hasta).matchAll(/^  (\w+): \{/gm)].map((m) => m[1]);
+  const repetidas = claves.filter((k, i) => claves.indexOf(k) !== i);
+  chk('ninguna tabla declarada dos veces', [], [...new Set(repetidas)]);
+}
+
   console.log(`  \x1b[32mPasaron: ${ok}\x1b[0m   \x1b[31mFallaron: ${ko}\x1b[0m`);
   process.exit(ko ? 1 : 0);
 })();

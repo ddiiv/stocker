@@ -9,6 +9,7 @@ const { cargarVenta, registrarMovimiento, redondear } = require('../services/cre
 const { descontarStockVenta, devolverStockVenta } = require('../services/saleStockService');
 const stockService = require('../services/stockService');
 const { precioDeVenta } = require('../services/precioService');
+const reglaMayorista = require('../services/reglaMayoristaService');
 const precioService = require('../services/precioService');
 const { generateSalePdf, generateSaleTicketPdf } = require('../services/pdfService');
 const fse = require('fs-extra');
@@ -410,10 +411,34 @@ const createSale = async (req, res, next) => {
       ? false
       : (esFiado ? descontarStock !== false : finalEstado === 'pagado');
 
-    // El vendedor es siempre quien está logueado: un empleado no puede
-    // registrar una venta a nombre de otro. El dueño no tiene employeeId, así
-    // que sus ventas quedan sin vendedor asignado salvo que lo mande.
-    const employeeId = req.auth.employeeId || null;
+    /*
+     * Quién vendió.
+     *
+     * Un empleado no puede registrar una venta a nombre de otro: es siempre el
+     * que está logueado, y eso no se negocia — de ahí sale la comisión y el
+     * arqueo de su turno.
+     *
+     * El dueño no tiene employeeId propio, así que sí puede decir quién
+     * atendió. El punto de venta ya ofrecía ese desplegable y lo mandaba, pero
+     * acá se descartaba: el comentario decía "salvo que lo mande" y el código
+     * no lo miraba. Elegir vendedor no hacía nada y la venta quedaba sin
+     * atribuir.
+     *
+     * Va validado contra el negocio: un id de empleado ajeno atribuiría la
+     * venta a alguien de otra cuenta.
+     */
+    let employeeId = req.auth.employeeId || null;
+    if (!employeeId && req.body?.employeeId) {
+      const vendedor = await Employee.findOne({
+        where: { id: Number(req.body.employeeId), businessId: req.auth.businessId },
+        attributes: ['id'],
+        transaction: t,
+      });
+      if (!vendedor) {
+        throw Object.assign(new Error('El vendedor indicado no pertenece a este negocio.'), { status: 400 });
+      }
+      employeeId = vendedor.id;
+    }
 
     // El local también se fija solo para los empleados, con el que tienen
     // asignado. Lo que llegue en el body se ignora: la restricción es del
@@ -447,7 +472,7 @@ const createSale = async (req, res, next) => {
        * la comprobación de abajo lo dejaba pasar, y la venta le descontaba
        * mercadería a la bodega. Se corta acá con el motivo dicho.
        */
-      if (locationId && tipo !== 'cotizacion') {
+      if (locationId) {
         const suyo = await BusinessLocation.findByPk(locationId, { transaction: t });
         if (suyo?.tipo === 'deposito') {
           throw Object.assign(
@@ -457,7 +482,7 @@ const createSale = async (req, res, next) => {
         }
       }
 
-      if (!locationId && tipo !== 'cotizacion') {
+      if (!locationId) {
         throw Object.assign(
           new Error('Tu usuario no tiene un local asignado, así que no se puede saber de dónde sale la mercadería. Pedile al dueño que te asigne uno desde Empleados.'),
           { status: 409 }
@@ -485,13 +510,13 @@ const createSale = async (req, res, next) => {
           transaction: t,
         });
         if (!local) throw Object.assign(new Error('El local indicado no pertenece a este negocio o está inactivo.'), { status: 400 });
-        if (local.tipo === 'deposito' && tipo !== 'cotizacion') {
+        if (local.tipo === 'deposito') {
           throw Object.assign(
             new Error(`"${local.nombre}" es un depósito y de un depósito no se vende. La mercadería sale por transferencia a un local.`),
             { status: 400 },
           );
         }
-      } else if (tipo !== 'cotizacion') {
+      } else {
         /*
          * Sin elegir: con un solo local no hay ambigüedad y se usa ése. Con
          * varios hay que decidir, porque el sistema no puede adivinar de cuál
@@ -578,9 +603,9 @@ const createSale = async (req, res, next) => {
       throw Object.assign(new Error('El descuento tiene que estar entre 0 y 100.'), { status: 400 });
     }
 
-    // Determinar si es mayorista: total de unidades >= 3
+    // Las unidades hacen falta para la regla del local, que se evalúa más abajo
+    // —cuando ya se sabe de qué local sale y cuánto suma la venta en lista.
     const totalUnidades = items.reduce((s, i) => s + Number(i.cantidad), 0);
-    const esMayorista   = totalUnidades >= 3;
 
     /*
      * Política del negocio ante la falta de stock.
@@ -601,10 +626,50 @@ const createSale = async (req, res, next) => {
      * `locationId` quedó decidido —lo elige el empleado, el dueño o el sistema
      * cuando hay uno solo—, que es el único momento en que se sabe cuál es.
      */
-    const localDeLaVenta = locationId
-      ? await BusinessLocation.findByPk(locationId, { attributes: ['id', 'tipo'], transaction: t })
-      : null;
+    const localDeLaVenta = await BusinessLocation.findByPk(locationId, { transaction: t });
     const esLocalDeFeria = localDeLaVenta?.tipo === 'feria';
+
+    /*
+     * Las variantes, de UNA consulta.
+     *
+     * Antes se pedía una por línea dentro del bucle: una venta de veinte
+     * artículos hacía veinte viajes a la base sosteniendo la transacción. Y
+     * ahora hace falta tenerlas todas antes de empezar, porque el umbral por
+     * monto necesita el total en lista para decidir si la venta es mayorista, y
+     * ese total no se sabe hasta haber mirado todos los precios.
+     */
+    const idsPedidos = [...new Set(items.map((i) => Number(i.productVariantId)).filter(Boolean))];
+    const variantesEncontradas = await ProductVariant.findAll({
+      where: { id: idsPedidos },
+      include: [{ model: Product, as: 'producto', required: true }],
+      transaction: t,
+    });
+    const porId = new Map(
+      variantesEncontradas
+        .filter((v) => v.producto?.businessId === req.auth.businessId)
+        .map((v) => [v.id, v]),
+    );
+    // El id de variante viene del cliente: sin esta comprobación se puede
+    // vender el producto de otro negocio, leyendo su título y su precio y
+    // descontándole el stock.
+    const ajena = idsPedidos.find((id) => !porId.has(id));
+    if (ajena) {
+      throw Object.assign(new Error(`Variante ${ajena} no encontrada.`), { status: 404 });
+    }
+
+    /*
+     * Mayorista o minorista, según la regla DEL LOCAL.
+     *
+     * El umbral por monto se mide en lista: el precio depende del total y el
+     * total del precio, así que hay que cortar el círculo por algún lado.
+     * Midiendo a precio minorista, el número contra el que se compara es el
+     * mismo que el cajero ve mientras arma la venta.
+     */
+    const totalEnLista = items.reduce((suma, i) => {
+      const v = porId.get(Number(i.productVariantId));
+      return suma + (v ? calcPrecio(v, false) * Number(i.cantidad) : 0);
+    }, 0);
+    const esMayorista = reglaMayorista.esMayorista(localDeLaVenta, totalUnidades, totalEnLista);
 
     // Lo que se vendió sin tener: se devuelve con la venta para poder avisarlo.
     const faltantes = [];
@@ -612,15 +677,7 @@ const createSale = async (req, res, next) => {
     // Construir sale items
     const enrichedItems = [];
     for (const item of items) {
-      // El id de variante viene del cliente: hay que confirmar que pertenezca
-      // a este negocio. Sin esta comprobación se puede vender el producto de
-      // otro negocio, leyendo su título y precio y descontándole el stock.
-      const variant = await ProductVariant.findByPk(item.productVariantId, {
-        include: [{ model: Product, as: 'producto' }],
-        transaction: t,
-      });
-      if (!variant || variant.producto?.businessId !== req.auth.businessId)
-        throw Object.assign(new Error(`Variante ${item.productVariantId} no encontrada.`), { status: 404 });
+      const variant = porId.get(Number(item.productVariantId));
 
       /*
        * Stock disponible.

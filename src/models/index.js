@@ -436,6 +436,33 @@ const BusinessLocation = db.define('BusinessLocation', {
    * es lo que eran hasta ahora y cambiarlos por adivinanza rompería sus ventas.
    */
   tipo:       { type: DataTypes.STRING(20), allowNull: false, defaultValue: 'local' }, // local|deposito|online|feria
+  /*
+   * Cuándo una venta de este local pasa a precio mayorista.
+   *
+   * Hasta ahora eran tres prendas, escrito a mano en el controlador y otra vez
+   * en dos pantallas. Con tres copias del mismo número, el día que alguien
+   * cambie una, la pantalla muestra un precio y el servidor cobra otro.
+   *
+   *   cantidad  a partir de N prendas (lo de siempre; N por defecto, 3)
+   *   monto     a partir de $X en la venta
+   *   ambos     lo que se cumpla primero
+   *   siempre   este local vende siempre al por mayor
+   *   nunca     este local vende siempre al detalle
+   *
+   * Cada local tiene la suya: un puesto de feria puede vender todo al por mayor
+   * mientras la sucursal del centro sigue pidiendo tres prendas.
+   */
+  mayoristaModo:     { type: DataTypes.STRING(10), allowNull: false, defaultValue: 'cantidad' },
+  mayoristaCantidad: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 3 },
+  /*
+   * El umbral por monto se mide con PRECIOS MINORISTAS.
+   *
+   * El precio depende del total y el total depende del precio: es circular y
+   * hay que cortar por algún lado. Midiendo en lista, el cajero puede explicarlo
+   * —"llegaste a $50.000, ahora va por mayor"— y el número que ve mientras arma
+   * la venta es el mismo contra el que se compara.
+   */
+  mayoristaMonto:    { type: DataTypes.DECIMAL(12, 2), allowNull: true },
   activo:     { type: DataTypes.BOOLEAN, defaultValue: true },
 }, { tableName: 'business_locations' });
 

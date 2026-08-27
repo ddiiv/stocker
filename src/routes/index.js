@@ -189,6 +189,7 @@ r.post('/account/password/confirmar', requireAuth, requireOwner, validatePasswor
 r.get ('/feria/candidatos', requireAuth, requirePermission('stock', 'ver'),    feriaCtrl.getCandidatos);
 r.get ('/feria/productos',  requireAuth, requireAnyPermission(['stock', 'ventas'], 'ver'), feriaCtrl.getProductos);
 r.post('/feria/generar',    requireAuth, requirePermission('stock', 'editar'), feriaCtrl.postGenerar);
+r.post('/feria/precios',    requireAuth, requirePermission('stock', 'editar'), feriaCtrl.postPrecios);
 
 // ── Locations ─────────────────────────────────────────────────────
 // El listado queda con requireAuth solo: lo necesitan casi todas las pantallas

@@ -3,6 +3,7 @@ const { cuitValido, emailValido } = require('../utils/identificadores');
 const { sanitizarPermisos } = require('../config/permisos');
 const bcrypt = require('bcryptjs');
 const { BusinessLocation, Role, Client, Sale, SaleItem, Invoice, ProductVariant, Product, StockMovement } = require('../models');
+const reglaMayorista = require('../services/reglaMayoristaService');
 const { ilikeOperator } = require('../utils/sqlHelpers');
 
 /*
@@ -21,7 +22,9 @@ function soloCampos(body, permitidos) {
   return patch;
 }
 
-const CAMPOS_LOCAL   = ['nombre', 'direccion', 'telefono', 'activo', 'tipo'];
+const CAMPOS_LOCAL   = ['nombre', 'direccion', 'telefono', 'activo', 'tipo',
+  // La regla de precio mayorista es propia de cada local. Ver reglaMayoristaService.
+  'mayoristaModo', 'mayoristaCantidad', 'mayoristaMonto'];
 const CAMPOS_CLIENTE = ['nombre', 'apellido', 'email', 'telefono', 'whatsapp',
   'cuit', 'dni', 'direccion', 'tipo', 'notas'];
 
@@ -56,11 +59,15 @@ const createLocation = async (req, res, next) => {
   try {
     const { nombre, direccion, telefono, tipo } = req.body;
     if (!nombre || !direccion) return res.status(400).json({ message: 'Nombre y dirección son obligatorios.' });
+    const errRegla = reglaMayorista.validar(req.body);
+    if (errRegla) return res.status(400).json({ message: errRegla });
     if (tipo && !TIPOS_LOCAL.includes(tipo)) {
-      return res.status(400).json({ message: 'El tipo tiene que ser "local", "deposito" u "online".' });
+      return res.status(400).json({ message: `El tipo tiene que ser uno de: ${TIPOS_LOCAL.join(', ')}.` });
     }
+    const regla = reglaMayorista.normalizar(req.body);
     const loc = await BusinessLocation.create({
       businessId: req.auth.businessId, nombre, direccion, telefono, tipo: tipo || 'local',
+      mayoristaModo: regla.modo, mayoristaCantidad: regla.cantidad, mayoristaMonto: regla.monto,
     });
     res.status(201).json(loc);
   } catch (e) { next(e); }
@@ -70,9 +77,12 @@ const updateLocation = async (req, res, next) => {
     const loc = await BusinessLocation.findOne({ where: { id: req.params.id, businessId: req.auth.businessId } });
     if (!loc) return res.status(404).json({ message: 'Local no encontrado.' });
 
+    const errRegla = reglaMayorista.validar({ ...loc.toJSON(), ...req.body });
+    if (errRegla) return res.status(400).json({ message: errRegla });
+
     const { tipo } = req.body;
     if (tipo && !TIPOS_LOCAL.includes(tipo)) {
-      return res.status(400).json({ message: 'El tipo tiene que ser "local", "deposito" u "online".' });
+      return res.status(400).json({ message: `El tipo tiene que ser uno de: ${TIPOS_LOCAL.join(', ')}.` });
     }
     /*
      * Convertir un local de venta en depósito no es un cambio de etiqueta: de

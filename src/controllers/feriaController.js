@@ -53,6 +53,7 @@ const getProductos = async (req, res, next) => {
       titulo: p.titulo,
       categoria: p.categoria,
       precio: Number(p.precioMinorista) || 0,
+      precioMayorista: Number(p.precioMayorista) || 0,
       costo: Number(p.costo) || 0,
       activo: p.activo,
       origenProductId: p.origenProductId,
@@ -61,4 +62,25 @@ const getProductos = async (req, res, next) => {
   } catch (error) { next(error); }
 };
 
-module.exports = { getCandidatos, postGenerar, getProductos };
+// POST /api/feria/precios  → recalcula los precios de productos ya generados
+const postPrecios = async (req, res, next) => {
+  const t = await sequelize.transaction();
+  try {
+    const { productIds, precio } = req.body || {};
+    const r = await feriaService.reaplicarPrecios({
+      businessId: req.auth.businessId, productIds, precio, transaction: t,
+    });
+    await t.commit();
+    res.json({
+      ...r,
+      mensaje: r.actualizados.length
+        ? `${r.actualizados.length} producto(s) con precios actualizados.`
+        : 'No se actualizó ninguno.',
+    });
+  } catch (error) {
+    await t.rollback().catch(() => {});
+    next(error);
+  }
+};
+
+module.exports = { getCandidatos, postGenerar, getProductos, postPrecios };

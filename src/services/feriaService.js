@@ -42,25 +42,83 @@ const error = (mensaje, status = 400, extra = {}) =>
 const redondear = (n) => Math.round(Number(n || 0) * 100) / 100;
 
 /*
- * El precio con el que nace el producto de feria.
+ * Los DOS precios con los que nace un producto de feria.
  *
- * Se decide una vez para todo el lote porque cargar cincuenta precios a mano
- * antes de la primera venta no es una opción. Después cada uno se edita como
- * cualquier producto.
+ * Minorista y mayorista se calculan por separado, cada uno con su propia
+ * regla, porque en la feria no guardan la relación que tienen en el local. El
+ * caso que lo motivó: el mayorista de feria es el mayorista del local tal cual,
+ * y el minorista de feria es ese mismo mayorista más un fijo.
+ *
+ * Cada regla tiene:
+ *   base   sobre qué precio del producto original se calcula (minorista o mayorista)
+ *   modo   igual (la base tal cual), porcentaje, o fijo (un monto que se suma)
+ *   valor  el porcentaje o el monto, según el modo
+ *
+ * El fijo admite negativo: restar $500 es tan legítimo como sumarlos, y
+ * prohibirlo obligaría a expresarlo como un porcentaje que no da redondo.
  */
-function precioDe(original, regla) {
-  const base = regla?.base === 'mayorista'
+
+const MODOS_PRECIO = ['igual', 'porcentaje', 'fijo'];
+const BASES_PRECIO = ['minorista', 'mayorista'];
+
+/*
+ * Acepta la forma nueva —una regla por precio— y también la vieja, que traía
+ * una sola y la usaba para los dos. La vieja sigue viva en llamadas ya escritas
+ * y en las pruebas; romperla no aportaría nada.
+ */
+function normalizarReglaPrecio(precio) {
+  const unaRegla = (r, porDefecto) => {
+    const modo = MODOS_PRECIO.includes(r?.modo) ? r.modo : porDefecto.modo;
+    const base = BASES_PRECIO.includes(r?.base) ? r.base : porDefecto.base;
+    const valor = Number(r?.valor ?? r?.porcentaje ?? r?.monto ?? 0) || 0;
+    return { modo, base, valor };
+  };
+
+  if (precio?.minorista || precio?.mayorista) {
+    return {
+      minorista: unaRegla(precio.minorista, { modo: 'igual', base: 'minorista' }),
+      mayorista: unaRegla(precio.mayorista, { modo: 'igual', base: 'mayorista' }),
+    };
+  }
+
+  // Forma vieja: una sola regla para los dos precios.
+  const unica = unaRegla(precio, { modo: 'igual', base: 'minorista' });
+  return { minorista: unica, mayorista: unica };
+}
+
+function validarReglaPrecio(regla) {
+  for (const [cual, r] of Object.entries(regla)) {
+    if (r.modo === 'porcentaje' && (r.valor < -100 || r.valor > 1000)) {
+      return `El porcentaje del precio ${cual} tiene que estar entre -100 y 1000.`;
+    }
+    if (r.modo === 'fijo' && Math.abs(r.valor) > 9999999999) {
+      return `El monto fijo del precio ${cual} es desmedido.`;
+    }
+  }
+  return null;
+}
+
+function aplicarUna(original, r) {
+  const base = r.base === 'mayorista'
     ? Number(original.precioMayorista) || Number(original.precioMinorista) || 0
     : Number(original.precioMinorista) || 0;
 
-  if (regla?.modo === 'porcentaje') {
-    const pct = Number(regla.porcentaje);
-    if (!Number.isFinite(pct) || pct < -100 || pct > 1000) {
-      throw error('El porcentaje tiene que estar entre -100 y 1000.');
-    }
-    return redondear(base * (1 + pct / 100));
-  }
+  if (r.modo === 'porcentaje') return redondear(base * (1 + r.valor / 100));
+  if (r.modo === 'fijo') return redondear(base + r.valor);
   return redondear(base);
+}
+
+/*
+ * Nunca por debajo de cero.
+ *
+ * Un porcentaje de -120 o un fijo que descuenta más de lo que vale dejarían un
+ * precio negativo, y una venta a precio negativo devuelve plata en cada línea.
+ */
+function preciosDe(original, regla) {
+  return {
+    minorista: Math.max(0, aplicarUna(original, regla.minorista)),
+    mayorista: Math.max(0, aplicarUna(original, regla.mayorista)),
+  };
 }
 
 /** El SKU de feria de un producto, sin comprobar si ya existe. */
@@ -79,6 +137,9 @@ async function generar({ businessId, productIds, prefijo, precio, transaction: t
   if (ids.length > 200) throw error('Máximo 200 productos por lote.');
 
   const pre = normalizarPrefijo(prefijo);
+  const reglaPrecio = normalizarReglaPrecio(precio);
+  const errPrecio = validarReglaPrecio(reglaPrecio);
+  if (errPrecio) throw error(errPrecio);
 
   const originales = await Product.findAll({
     where: { id: ids, businessId, ...NO_ES_FERIA },
@@ -120,7 +181,7 @@ async function generar({ businessId, productIds, prefijo, precio, transaction: t
       continue;
     }
 
-    const precioMinorista = precioDe(orig, precio);
+    const { minorista: precioMinorista, mayorista: precioMayoristaFeria } = preciosDe(orig, reglaPrecio);
     const producto = await Product.create({
       businessId,
       sku,
@@ -131,11 +192,7 @@ async function generar({ businessId, productIds, prefijo, precio, transaction: t
       genero: orig.genero,
       modelo: orig.modelo,
       precioMinorista,
-      // En la feria no hay precio por cantidad: se vende de a uno y al mismo
-      // precio. Dejarlo igual al minorista evita que el descuento mayorista
-      // —que se activa solo a partir de 3 unidades— cambie el precio sin que
-      // nadie lo haya decidido.
-      precioMayorista: precioMinorista,
+      precioMayorista: precioMayoristaFeria,
       costo: orig.costo,
       variantes: {},
       esFeria: true,
@@ -163,11 +220,85 @@ async function generar({ businessId, productIds, prefijo, precio, transaction: t
 
     creados.push({
       productId: producto.id, variantId: variante.id, sku,
-      titulo: producto.titulo, precio: precioMinorista, origen: orig.sku,
+      titulo: producto.titulo,
+      precio: precioMinorista, precioMayorista: precioMayoristaFeria,
+      origen: orig.sku,
     });
   }
 
-  return { prefijo: pre, creados, omitidos };
+  /*
+   * Avisar, no impedir.
+   *
+   * Un mayorista más caro que el minorista casi siempre es un error de carga
+   * —las dos reglas se escriben seguidas y es fácil cruzarlas— pero puede ser
+   * deliberado, así que no se bloquea. Lo que no puede pasar es que se genere
+   * en silencio y aparezca cobrando de más recién en el mostrador.
+   */
+  const alReves = creados.filter((c) => c.precioMayorista > c.precio);
+  const avisos = alReves.length
+    ? [`En ${alReves.length} producto(s) el precio mayorista quedó más caro que el minorista. `
+       + 'Revisá las reglas si no fue a propósito.']
+    : [];
+
+  return { prefijo: pre, creados, omitidos, avisos };
+}
+
+/*
+ * Vuelve a calcular los precios de productos de feria YA generados.
+ *
+ * Existe porque generar es idempotente —de lo contrario un segundo lote
+ * duplicaría el catálogo— y sin esto, cambiar de lista de precios obligaba a
+ * borrar todo y regenerar, perdiendo los precios que se hubieran ajustado a
+ * mano. La base sigue siendo el producto original, así que la regla se aplica
+ * sobre los mismos números que la primera vez.
+ */
+async function reaplicarPrecios({ businessId, productIds, precio, transaction: t }) {
+  const ids = [...new Set((Array.isArray(productIds) ? productIds : []).map(Number).filter(Boolean))];
+  if (!ids.length) throw error('Elegí al menos un producto de feria.');
+
+  const reglaPrecio = normalizarReglaPrecio(precio);
+  const errPrecio = validarReglaPrecio(reglaPrecio);
+  if (errPrecio) throw error(errPrecio);
+
+  const deFeria = await Product.findAll({
+    where: { id: ids, businessId, esFeria: true },
+    transaction: t,
+  });
+  if (!deFeria.length) throw error('Ninguno de los productos elegidos es de feria.', 404);
+
+  const origenes = await Product.findAll({
+    where: { id: deFeria.map((p) => p.origenProductId).filter(Boolean), businessId },
+    transaction: t,
+  });
+  const porId = new Map(origenes.map((p) => [p.id, p]));
+
+  const actualizados = [];
+  const sinOrigen = [];
+
+  for (const p of deFeria) {
+    const orig = porId.get(p.origenProductId);
+    /*
+     * Sin el original no hay sobre qué calcular. Puede pasar si el producto del
+     * catálogo normal se borró: se informa en vez de dejarlo con el precio
+     * viejo y sin explicación.
+     */
+    if (!orig) { sinOrigen.push({ id: p.id, sku: p.sku, titulo: p.titulo }); continue; }
+
+    const { minorista, mayorista } = preciosDe(orig, reglaPrecio);
+    await p.update({ precioMinorista: minorista, precioMayorista: mayorista, fechaActualizacion: new Date() }, { transaction: t });
+    actualizados.push({
+      id: p.id, sku: p.sku, titulo: p.titulo,
+      precio: minorista, precioMayorista: mayorista,
+    });
+  }
+
+  const alReves = actualizados.filter((c) => c.precioMayorista > c.precio);
+  return {
+    actualizados, sinOrigen,
+    avisos: alReves.length
+      ? [`En ${alReves.length} producto(s) el precio mayorista quedó más caro que el minorista.`]
+      : [],
+  };
 }
 
 /*
@@ -187,7 +318,7 @@ async function candidatos(businessId, prefijo) {
 
   const feria = await Product.findAll({
     where: { businessId, esFeria: true },
-    attributes: ['id', 'sku', 'origenProductId', 'precioMinorista'],
+    attributes: ['id', 'sku', 'origenProductId', 'precioMinorista', 'precioMayorista'],
   });
   const porOrigen = new Map(feria.map((p) => [p.origenProductId, p]));
 
@@ -202,6 +333,8 @@ async function candidatos(businessId, prefijo) {
         skuFeria: yaEsta ? yaEsta.sku : skuDeFeria(p.sku, pre),
         generado: Boolean(yaEsta),
         precioFeria: yaEsta ? Number(yaEsta.precioMinorista) || 0 : null,
+        precioFeriaMayorista: yaEsta ? Number(yaEsta.precioMayorista) || 0 : null,
+        feriaProductId: yaEsta ? yaEsta.id : null,
       };
     }),
   };
@@ -213,4 +346,8 @@ async function tienePuestos(businessId) {
   return n > 0;
 }
 
-module.exports = { generar, candidatos, tienePuestos, normalizarPrefijo, skuDeFeria, PREFIJO_POR_DEFECTO };
+module.exports = {
+  generar, reaplicarPrecios, candidatos, tienePuestos,
+  normalizarPrefijo, skuDeFeria, normalizarReglaPrecio, preciosDe,
+  PREFIJO_POR_DEFECTO, MODOS_PRECIO, BASES_PRECIO,
+};
