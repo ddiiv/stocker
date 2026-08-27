@@ -1138,6 +1138,27 @@ const updateSaleStatus = async (req, res, next) => {
     });
     if (!sale) throw Object.assign(new Error('Venta no encontrada.'), { status: 404 });
 
+    /*
+     * Una venta cobrada no se reabre por acá.
+     *
+     * Este endpoint bloquea pasar A 'pagado' y A 'cancelado', pero dejaba
+     * salir DE 'pagado' hacia 'pendiente' sin tocar nada más. La venta quedaba
+     * pendiente con saldoPendiente en cero, y como el cobro calcula
+     * `saldoPendiente || total`, volvía a cobrar el total entero y agregaba
+     * otra tanda de líneas de pago sobre las que ya estaban: el arqueo contaba
+     * la misma plata dos veces.
+     *
+     * Si el cobro estuvo mal, lo que corresponde es anular —que devuelve el
+     * stock, cancela la deuda y deja constancia del motivo—, no dejar la venta
+     * a mitad de camino entre cobrada y pendiente.
+     */
+    if (sale.estado === 'pagado') {
+      throw Object.assign(
+        new Error('Esta venta ya está cobrada. Si el cobro estuvo mal, anulala: cambiarle el estado a mano dejaría la plata contada dos veces.'),
+        { status: 409 },
+      );
+    }
+
     await sale.update({ estado }, { transaction: t });
     await t.commit();
 

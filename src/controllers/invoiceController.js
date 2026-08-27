@@ -228,7 +228,19 @@ const createInvoice = async (req, res, next) => {
         clienteNombre, clienteCuit: finalCuit,
         clienteEmail:  finalEmail,
         clienteDireccion: finalDireccion,
-        subtotal:      Number(sale.subtotal),
+        /*
+         * El neto gravado, no el bruto de la venta.
+         *
+         * Guardaba `sale.subtotal`, que es la suma de las líneas ANTES del
+         * descuento, mientras que el IVA y el total salen de lo efectivamente
+         * cobrado. En una venta con descuento el comprobante quedaba con tres
+         * números que no cierran: el PDF imprime Subtotal + IVA + Total y la
+         * cuenta no daba. En un documento fiscal eso no es un detalle.
+         *
+         * `calcularIVA` descompone el total cobrado, así que neto + iva es
+         * exactamente el total, que es la forma en que AFIP espera el desglose.
+         */
+        subtotal:      neto,
         iva, total:    totalAFacturar,
         esMayorista:   sale.esMayorista,
         cae, caeVencimiento,
