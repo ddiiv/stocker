@@ -1,5 +1,6 @@
 const { Op } = require('sequelize');
 const { Client, ClientAccountEntry, Sale } = require('../models');
+const { descontarStockVenta } = require('./saleStockService');
 
 /*
  * Cuenta corriente de clientes.
@@ -123,7 +124,7 @@ async function cargarVenta({ saleId, clientId, businessId, employeeId, monto, nu
  *
  * @returns {Array} ventas que quedaron saldadas con este pago
  */
-async function imputarPago({ businessId, clientId, monto, medioPago = null }, t) {
+async function imputarPago({ businessId, clientId, monto, medioPago = null, employeeId = null }, t) {
   let restante = redondear(monto);
   const saldadas = [];
 
@@ -167,7 +168,29 @@ async function imputarPago({ businessId, clientId, monto, medioPago = null }, t)
       } : {}),
     }, { transaction: t });
 
-    if (queda <= 0) saldadas.push(venta);
+    /*
+     * Al saldarse, la mercadería sale.
+     *
+     * Una venta fiada puede haberse hecho sin entregar nada —una seña, algo
+     * reservado—, y ahí `stockDescontado` queda en false a propósito. Pero
+     * cuando el cliente termina de pagar se lleva la ropa, y hasta ahora este
+     * camino la daba por pagada sin tocar el inventario: la prenda seguía
+     * figurando en el local para siempre.
+     *
+     * Pasaba sólo cobrando desde la ficha del cliente. Cobrando desde la venta
+     * el stock sí se descontaba, así que el mismo cobro dejaba el inventario en
+     * un estado u otro según por qué pantalla se hiciera.
+     *
+     * `descontarStockVenta` no hace nada si ya se había descontado, así que la
+     * venta fiada que sí entregó al momento no se toca dos veces.
+     */
+    if (queda <= 0) {
+      await descontarStockVenta(venta, t, {
+        employeeId,
+        motivo: `Cobro de cuenta corriente ${venta.numero}`,
+      });
+      saldadas.push(venta);
+    }
     restante = redondear(restante - aplica);
   }
 

@@ -84,15 +84,40 @@ const createInvoice = async (req, res, next) => {
   try {
     const { saleId, clienteCuit, clienteEmail, clienteDireccion, tipoOverride, enviarEmail = true, enviarWhatsapp = true, businessCuitId } = req.body;
 
+    /*
+     * La venta se traba antes de mirar si ya tiene factura.
+     *
+     * Las dos consultas corrían fuera de la transacción y sin lock, y entre el
+     * "¿ya tiene factura?" y el guardado hay un viaje a ARCA que tarda
+     * segundos. Dos pedidos simultáneos para la misma venta pasaban los dos el
+     * control, pedían los dos un CAE —dos autorizaciones fiscales de verdad,
+     * quemadas— y recién chocaban al insertar, contra uq_invoices_sale. La
+     * fila duplicada no llegaba a existir, pero el número fiscal ya estaba
+     * gastado y el cupo del mes también.
+     *
+     * Con el lock, el segundo espera al primero y encuentra la factura ya
+     * grabada: rebota con 409 sin haber molestado a ARCA.
+     *
+     * Sin `include`: Postgres rechaza FOR UPDATE sobre el lado nulo de un LEFT
+     * JOIN, así que los ítems y el cliente se cargan aparte.
+     */
     const sale = await Sale.findOne({
       where: { id: saleId, businessId: req.auth.businessId },
-      include: [{ model: SaleItem, as: 'items' }, { association: 'cliente' }],
+      transaction: t, lock: t.LOCK.UPDATE,
     });
     if (!sale)             throw Object.assign(new Error('Venta no encontrada.'), { status: 404 });
     if (sale.estado !== 'pagado') throw Object.assign(new Error('Solo se puede facturar una venta ya cobrada.'), { status: 400 });
 
-    const existingInvoice = await Invoice.findOne({ where: { saleId, businessId: req.auth.businessId } });
+    const existingInvoice = await Invoice.findOne({
+      where: { saleId, businessId: req.auth.businessId },
+      transaction: t,
+    });
     if (existingInvoice)   throw Object.assign(new Error('Esta venta ya tiene una factura generada.'), { status: 409 });
+
+    sale.items = await SaleItem.findAll({ where: { saleId: sale.id }, transaction: t });
+    sale.cliente = sale.clientId
+      ? await Client.findOne({ where: { id: sale.clientId, businessId: req.auth.businessId }, transaction: t })
+      : null;
 
     /*
      * Tope de comprobantes del mes.
