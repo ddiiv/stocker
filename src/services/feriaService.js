@@ -25,6 +25,18 @@ export async function generarFeria({ productIds, prefijo, precio }) {
   return data;
 }
 
+/*
+ * Recalcula los precios de productos de feria YA generados.
+ *
+ * Generar es idempotente —si no, un segundo lote duplicaría el catálogo— así
+ * que sin esto, cambiar de lista de precios obligaba a borrar todo y volver a
+ * generar. La base sigue siendo el producto original.
+ */
+export async function reaplicarPrecios({ productIds, precio }) {
+  const { data } = await http.post("/feria/precios", { productIds, precio });
+  return data;
+}
+
 export async function fetchProductosFeria() {
   const { data } = await http.get("/feria/productos");
   return data;

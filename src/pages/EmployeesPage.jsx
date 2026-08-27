@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { Plus, Users, PencilLine, Power, MapPin, ShieldCheck, Activity, Monitor, Lock, LockOpen } from "lucide-react";
 import { fetchEmployees, fetchPos, fetchRoles, createEmployee, updateEmployee, toggleEmployeeActive, createLocation, createRole, updateRole, fetchEmployeeSessions, desbloquearEmpleado, updateLocation } from "../services/employeeService";
+import { MODOS_MAYORISTA, describir as describirRegla } from "../utils/reglaMayorista";
+import { mensajeDeError } from "../utils/errores";
 import { initials, formatDateTime } from "../utils/formatters";
 import { PageHeader, EmptyState, Card } from "../components/ui/Layout";
 import EmployeeFormModal from "../components/employees/EmployeeFormModal";
@@ -235,9 +237,125 @@ export default function EmployeesPage() {
  * marcar cuál es el depósito, y el circuito de reposición quedaba inalcanzable
  * salvo creando un local nuevo.
  */
+/*
+ * La regla de precio mayorista de un local.
+ *
+ * Tiene estado propio, y no es un capricho: el servidor rechaza un modo "por
+ * monto" sin monto —una regla que nunca se cumple dejaría todo a precio
+ * minorista sin que nadie entienda por qué—, pero el campo del monto sólo
+ * aparece DESPUÉS de elegir ese modo. Guardando en cada cambio, elegir el modo
+ * fallaba siempre y no había forma de llegar a cargar el monto.
+ *
+ * Así que acá el modo se elige, aparece lo que haga falta, y recién se guarda
+ * cuando el conjunto está completo. Mientras tanto se muestra qué falta.
+ */
+function ReglaMayoristaLocal({ local, guardando, onGuardar }) {
+  const [modo, setModo] = useState(local.mayoristaModo || "cantidad");
+  const [cantidad, setCantidad] = useState(local.mayoristaCantidad ?? 3);
+  const [monto, setMonto] = useState(local.mayoristaMonto ?? "");
+
+  // Si el local cambia por fuera (otra pestaña, un refresco), se vuelve a leer.
+  useEffect(() => {
+    setModo(local.mayoristaModo || "cantidad");
+    setCantidad(local.mayoristaCantidad ?? 3);
+    setMonto(local.mayoristaMonto ?? "");
+  }, [local.mayoristaModo, local.mayoristaCantidad, local.mayoristaMonto]);
+
+  const necesitaMonto = modo === "monto" || modo === "ambos";
+  const necesitaCantidad = modo === "cantidad" || modo === "ambos";
+  const faltaMonto = necesitaMonto && (monto === "" || monto === null);
+
+  const propuesta = {
+    mayoristaModo: modo,
+    mayoristaCantidad: Number(cantidad) || 3,
+    mayoristaMonto: monto === "" || monto === null ? null : Number(monto),
+  };
+  const cambio = modo !== (local.mayoristaModo || "cantidad")
+    || Number(cantidad) !== Number(local.mayoristaCantidad ?? 3)
+    || String(monto ?? "") !== String(local.mayoristaMonto ?? "");
+
+  return (
+    <div className="mt-2">
+      <div className="flex flex-wrap items-center justify-end gap-2">
+        <span className="text-xs text-ink-500">Precio mayorista:</span>
+        <select
+          className="input w-auto py-1 text-xs"
+          value={modo}
+          disabled={guardando}
+          onChange={(e) => setModo(e.target.value)}
+          aria-label={`Regla de precio mayorista de ${local.nombre}`}
+        >
+          {MODOS_MAYORISTA.map((m) => <option key={m.key} value={m.key}>{m.label}</option>)}
+        </select>
+
+        {necesitaCantidad && (
+          <label className="flex items-center gap-1 text-xs text-ink-600">
+            desde
+            <input
+              className="input w-16 py-1 text-xs" type="number" min="1" step="1"
+              value={cantidad} disabled={guardando}
+              onChange={(e) => setCantidad(e.target.value)}
+              aria-label={`Cantidad de prendas para mayorista en ${local.nombre}`}
+            />
+            prendas
+          </label>
+        )}
+
+        {necesitaMonto && (
+          <label className="flex items-center gap-1 text-xs text-ink-600">
+            {modo === "ambos" ? "o desde $" : "desde $"}
+            <input
+              className={`input w-24 py-1 text-xs ${faltaMonto ? "border-brick-500" : ""}`}
+              type="number" min="0" step="0.01"
+              value={monto} disabled={guardando}
+              onChange={(e) => setMonto(e.target.value)}
+              aria-label={`Monto para mayorista en ${local.nombre}`}
+            />
+          </label>
+        )}
+
+        {cambio && (
+          <button
+            className="btn-accent py-1 text-xs"
+            disabled={guardando || faltaMonto}
+            onClick={() => onGuardar(propuesta)}
+          >
+            {guardando ? "Guardando…" : "Guardar"}
+          </button>
+        )}
+      </div>
+
+      <p className="mt-1 text-xs text-ink-400">
+        {faltaMonto
+          ? "Poné desde qué importe la venta pasa a mayorista."
+          : describirRegla(propuesta)}
+      </p>
+    </div>
+  );
+}
+
 function LocalesCard({ locations, onChange }) {
   const [guardando, setGuardando] = useState(null);
   const [error, setError] = useState("");
+
+  /*
+   * Cambiar la regla mayorista de un local.
+   *
+   * Va aparte de `cambiarTipo` porque no comparte nada: acá no hay que
+   * confirmar mercadería ni nada, y el error que puede volver es de validación
+   * —un monto que falta, una cantidad en cero— y hay que mostrarlo tal cual.
+   */
+  async function cambiarRegla(loc, cambios) {
+    setGuardando(loc.id); setError("");
+    try {
+      await updateLocation(loc.id, cambios);
+      await onChange();
+    } catch (e) {
+      setError(mensajeDeError(e, "No se pudo guardar la regla de precios."));
+    } finally {
+      setGuardando(null);
+    }
+  }
 
   async function cambiarTipo(loc, tipo) {
     if (tipo === loc.tipo) return;
@@ -298,12 +416,28 @@ function LocalesCard({ locations, onChange }) {
                     value={l.tipo || "local"}
                     disabled={guardando === l.id}
                     onChange={(e) => cambiarTipo(l, e.target.value)}
+                    aria-label={`Tipo de ${l.nombre}`}
                   >
                     <option value="local">Local de venta</option>
                     <option value="deposito">Depósito</option>
                     <option value="online">Online / Envíos</option>
                     <option value="feria">Feria (sin stock)</option>
                   </select>
+
+                  {/*
+                    * Cuándo este local vende al por mayor.
+                    *
+                    * Va acá, al lado del tipo, porque es la otra cosa que define
+                    * cómo se comporta el local. Un depósito no vende, así que no
+                    * tiene sentido preguntárselo.
+                    */}
+                  {l.tipo !== "deposito" && (
+                    <ReglaMayoristaLocal
+                      local={l}
+                      guardando={guardando === l.id}
+                      onGuardar={(cambios) => cambiarRegla(l, cambios)}
+                    />
+                  )}
                 </td>
               </tr>
             ))}

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Store, Tag, AlertTriangle, Check, RefreshCw } from "lucide-react";
 import { PageHeader, Card, EmptyState } from "../components/ui/Layout";
-import { fetchCandidatos, generarFeria, fetchProductosFeria } from "../services/feriaService";
+import { fetchCandidatos, generarFeria, fetchProductosFeria, reaplicarPrecios } from "../services/feriaService";
 import { formatCurrency } from "../utils/formatters";
 import { mensajeDeError } from "../utils/errores";
 
@@ -16,11 +16,63 @@ import { mensajeDeError } from "../utils/errores";
  * de siempre: se escanea el código y aparece el precio, sin preguntar talle.
  */
 
-const MODOS = [
-  { key: "minorista", label: "Igual al minorista", ayuda: "El mismo precio que en el local." },
-  { key: "mayorista", label: "Igual al mayorista", ayuda: "El precio por cantidad del local." },
-  { key: "porcentaje", label: "Un porcentaje", ayuda: "Sobre el minorista o el mayorista." },
+/*
+ * Cada precio de feria se arma con tres cosas: sobre qué precio del producto
+ * original se calcula, cómo, y con qué número.
+ *
+ * Son dos reglas independientes porque en la feria los dos precios no guardan
+ * la relación que tienen en el local. El caso que lo motivó: el mayorista de
+ * feria es el mayorista del local tal cual, y el minorista de feria es ese
+ * mismo mayorista más un fijo.
+ */
+const BASES = [
+  { key: "minorista", label: "el minorista del local" },
+  { key: "mayorista", label: "el mayorista del local" },
 ];
+const MODOS = [
+  { key: "igual",      label: "tal cual" },
+  { key: "porcentaje", label: "± un %" },
+  { key: "fijo",       label: "± un monto" },
+];
+
+/* Un control por cada precio. Repetirlo dos veces a mano sería garantizar que
+   uno de los dos quede distinto cuando algo cambie. */
+function ReglaPrecio({ titulo, valor, onChange }) {
+  return (
+    <div className="rounded-md border border-line bg-paper-100 p-3">
+      <p className="mb-2 text-xs font-medium uppercase tracking-wide text-ink-600">{titulo}</p>
+      <div className="flex flex-wrap items-center gap-2">
+        <select
+          className="input w-auto py-1 text-sm" value={valor.base}
+          onChange={(e) => onChange({ ...valor, base: e.target.value })}
+          aria-label={`Sobre qué precio se calcula el ${titulo.toLowerCase()}`}
+        >
+          {BASES.map((b) => <option key={b.key} value={b.key}>{b.label}</option>)}
+        </select>
+        <select
+          className="input w-auto py-1 text-sm" value={valor.modo}
+          onChange={(e) => onChange({ ...valor, modo: e.target.value })}
+          aria-label={`Cómo se calcula el ${titulo.toLowerCase()}`}
+        >
+          {MODOS.map((m) => <option key={m.key} value={m.key}>{m.label}</option>)}
+        </select>
+        {valor.modo !== "igual" && (
+          <input
+            className="input w-28 py-1 text-sm" type="number" step={valor.modo === "fijo" ? "1" : "0.1"}
+            value={valor.valor}
+            onChange={(e) => onChange({ ...valor, valor: e.target.value })}
+            aria-label={`Valor del ${titulo.toLowerCase()}`}
+          />
+        )}
+      </div>
+      <p className="mt-1 text-xs text-ink-500">
+        {valor.modo === "igual" && `Toma ${BASES.find((b) => b.key === valor.base)?.label} sin cambios.`}
+        {valor.modo === "porcentaje" && `Negativo baja el precio: −20 es un 20% menos.`}
+        {valor.modo === "fijo" && `Se suma al precio base. Negativo lo descuenta.`}
+      </p>
+    </div>
+  );
+}
 
 export default function FeriaPage() {
   const [datos, setDatos] = useState(null);
@@ -33,9 +85,9 @@ export default function FeriaPage() {
   const [prefijo, setPrefijo] = useState("FERIA");
   const [elegidos, setElegidos] = useState(() => new Set());
   const [busqueda, setBusqueda] = useState("");
-  const [modo, setModo] = useState("minorista");
-  const [base, setBase] = useState("minorista");
-  const [porcentaje, setPorcentaje] = useState(-20);
+  const [rMinorista, setRMinorista] = useState({ base: "minorista", modo: "igual", valor: 0 });
+  const [rMayorista, setRMayorista] = useState({ base: "mayorista", modo: "igual", valor: 0 });
+  const [reaplicando, setReaplicando] = useState(false);
 
   const cargar = useCallback(async () => {
     setCargando(true); setError("");
@@ -73,14 +125,18 @@ export default function FeriaPage() {
 
   /* Lo que va a salir por cada producto elegido, calculado en la pantalla para
      poder verlo ANTES de generar cincuenta productos con el precio equivocado. */
-  const previsualizar = (p) => {
-    const partida = base === "mayorista" ? (p.precioMayorista || p.precioMinorista) : p.precioMinorista;
-    if (modo === "porcentaje") {
-      const pct = Number(porcentaje) || 0;
-      return Math.round(partida * (1 + pct / 100) * 100) / 100;
-    }
-    return modo === "mayorista" ? (p.precioMayorista || p.precioMinorista) : p.precioMinorista;
+  const aplicar = (p, r) => {
+    const partida = r.base === "mayorista" ? (p.precioMayorista || p.precioMinorista) : p.precioMinorista;
+    const v = Number(r.valor) || 0;
+    if (r.modo === "porcentaje") return Math.max(0, Math.round(partida * (1 + v / 100) * 100) / 100);
+    if (r.modo === "fijo") return Math.max(0, Math.round((partida + v) * 100) / 100);
+    return Math.round(partida * 100) / 100;
   };
+  const previsualizar = (p) => ({
+    minorista: aplicar(p, rMinorista),
+    mayorista: aplicar(p, rMayorista),
+  });
+  const reglaParaApi = () => ({ minorista: rMinorista, mayorista: rMayorista });
 
   async function generar() {
     if (!elegidos.size) { setError("Elegí al menos un producto."); return; }
@@ -89,9 +145,9 @@ export default function FeriaPage() {
       const r = await generarFeria({
         productIds: [...elegidos],
         prefijo,
-        precio: modo === "porcentaje" ? { modo: "porcentaje", base, porcentaje: Number(porcentaje) } : { modo, base: modo },
+        precio: reglaParaApi(),
       });
-      setAviso(r.mensaje);
+      setAviso([r.mensaje, ...(r.avisos || [])].filter(Boolean).join(' · '));
       setElegidos(new Set());
     } catch (e) {
       setError(mensajeDeError(e, "No se pudieron generar los productos de feria."));
@@ -99,6 +155,21 @@ export default function FeriaPage() {
       return;
     }
     setTrabajando(false);
+    await cargar();
+  }
+
+  async function recalcular() {
+    if (!generados.length) return;
+    setReaplicando(true); setError(""); setAviso("");
+    try {
+      const r = await reaplicarPrecios({ productIds: generados.map((p) => p.id), precio: reglaParaApi() });
+      setAviso([r.mensaje, ...(r.avisos || [])].filter(Boolean).join(" · "));
+    } catch (e) {
+      setError(mensajeDeError(e, "No se pudieron recalcular los precios."));
+      setReaplicando(false);
+      return;
+    }
+    setReaplicando(false);
     await cargar();
   }
 
@@ -141,7 +212,7 @@ export default function FeriaPage() {
               propio código y su propio precio. El original no se toca.
             </p>
 
-            <div className="mb-4 grid grid-cols-1 gap-4 sm:grid-cols-3">
+            <div className="mb-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
               <div>
                 <label className="label" htmlFor="feria-prefijo">Prefijo del código</label>
                 <input
@@ -157,31 +228,11 @@ export default function FeriaPage() {
                   Se usan los primeros 3 caracteres: <span className="font-mono">{(datos?.prefijo || "FER")}</span>
                 </p>
               </div>
+            </div>
 
-              <div>
-                <label className="label" htmlFor="feria-modo">Precio de feria</label>
-                <select id="feria-modo" className="input" value={modo} onChange={(e) => setModo(e.target.value)}>
-                  {MODOS.map((m) => <option key={m.key} value={m.key}>{m.label}</option>)}
-                </select>
-                <p className="mt-1 text-xs text-ink-500">{MODOS.find((m) => m.key === modo)?.ayuda}</p>
-              </div>
-
-              {modo === "porcentaje" && (
-                <div>
-                  <label className="label" htmlFor="feria-pct">Porcentaje sobre</label>
-                  <div className="flex gap-2">
-                    <select className="input w-auto" value={base} onChange={(e) => setBase(e.target.value)}>
-                      <option value="minorista">Minorista</option>
-                      <option value="mayorista">Mayorista</option>
-                    </select>
-                    <input
-                      id="feria-pct" className="input" type="number" step="1" min="-100" max="1000"
-                      value={porcentaje} onChange={(e) => setPorcentaje(e.target.value)}
-                    />
-                  </div>
-                  <p className="mt-1 text-xs text-ink-500">Negativo baja el precio: −20 es un 20% menos.</p>
-                </div>
-              )}
+            <div className="mb-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <ReglaPrecio titulo="Precio minorista de feria" valor={rMinorista} onChange={setRMinorista} />
+              <ReglaPrecio titulo="Precio mayorista de feria" valor={rMayorista} onChange={setRMayorista} />
             </div>
 
             {pendientes.length === 0 ? (
@@ -214,7 +265,7 @@ export default function FeriaPage() {
                         <th className="px-3 py-2 font-medium"> </th>
                         <th className="px-3 py-2 font-medium">Producto</th>
                         <th className="px-3 py-2 font-medium">Código de feria</th>
-                        <th className="px-3 py-2 text-right font-medium">Precio de feria</th>
+                        <th className="px-3 py-2 text-right font-medium">Precios de feria</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -234,10 +285,10 @@ export default function FeriaPage() {
                           </td>
                           <td className="px-3 py-2 font-mono text-xs text-brass-800">{p.skuFeria}</td>
                           <td className="px-3 py-2 text-right tabular-nums">
-                            <span className="text-ink-900">{formatCurrency(previsualizar(p))}</span>
-                            <span className="ml-1 text-xs text-ink-400 line-through">
-                              {formatCurrency(p.precioMinorista)}
-                            </span>
+                            <p className="text-ink-900">{formatCurrency(previsualizar(p).minorista)}</p>
+                            <p className="text-xs text-ink-500">
+                              may. {formatCurrency(previsualizar(p).mayorista)}
+                            </p>
                           </td>
                         </tr>
                       ))}
@@ -258,11 +309,23 @@ export default function FeriaPage() {
           </Card>
 
           <Card className="p-0">
-            <div className="border-b border-line px-4 py-3">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line px-4 py-3">
               <h3 className="font-display text-base font-semibold text-ink-950">
                 <Store size={16} className="mr-1 inline text-ink-500" /> Catálogo de feria
                 <span className="ml-2 text-sm font-normal text-ink-500">{generados.length} producto(s)</span>
               </h3>
+              {/*
+                * Recalcular los ya generados.
+                *
+                * Generar es idempotente —si no, un segundo lote duplicaría el
+                * catálogo— así que sin esto, cambiar de lista de precios
+                * obligaba a borrar todo y volver a generar.
+                */}
+              {generados.length > 0 && (
+                <button className="btn-ghost py-1 text-xs" onClick={recalcular} disabled={reaplicando}>
+                  {reaplicando ? "Recalculando…" : "Aplicar estas reglas a los ya generados"}
+                </button>
+              )}
             </div>
 
             {generados.length === 0 ? (
@@ -278,7 +341,8 @@ export default function FeriaPage() {
                     <tr className="border-b border-line text-left text-xs uppercase tracking-wide text-ink-600">
                       <th className="px-4 py-3 font-medium">Producto</th>
                       <th className="px-4 py-3 font-medium">Código</th>
-                      <th className="px-4 py-3 text-right font-medium">Precio</th>
+                      <th className="px-4 py-3 text-right font-medium">Minorista</th>
+                      <th className="px-4 py-3 text-right font-medium">Mayorista</th>
                       <th className="px-4 py-3 text-right font-medium">Stock</th>
                     </tr>
                   </thead>
@@ -288,6 +352,7 @@ export default function FeriaPage() {
                         <td className="px-4 py-3 text-ink-900">{p.titulo}</td>
                         <td className="px-4 py-3 font-mono text-xs text-brass-800">{p.sku}</td>
                         <td className="px-4 py-3 text-right tabular-nums text-ink-900">{formatCurrency(p.precio)}</td>
+                        <td className="px-4 py-3 text-right tabular-nums text-ink-700">{formatCurrency(p.precioMayorista)}</td>
                         {/* No es "0": es que no se lleva la cuenta, y decirlo así
                             evita que alguien salga a reponer lo que no falta. */}
                         <td className="px-4 py-3 text-right text-xs text-ink-500">sin control</td>

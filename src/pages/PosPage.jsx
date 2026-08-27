@@ -11,13 +11,12 @@ import { fetchClients } from "../services/clientService";
 import { fetchPaymentMethods } from "../services/paymentMethodService";
 import { useBarcodeScanner } from "../hooks/useBarcodeScanner";
 import { formatCurrency } from "../utils/formatters";
+import { esMayorista as evaluarMayorista, describir as describirRegla } from "../utils/reglaMayorista";
 import { PageHeader, Card } from "../components/ui/Layout";
 import { useAuth } from "../context/AuthContext";
 import { esAdministradorTotal } from "../utils/permissions";
 import PaymentSplit, { lineasParaApi, calcularTotales } from "../components/sales/PaymentSplit";
 import AvisoCredito from "../components/sales/AvisoCredito";
-// Mismo criterio que el backend: 3 o más unidades es precio mayorista.
-const UMBRAL_MAYORISTA = 3;
 
 export default function PosPage() {
   const navigate = useNavigate();
@@ -107,7 +106,21 @@ export default function PosPage() {
   }, [localEfectivo]);
 
   const totalUnidades = items.reduce((s, i) => s + i.cantidad, 0);
-  const esMayorista = totalUnidades >= UMBRAL_MAYORISTA;
+
+  /*
+   * Mayorista o minorista, según la regla DEL LOCAL.
+   *
+   * Antes era `>= 3` escrito acá, otra vez en Nueva venta y una tercera en el
+   * servidor. Tres copias sin saber una de otra: cambiar una hacía que la
+   * pantalla mostrara un precio y la caja cobrara otro. Ahora la regla vive en
+   * el local y la evalúa la misma función que usa el servidor.
+   *
+   * El umbral por monto se mide EN LISTA —el precio depende del total y el
+   * total del precio— así que primero se suma todo a minorista.
+   */
+  const localRegla = locations.find((l) => String(l.id) === String(localEfectivo)) || null;
+  const totalEnLista = items.reduce((s, i) => s + (Number(i.precioMinorista) || 0) * i.cantidad, 0);
+  const esMayorista = evaluarMayorista(localRegla, totalUnidades, totalEnLista);
   const precioDe = (i) => (esMayorista ? i.precioMayorista : i.precioMinorista);
   const total = items.reduce((s, i) => s + precioDe(i) * i.cantidad, 0);
 
@@ -443,7 +456,19 @@ export default function PosPage() {
           <Card>
             <div className="flex items-baseline justify-between">
               <span className="text-sm text-ink-600">{totalUnidades} {totalUnidades === 1 ? "unidad" : "unidades"}</span>
-              {esMayorista && <span className="rounded bg-brass-50 px-2 py-0.5 text-xs font-medium text-brass-700">Precio mayorista</span>}
+              {/* La regla vive en el local y cambia entre sucursales, así que
+                  el cartel dice cuál se está aplicando. Sin eso, el cajero ve
+                  que el precio cambió y no sabe si está bien. */}
+              {esMayorista
+                ? (
+                  <span className="rounded bg-brass-50 px-2 py-0.5 text-xs font-medium text-brass-700"
+                    title={describirRegla(localRegla)}>
+                    Precio mayorista
+                  </span>
+                )
+                : localRegla && (
+                  <span className="text-xs text-ink-500">{describirRegla(localRegla)}</span>
+                )}
             </div>
             <p className="mt-2 font-display text-4xl font-semibold text-ink-950">{formatCurrency(total)}</p>
           </Card>

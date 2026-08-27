@@ -7,6 +7,7 @@ import { createSale } from "../services/salesService";
 import { fetchPaymentMethods } from "../services/paymentMethodService";
 import PaymentSplit, { lineasParaApi, calcularTotales } from "../components/sales/PaymentSplit";
 import { formatCurrency } from "../utils/formatters";
+import { esMayorista as evaluarMayorista, describir as describirRegla } from "../utils/reglaMayorista";
 import { PageHeader, Card } from "../components/ui/Layout";
 import AvisoError from "../components/ui/AvisoError";
 import { analizarError } from "../utils/errores";
@@ -90,7 +91,12 @@ export default function NewSalePage() {
   }
 
   const totalUnidades = items.reduce((s, i) => s + i.cantidad, 0);
-  const esMayorista   = totalUnidades >= 3;
+
+  // La misma regla que aplica el servidor, tomada del local elegido. Ver
+  // utils/reglaMayorista: antes este `>= 3` estaba escrito tres veces.
+  const localRegla = locations.find((l) => String(l.id) === String(locationId)) || null;
+  const totalEnLista = items.reduce((s, i) => s + (Number(i.precioUnitario) || 0) * i.cantidad, 0);
+  const esMayorista   = evaluarMayorista(localRegla, totalUnidades, totalEnLista);
   const subtotal = items.reduce((s, i) => s + i.cantidad * (esMayorista ? i.precioMayorista : i.precioUnitario), 0);
   const descuento = Math.round(subtotal * descuentoPct / 100);
   const total     = subtotal - descuento;
@@ -142,7 +148,18 @@ export default function NewSalePage() {
               <TypeToggle tipo={tipo} setTipo={setTipo} />
               <input type="date" className="input ml-auto w-auto" value={fecha} onChange={(e) => setFecha(e.target.value)} />
             </div>
-            {esMayorista && <p className="mb-3 rounded-md bg-teal-50 px-3 py-2 text-xs font-medium text-teal-600">✓ Precio MAYORISTA aplicado (≥ 3 prendas)</p>}
+            {/* El "≥ 3 prendas" estaba escrito a mano y dejó de ser cierto en
+                cuanto cada local pudo tener su regla: un cartel que afirma algo
+                que el sistema ya no hace es peor que no tener cartel. */}
+            {esMayorista
+              ? (
+                <p className="mb-3 rounded-md bg-teal-50 px-3 py-2 text-xs font-medium text-teal-600">
+                  ✓ Precio MAYORISTA aplicado — {describirRegla(localRegla)}
+                </p>
+              )
+              : localRegla && (
+                <p className="mb-3 text-xs text-ink-500">{describirRegla(localRegla)}</p>
+              )}
             <ProductPicker onPick={addItem} locationId={locationId || null} />
             <div className="mt-4 overflow-x-auto">
               {items.length === 0 ? (
