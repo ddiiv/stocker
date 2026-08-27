@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import { ArrowLeft, Plus, Trash2 } from "lucide-react";
 import { fetchProductGroups, adjustVariantStock, createVariant, deleteVariant, updateVariant, fetchVariantesPorLocal } from "../services/productService";
+import { mensajeDeError } from "../utils/errores";
 import { suggestSku, skuDisponible } from "../services/skuService";
 import { ordenarVariantes, CRITERIOS } from "../utils/ordenVariantes";
 import { useAuth } from "../context/AuthContext";
@@ -28,6 +29,7 @@ export default function ProductDetailPage() {
   const { skuAgrupador } = useParams();
   const [group, setGroup] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
   const [addOpen, setAddOpen] = useState(false);
   const [masivoOpen, setMasivoOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
@@ -51,12 +53,29 @@ export default function ProductDetailPage() {
    */
   const [localAjuste, setLocalAjuste] = useState("");
 
+  /*
+   * `load` no lanza nunca: muestra su propio error y vuelve.
+   *
+   * Esa garantía es la que arregla dos cosas de una. Sin el `finally`, un
+   * error dejaba la pantalla en esqueleto para siempre. Y como `load` se
+   * llama al final de las operaciones —ajustar stock, guardar un SKU—, si
+   * lanzaba, el catch de esa operación lo tomaba como propio: se ajustaba el
+   * stock bien y el usuario leía "No se pudo ajustar el stock".
+   */
   async function load() {
     setLoading(true);
-    const groups = await fetchProductGroups({ search: skuAgrupador });
-    const g = groups.find((x) => x.skuAgrupador === skuAgrupador) || null;
-    setGroup(g);
-    setLoading(false);
+    setLoadError("");
+    let g = null;
+    try {
+      const groups = await fetchProductGroups({ search: skuAgrupador });
+      g = groups.find((x) => x.skuAgrupador === skuAgrupador) || null;
+      setGroup(g);
+    } catch (e) {
+      setLoadError(mensajeDeError(e, "No se pudo cargar el producto."));
+      return;
+    } finally {
+      setLoading(false);
+    }
 
     // El desglose se pide aparte y no bloquea el resto de la pantalla: si
     // fallara, el producto se sigue viendo con su total.
@@ -118,6 +137,14 @@ export default function ProductDetailPage() {
   const stockDe = new Map((porLocal?.variantes || []).map((v) => [v.variantId, v.porLocal]));
 
   if (loading) return <div className="card h-64 animate-pulse bg-paper-200/60" />;
+  if (loadError) {
+    return (
+      <div className="card">
+        <p className="text-sm text-brick-500">{loadError}</p>
+        <button className="btn-ghost mt-3" onClick={load}>Reintentar</button>
+      </div>
+    );
+  }
   if (!group)  return <EmptyState icon={Boxes} title="Producto no encontrado" action={<Link to="/stock" className="btn-ghost">Volver a stock</Link>} />;
 
   return (

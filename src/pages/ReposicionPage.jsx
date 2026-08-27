@@ -60,6 +60,8 @@ export default function ReposicionPage() {
   const [cargando, setCargando] = useState(true);
   const [tab, setTab] = useState("pendiente");
   const [error, setError] = useState("");
+  // Un solo candado para todas las acciones sobre pedidos: son excluyentes.
+  const [enAccion, setEnAccion] = useState(false);
   const [aviso, setAviso] = useState("");
 
   // Alta de pedido
@@ -204,16 +206,35 @@ export default function ReposicionPage() {
     setGuardando(false);
   }
 
+  /*
+   * Aprobar, rechazar, despachar, recibir: todas pasan por acá.
+   *
+   * El candado no es cosmético. Sin él, dos clics seguidos mandaban la acción
+   * dos veces, y la segunda —sobre un pedido que ya cambió de estado— volvía
+   * con un error que pisaba el aviso de éxito de la primera: la operación
+   * salía bien y en pantalla decía que falló.
+   *
+   * El refresco va fuera del try por lo mismo: si el pedido se despachó y la
+   * recarga falla, eso no es un despacho fallido.
+   */
   async function accion(fn, pedido, ...args) {
+    if (enAccion) return;
+    setEnAccion(true);
     setError(""); setAviso("");
+    let hecho = false;
     try {
       const r = await fn(pedido.id, ...args);
       setAviso(r.mensaje);
       setBorrador({});
+      hecho = true;
+    } catch (e) {
+      setError(mensajeDeError(e, "No se pudo completar la acción."));
+    } finally {
+      setEnAccion(false);
+    }
+    if (hecho) {
       await cargar();
       fetchEnTransito().then(setTransito).catch(() => {});
-    } catch (e) {
-      setError(e.response?.data?.message || "No se pudo completar la acción.");
     }
   }
 
@@ -410,20 +431,20 @@ export default function ReposicionPage() {
                       <button className="btn-accent px-2 py-1 text-xs" onClick={() => aprobarConChequeo(p)}>
                         <Check size={13} /> Aprobar
                       </button>
-                      <button className="btn-ghost px-2 py-1 text-xs text-brick-500"
+                      <button disabled={enAccion} className="btn-ghost px-2 py-1 text-xs text-brick-500"
                         onClick={() => { const m = pedirMotivo(p, "rechazás"); if (m) accion(rechazarPedido, p, m); }}>
                         <X size={13} /> Rechazar
                       </button>
                     </>
                   )}
                   {puedeOperar && p.estado === "pendiente" && (
-                    <button className="btn-ghost px-2 py-1 text-xs text-ink-500"
+                    <button disabled={enAccion} className="btn-ghost px-2 py-1 text-xs text-ink-500"
                       onClick={() => { const m = pedirMotivo(p, "cancelás"); if (m) accion(cancelarPedido, p, m); }}>
                       <Ban size={13} /> Cancelar
                     </button>
                   )}
                   {puedeOperar && p.estado === "aprobado" && (
-                    <button className="btn-accent px-2 py-1 text-xs"
+                    <button disabled={enAccion} className="btn-accent px-2 py-1 text-xs"
                       onClick={() => accion(despacharPedido, p,
                         (p.items || []).map((i) => ({ itemId: i.id, cantidad: valorDe(i, "envio") })))}>
                       <Truck size={13} /> Despachar

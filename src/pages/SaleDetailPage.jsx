@@ -28,6 +28,7 @@ export default function SaleDetailPage() {
   const [businessCuits, setBusinessCuits] = useState([]);
   const [payModal, setPayModal] = useState(false);
   const [payError, setPayError] = useState("");
+  const [loadError, setLoadError] = useState("");
   // La conversión puede fallar por stock, por número tomado o porque falta
   // decir de qué local sale. Antes ninguno de esos motivos se veía.
   const [convertError, setConvertError] = useState("");
@@ -36,12 +37,25 @@ export default function SaleDetailPage() {
   const [metodos, setMetodos] = useState([]);
   const [pagos, setPagos] = useState([]);
 
+  /*
+   * El `finally` es lo que impide que la pantalla quede en esqueleto.
+   *
+   * Sin él, cualquier error acá cortaba la función antes del setLoading(false)
+   * y quedaba el armazón gris girando para siempre, sin decir qué pasó. Un 404
+   * —una venta que no existe— se veía igual que una caída de red.
+   */
   async function load() {
     setLoading(true);
-    const s = await getSale(numero);
-    setSale(s);
-    if (s?.cliente) setInvoiceForm((f) => ({ ...f, clienteCuit: s.cliente.cuit || "", clienteEmail: s.cliente.email || "" }));
-    setLoading(false);
+    setLoadError("");
+    try {
+      const s = await getSale(numero);
+      setSale(s);
+      if (s?.cliente) setInvoiceForm((f) => ({ ...f, clienteCuit: s.cliente.cuit || "", clienteEmail: s.cliente.email || "" }));
+    } catch (e) {
+      setLoadError(mensajeDeError(e, "No se pudo cargar el comprobante."));
+    } finally {
+      setLoading(false);
+    }
   }
 
   useEffect(() => { load(); }, [numero]);
@@ -81,17 +95,28 @@ export default function SaleDetailPage() {
     }
   }
 
+  /*
+   * Cobrar, y recién después refrescar.
+   *
+   * El refresco estaba DENTRO del try, así que si la plata entraba bien y la
+   * recarga fallaba, el cajero leía "No se pudo cobrar la venta" sobre una
+   * venta ya cobrada. Lo natural entonces es volver a cobrar — y cobrarle dos
+   * veces al cliente. Separarlos es lo único que evita eso: el catch de acá
+   * habla sólo del cobro, y `load` ya muestra sus propios errores.
+   */
   async function confirmarCobro() {
     setBusy(true); setPayError("");
+    let cobrado = false;
     try {
       await cobrarSale(numero, lineasParaApi(pagos, metodos, aCobrar));
+      cobrado = true;
       setPayModal(false);
-      await load();
     } catch (e) {
-      setPayError(e.response?.data?.message || "No se pudo cobrar la venta.");
+      setPayError(mensajeDeError(e, "No se pudo cobrar la venta."));
     } finally {
       setBusy(false);
     }
+    if (cobrado) await load();
   }
 
   /*
@@ -156,6 +181,20 @@ export default function SaleDetailPage() {
   }
 
   if (loading) return <div className="card h-64 animate-pulse bg-paper-200/60" />;
+
+  /* Si la carga falló hay que decirlo y dar la salida. Antes esto caía en
+     "Venta no encontrada", que es una respuesta distinta a "no se pudo
+     cargar" y mandaba a buscar un comprobante que sí existe. */
+  if (loadError) {
+    return (
+      <div className="card">
+        <p className="text-sm text-brick-500">{loadError}</p>
+        <button className="btn-ghost mt-3" onClick={load}>
+          <RefreshCw size={15} /> Reintentar
+        </button>
+      </div>
+    );
+  }
   if (!sale)   return <p className="text-ink-600">Venta no encontrada.</p>;
 
   const items = sale.items || [];

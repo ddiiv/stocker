@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Receipt, XCircle, Download, Filter } from "lucide-react";
 import { fetchInvoices, fetchReceipts, voidInvoice, downloadInvoicePdf } from "../services/invoiceService";
+import { mensajeDeError } from "../utils/errores";
 import { formatCurrency, formatDate } from "../utils/formatters";
 import { PageHeader, EmptyState } from "../components/ui/Layout";
 import BillingTabs from "../components/billing/BillingTabs";
@@ -14,25 +15,46 @@ export default function BillingPage() {
   const [resumen, setResumen] = useState(null);
   const [loading, setLoading] = useState(true);
   const [periodo, setPeriodo] = useState("");
+  const [error, setError] = useState("");
 
   async function load() {
     setLoading(true);
-    // El mismo rango para facturas y recibos: los recibos se derivan de las
-    // facturas, así que filtrarlos distinto mostraría dos verdades.
-    const rango = rangoDe(periodo);
-    const [inv, rec] = await Promise.all([fetchInvoices(rango), fetchReceipts(rango)]);
-    setInvoices(inv.facturas);
-    setResumen(inv.resumen);
-    setReceipts(rec);
-    setLoading(false);
+    setError("");
+    try {
+      // El mismo rango para facturas y recibos: los recibos se derivan de las
+      // facturas, así que filtrarlos distinto mostraría dos verdades.
+      const rango = rangoDe(periodo);
+      const [inv, rec] = await Promise.all([fetchInvoices(rango), fetchReceipts(rango)]);
+      setInvoices(inv.facturas);
+      setResumen(inv.resumen);
+      setReceipts(rec);
+    } catch (e) {
+      // Son dos consultas en paralelo: si falla cualquiera, sin este catch la
+      // pantalla quedaba en esqueleto sin decir cuál ni por qué.
+      setError(mensajeDeError(e, "No se pudo cargar la facturación."));
+    } finally {
+      setLoading(false);
+    }
   }
 
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [periodo]);
 
+  /*
+   * Anular una factura toca ARCA, y ARCA falla seguido: certificado vencido,
+   * el servicio caído, un CAE que no se puede anular. Sin catch, todo eso era
+   * un rechazo sin manejar: la pantalla no cambiaba y el usuario no sabía si
+   * la factura quedó anulada o no.
+   */
   async function handleVoid(id) {
     if (!confirm("¿Anular esta factura? Esta acción no se puede deshacer.")) return;
-    await voidInvoice(id);
-    load();
+    setError("");
+    try {
+      await voidInvoice(id);
+    } catch (e) {
+      setError(mensajeDeError(e, "No se pudo anular la factura."));
+      return;
+    }
+    await load();
   }
 
   return (
@@ -93,6 +115,14 @@ export default function BillingPage() {
           </button>
         ))}
       </div>
+
+      {/* El error de carga y el de anulación comparten lugar: los dos son
+          "algo salió mal en esta pantalla" y no compiten entre sí. */}
+      {error && (
+        <p className="mb-4 rounded-md border border-brick-500/30 bg-brick-50 px-3 py-2 text-sm text-brick-500">
+          {error}
+        </p>
+      )}
 
       {loading ? (
         <div className="card p-0">

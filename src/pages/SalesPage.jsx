@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { Plus, ShoppingCart, CheckCircle2, NotebookPen, Split, Filter, X } from "lucide-react";
 import { fetchSales, cobrarSale } from "../services/salesService";
+import { mensajeDeError } from "../utils/errores";
 import { fetchPaymentMethods } from "../services/paymentMethodService";
 import PaymentSplit, { lineasParaApi, calcularTotales } from "../components/sales/PaymentSplit";
 import { formatCurrency, formatDate } from "../utils/formatters";
@@ -38,22 +39,34 @@ export default function SalesPage() {
   const [pagos, setPagos] = useState([]);
   const [payError, setPayError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [loadError, setLoadError] = useState("");
 
   // Lo que falta cobrar de la venta abierta, que no siempre es su total: el
   // cliente pudo haber pagado una parte a cuenta desde su ficha.
   const aCobrar = Number(payingSale?.saldoPendiente) || Number(payingSale?.total) || 0;
 
+  /*
+   * Sin el `finally`, cualquier error acá dejaba el listado en esqueleto para
+   * siempre y sin explicación. Un filtro que devuelve error se veía igual que
+   * una consulta que nunca termina.
+   */
   async function load() {
     setLoading(true);
-    const { desde, hasta } = rangoDe(periodo);
-    const r = await fetchSales({
-      tipo: tipo || undefined,
-      medioPago: medioPago || undefined,
-      desde, hasta,
-    });
-    setSales(r.ventas);
-    setResumen(r.resumen);
-    setLoading(false);
+    setLoadError("");
+    try {
+      const { desde, hasta } = rangoDe(periodo);
+      const r = await fetchSales({
+        tipo: tipo || undefined,
+        medioPago: medioPago || undefined,
+        desde, hasta,
+      });
+      setSales(r.ventas);
+      setResumen(r.resumen);
+    } catch (e) {
+      setLoadError(mensajeDeError(e, "No se pudieron cargar las ventas."));
+    } finally {
+      setLoading(false);
+    }
   }
 
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [tipo, periodo, medioPago]);
@@ -78,18 +91,32 @@ export default function SalesPage() {
     setPagos([{ paymentMethodId: metodos[0].id, monto: pendiente, ajusteManual: "" }]);
   }
 
+  /*
+   * Cobrar desde el listado.
+   *
+   * Va el NÚMERO, no el id: desde que la ruta identifica la venta por su
+   * comprobante, mandar el id apuntaba a /sales/123/cobrar y el backend
+   * buscaba una venta numerada "123", que no existe. Cobrar desde acá tiraba
+   * 404 mientras que desde el detalle funcionaba.
+   *
+   * Y el refresco va fuera del try: si la plata entra y la recarga falla, el
+   * cajero no puede leer "No se pudo cobrar" sobre una venta ya cobrada — es
+   * la forma más directa de que le cobre dos veces al cliente.
+   */
   async function handleCobro() {
     if (!payingSale) return;
     setBusy(true); setPayError("");
+    let cobrado = false;
     try {
-      await cobrarSale(payingSale.id, lineasParaApi(pagos, metodos, aCobrar));
+      await cobrarSale(payingSale.numero, lineasParaApi(pagos, metodos, aCobrar));
+      cobrado = true;
       setPayingSale(null);
-      await load();
     } catch (e) {
-      setPayError(e.response?.data?.message || "No se pudo cobrar la venta.");
+      setPayError(mensajeDeError(e, "No se pudo cobrar la venta."));
     } finally {
       setBusy(false);
     }
+    if (cobrado) await load();
   }
 
   return (
@@ -193,6 +220,13 @@ export default function SalesPage() {
           {Array.from({ length: 5 }).map((_, i) => (
             <div key={i} className="h-16 animate-pulse border-b border-line last:border-0" />
           ))}
+        </div>
+      ) : loadError ? (
+        /* "No cargó" no es lo mismo que "no hay ventas": la segunda manda a
+           revisar los filtros, la primera a reintentar. */
+        <div className="card">
+          <p className="text-sm text-brick-500">{loadError}</p>
+          <button className="btn-ghost mt-3" onClick={load}>Reintentar</button>
         </div>
       ) : sales.length === 0 ? (
         /* El vacío dice si es "no hay nada" o "no hay nada CON ESTE FILTRO":
