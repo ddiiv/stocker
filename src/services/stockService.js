@@ -12,7 +12,7 @@
  */
 
 const { Op } = require('sequelize');
-const { ProductVariant, VariantStock, BusinessLocation, StockMovement } = require('../models');
+const { ProductVariant, VariantStock, BusinessLocation, StockMovement, Employee } = require('../models');
 
 /*
  * A qué local va un movimiento que no lo aclara.
@@ -25,6 +25,47 @@ const { ProductVariant, VariantStock, BusinessLocation, StockMovement } = requir
  * Un negocio sin locales cargados devuelve null: ahí el stock queda sólo en el
  * total, que es lo que había antes de esta función y sigue siendo correcto.
  */
+/*
+ * De qué local se trata, comprobando que sea de este negocio.
+ *
+ * Existe porque el patrón "tomo locationId del cuerpo y si no viene busco uno"
+ * estaba copiado en cinco controladores, y en cuatro de ellos el id que mandaba
+ * el cliente se usaba tal cual, sin preguntar de quién era. Con eso, un negocio
+ * escribía filas de stock contra el local de otro: no leía nada ajeno, pero
+ * ensuciaba la contabilidad por local de los dos y podía esconder mercadería en
+ * un lugar que su propia pantalla no muestra.
+ *
+ * El orden de preferencia es el de siempre: lo que se pidió, si no el local del
+ * empleado, si no el principal del negocio.
+ *
+ * @throws si el local pedido no es de este negocio o está inactivo. Es un error
+ *   del cliente, no un caso a resolver en silencio eligiendo otro: descartarlo y
+ *   seguir con el local por defecto movería stock en un lugar que nadie pidió.
+ */
+async function resolverLocal({ locationId, businessId, employeeId = null, transaction = null }) {
+  if (locationId) {
+    const local = await BusinessLocation.findOne({
+      where: { id: Number(locationId), businessId, activo: true },
+      attributes: ['id'],
+      transaction,
+    });
+    if (!local) {
+      throw Object.assign(
+        new Error('El local indicado no pertenece a este negocio o está inactivo.'),
+        { status: 400 },
+      );
+    }
+    return local.id;
+  }
+
+  if (employeeId) {
+    const emp = await Employee.findByPk(employeeId, { attributes: ['locationId'], transaction });
+    if (emp?.locationId) return emp.locationId;
+  }
+
+  return localPorDefecto(businessId, transaction);
+}
+
 async function localPorDefecto(businessId, transaction = null) {
   /*
    * Se prefiere un local de venta antes que un depósito.
@@ -234,4 +275,4 @@ async function transferir({ variantId, businessId, desde, hacia, cantidad, emplo
   return { salida, entrada };
 }
 
-module.exports = { mover, stockEn, desglosePorVariante, transferir, localPorDefecto, recalcularTotal };
+module.exports = { mover, stockEn, desglosePorVariante, transferir, localPorDefecto, resolverLocal, recalcularTotal };

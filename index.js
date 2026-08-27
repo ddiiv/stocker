@@ -449,11 +449,39 @@ async function start() {
   }
 }
 
-// Un throw fuera del try (por ejemplo al cargar un módulo) moría con un stack
-// trace pelado, sin decir qué variable faltaba.
+/*
+ * Una promesa rechazada de fondo NO puede tumbar el servidor.
+ *
+ * Node convierte un rechazo sin manejar en uncaughtException, y como abajo eso
+ * termina en process.exit(1), un mail que no salió o una consulta que tardó de
+ * más dejaba sin sistema a TODOS los negocios a la vez. Se vio con doce ventas
+ * simultáneas: la ráfaga de avisos por mail y WhatsApp que dispara cada venta
+ * alcanzaba para voltear el proceso.
+ *
+ * Un rechazo así es un defecto y hay que arreglarlo, pero la caja de un local
+ * no es el lugar donde enterarse. Se registra completo —con stack, que es lo
+ * único que permite ubicarlo— y el servidor sigue atendiendo.
+ */
+process.on('unhandledRejection', (razon) => {
+  const err = razon instanceof Error ? razon : new Error(String(razon));
+  console.error('✖ Promesa rechazada sin manejar (el servidor sigue en pie):');
+  console.error(`  ${err.name}: ${err.message}`);
+  if (err.stack) console.error(err.stack.split('\n').slice(1, 8).join('\n'));
+});
+
+/*
+ * Un throw fuera del try (por ejemplo al cargar un módulo) moría con un stack
+ * trace pelado, sin decir qué variable faltaba.
+ *
+ * Acá sí se sale: una excepción sincrónica sin capturar deja el proceso en un
+ * estado que no se puede razonar, y seguir sirviendo desde ahí es peor que
+ * reiniciar. Va con stack porque sin él el mensaje solo —"Operation timeout"—
+ * no alcanza para saber ni de qué parte del sistema vino.
+ */
 process.on('uncaughtException', (err) => {
   console.error('✖ El proceso se detuvo por un error no capturado:');
-  console.error(`  ${err.message}`);
+  console.error(`  ${err.name}: ${err.message}`);
+  if (err.stack) console.error(err.stack.split('\n').slice(1, 10).join('\n'));
   process.exit(1);
 });
 

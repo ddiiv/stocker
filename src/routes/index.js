@@ -43,6 +43,34 @@ const { FEATURES } = require('../config/planes');
 
 const r = Router();
 
+/*
+ * Express 4 no entiende de promesas.
+ *
+ * Si un handler `async` rechaza, Express no lo ve: el rechazo queda sin
+ * manejar y Node lo convierte en uncaughtException, que en index.js termina en
+ * process.exit(1). O sea que un error asincrónico en UNA ruta dejaba sin
+ * sistema a todos los negocios a la vez.
+ *
+ * No es teórico. `const t = await sequelize.transaction()` está escrito ANTES
+ * del try en treinta controladores, y cuando el pool se agota —doce ventas
+ * simultáneas alcanzan, con pool de 10— eso lanza fuera de todo catch. Se
+ * reprodujo: el proceso se caía con "Operation timeout" y sin stack.
+ *
+ * Envolver acá, en el registro, cubre las 178 rutas de una y también las que
+ * se agreguen después, que es lo que hace que el arreglo no se pierda. Un
+ * rechazo pasa a ser un 500 con su log, como cualquier error sincrónico.
+ */
+const envolver = (fn) => (
+  typeof fn === 'function' && fn.constructor.name === 'AsyncFunction'
+    ? function envuelto(req, res, next) { return Promise.resolve(fn(req, res, next)).catch(next); }
+    : fn
+);
+
+for (const metodo of ['get', 'post', 'put', 'patch', 'delete', 'all']) {
+  const original = r[metodo].bind(r);
+  r[metodo] = (ruta, ...handlers) => original(ruta, ...handlers.map(envolver));
+}
+
 // ── Auth ──────────────────────────────────────────────────────────
 r.post('/auth/register',              registerLimiter, validatePasswordBody(), register);
 r.post('/auth/login',                 loginLimiter, frenarSiBloqueado('business'), login);

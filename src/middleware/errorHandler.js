@@ -106,6 +106,21 @@ const errorHandler = (err, req, res, next) => { // eslint-disable-line no-unused
   if (status >= 500) log.error('http', mensajeSeguro(err), contexto);
   else log.warn('http', mensajeSeguro(err), contexto);
 
+  /*
+   * Saturación: no hay conexión libre a la base.
+   *
+   * Es distinto de un error: el pedido no está mal, el sistema no da abasto en
+   * este instante. Merece un 503 y un mensaje que diga que se puede reintentar
+   * —un 500 "error interno" hace pensar que la venta quedó a medias, y el
+   * cajero no sabe si volver a cargarla.
+   */
+  if (err.name === 'SequelizeConnectionAcquireTimeoutError' || err.name === 'SequelizeConnectionError') {
+    return res.status(503).json({
+      message: 'El sistema está con mucha carga en este momento. Esperá unos segundos y volvé a intentar: no se guardó nada.',
+      codigo: 'SATURADO',
+    });
+  }
+
   if (err.name === 'SequelizeValidationError' || err.name === 'SequelizeUniqueConstraintError') {
     /*
      * Se muestra en `message`, no sólo en `errors`. Antes el cuerpo decía

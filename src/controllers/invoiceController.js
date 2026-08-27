@@ -218,7 +218,7 @@ const createInvoice = async (req, res, next) => {
      * numeración—; lo único que se repite es el INSERT.
      */
     const invoice = await crearConNumero(
-      (saltar) => nextInvoiceNumber(req.auth.businessId, saltar),
+      (saltar) => nextInvoiceNumber(req.auth.businessId, saltar, t),
       (numero, sp) => Invoice.create({
         businessId:    req.auth.businessId,
         saleId:        sale.id,

@@ -721,7 +721,7 @@ const createSale = async (req, res, next) => {
      * error de base en crudo.
      */
     const sale = await crearConNumero(
-      (saltar) => nextSaleNumber(req.auth.businessId, tipo, saltar),
+      (saltar) => nextSaleNumber(req.auth.businessId, tipo, saltar, t),
       /*
        * Una cotización aparta su número de venta al nacer.
        *
@@ -738,7 +738,7 @@ const createSale = async (req, res, next) => {
       clientId:    clientId || null,
       numero, tipo,
       numeroVenta: tipo === 'cotizacion'
-        ? await nextSaleNumber(req.auth.businessId, 'venta')
+        ? await nextSaleNumber(req.auth.businessId, 'venta', 0, sp || t)
         : null,
       estado:      finalEstado,
       condicionPago,
@@ -1314,7 +1314,7 @@ const convertQuoteToSale = async (req, res, next) => {
        * cobrando en este mismo instante.
        */
       await crearConNumero(
-        (saltar) => nextSaleNumber(req.auth.businessId, 'venta', saltar),
+        (saltar) => nextSaleNumber(req.auth.businessId, 'venta', saltar, t),
         (n, sp) => {
           numero = n;
           return quote.update({

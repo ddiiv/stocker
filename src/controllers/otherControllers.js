@@ -126,6 +126,24 @@ const updateRole = async (req, res, next) => {
     const patch = {};
     if (req.body?.nombre !== undefined) patch.nombre = req.body.nombre;
     if (req.body?.permisos !== undefined) patch.permisos = sanitizarPermisos(req.body.permisos);
+
+    /*
+     * Nadie se edita los permisos a sí mismo.
+     *
+     * Quien tiene "empleados: editar" administra cargos, que es su trabajo.
+     * Pero editando el suyo propio se otorgaba en silencio facturación, caja y
+     * aprobaciones, sin que el dueño se enterara — y desde que los permisos se
+     * releen de la base en cada pedido, el cambio surte efecto en el acto.
+     *
+     * El nombre del cargo sí lo puede tocar: no da acceso a nada. Y el dueño no
+     * tiene cargo, así que esto no lo limita a él.
+     */
+    if (patch.permisos !== undefined && req.auth.roleId && Number(req.auth.roleId) === role.id) {
+      return res.status(403).json({
+        message: 'No podés cambiar los permisos de tu propio cargo. Pedíselo al dueño de la cuenta.',
+      });
+    }
+
     await role.update(patch);
     res.json(role);
   } catch (e) { next(e); }

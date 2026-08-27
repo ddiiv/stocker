@@ -127,6 +127,56 @@ function sesion() {
   await api('DELETE', `/api/employees/${alta.json.id}`);
   chk('borrado: la sesión muere', 401, (await emp('GET', '/api/auth/me')).status);
 
+  tit('2.b NADIE SE EDITA SUS PROPIOS PERMISOS');
+  /*
+   * Quien administra cargos podía editar el suyo y otorgarse facturación, caja
+   * y aprobaciones sin que el dueño se enterara. Desde que los permisos se
+   * releen en cada pedido, además, surtía efecto en el acto.
+   */
+  const emp2 = sesion();
+  const alta2 = await api('POST', '/api/employees', {
+    nombre: 'Cargo', apellido: 'QA', dni: '39777002',
+    email: 'cargo.qa@test.local', password: 'CargoQa2026!', roleId: rol?.id,
+  });
+  await emp2('POST', '/api/auth/employee-login', {
+    email: 'cargo.qa@test.local', password: 'CargoQa2026!',
+  });
+  const cargoPropio = await emp2('PUT', `/api/roles/${rol.id}`, {
+    permisos: { facturacion: 'editar', caja: 'editar' },
+  });
+  chk('editar los permisos del cargo propio se rechaza', 403, cargoPropio.status);
+  chk('renombrar el propio sigue permitido', 200,
+    (await emp2('PUT', `/api/roles/${rol.id}`, { nombre: rol.nombre })).status);
+  await api('DELETE', `/api/employees/${alta2.json.id}`);
+
+  tit('2.c EL LOCAL DE UN MOVIMIENTO TAMBIÉN ES DEL NEGOCIO');
+  /*
+   * El `locationId` llegaba del cuerpo y se usaba tal cual. No dejaba leer nada
+   * ajeno, pero escribía filas de stock contra el local de otro negocio: la
+   * contabilidad por local de los dos quedaba sucia, y se podía esconder
+   * mercadería en un lugar que la propia pantalla no muestra.
+   */
+  const localAjeno = await BusinessLocation.findOne({
+    where: { businessId: { [Op.ne]: negocio.id } }, attributes: ['id'],
+  });
+  if (localAjeno) {
+    const conAjeno = await api('PATCH', `/api/products/variants/${variante.id}/stock`, {
+      tipo: 'ingreso', cantidad: 1, locationId: localAjeno.id, motivo: 'QA aislamiento',
+    });
+    chk('ajustar stock en el local de otro negocio se rechaza', 400, conAjeno.status);
+    chk('y no queda fila de stock en ese local', null,
+      await VariantStock.findOne({ where: { productVariantId: variante.id, locationId: localAjeno.id } }));
+  } else {
+    console.log('  \x1b[33m—\x1b[0m no hay locales de otro negocio para probarlo');
+  }
+  const localPropio = await api('PATCH', `/api/products/variants/${variante.id}/stock`, {
+    tipo: 'ingreso', cantidad: 1, locationId: local.id, motivo: 'QA aislamiento',
+  });
+  chk('el local propio sigue funcionando', 200, localPropio.status);
+  await api('PATCH', `/api/products/variants/${variante.id}/stock`, {
+    tipo: 'egreso', cantidad: 1, locationId: local.id, motivo: 'QA aislamiento deshacer',
+  });
+
   tit('3. SIN PAGAR SE LEE, NO SE ESCRIBE');
   const sub = await Subscription.findOne({ where: { businessId: negocio.id } });
   const comoEstaba = { estado: sub.estado, trialFin: sub.trialFin };
@@ -153,7 +203,7 @@ function sesion() {
     const v = await Sale.findByPk(id);
     if (v) await v.destroy();
   }
-  await Employee.destroy({ where: { email: 'aislamiento.qa@test.local' } });
+  await Employee.destroy({ where: { email: { [Op.like]: '%.qa@test.local' } } });
   await Role.destroy({ where: { nombre: { [Op.like]: 'QA sin permisos%' } } });
   chk('no quedan documentos de prueba', 0, (await Sale.findAll({ where: { id: creados } })).length);
 

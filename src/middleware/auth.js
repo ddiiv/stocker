@@ -105,7 +105,18 @@ async function requireAuth(req, res, next) {
       }).catch(() => {});
     }
     next();
-  } catch {
+  } catch (err) {
+    /*
+     * Un 401 dice "tu sesión no vale". Eso es cierto sólo si el token no
+     * verifica; no lo es si la base no contestó a tiempo.
+     *
+     * El catch tapaba todo por igual, y desde que acá se relee al empleado eso
+     * pasó a importar: con el pool saturado, la lectura falla y el cajero veía
+     * "Token inválido o expirado" — o sea, lo echaba del sistema en el peor
+     * momento, cuando hay cola en la caja. Se distingue: si el token estaba
+     * bien, el problema es del servidor y se responde como tal.
+     */
+    if (req.auth) return next(err);
     res.status(401).json({ message: 'Token inválido o expirado.' });
   }
 }

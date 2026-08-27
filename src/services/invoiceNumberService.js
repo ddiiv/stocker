@@ -58,10 +58,16 @@ const armar = (prefijo, seq) => `${prefijo}${String(seq).padStart(6, '0')}`;
 /**
  * @param {number} saltar  cuántos números correr hacia adelante. Lo usa el
  *   reintento cuando el número calculado ya se lo ganó otra caja.
+ * @param transaction  LA TRANSACCIÓN EN CURSO, si hay una abierta. No es
+ *   opcional en la práctica: leyendo por fuera, el handler retiene la
+ *   conexión de su transacción y pide una segunda para esta consulta. Con
+ *   diez conexiones en el pool, diez ventas simultáneas se quedan cada una
+ *   esperando la conexión que tiene otra, y ninguna avanza hasta que vence
+ *   el tiempo de espera. Se vio: de doce ventas a la vez entraban dos.
  */
-async function nextInvoiceNumber(businessId, saltar = 0) {
+async function nextInvoiceNumber(businessId, saltar = 0, transaction = null) {
   const prefijo = mesActual();
-  const ultimo = await ultimoCorrelativo(Invoice, businessId, prefijo);
+  const ultimo = await ultimoCorrelativo(Invoice, businessId, prefijo, transaction);
   return armar(prefijo, ultimo + 1 + saltar);
 }
 
@@ -103,7 +109,7 @@ async function nextSaleNumber(businessId, tipo, saltar = 0, transaction = null) 
  * @param {Function} generarNumero  async (saltar) => string
  * @param {Function} crear          async (numero, transaction) => registro
  */
-async function crearConNumero(generarNumero, crear, { transaction = null, intentos = 5 } = {}) {
+async function crearConNumero(generarNumero, crear, { transaction = null, intentos = 8 } = {}) {
   const esChoque = (e) => e?.name === 'SequelizeUniqueConstraintError'
     || /must be unique|duplicate key|UNIQUE KEY/i.test(e?.parent?.message || e?.message || '');
 
@@ -153,9 +159,21 @@ async function crearConNumero(generarNumero, crear, { transaction = null, intent
     } catch (e) {
       if (!esChoque(e)) throw e;
       ultimoError = e;
-      // Una espera mínima y creciente: sin esto los reintentos vuelven a
-      // chocar entre ellos en el mismo milisegundo.
-      await new Promise((r) => setTimeout(r, 15 * (i + 1)));
+      /*
+       * Espera creciente y con una parte al azar.
+       *
+       * Lo de creciente ya estaba; lo del azar es lo que faltaba. Con una
+       * espera fija, dos cajas que pierden contra la misma tercera vuelven a
+       * intentar en el mismo milisegundo, chocan de nuevo, esperan lo mismo
+       * otra vez y siguen en fila india hasta agotar los intentos. Ocho cajas
+       * a la vez alcanzaban para que alguna perdiera la venta.
+       *
+       * El azar las desalinea en el primer reintento. Y ocho intentos en vez de
+       * cinco dan margen para el pico de un lunes a la mañana, sin que el
+       * cajero espere: son milisegundos.
+       */
+      const base = 15 * (i + 1);
+      await new Promise((r) => setTimeout(r, base + Math.floor(Math.random() * base)));
     }
   }
   /*

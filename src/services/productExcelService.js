@@ -213,7 +213,9 @@ function toStr(v) {
 async function importProductsXlsx(businessId, buffer, { locationId = null } = {}) {
   // Local de respaldo: para archivos con una sola columna "Stock", sin nombre
   // de local. Sin indicarlo, el principal.
-  locationId = locationId || await stockService.localPorDefecto(businessId);
+  // El local llega desde el formulario de importación: hay que comprobar que
+  // sea de este negocio antes de cargarle mil filas de stock encima.
+  locationId = await stockService.resolverLocal({ locationId, businessId });
 
   const workbook = new ExcelJS.Workbook();
   await workbook.xlsx.load(buffer);

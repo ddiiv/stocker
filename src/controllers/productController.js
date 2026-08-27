@@ -517,17 +517,13 @@ const scanAdjustStock = async (req, res, next) => {
      * De qué local es el movimiento.
      *
      * El escaneo se hace caminando el local con el celular, así que el lugar es
-     * el del empleado que escanea. Antes esto quedaba en null y el registro no
-     * podía responder "a dónde" justo en el flujo donde más se pregunta.
-     * El dueño no tiene local asignado; ahí sigue en null, que es lo honesto.
+     * el del empleado que escanea. El dueño no tiene local asignado y cae en el
+     * principal, que es donde el resolvedor termina cuando no hay nada mejor.
      */
-    let locationId = req.body.locationId || null;
-    if (!locationId && req.auth.employeeId) {
-      const emp = await Employee.findByPk(req.auth.employeeId, { attributes: ['locationId'], transaction: t });
-      locationId = emp?.locationId || null;
-    }
-    // El dueño escanea sin local asignado: va al principal.
-    if (!locationId) locationId = await stockService.localPorDefecto(req.auth.businessId, t);
+    const locationId = await stockService.resolverLocal({
+      locationId: req.body.locationId, businessId: req.auth.businessId,
+      employeeId: req.auth.employeeId, transaction: t,
+    });
 
     const variant = await buscarPorCodigo(codigo, req.auth.businessId, t);
     if (!variant) {
@@ -1038,11 +1034,9 @@ const adjustStock = async (req, res, next) => {
      * es el dueño —que no tiene local asignado—, el principal. Antes esto no
      * hacía falta porque el stock era uno solo.
      */
-    const local = locationId
-      || (req.auth.employeeId
-        ? (await Employee.findByPk(req.auth.employeeId, { attributes: ['locationId'], transaction: t }))?.locationId
-        : null)
-      || await stockService.localPorDefecto(req.auth.businessId, t);
+    const local = await stockService.resolverLocal({
+      locationId, businessId: req.auth.businessId, employeeId: req.auth.employeeId, transaction: t,
+    });
 
     const stockAnterior = await stockService.stockEn(variant.id, local, t);
     let stockNuevo;
