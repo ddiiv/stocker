@@ -85,7 +85,7 @@ const curva = async (req, res, next) => {
   try {
     const productId = Number(req.query.productId);
     if (!productId) return res.status(400).json({ message: 'Falta el producto.' });
-    const data = await deposito.ejeDeCurva(productId, req.auth.businessId, req.query.valor);
+    const data = await deposito.ejeDeCurva(productId, req.auth.businessId, req.query.valor, null, { exigirValor: false });
     res.json({
       ...data,
       // Lo que entra si se cargan N curvas parejas, para poder mostrarlo antes.

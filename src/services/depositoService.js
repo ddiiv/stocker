@@ -182,7 +182,7 @@ async function armarItems(items, businessId, t = null) {
  * esta segunda forma, un producto de una dimensión no podría cargarse por
  * curva y habría que explicar por qué.
  */
-async function ejeDeCurva(productId, businessId, valorFijo, t = null) {
+async function ejeDeCurva(productId, businessId, valorFijo, t = null, { exigirValor = true } = {}) {
   const variantes = await ProductVariant.findAll({
     where: { productId, businessId, activo: true },
     include: [{ model: Product, as: 'producto', attributes: ['id', 'titulo', 'esFeria'], required: true }],
@@ -209,6 +209,20 @@ async function ejeDeCurva(productId, businessId, valorFijo, t = null) {
   const fijo = String(valorFijo || '').trim();
   if (!fijo) {
     const opciones = [...new Set(variantes.map((v) => v.variante1Valor).filter(Boolean))];
+    /*
+     * Al cargar hace falta el color sí o sí. Al previsualizar, en cambio, la
+     * pantalla justamente necesita saber cuáles hay para poder ofrecerlos: es
+     * el paso "entrás el producto y salen los colores".
+     */
+    if (!exigirValor) {
+      return {
+        titulo: variantes[0].producto.titulo,
+        necesitaValor: true,
+        ejeFijo: variantes[0].variante1Nombre || 'Variante',
+        opciones,
+        valores: [],
+      };
+    }
     throw error(
       `Elegí ${(variantes[0].variante1Nombre || 'la variante').toLowerCase()} para armar la curva: ${opciones.join(', ')}.`,
       400,
