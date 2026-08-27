@@ -20,8 +20,26 @@ export async function fetchIngresos(filtros = {}) {
  * Registra un ingreso.
  * @param {"etiquetas"|"conteo"} origen  etiquetas sube el stock ya; conteo espera firma.
  */
+/*
+ * `payload` acepta `items` (líneas sueltas) y `curvas`, o las dos.
+ *
+ * Una curva es una corrida completa: "20 curvas de negro" son 20 de cada talle
+ * de ese color. El servidor la expande a líneas, así que el remito que queda
+ * guardado es igual al de un ingreso cargado a mano.
+ */
 export async function crearIngreso(payload) {
   const { data } = await http.post("/deposito/ingresos", payload);
+  return data;
+}
+
+/*
+ * Qué talles abre una curva de ese producto y ese color.
+ *
+ * Se consulta antes de cargar para poder mostrar la corrida: sin esto, "20
+ * curvas" es un número que no dice cuántas unidades entran.
+ */
+export async function fetchCurva({ productId, valor }) {
+  const { data } = await http.get("/deposito/curva", { params: { productId, valor } });
   return data;
 }
 
@@ -134,11 +152,6 @@ export async function fetchDisponibilidad(pedidoId) {
   return data;
 }
 
-/** Aprobar sabiendo que falta mercadería es una decisión explícita. */
-export async function aprobarPedidoParcial(id) {
-  const { data } = await http.post(`/reposicion/pedidos/${id}/aprobar`, { aceptarParcial: true });
-  return data;
-}
 
 /*
  * Carga mercadería que estaba en el estante sin registrar, para completar un

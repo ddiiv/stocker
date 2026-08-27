@@ -276,6 +276,12 @@ function LocalesCard({ locations, onChange }) {
         depósito no se vende. El de <strong>Online / Envíos</strong> vende como un local, y su stock es el que se
         publica en MercadoLibre.
       </p>
+      {/* La feria es el único tipo que NO lleva inventario, y conviene decirlo
+          acá: es lo que explica por qué no aparece en depósito ni reposición. */}
+      <p className="mb-3 text-xs text-ink-500">
+        Un puesto de <strong>Feria</strong> vende sin llevar stock: sólo queda registrado qué se vendió. No recibe
+        reposición ni entra al depósito, y sólo vende productos del catálogo de feria.
+      </p>
       {error && <p className="mb-3 rounded-md bg-brick-50 px-3 py-2 text-sm text-brick-500">{error}</p>}
       <div className="overflow-x-auto">
         <table className="w-full min-w-[420px] text-sm">
@@ -296,6 +302,7 @@ function LocalesCard({ locations, onChange }) {
                     <option value="local">Local de venta</option>
                     <option value="deposito">Depósito</option>
                     <option value="online">Online / Envíos</option>
+                    <option value="feria">Feria (sin stock)</option>
                   </select>
                 </td>
               </tr>

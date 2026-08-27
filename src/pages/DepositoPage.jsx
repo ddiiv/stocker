@@ -4,6 +4,7 @@ import {
 } from "lucide-react";
 import { PageHeader, Card, EmptyState } from "../components/ui/Layout";
 import SelectorArticulos from "../components/deposito/SelectorArticulos";
+import CargaPorCurvas from "../components/deposito/CargaPorCurvas";
 import ArmadoPedido from "../components/deposito/ArmadoPedido";
 import HistorialReposiciones from "../components/deposito/HistorialReposiciones";
 import {
@@ -43,6 +44,8 @@ export default function DepositoPage() {
   const [locationId, setLocationId] = useState("");
   const [origen, setOrigen] = useState("etiquetas");
   const [items, setItems] = useState([]);
+  // Curvas pendientes de guardar. El servidor las expande a líneas al crear.
+  const [curvas, setCurvas] = useState([]);
   const [notas, setNotas] = useState("");
   const [guardando, setGuardando] = useState(false);
   const [error, setError] = useState("");
@@ -109,7 +112,7 @@ export default function DepositoPage() {
   const necesitaElegirDeposito = depositos.length > 1;
 
   async function guardar() {
-    if (!items.length) { setError("Agregá al menos un artículo."); return; }
+    if (!items.length && !curvas.length) { setError("Agregá al menos un artículo o una curva."); return; }
     if (necesitaElegirDeposito && !locationId) { setError("Elegí en qué depósito estás cargando."); return; }
     setGuardando(true); setError(""); setAviso("");
     try {
@@ -119,8 +122,10 @@ export default function DepositoPage() {
         items: items.filter((i) => i.cantidad > 0).map((i) => ({
           productVariantId: i.productVariantId, cantidad: i.cantidad,
         })),
+        // `_resumen` es sólo para mostrarlo acá: no viaja al servidor.
+        curvas: curvas.map(({ _resumen, ...c }) => c),
       });
-      setItems([]); setNotas("");
+      setItems([]); setCurvas([]); setNotas("");
       setAviso(origen === "etiquetas"
         ? `${ingreso.numero} cargado: el stock ya está en el depósito. Generá las etiquetas y pegalas en cada prenda.`
         : `${ingreso.numero} enviado a oficina. El stock sube cuando lo acepten.`);
@@ -341,12 +346,52 @@ export default function DepositoPage() {
             </div>
           </div>
 
-          <SelectorArticulos
-            items={items}
-            onChange={setItems}
-            etiquetaCantidad="Unidades"
-            locationId={locationId ? Number(locationId) : null}
-          />
+          {/*
+            * Dos formas de cargar el mismo remito.
+            *
+            * Por curvas es como llega la mercadería del proveedor: corridas
+            * completas de un modelo y un color. Suelto es para lo que llega
+            * descabalado. Conviven, y si una curva y una línea suelta caen
+            * sobre el mismo talle, el servidor las suma.
+            */}
+          <CargaPorCurvas onAgregar={(c) => setCurvas((cs) => [...cs, c])} />
+
+          {curvas.length > 0 && (
+            <div className="mt-3 rounded-md border border-line bg-paper-50 p-3">
+              <p className="mb-2 text-xs font-medium uppercase tracking-wide text-ink-600">
+                Curvas cargadas
+              </p>
+              <ul className="divide-y divide-line/60">
+                {curvas.map((c, i) => (
+                  <li key={`${c.productId}-${c.valor || ""}-${i}`} className="flex items-center justify-between gap-3 py-1.5 text-sm">
+                    <span className="text-ink-900">
+                      {c._resumen.titulo}
+                      {c._resumen.color && <span className="text-ink-500"> · {c._resumen.color}</span>}
+                    </span>
+                    <span className="flex items-center gap-2 text-xs text-ink-600">
+                      {c._resumen.unidades} un. en {c._resumen.talles} talles
+                      <button
+                        className="rounded p-1 text-brick-500 hover:bg-paper-200"
+                        onClick={() => setCurvas((cs) => cs.filter((_, j) => j !== i))}
+                        aria-label={`Quitar la curva de ${c._resumen.titulo}`}
+                      >
+                        ✕
+                      </button>
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          <div className="mt-4">
+            <SelectorArticulos
+              items={items}
+              onChange={setItems}
+              etiquetaCantidad="Unidades"
+              locationId={locationId ? Number(locationId) : null}
+            />
+          </div>
 
           <div className="mt-4">
             <label className="label">Nota (opcional)</label>

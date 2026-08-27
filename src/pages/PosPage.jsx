@@ -387,7 +387,17 @@ export default function PosPage() {
                         }`}
                       >
                         <td className="px-4 py-3">
-                          <p className="font-medium text-ink-900">{i.titulo}</p>
+                          <p className="font-medium text-ink-900">
+                            {i.titulo}
+                            {/* Un artículo de feria se cobra a otro precio y no
+                                descuenta stock: decirlo en la línea evita que
+                                alguien lo confunda con el del local. */}
+                            {i.esFeria && (
+                              <span className="ml-1 rounded bg-brass-50 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-brass-800">
+                                Feria
+                              </span>
+                            )}
+                          </p>
                           <p className="mt-0.5 text-xs text-ink-500">
                             <span className="tag-chip">{i.sku}</span>
                             {[i.variante1Valor, i.variante2Valor].filter(Boolean).length > 0 && (

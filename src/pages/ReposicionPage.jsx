@@ -7,7 +7,7 @@ import SelectorArticulos from "../components/deposito/SelectorArticulos";
 import {
   fetchLugares, fetchPedidos, crearPedido, aprobarPedido, rechazarPedido,
   cancelarPedido, despacharPedido, recibirPedido, fetchEnTransito,
-  fetchDisponibilidad, aprobarPedidoParcial, fetchSaldos, resolverSaldo,
+  fetchDisponibilidad, fetchSaldos, resolverSaldo,
 } from "../services/depositoService";
 import { mensajeDeError } from "../utils/errores";
 import { formatDateTime } from "../utils/formatters";
@@ -62,6 +62,8 @@ export default function ReposicionPage() {
   const [error, setError] = useState("");
   // Un solo candado para todas las acciones sobre pedidos: son excluyentes.
   const [enAccion, setEnAccion] = useState(false);
+  // El faltante al aprobar: no es un error, pero tampoco un "listo" a secas.
+  const [advertencia, setAdvertencia] = useState("");
   const [aviso, setAviso] = useState("");
 
   // Alta de pedido
@@ -127,35 +129,30 @@ export default function ReposicionPage() {
   }
 
   /*
-   * Aprobar mira el stock real. Si falta, el backend frena con STOCK_PARCIAL y
-   * acá se pregunta: mandar lo que hay, o rechazar.
+   * Aprobar mira el stock, pero ya no frena.
+   *
+   * Antes el backend rechazaba un pedido sin stock declarado y esta pantalla
+   * preguntaba si mandarlo igual. La realidad del depósito es otra: hay
+   * mercadería física sin cargar, y frenar ahí obligaba a inventar un ingreso
+   * sólo para poder aprobar algo que ya estaba en el estante.
+   *
+   * Ahora aprueba siempre y el faltante viene en `aviso`, que se muestra en
+   * tono de advertencia y queda escrito en el pedido. Lo que no cambió: nadie
+   * despacha lo que no está — el armado comprueba contra el stock real y lo que
+   * no aparece va a la lista de faltantes.
    */
   async function aprobarConChequeo(p) {
-    setError(""); setAviso("");
+    setError(""); setAviso(""); setAdvertencia("");
     try {
       const r = await aprobarPedido(p.id);
       setAviso(r.mensaje);
-      setBorrador({}); await cargar();
+      if (r.aviso) setAdvertencia(r.aviso);
+      setBorrador({});
     } catch (e) {
-      const d = e.response?.data;
-      if (d?.codigo === "STOCK_PARCIAL") {
-        const ok = confirm(
-          `${d.message}\n\n¿Aprobarlo igual? El depósito va a mandar lo que haya y el faltante queda anotado.`,
-        );
-        if (!ok) return;
-        try {
-          const r2 = await aprobarPedidoParcial(p.id);
-          setAviso(`${r2.mensaje} Se aprobó como parcial.`);
-          setBorrador({}); await cargar();
-        } catch (e2) { setError(mensajeDeError(e2, "No se pudo aprobar.")); }
-        return;
-      }
-      if (d?.codigo === "SIN_STOCK_TOTAL") {
-        setError(d.message);
-        return;
-      }
       setError(mensajeDeError(e, "No se pudo aprobar."));
+      return;
     }
+    await cargar();
   }
 
   async function cargar() {
@@ -272,6 +269,12 @@ export default function ReposicionPage() {
 
       {error && <p className="mb-4 rounded-md bg-brick-50 px-3 py-2 text-sm text-brick-500">{error}</p>}
       {aviso && <p className="mb-4 rounded-md bg-teal-50 px-3 py-2 text-sm text-teal-600">{aviso}</p>}
+      {/* El faltante va en otro tono: se aprobó, pero hay algo que saber. */}
+      {advertencia && (
+        <p className="mb-4 rounded-md border border-brass-500/40 bg-brass-50 px-3 py-2 text-sm text-brass-800">
+          {advertencia} El depósito va a mandar lo que encuentre; lo que no aparezca queda en la lista de faltantes.
+        </p>
+      )}
 
       {abrirAlta && puedeOperar && (
         <Card className="mb-5">

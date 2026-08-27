@@ -32,6 +32,7 @@ const TITLES = {
   "/stock/a-regularizar": "Stock a regularizar",
   "/stock/etiquetas": "Etiquetas",
   "/deposito": "Depósito",
+  "/feria": "Feria",
   "/reposicion": "Reposición",
   "/ventas": "Ventas y cotizaciones",
   "/ventas/nueva": "Nueva venta / cotización",
