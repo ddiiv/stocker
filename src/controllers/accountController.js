@@ -189,12 +189,20 @@ const confirmarCambioEmail = async (req, res, next) => {
     if (!emailNuevo) {
       return res.status(400).json({ message: 'El pedido perdió el email nuevo. Empezá de nuevo.' });
     }
+    /*
+     * El negocio se lee ANTES de comprobar el email.
+     *
+     * Estaba al revés: `b.id` se usaba una línea antes del `const b`, o sea
+     * dentro de su zona muerta temporal. No era un caso borde — reventaba con
+     * ReferenceError siempre, así que cambiar el email de la cuenta nunca
+     * funcionó y devolvía un 500 sin explicación.
+     */
+    const b = await Business.findByPk(req.auth.businessId);
+    if (!b) return res.status(404).json({ message: 'No se encontró la cuenta.' });
+
     // Puede haberse registrado esa casilla entre el pedido y la confirmación.
-    // No alcanza con mirar `businesses`: el email tampoco puede ser el de un
-    // empleado de cualquier negocio ni el de un operador de la plataforma.
     await identidad.exigirLibre(emailNuevo, { businessId: b.id });
 
-    const b = await Business.findByPk(req.auth.businessId);
     await b.update({ email: emailNuevo });
     await registro.update({ usedAt: new Date() });
 

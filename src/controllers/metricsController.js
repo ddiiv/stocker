@@ -53,8 +53,12 @@ const timeline = async (req, res, next) => {
 
     // Costo por SKU para poder calcular margen en cada punto de la serie.
     const skus = [...new Set(ventas.flatMap((v) => v.items.map((i) => i.sku)))];
+    // Igual que en el resumen: el SKU es único por negocio, no global.
     const variantes = skus.length
-      ? await ProductVariant.findAll({ where: { sku: skus }, include: [{ model: Product, as: 'producto' }] })
+      ? await ProductVariant.findAll({
+        where: { sku: skus, businessId },
+        include: [{ model: Product, as: 'producto' }],
+      })
       : [];
     const costoPorSku = new Map(variantes.map((v) => [v.sku, Number(v.producto?.costo) || 0]));
 

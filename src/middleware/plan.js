@@ -67,4 +67,44 @@ const requireFeature = (clave) => async (req, res, next) => {
   } catch (e) { next(e); }
 };
 
-module.exports = { exigirOperativa, requireFeature, SOLO_LECTURA };
+/*
+ * Rutas que nunca se bloquean por falta de pago.
+ *
+ * Son las que el cliente necesita justamente cuando la cuenta está en lectura:
+ * entrar, ver su cuenta, y sobre todo pagar. Bloquear /billing sería encerrarlo
+ * afuera de la única pantalla que le devuelve el servicio.
+ *
+ * Antes esto no hacía falta declararlo: el candado se montaba con un r.use() a
+ * mitad del archivo de rutas y sólo alcanzaba a lo registrado más abajo. Pero
+ * ese r.use corría ANTES del requireAuth de cada ruta, así que leía un
+ * req.auth que todavía no existía y dejaba pasar todo. El candado nunca se
+ * cerró. Ahora corre dentro de requireAuth —el único lugar donde req.auth ya
+ * está— y la lista de exentas pasa a ser explícita.
+ */
+const EXENTAS = ['/auth', '/account', '/billing', '/backoffice', '/public'];
+
+const estaExenta = (ruta) => EXENTAS.some((p) => ruta === p || ruta.startsWith(p + '/'));
+
+/**
+ * El candado, para llamar desde requireAuth con req.auth ya cargado.
+ * @returns {object|null} el cuerpo del 402, o null si puede seguir.
+ */
+async function motivoDeBloqueo(req) {
+  if (SOLO_LECTURA.has(req.method)) return null;
+  if (estaExenta(req.path)) return null;
+  if (!req.auth?.businessId) return null;
+
+  const { estado, soloLectura, plan } = await estadoDe(req.auth.businessId);
+  if (!soloLectura) return null;
+
+  return {
+    motivo: 'suscripcion',
+    estado,
+    plan: plan?.codigo || null,
+    message: estado === 'lectura'
+      ? 'La prueba terminó y la cuenta quedó en modo lectura. Tus datos están intactos: activá la suscripción y volvés a operar al instante.'
+      : 'La suscripción está cancelada. Reactivala para volver a operar.',
+  };
+}
+
+module.exports = { exigirOperativa, requireFeature, SOLO_LECTURA, motivoDeBloqueo, EXENTAS };

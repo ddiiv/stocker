@@ -1,7 +1,7 @@
 const path = require('path');
 const { Op } = require('sequelize');
 const sequelize = require('../config/database');
-const { Sale, SaleItem, SalePayment, PaymentMethod, ProductVariant, Product, Employee, BusinessLocation, Business, BusinessCuit } = require('../models');
+const { Sale, SaleItem, SalePayment, PaymentMethod, ProductVariant, Product, Employee, BusinessLocation, Business, BusinessCuit, Client } = require('../models');
 const { citar } = require('../utils/sqlHelpers');
 const { nextSaleNumber, crearConNumero } = require('../services/invoiceNumberService');
 const { calcularPagos } = require('../services/paymentService');
@@ -367,6 +367,33 @@ const createSale = async (req, res, next) => {
         new Error('Para fiar hay que elegir un cliente: no se puede vender en cuenta corriente a consumidor final.'),
         { status: 400 }
       );
+    }
+
+    /*
+     * El cliente también tiene que ser de este negocio.
+     *
+     * Se comprobaba para la variante y para el local, pero no para el cliente,
+     * y el id viene del cuerpo. Con un clientId ajeno la venta se creaba igual
+     * y la respuesta devolvía la ficha entera del cliente del otro inquilino
+     * —nombre, mail, teléfono, CUIT, DNI, límite de crédito y saldo—, porque
+     * la asociación `cliente` se incluye sin filtro. Probando ids de corrido se
+     * leía la cartera de clientes de toda la plataforma.
+     *
+     * Peor todavía en una venta de verdad: `notifySaleAsync` le manda a esa
+     * persona el comprobante en PDF y un WhatsApp por una compra que nunca hizo.
+     *
+     * La comprobación existía, pero sólo en el camino fiado —dentro de
+     * creditService— y una venta de contado no pasa por ahí.
+     */
+    if (clientId) {
+      const cliente = await Client.findOne({
+        where: { id: clientId, businessId: req.auth.businessId },
+        attributes: ['id'],
+        transaction: t,
+      });
+      if (!cliente) {
+        throw Object.assign(new Error('El cliente no pertenece a este negocio.'), { status: 404 });
+      }
     }
 
     /*

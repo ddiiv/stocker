@@ -145,7 +145,9 @@ r.post('/account/password/confirmar', requireAuth, requireOwner, validatePasswor
  * GET siguen abiertos aunque la cuenta esté impaga. Es la regla del modo
  * lectura — el cliente nunca pierde el acceso a sus propios datos.
  */
-r.use((req, res, next) => (req.auth?.businessId ? exigirOperativa(req, res, next) : next()));
+// El candado vive ahora dentro de requireAuth (middleware/auth.js): acá corría
+// antes de que existiera req.auth y por eso dejaba pasar todo. La lista de
+// rutas exentas está en middleware/plan.js.
 
 // ── Locations ─────────────────────────────────────────────────────
 // El listado queda con requireAuth solo: lo necesitan casi todas las pantallas

@@ -1,7 +1,8 @@
 const { verifyToken } = require('../utils/jwt');
 const { renovarSesion } = require('../utils/session');
 const { readAuthCookie, setAuthCookie } = require('../utils/authCookie');
-const { Employee, EmployeeSession } = require('../models');
+const { motivoDeBloqueo } = require('./plan');
+const { Employee, EmployeeSession, Role } = require('../models');
 
 // El token vive en una cookie httpOnly. El header Bearer se sigue aceptando
 // para clientes que no son el navegador (scripts, Postman) y para que las
@@ -23,6 +24,49 @@ async function requireAuth(req, res, next) {
     // esto lanza: el corte no depende del navegador.
     req.auth = verifyToken(token);
 
+    /*
+     * El empleado se vuelve a leer de la base en cada pedido.
+     *
+     * Sin esto, quien manda es el token: los permisos y el estado del empleado
+     * viajan firmados adentro y nunca se releen, así que desactivar a alguien
+     * —o borrarlo— no le cortaba el acceso. Peor todavía, la ventana de
+     * inactividad se renueva en cada pedido, así que un empleado que sigue
+     * usando el sistema no llegaba nunca al corte: el único tope real eran las
+     * 24 h del límite absoluto.
+     *
+     * En un local eso es concreto. Echás a alguien un viernes a la tarde y
+     * hasta el sábado puede seguir facturando, moviendo stock y tocando la
+     * caja desde su teléfono.
+     *
+     * Es una lectura por clave primaria con un join al cargo. Va antes de
+     * renovar la cookie para que el token que se re-firma lleve los permisos
+     * de ahora y no los del login.
+     */
+    if (req.auth.type === 'employee' && req.auth.employeeId) {
+      const empleado = await Employee.findByPk(req.auth.employeeId, {
+        attributes: ['id', 'businessId', 'activo', 'roleId'],
+        include: [{ model: Role, as: 'cargo', attributes: ['id', 'permisos'] }],
+      });
+
+      /*
+       * Borrado, desactivado, o movido a otro negocio: en los tres casos la
+       * sesión deja de valer. El mensaje es el mismo para los tres a
+       * propósito: decir cuál de las tres cosas pasó es información sobre la
+       * cuenta que no hace falta dar en un 401.
+       */
+      if (!empleado || !empleado.activo || empleado.businessId !== req.auth.businessId) {
+        return res.status(401).json({
+          message: 'Tu usuario ya no tiene acceso. Pedile al dueño de la cuenta que lo revise.',
+          codigo: 'SESION_REVOCADA',
+        });
+      }
+
+      // Los permisos salen del cargo de ahora, no de los que tenía al entrar:
+      // cambiarle el cargo a alguien surte efecto en el pedido siguiente.
+      req.auth.permisos = empleado.cargo?.permisos || {};
+      req.auth.roleId = empleado.roleId;
+    }
+
     // Sesión deslizante: se corre la ventana de inactividad en cada pedido,
     // pero el tope absoluto viaja firmado y no se mueve. Si ya se cumplió,
     // renovarSesion devuelve null y hay que volver a autenticarse.
@@ -35,7 +79,18 @@ async function requireAuth(req, res, next) {
       setAuthCookie(res, renovado, req);
     }
 
-    // Actualiza última conexión del empleado y su sesión más reciente (sin bloquear el request)
+    /*
+     * Cuenta sin pagar: se puede leer, no escribir.
+     *
+     * Va acá y no en un r.use() del archivo de rutas porque ese corre antes que
+     * este middleware, mirando un req.auth que todavía no existe. Con la lista
+     * de exentas dentro de plan.js, el cliente siempre puede entrar, ver sus
+     * datos y pagar.
+     */
+    const bloqueo = await motivoDeBloqueo(req);
+    if (bloqueo) return res.status(402).json(bloqueo);
+
+    // Última conexión y sesión más reciente: no bloquean el pedido.
     if (req.auth.type === 'employee' && req.auth.employeeId) {
       const now = new Date();
       Employee.update({ ultimaConexion: now }, { where: { id: req.auth.employeeId } }).catch(() => {});

@@ -228,7 +228,13 @@ const getDashboard = async (req, res, next) => {
 
     // Costo de mercadería
     const allSkus = [...new Set(paid.flatMap((s) => s.items.map((i) => i.sku)))];
-    const variants = allSkus.length ? await ProductVariant.findAll({ where: { sku: allSkus }, include: [{ model: Product, as: 'producto' }] }) : [];
+    // El SKU es único por negocio, no en toda la plataforma: el índice es
+    // (businessId, sku). Sin filtrar, dos inquilinos que usen el mismo código
+    // —"REMERA-M", "001"— se pisan y el margen sale con el costo del otro.
+    const variants = allSkus.length ? await ProductVariant.findAll({
+      where: { sku: allSkus, businessId: req.auth.businessId },
+      include: [{ model: Product, as: 'producto' }],
+    }) : [];
     const costMap  = new Map(variants.map((v) => [v.sku, Number(v.producto.costo)]));
 
     let cogs = 0;
