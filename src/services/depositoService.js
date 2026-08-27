@@ -143,7 +143,7 @@ async function armarItems(items, businessId, t = null) {
   const feria = variantes.find((v) => v.producto?.esFeria);
   if (feria) {
     throw error(
-      `"${feria.producto.titulo}" es un producto de feria: no lleva stock y no entra al depósito.`,
+      `"${feria.producto.titulo}" es un producto de evento: no lleva stock y no entra al depósito.`,
       400, { codigo: 'FERIA_SIN_STOCK' },
     );
   }
@@ -190,7 +190,7 @@ async function ejeDeCurva(productId, businessId, valorFijo, t = null, { exigirVa
   });
   if (!variantes.length) throw error('Ese producto no tiene variantes activas.', 404);
   if (variantes[0].producto?.esFeria) {
-    throw error('Los productos de feria no llevan stock: no entran al depósito.', 400, { codigo: 'FERIA_SIN_STOCK' });
+    throw error('Los productos de evento no llevan stock: no entran al depósito.', 400, { codigo: 'FERIA_SIN_STOCK' });
   }
 
   const tieneDos = variantes.some((v) => v.variante2Valor);

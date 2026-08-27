@@ -182,7 +182,7 @@ async function mover({
    */
   const deFeria = await esVarianteDeFeria(variantId, t);
   if (deFeria) {
-    const err = new Error('Los productos de feria no llevan stock: no se les puede registrar un movimiento.');
+    const err = new Error('Los productos de evento no llevan stock: no se les puede registrar un movimiento.');
     err.status = 409;
     err.codigo = 'FERIA_SIN_STOCK';
     throw err;

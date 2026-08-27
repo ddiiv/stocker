@@ -133,7 +133,7 @@ const skuDeFeria = (skuOriginal, prefijo) => `${prefijo}${String(skuOriginal || 
  */
 async function generar({ businessId, productIds, prefijo, precio, transaction: t }) {
   const ids = [...new Set((Array.isArray(productIds) ? productIds : []).map(Number).filter(Boolean))];
-  if (!ids.length) throw error('Elegí al menos un producto para generar su versión de feria.');
+  if (!ids.length) throw error('Elegí al menos un producto para generar su versión de evento.');
   if (ids.length > 200) throw error('Máximo 200 productos por lote.');
 
   const pre = normalizarPrefijo(prefijo);
@@ -170,7 +170,7 @@ async function generar({ businessId, productIds, prefijo, precio, transaction: t
 
   for (const orig of originales) {
     if (hechoPor.has(orig.id)) {
-      omitidos.push({ productId: orig.id, titulo: orig.titulo, motivo: 'ya tenía su versión de feria', sku: hechoPor.get(orig.id).sku });
+      omitidos.push({ productId: orig.id, titulo: orig.titulo, motivo: 'ya tenía su versión de evento', sku: hechoPor.get(orig.id).sku });
       continue;
     }
 
@@ -254,7 +254,7 @@ async function generar({ businessId, productIds, prefijo, precio, transaction: t
  */
 async function reaplicarPrecios({ businessId, productIds, precio, transaction: t }) {
   const ids = [...new Set((Array.isArray(productIds) ? productIds : []).map(Number).filter(Boolean))];
-  if (!ids.length) throw error('Elegí al menos un producto de feria.');
+  if (!ids.length) throw error('Elegí al menos un producto de evento.');
 
   const reglaPrecio = normalizarReglaPrecio(precio);
   const errPrecio = validarReglaPrecio(reglaPrecio);
@@ -264,7 +264,7 @@ async function reaplicarPrecios({ businessId, productIds, precio, transaction: t
     where: { id: ids, businessId, esFeria: true },
     transaction: t,
   });
-  if (!deFeria.length) throw error('Ninguno de los productos elegidos es de feria.', 404);
+  if (!deFeria.length) throw error('Ninguno de los productos elegidos es de evento.', 404);
 
   const origenes = await Product.findAll({
     where: { id: deFeria.map((p) => p.origenProductId).filter(Boolean), businessId },

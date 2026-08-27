@@ -4,6 +4,7 @@ const { sanitizarPermisos } = require('../config/permisos');
 const bcrypt = require('bcryptjs');
 const { BusinessLocation, Role, Client, Sale, SaleItem, Invoice, ProductVariant, Product, StockMovement } = require('../models');
 const reglaMayorista = require('../services/reglaMayoristaService');
+const { TIPOS, NOMBRES } = require('../config/lugares');
 const { ilikeOperator } = require('../utils/sqlHelpers');
 
 /*
@@ -44,16 +45,21 @@ const getLocations = async (req, res, next) => {
  * depósito, y sería invisible en las dos pantallas a la vez.
  */
 /*
- * Los cuatro tipos de lugar, y qué puede hacer cada uno.
- *
- *   local     vende, recibe reposición, lleva stock.
- *   deposito  no vende: es la puerta de entrada de la mercadería nueva.
- *   online    vende y lleva stock; el suyo es el que se publica en MercadoLibre.
- *   feria     vende SIN stock. Sólo se registra qué se vendió, no cuánto queda.
- *             Queda afuera del depósito, de la reposición y de MercadoLibre, y
- *             sólo admite productos de feria.
+ * Qué puede hacer cada tipo está en config/lugares.js, que es de donde salen
+ * también los filtros de stock y reposición. Esta lista estaba escrita de nuevo
+ * acá: dos copias de la misma verdad, y agregar un tipo obligaba a acordarse de
+ * los dos lugares.
  */
-const TIPOS_LOCAL = ['local', 'deposito', 'online', 'feria'];
+const TIPOS_LOCAL = TIPOS;
+
+/*
+ * El error nombra los tipos como los ve el cliente.
+ *
+ * Devolver "local, deposito, online, feria" era mostrarle los valores crudos de
+ * la base a alguien que en pantalla lee "Evento" y "Online / Envíos", y encima
+ * filtra hacia afuera cómo están guardados.
+ */
+const tiposValidos = () => TIPOS_LOCAL.map((t) => NOMBRES[t] || t).join(', ');
 
 const createLocation = async (req, res, next) => {
   try {
@@ -62,7 +68,7 @@ const createLocation = async (req, res, next) => {
     const errRegla = reglaMayorista.validar(req.body);
     if (errRegla) return res.status(400).json({ message: errRegla });
     if (tipo && !TIPOS_LOCAL.includes(tipo)) {
-      return res.status(400).json({ message: `El tipo tiene que ser uno de: ${TIPOS_LOCAL.join(', ')}.` });
+      return res.status(400).json({ message: `El tipo tiene que ser uno de: ${tiposValidos()}.` });
     }
     const regla = reglaMayorista.normalizar(req.body);
     const loc = await BusinessLocation.create({
@@ -82,7 +88,7 @@ const updateLocation = async (req, res, next) => {
 
     const { tipo } = req.body;
     if (tipo && !TIPOS_LOCAL.includes(tipo)) {
-      return res.status(400).json({ message: `El tipo tiene que ser uno de: ${TIPOS_LOCAL.join(', ')}.` });
+      return res.status(400).json({ message: `El tipo tiene que ser uno de: ${tiposValidos()}.` });
     }
     /*
      * Convertir un local de venta en depósito no es un cambio de etiqueta: de

@@ -3,6 +3,9 @@ const { Op } = require('sequelize');
 /*
  * Cómo se pregunta "esto NO es de feria".
  *
+ * (`feria` es el nombre interno de lo que en la interfaz se llama EVENTO; ver
+ * config/lugares.js.)
+ *
  * Parece de más tener un helper para un booleano, y no lo es. `esFeria` se
  * agregó a una tabla que ya tenía filas, así que todo lo anterior al cambio
  * quedó en NULL hasta que corre el relleno — y una base recién migrada, o una

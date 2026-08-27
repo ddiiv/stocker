@@ -704,12 +704,12 @@ const createSale = async (req, res, next) => {
       const productoEsFeria = Boolean(variant.producto?.esFeria);
       if (productoEsFeria && !esLocalDeFeria) {
         throw Object.assign(new Error(
-          `"${variant.producto.titulo}" es un producto de feria y sólo se vende en un puesto de feria.`,
+          `"${variant.producto.titulo}" es un producto de evento y sólo se vende en un local de evento.`,
         ), { status: 400, codigo: 'FERIA_LOCAL_EQUIVOCADO' });
       }
       if (!productoEsFeria && esLocalDeFeria) {
         throw Object.assign(new Error(
-          `En un puesto de feria sólo se venden productos de feria. "${variant.producto.titulo}" es del catálogo normal.`,
+          `En un local de evento sólo se venden productos de evento. "${variant.producto.titulo}" es del catálogo normal.`,
         ), { status: 400, codigo: 'FERIA_LOCAL_EQUIVOCADO' });
       }
 

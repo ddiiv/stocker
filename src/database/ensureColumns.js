@@ -240,7 +240,7 @@ const RELLENOS = [
   },
 
   {
-    descripcion: 'productos anteriores a la feria marcados como catálogo normal',
+    descripcion: 'productos anteriores al evento marcados como catálogo normal',
     cuandoSeAgrega: 'products.esFeria',
     /*
      * Reintentable y con guarda de NULL: la columna se agregó a una tabla que ya

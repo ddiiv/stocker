@@ -30,7 +30,7 @@ const postGenerar = async (req, res, next) => {
     await t.commit();
 
     const partes = [];
-    if (r.creados.length) partes.push(`${r.creados.length} producto(s) de feria generado(s)`);
+    if (r.creados.length) partes.push(`${r.creados.length} producto(s) de evento generado(s)`);
     if (r.omitidos.length) partes.push(`${r.omitidos.length} sin generar`);
     res.status(201).json({ ...r, mensaje: partes.join(' · ') || 'No había nada para generar.' });
   } catch (error) {
