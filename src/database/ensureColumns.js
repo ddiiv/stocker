@@ -506,55 +506,46 @@ async function ensureColumns(sequelize) {
     }
   }
 
-  await reservarNumeroACotizaciones(sequelize);
+  await liberarNumeroDeCotizaciones(sequelize);
   await asegurarIndices(sequelize, esPostgres);
 
   return agregadas;
 }
 
 /*
- * Le aparta su número de venta a las cotizaciones que quedaron sin reserva.
+ * Les suelta el número de venta a las cotizaciones que lo tenían apartado.
  *
- * Va en JavaScript y no en un RELLENO de SQL porque cada fila necesita un
- * número distinto y correlativo, y eso en SQL portable entre Postgres y SQL
- * Server no se escribe una sola vez.
+ * Es el reverso de lo que hacía este mismo archivo hasta hace poco. Mientras
+ * las cotizaciones se convertían en venta, cada una nacía con un número de
+ * venta reservado para no pelearlo el día de la conversión. Las cotizaciones
+ * dejaron de convertirse, así que esa reserva pasó a ser un número sacado de
+ * la serie que nadie va a usar nunca: un hueco permanente en la numeración,
+ * imposible de explicar mirando la lista de ventas.
  *
- * Corre en cada arranque pero no cuesta: la consulta que las busca usa el
- * índice y en cuanto no hay ninguna sin reservar termina sin escribir nada.
- * Es reintentable a propósito — si el proceso se cae a la mitad, el arranque
- * siguiente sigue por donde iba.
+ * Soltarlo no reescribe ninguna cotización: sigue siendo el mismo presupuesto,
+ * con su mismo número COT-. Lo único que cambia es que el número de venta
+ * vuelve a la cola.
  *
- * El orden por id importa: la cotización más vieja se lleva el número más
- * bajo, que es lo que alguien espera al mirar la lista.
+ * Va en un UPDATE y no en un RELLENO de la tabla de arriba porque no completa
+ * una columna nueva: limpia una vieja. Es idempotente —en cuanto no queda
+ * ninguna con reserva no escribe nada— y por eso corre en cada arranque.
  */
-async function reservarNumeroACotizaciones(sequelize) {
+async function liberarNumeroDeCotizaciones(sequelize) {
   const { Sale } = require('../models');
-  const { nextSaleNumber } = require('../services/invoiceNumberService');
+  const { Op } = require('sequelize');
 
-  let pendientes;
   try {
-    pendientes = await Sale.findAll({
-      where: { tipo: 'cotizacion', numeroVenta: null },
-      attributes: ['id', 'businessId'],
-      order: [['id', 'ASC']],
-    });
-  } catch {
-    // La columna todavía no existe (primer arranque del deploy). El próximo la
-    // encuentra.
-    return;
+    const soltadas = await Sale.update(
+      { numeroVenta: null },
+      { where: { tipo: 'cotizacion', numeroVenta: { [Op.ne]: null } } },
+    );
+    const n = Array.isArray(soltadas) ? soltadas[0] : 0;
+    if (n) console.log(`[schema] ${n} cotización(es) soltaron el número de venta que tenían apartado`);
+  } catch (err) {
+    // La columna puede no existir todavía en un primer arranque. El próximo la
+    // encuentra, y mientras tanto no hay nada que soltar.
+    console.warn(`[schema] no se pudo soltar la reserva de las cotizaciones: ${err.message}`);
   }
-  if (!pendientes.length) return;
-
-  let hechas = 0;
-  for (const cot of pendientes) {
-    try {
-      await cot.update({ numeroVenta: await nextSaleNumber(cot.businessId, 'venta') });
-      hechas += 1;
-    } catch (err) {
-      console.warn(`[schema] no se pudo reservar número para la cotización ${cot.id}: ${err.message}`);
-    }
-  }
-  if (hechas) console.log(`[schema] número de venta reservado para ${hechas} cotización(es) que no lo tenían`);
 }
 
 /*

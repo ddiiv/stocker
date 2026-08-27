@@ -7,6 +7,8 @@ const { nextSaleNumber, crearConNumero } = require('../services/invoiceNumberSer
 const { calcularPagos } = require('../services/paymentService');
 const { cargarVenta, registrarMovimiento, redondear } = require('../services/creditService');
 const { descontarStockVenta, devolverStockVenta } = require('../services/saleStockService');
+const { esAdministradorTotal } = require('../middleware/auth');
+const { alcanza: alcanzaNivel } = require('../config/permisos');
 const stockService = require('../services/stockService');
 const { precioDeVenta } = require('../services/precioService');
 const reglaMayorista = require('../services/reglaMayoristaService');
@@ -331,9 +333,36 @@ const createSale = async (req, res, next) => {
       descontarStock,
       // Si no hay clientId registrado, datos ad-hoc del cliente
       clienteAdHoc,
+      /*
+       * La persona ya vio qué falta y confirmó darlo de alta.
+       *
+       * Es un sí/no y nada más: las cantidades las calcula el servidor con las
+       * filas trabadas. Si vinieran de acá, cualquiera con la sesión abierta
+       * podría inventarse inventario mandando el número que quiera.
+       */
+      confirmarAltaStock = false,
     } = req.body;
 
     if (!items.length) throw Object.assign(new Error('La venta necesita al menos un ítem.'), { status: 400 });
+
+    /*
+     * Emitir un presupuesto es un permiso aparte.
+     *
+     * El módulo `cotizaciones` existía desde siempre y no gateaba nada: primero
+     * porque ninguna ruta lo pedía, después porque lo único que pedía era la
+     * conversión en venta, que ya no existe. Un permiso que aparece en la
+     * pantalla de cargos, que el dueño tilda y destilda, y que no cambia nada,
+     * es peor que no tenerlo.
+     *
+     * Va acá y no en la ruta porque ventas y cotizaciones entran por el mismo
+     * POST y se distinguen recién por el cuerpo. Hereda de `ventas`, así que
+     * ningún cargo que ya venía cotizando se queda afuera al desplegar esto.
+     */
+    if (tipo === 'cotizacion'
+      && !esAdministradorTotal(req.auth)
+      && !alcanzaNivel(req.auth.permisos, 'cotizaciones', 'editar')) {
+      throw Object.assign(new Error('Sin permiso para emitir cotizaciones.'), { status: 403 });
+    }
 
     /*
      * Venta fiada.
@@ -550,18 +579,6 @@ const createSale = async (req, res, next) => {
     }
 
     /*
-     * El nombre del local, para los mensajes de faltante.
-     *
-     * Decir "no queda stock" sin decir dónde manda a buscar en el depósito
-     * equivocado cuando la mercadería está en la otra sucursal.
-     */
-    let nombreLocalVenta = 'este local';
-    if (locationId) {
-      const l = await BusinessLocation.findByPk(locationId, { attributes: ['nombre'], transaction: t });
-      if (l) nombreLocalVenta = l.nombre;
-    }
-
-    /*
      * Las cantidades y el precio se validan ANTES de calcular nada.
      *
      * Sin esto entraba cualquier cosa y la venta se guardaba igual:
@@ -606,17 +623,6 @@ const createSale = async (req, res, next) => {
     // Las unidades hacen falta para la regla del local, que se evalúa más abajo
     // —cuando ya se sabe de qué local sale y cuánto suma la venta en lista.
     const totalUnidades = items.reduce((s, i) => s + Number(i.cantidad), 0);
-
-    /*
-     * Política del negocio ante la falta de stock.
-     *
-     * Se lee una vez por venta y no por línea: son decenas de líneas y el dato
-     * es el mismo para todas.
-     */
-    const negocio = await Business.findByPk(req.auth.businessId, {
-      attributes: ['id', 'ventaSinStock'], transaction: t,
-    });
-    const politicaSinStock = negocio?.ventaSinStock === 'bloquear' ? 'bloquear' : 'permitir';
 
     /*
      * Si se está vendiendo en un puesto de feria.
@@ -671,9 +677,6 @@ const createSale = async (req, res, next) => {
     }, 0);
     const esMayorista = reglaMayorista.esMayorista(localDeLaVenta, totalUnidades, totalEnLista);
 
-    // Lo que se vendió sin tener: se devuelve con la venta para poder avisarlo.
-    const faltantes = [];
-
     // Construir sale items
     const enrichedItems = [];
     for (const item of items) {
@@ -714,62 +717,17 @@ const createSale = async (req, res, next) => {
       }
 
       /*
-       * Un producto de feria no consulta stock ni lo descuenta.
+       * El stock NO se comprueba acá.
        *
-       * Es el punto de la feria: se registra QUÉ se vendió, no cuánto queda.
-       * Comprobar disponibilidad acá daría siempre cero y frenaría —o marcaría
-       * como faltante— cada venta del puesto.
+       * Estaba comprobado en dos lugares —esta vuelta y `descontarStockVenta`—
+       * sobre dos lecturas distintas: ésta sin trabar la fila, la otra con la
+       * fila trabada. Dos copias de la misma regla que podían no coincidir, y
+       * la que decidía de verdad era siempre la segunda.
+       *
+       * Ahora la decisión vive en un solo lado, el que tiene las filas
+       * bloqueadas y puede dar de alta lo que falte antes de descontar. Acá
+       * sólo se arman las líneas.
        */
-      if (sacaMercaderia && !productoEsFeria) {
-        /*
-         * Se comprueba contra el stock DEL LOCAL de la venta.
-         *
-         * Miraba el total de la variante, que desde que el stock es por local
-         * ya no es lo disponible acá: con 0 en esta sucursal y 20 en la otra,
-         * la venta pasaba esta comprobación y recién la frenaba el segundo
-         * control, con un mensaje sobre otra cosa. Peor todavía, el mensaje
-         * decía "no queda stock" cuando sí había, en otro lado.
-         */
-        const disponible = await stockService.stockEn(variant.id, locationId, t);
-        if (disponible < item.cantidad) {
-          const nombre = [variant.producto.titulo, variant.variante1Valor, variant.variante2Valor]
-            .filter(Boolean).join(' · ');
-          const total = Number(variant.stock) || 0;
-          const enOtros = total - disponible;
-
-          /*
-           * La venta pasa igual, salvo que el negocio pida lo contrario.
-           *
-           * En el mostrador la prenda está en la mano del cliente y el sistema
-           * va atrás: frenar por un dato que todavía no se cargó pierde la
-           * venta o empuja al cajero a inventar una vuelta. Lo que sí no puede
-           * pasar es que el faltante se pierda, así que la línea queda marcada
-           * y el stock queda en negativo A LA VISTA, como pendiente de
-           * regularizar.
-           */
-          if (politicaSinStock === 'bloquear') {
-            throw Object.assign(
-              new Error(
-                (disponible === 0
-                  ? `No queda stock de ${nombre} (${variant.sku}) en ${nombreLocalVenta}.`
-                  : `Sólo quedan ${disponible} de ${nombre} (${variant.sku}) en ${nombreLocalVenta} y estás vendiendo ${item.cantidad}.`)
-                + (enOtros > 0 ? ` Hay ${enOtros} en total entre todos los locales: transferilo desde Stock.` : '')
-              ),
-              // La pantalla lo usa para ofrecer registrarla como cotización en
-              // vez de dejar al cajero sin salida con el cliente enfrente.
-              { status: 409, detalles: { codigo: 'SIN_STOCK' } }
-            );
-          }
-
-          faltantes.push({
-            sku: variant.sku, nombre,
-            vendido: item.cantidad,
-            habia: disponible,
-            falta: item.cantidad - disponible,
-            enOtrosLocales: enOtros > 0 ? enOtros : 0,
-          });
-        }
-      }
 
       const precioUnitario = item.precioUnitario ?? calcPrecio(variant, esMayorista);
       const subtotal = precioUnitario * item.cantidad;
@@ -822,24 +780,22 @@ const createSale = async (req, res, next) => {
      */
     const sale = await crearConNumero(
       (saltar) => nextSaleNumber(req.auth.businessId, tipo, saltar, t),
-      /*
-       * Una cotización aparta su número de venta al nacer.
-       *
-       * Se calcula acá adentro, dentro del reintento, y no una vez afuera: si
-       * dos cotizaciones se crean en el mismo instante y reservan el mismo
-       * número, la segunda choca contra uq_sales_biz_numero_venta, el
-       * reintento vuelve a leer el máximo —que ya incluye la reserva de la
-       * primera— y sale con el siguiente.
-       */
       async (numero, sp) => Sale.create({
       businessId:  req.auth.businessId,
       locationId:  locationId || null,
       employeeId,
       clientId:    clientId || null,
       numero, tipo,
-      numeroVenta: tipo === 'cotizacion'
-        ? await nextSaleNumber(req.auth.businessId, 'venta', 0, sp || t)
-        : null,
+      /*
+       * Una cotización ya NO aparta un número de venta.
+       *
+       * Durante un tiempo lo hizo, porque las cotizaciones se convertían en
+       * venta y había que garantizarles el número. Desde que la cotización es
+       * sólo un presupuesto —no se convierte— reservar sería sacar de la serie
+       * un número que nadie va a usar, y dejar un hueco que después nadie sabe
+       * explicar. La columna queda porque hay filas viejas que la tienen.
+       */
+      numeroVenta: null,
       estado:      finalEstado,
       condicionPago,
       esMayorista,
@@ -892,11 +848,22 @@ const createSale = async (req, res, next) => {
       }, t);
     }
 
-    // La segunda comprobación de stock, ya con la fila bloqueada, la hace el
-    // helper: es la que garantiza que dos cajas vendiendo la última unidad a
-    // la vez no la vendan las dos.
+    /*
+      * La comprobación de stock la hace el helper, con la fila bloqueada.
+      *
+      * Es el único que decide: si falta y nadie lo confirmó, corta con 409
+      * SIN_STOCK y la lista de lo que falta; si lo confirmaron, da de alta la
+      * diferencia y recién ahí descuenta. Como todo pasa dentro de esta misma
+      * transacción, o queda el alta Y la venta, o no queda ninguna de las dos.
+      */
+    let altas = [];
     if (sacaMercaderia) {
-      await descontarStockVenta(sale, t, { employeeId, motivo: `Venta ${numero}` });
+      const r = await descontarStockVenta(sale, t, {
+        employeeId,
+        motivo: `Venta ${numero}`,
+        confirmarAltaStock,
+      });
+      altas = r.altas || [];
     }
 
     await t.commit();
@@ -912,21 +879,25 @@ const createSale = async (req, res, next) => {
     notifySaleAsync(sale.id, req.auth.businessId);
 
     /*
-     * El aviso de lo que se vendió sin tener.
+     * El aviso de lo que hubo que dar de alta.
      *
      * Va en la respuesta de la venta y no en un endpoint aparte: el momento en
      * que sirve es justo después de cobrar, con la persona todavía en la
      * pantalla. Un aviso que hay que ir a buscar no lo ve nadie.
+     *
+     * Antes este aviso decía que el stock había quedado en negativo. Ya no
+     * puede pasar: o se confirmó el alta y quedó en cero, o la venta no se
+     * hizo.
      */
     res.status(201).json({
       ...full.toJSON(),
-      ...(faltantes.length ? {
-        avisoStock: {
-          codigo: 'VENDIDO_SIN_STOCK',
-          mensaje: faltantes.length === 1
-            ? `Vendiste ${faltantes[0].vendido} de ${faltantes[0].nombre} y el sistema tenía ${faltantes[0].habia}. Quedó en negativo hasta que cargues la mercadería.`
-            : `${faltantes.length} artículos se vendieron sin stock cargado. Quedaron en negativo hasta que los regularices.`,
-          faltantes,
+      ...(altas.length ? {
+        altaStock: {
+          codigo: 'STOCK_DADO_DE_ALTA',
+          mensaje: altas.length === 1
+            ? `Se dieron de alta ${altas[0].unidades} unidad(es) de ${altas[0].sku} que no estaban cargadas.`
+            : `Se dieron de alta unidades de ${altas.length} artículos que no estaban cargados.`,
+          altas,
         },
       } : {}),
     });
@@ -1010,9 +981,20 @@ const cobrarSale = async (req, res, next) => {
 
     // Si la mercadería quedó en el local (una seña, por ejemplo), sale recién
     // ahora. Si ya se la había llevado, el helper no vuelve a descontarla.
+    /*
+     * Cobrar también puede toparse con que falte stock.
+     *
+     * Pasa con las fiadas que quedaron señadas: la mercadería no salió al
+     * venderla y sale recién ahora, y en el medio pudo haberse vendido en otra
+     * caja. Se acepta la misma confirmación que en el punto de venta, porque
+     * la situación es idéntica —alguien está mirando la percha— y porque sin
+     * esto la venta quedaría cobrada a medias, sin forma de destrabarla desde
+     * la pantalla.
+     */
     await descontarStockVenta(sale, t, {
       employeeId: req.auth.employeeId || null,
       motivo: `Cobro venta ${sale.numero}`,
+      confirmarAltaStock: req.body?.confirmarAltaStock === true,
     });
 
     // Venta fiada: cobrarla cancela la deuda que había nacido con ella.
@@ -1164,17 +1146,11 @@ const anularSale = async (req, res, next) => {
       totalCobrado: 0,
       recargoPagos: 0,
       /*
-       * Una cotización anulada suelta el número de venta que tenía apartado.
+       * Si era una cotización vieja con número apartado, se suelta.
        *
-       * La reserva existe para que un presupuesto pueda convertirse más
-       * adelante sin pelear por el número. Anulada, esa conversión no va a
-       * pasar nunca, y seguir reteniéndolo es guardar un lugar para algo que
-       * ya no viene.
-       *
-       * Soltarlo no siempre lo devuelve al uso: el próximo número sale del
-       * máximo, así que sólo se recupera de verdad si era el más alto. Si
-       * quedó en el medio de la serie, el hueco queda — y está bien, porque
-       * este número es interno y el correlativo fiscal lo lleva la factura.
+       * Las cotizaciones nuevas ya no reservan nada, así que esto sólo alcanza
+       * a las que quedaron de antes. Se deja porque anular es justamente el
+       * momento en que alguien mira una de ésas.
        */
       numeroVenta: sale.tipo === 'cotizacion' ? null : sale.numeroVenta,
       notas: [sale.notas, `ANULADA: ${motivo}`].filter(Boolean).join(' · ').slice(0, 500),
@@ -1298,173 +1274,24 @@ const updateSaleStatus = async (req, res, next) => {
  * El stock sale acá y no al cobrar: convertir un presupuesto en venta es el
  * momento en que el cliente se lleva la mercadería, aunque pague después.
  */
-const convertQuoteToSale = async (req, res, next) => {
-  const t = await sequelize.transaction();
-  try {
-    /*
-     * Sin `include`: Postgres rechaza `FOR UPDATE` sobre el lado nulo de un
-     * LEFT JOIN ("FOR UPDATE cannot be applied to the nullable side of an
-     * outer join"), y traer los ítems asociados arma exactamente ese join. En
-     * SQL Server pasa sin chistar, así que el error sólo aparece en
-     * producción. Los ítems se cargan aparte, dentro de la misma transacción.
-     */
-    const quote = await Sale.findOne({
-      where: dondeVenta(req, { tipo: 'cotizacion' }),
-      transaction: t, lock: t.LOCK.UPDATE,
-    });
-    if (!quote) {
-      await t.rollback();
-      return res.status(404).json({ message: 'Cotización no encontrada.' });
-    }
-    if (quote.estado === 'cancelado') {
-      await t.rollback();
-      return res.status(409).json({ message: 'Esta cotización está anulada.' });
-    }
-
-    /*
-     * De qué local sale la mercadería.
-     *
-     * El de la cotización si lo tiene; si no, el del empleado. Una cotización
-     * puede haberse hecho sin local —no descuenta nada, así que no hacía
-     * falta—, pero la venta sí necesita saberlo.
-     */
-    let locationId = Number(req.body?.locationId) || quote.locationId || null;
-
-    if (req.auth.employeeId && !Number(req.body?.locationId)) {
-      const empleado = await Employee.findOne({
-        where: { id: req.auth.employeeId, businessId: req.auth.businessId }, transaction: t,
-      });
-      locationId = empleado?.locationId || locationId;
-    }
-
-    if (!locationId) {
-      const activos = await BusinessLocation.findAll({
-        where: { businessId: req.auth.businessId, activo: true, tipo: { [Op.ne]: 'deposito' } },
-        order: [['id', 'ASC']], transaction: t,
-      });
-      if (activos.length === 1) locationId = activos[0].id;
-      else if (activos.length === 0) {
-        await t.rollback();
-        return res.status(409).json({ message: 'No hay ningún local de venta cargado.' });
-      } else {
-        await t.rollback();
-        return res.status(400).json({ message: 'Elegí de qué local sale la mercadería al convertir la cotización.' });
-      }
-    }
-
-    const local = await BusinessLocation.findOne({
-      where: { id: locationId, businessId: req.auth.businessId, activo: true }, transaction: t,
-    });
-    if (!local) {
-      await t.rollback();
-      return res.status(400).json({ message: 'El local indicado no pertenece a este negocio o está inactivo.' });
-    }
-    if (local.tipo === 'deposito') {
-      await t.rollback();
-      return res.status(400).json({
-        message: `"${local.nombre}" es un depósito y de un depósito no se vende. Transferí la mercadería a un local primero.`,
-      });
-    }
-
-    /*
-     * Se comprueba TODO antes de descontar nada.
-     *
-     * Frenar en la mitad dejaría media cotización convertida, con parte del
-     * stock ya descontado y un documento que sigue diciendo "cotización".
-     */
-    const lineas = await SaleItem.findAll({ where: { saleId: quote.id }, transaction: t });
-
-    const faltantes = [];
-    for (const item of lineas) {
-      if (!item.productVariantId) continue;
-      const disponible = await stockService.stockEn(item.productVariantId, locationId, t);
-      if (disponible < item.cantidad) {
-        const variante = await ProductVariant.findByPk(item.productVariantId, {
-          include: [{ model: Product, as: 'producto', attributes: ['titulo'] }], transaction: t,
-        });
-        const nombre = [variante?.producto?.titulo, variante?.variante1Valor, variante?.variante2Valor]
-          .filter(Boolean).join(' · ');
-        faltantes.push({
-          sku: variante?.sku || String(item.productVariantId),
-          nombre, pide: item.cantidad, hay: disponible,
-          total: Number(variante?.stock) || 0,
-        });
-      }
-    }
-
-    if (faltantes.length) {
-      await t.rollback();
-      const detalle = faltantes
-        .map((f) => `${f.nombre || f.sku} (${f.sku}): ${f.hay === 0 ? 'no queda nada' : `quedan ${f.hay}`} y la cotización pide ${f.pide}`)
-        .join('; ');
-      const enOtros = faltantes.some((f) => f.total > f.hay);
-      return res.status(409).json({
-        message: `No se puede convertir en venta: falta stock en ${local.nombre}. ${detalle}.`
-          + (enOtros ? ' Hay unidades en otros locales: transferilas desde Stock.' : ''),
-        codigo: 'SIN_STOCK',
-        faltantes,
-      });
-    }
-
-    /*
-     * El número ya estaba apartado desde que se hizo la cotización.
-     *
-     * Ese es el punto de la reserva: entre el presupuesto y la conversión
-     * pueden haber pasado cincuenta ventas, y ninguna le tocó este número. No
-     * hay nada que calcular ni contra qué competir, así que tampoco hay
-     * reintento: se escribe el que estaba guardado.
-     *
-     * `numeroVenta` se conserva después de usarlo. Es la misma fila que era la
-     * cotización, y dejarlo permite ver que esta venta salió de un presupuesto
-     * y con qué número se lo había prometido.
-     */
-    let numero = quote.numeroVenta;
-
-    if (numero) {
-      await quote.update({
-        tipo: 'venta', estado: 'pendiente', numero,
-        saldoPendiente: quote.total,
-        locationId,
-        employeeId: quote.employeeId || req.auth.employeeId || null,
-      }, { transaction: t });
-    } else {
-      /*
-       * Cotizaciones anteriores a la reserva, o a las que el relleno no llegó.
-       * Ahí sí hay que pedir número y competir con las ventas del momento, que
-       * es como funcionaba antes: con reintento, porque otra caja puede estar
-       * cobrando en este mismo instante.
-       */
-      await crearConNumero(
-        (saltar) => nextSaleNumber(req.auth.businessId, 'venta', saltar, t),
-        (n, sp) => {
-          numero = n;
-          return quote.update({
-            tipo: 'venta', estado: 'pendiente', numero: n,
-            numeroVenta: n,
-            saldoPendiente: quote.total,
-            locationId,
-            employeeId: quote.employeeId || req.auth.employeeId || null,
-          }, { transaction: sp || t });
-        },
-        { transaction: t },
-      );
-    }
-
-    await descontarStockVenta(quote, t, {
-      employeeId: req.auth.employeeId || null,
-      motivo: `Conversión de cotización a venta ${numero}`,
-    });
-
-    await t.commit();
-
-    const full = await Sale.findByPk(quote.id, {
-      include: [{ model: SaleItem, as: 'items' }, { association: 'empleado', attributes: ['id', 'nombre', 'apellido'] }],
-    });
-    res.json(full);
-  } catch (error) {
-    await t.rollback().catch(() => {});
-    next(error);
-  }
+/*
+ * POST /api/sales/cotizacion/:numero/convertir  →  410 Gone
+ *
+ * Las cotizaciones ya no se convierten en venta.
+ *
+ * Se dejó la ruta respondiendo en vez de borrarla porque la pantalla vieja
+ * puede seguir abierta en el navegador de alguien: sin esto le llegaría un 404
+ * "cotización no encontrada", que manda a buscar el problema en el lugar
+ * equivocado. Esto le dice qué cambió y qué hacer en su lugar.
+ *
+ * Cuando ya no queden pestañas viejas dando vueltas, esto se borra.
+ */
+const convertQuoteToSale = async (req, res) => {
+  res.status(410).json({
+    message: 'Las cotizaciones ya no se convierten en venta: son sólo presupuestos. '
+      + 'Cargá la venta desde el punto de venta.',
+    codigo: 'CONVERSION_DISCONTINUADA',
+  });
 };
 
 // GET /api/sales/:numero/ticket → devuelve PDF de ticket 80mm inline

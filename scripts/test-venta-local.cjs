@@ -142,28 +142,39 @@ function sesion() {
 
     tit('6. VENDER LO QUE NO HAY, SEGÚN LA POLÍTICA DEL NEGOCIO');
     /*
-     * El mostrador manda: por defecto la venta pasa igual.
+     * El mostrador manda, pero ya no en silencio.
      *
-     * La mercadería está en la mano del cliente y el sistema va atrás, así que
-     * frenar por un dato sin cargar pierde la venta. Lo que no puede perderse
-     * es el faltante: queda en negativo, avisado y listado para regularizar.
+     * Hasta hace poco la venta pasaba igual y el local quedaba en negativo,
+     * "a la vista" en Stock a regularizar. En la práctica nadie lo regularizaba
+     * y el inventario se volvía ficción. Ahora se pregunta: si la persona
+     * confirma que la mercadería está, se da de alta y después se descuenta,
+     * así que el stock nunca pasa por negativo. El detalle fino de este
+     * circuito está en test-alta-stock.cjs; acá se comprueba que el local
+     * correcto es el que se mira y el que se toca.
      */
     await stock.mover({ variantId: v.id, businessId: negocio.id, locationId: A.id, fijar: 0, tipo: 'ajuste', motivo: 'QA' });
 
     await negocio.update({ ventaSinStock: 'permitir' });
-    const pasa = await dueno('POST', '/api/sales', { tipo: 'venta', estado: 'pagado', locationId: A.id, items: [item], pagos: pago(200) });
-    chk('con "permitir" la venta pasa', 201, pasa.status);
-    chk('y avisa lo que se vendió sin tener', 'VENDIDO_SIN_STOCK', pasa.json?.avisoStock?.codigo);
-    chk('el aviso dice cuánto falta', 2, pasa.json?.avisoStock?.faltantes?.[0]?.falta);
-    chk('el local quedó en negativo, a la vista', -2, await enA());
+    const pregunta = await dueno('POST', '/api/sales', { tipo: 'venta', estado: 'pagado', locationId: A.id, items: [item], pagos: pago(200) });
+    chk('con "permitir" la venta pregunta antes', 409, pregunta.status);
+    chk('con el código que la pantalla espera', 'SIN_STOCK', pregunta.json?.codigo);
+    chk('ofreciendo dar de alta', true, pregunta.json?.puedeConfirmar);
+    chk('nombra el local donde falta', A.nombre, pregunta.json?.local);
+    chk('y avisa que hay en el otro', 6, pregunta.json?.faltantes?.[0]?.enOtrosLocales);
+    chk('sin tocar nada mientras tanto', 0, await enA());
+
+    const confirmada = await dueno('POST', '/api/sales', { tipo: 'venta', estado: 'pagado', locationId: A.id, items: [item], pagos: pago(200), confirmarAltaStock: true });
+    chk('confirmando, la venta entra', 201, confirmada.status);
+    chk('el local queda en cero, nunca en negativo', 0, await enA());
     chk('el stock de B quedó intacto', 6, await enB());
 
-    // Y con la política estricta se frena, con el mensaje de siempre.
+    // Y con la política estricta ni siquiera se ofrece.
     await negocio.update({ ventaSinStock: 'bloquear' });
     const falta = await dueno('POST', '/api/sales', { tipo: 'venta', estado: 'pagado', locationId: A.id, items: [item], pagos: pago(200) });
     chk('con "bloquear" la venta se frena', 409, falta.status);
     chk('nombra el local',   true, new RegExp(A.nombre).test(falta.json?.message || ''));
-    chk('y dice que hay en otro lado', true, /en total entre todos los locales/.test(falta.json?.message || ''));
+    chk('sin ofrecer confirmar', false, falta.json?.puedeConfirmar);
+    chk('y dice que hay en otro lado', true, /en otros locales/.test(falta.json?.message || ''));
     await negocio.update({ ventaSinStock: 'permitir' });
 
     tit('7. LOS MOVIMIENTOS QUEDAN CON SU LOCAL Y SU EMPLEADO');
@@ -171,7 +182,7 @@ function sesion() {
       where: { productVariantId: v.id, tipo: 'egreso' },
       order: [['id', 'ASC']],
     });
-    chk('hay tres egresos (las dos ventas y la que pasó sin stock)', 3, movs.length);
+    chk('hay tres egresos (las dos ventas y la confirmada)', 3, movs.length);
     chk('el primero, del local del dueño', B.id, movs[0]?.locationId);
     chk('el segundo, del local del empleado', A.id, movs[1]?.locationId);
     chk('y con el empleado que vendió', conLocal.id, movs[1]?.employeeId);

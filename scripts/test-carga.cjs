@@ -94,8 +94,18 @@ function sesion() {
     chk('ninguna cae con error interno', 0, contadas.filter((r) => r.status === 500).length);
     // Un 401 acá sería el peor de los síntomas: echar al cajero por carga.
     chk('a nadie lo echa del sistema', 0, contadas.filter((r) => r.status === 401).length);
-    chk('cada una con su número reservado', entraron.length,
-      new Set(entraron.map((r) => r.json?.numeroVenta).filter(Boolean)).size);
+    /*
+     * Cada una con SU número, y ninguna apartando un número de venta.
+     *
+     * Antes se comprobaba lo segundo al revés: cada cotización reservaba un
+     * número de venta y se verificaba que fueran distintos. Las cotizaciones
+     * dejaron de reservar, así que lo que hay que garantizar bajo carga es que
+     * la serie COT- no repita.
+     */
+    chk('cada una con su número de cotización', entraron.length,
+      new Set(entraron.map((r) => r.json?.numero).filter(Boolean)).size);
+    chk('y ninguna aparta número de venta', 0,
+      entraron.filter((r) => r.json?.numeroVenta).length);
 
     const vivo = await api('GET', '/api/auth/me');
     chk('y el servidor sigue en pie', 200, vivo.status);

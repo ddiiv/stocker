@@ -79,38 +79,81 @@ const { nextSaleNumber } = require('../src/services/invoiceNumberService');
   chk('las dos entran', [201, 201], [a.status, b.status]);
   chk('el número avanza de a uno', 1, correlativo(b.json.numero) - correlativo(a.json.numero));
 
-  tit('Cotización convertida en venta — el caso del incidente');
+  tit('La cotización ya no aparta ningún número de venta');
   /*
-   * El orden importa: la cotización se crea ANTES que la venta y se convierte
-   * DESPUÉS. Ése era el escenario que rompía la numeración, y sigue siendo el
-   * que hay que cubrir.
+   * Esto probaba lo contrario hasta hace poco, y el cambio es a propósito.
    *
-   * Lo que cambió es cómo se resuelve. Antes la conversión pedía número en ese
-   * momento y quedaba con número alto sobre id bajo, que es lo que hacía
-   * perder el hilo al generador. Ahora el número estaba apartado desde que se
-   * hizo el presupuesto, así que la convertida queda con un número MÁS BAJO
-   * que la venta del medio — y eso es correcto: es el que tenía guardado.
+   * Mientras las cotizaciones se convertían en venta, cada una nacía con un
+   * número de venta apartado para no pelearlo el día de la conversión. Las
+   * cotizaciones dejaron de convertirse: son presupuestos y nada más. Apartar
+   * un número ahora sería sacar de la serie uno que nadie va a usar, y dejar
+   * un hueco permanente que nadie puede explicar mirando la lista.
+   *
+   * Lo que se comprueba es justamente eso: que una cotización no toque la
+   * serie de ventas, ni al crearse ni después.
    */
-  const cot = await api('POST', '/api/sales', { ...base, tipo: 'cotizacion', estado: 'pendiente' });
-  if (cot.json?.id) creados.push(cot.json.id);
-  chk('la cotización se crea', 201, cot.status);
+  const cotizar = async () => {
+    const r = await api('POST', '/api/sales', { ...base, tipo: 'cotizacion', estado: 'pendiente' });
+    if (r.json?.id) creados.push(r.json.id);
+    return r;
+  };
 
-  const entremedio = await vender();
-  chk('una venta entremedio', 201, entremedio.status);
+  const antes = await nextSaleNumber(negocio.id, 'venta');
+  const presupuesto = await cotizar();
+  chk('la cotización se crea', 201, presupuesto.status);
+  chk('se numera en la serie COT-', true, /^COT-/.test(presupuesto.json?.numero || ''));
+  chk('y NO aparta número de venta', null, presupuesto.json?.numeroVenta ?? null);
+  chk('el próximo número de venta no se movió', antes, await nextSaleNumber(negocio.id, 'venta'));
 
-  const conv = await api('POST', `/api/sales/cotizacion/${encodeURIComponent(cot.json.numero)}/convertir`, { locationId: local.id });
-  chk('la cotización se convierte', 200, conv.status);
-  chk('conserva su id', cot.json.id, conv.json.id);
-  chk('y estrena número de venta', true, /^V-/.test(conv.json.numero || ''));
-  chk('usa el número que tenía apartado', cot.json.numeroVenta, conv.json.numero);
-  chk('que es anterior al de la venta del medio', true,
-    correlativo(conv.json.numero) < correlativo(entremedio.json.numero));
+  const despuesDeCotizar = await vender();
+  chk('la venta siguiente entra', 201, despuesDeCotizar.status);
+  chk('y toma el número que estaba libre', antes, despuesDeCotizar.json?.numero);
 
+  tit('Convertir una cotización ya no existe');
   /*
-   * Acá, y sólo acá, existe el estado que rompía todo: número alto sobre id
-   * bajo y nada todavía que lo tape. Se le pregunta al generador directamente,
-   * porque a través de la API el reintento consigue número igual y el error
-   * queda invisible. Con la lectura por id esta comprobación falla.
+   * La ruta sigue contestando en vez de dar 404 porque puede haber una
+   * pantalla vieja abierta en el navegador de alguien. Lo que tiene que decir
+   * es qué cambió, no "no encontrado", que manda a buscar el problema en el
+   * lugar equivocado.
+   */
+  const conv = await api('POST',
+    `/api/sales/cotizacion/${encodeURIComponent(presupuesto.json.numero)}/convertir`, { locationId: local.id });
+  chk('la conversión se rechaza', 410, conv.status);
+  chk('y dice por qué', 'CONVERSION_DISCONTINUADA', conv.json?.codigo);
+
+  const siguePresupuesto = await Sale.findByPk(presupuesto.json.id);
+  chk('la cotización queda intacta', 'cotizacion', siguePresupuesto?.tipo);
+  chk('con su número COT- de siempre', presupuesto.json.numero, siguePresupuesto?.numero);
+
+  tit('Muchas cotizaciones no corren la serie de ventas');
+  /*
+   * El caso que motivó todo esto al revés: con la reserva, hacer cinco
+   * presupuestos adelantaba cinco números la serie de ventas, y el dueño veía
+   * saltos que no correspondían a ninguna venta.
+   */
+  const antesDeVarias = await nextSaleNumber(negocio.id, 'venta');
+  const varias = await Promise.all([cotizar(), cotizar(), cotizar(), cotizar()]);
+  chk('las cuatro se crean', 4, varias.filter((r) => r.status === 201).length);
+  chk('con cuatro números COT- distintos', 4,
+    new Set(varias.map((r) => r.json?.numero).filter(Boolean)).size);
+  chk('ninguna aparta número de venta', 0,
+    varias.filter((r) => r.json?.numeroVenta).length);
+  chk('y la serie de ventas sigue donde estaba', antesDeVarias,
+    await nextSaleNumber(negocio.id, 'venta'));
+
+  tit('Anular una cotización no toca la serie de ventas');
+  const aAnular = await cotizar();
+  const antesDeAnular = await nextSaleNumber(negocio.id, 'venta');
+  const anulada = await api('POST',
+    `/api/sales/${encodeURIComponent(aAnular.json.numero)}/anular`, { motivo: 'Prueba de numeración' });
+  chk('la cotización se anula', 200, anulada.status);
+  chk('el próximo número de venta no cambió', antesDeAnular,
+    await nextSaleNumber(negocio.id, 'venta'));
+
+  tit('La serie de ventas no repite ni retrocede');
+  /*
+   * Se le pregunta al generador directo: a través de la API el reintento
+   * consigue número igual y un defecto acá quedaría invisible.
    */
   const proximo = await nextSaleNumber(negocio.id, 'venta');
   const usados = (await Sale.findAll({
@@ -123,97 +166,9 @@ const { nextSaleNumber } = require('../src/services/invoiceNumberService');
     delMes.every((n) => correlativo(n) < correlativo(proximo)));
 
   const despues = [await vender(), await vender(), await vender()];
-  chk('las ventas siguientes NO rebotan', [201, 201, 201], despues.map((r) => r.status));
+  chk('las ventas siguientes entran', [201, 201, 201], despues.map((r) => r.status));
   chk('y siguen la serie sin repetir', 3,
     new Set(despues.map((r) => correlativo(r.json.numero))).size);
-  chk('arrancan después de la convertida', true,
-    correlativo(despues[0].json.numero) > correlativo(conv.json.numero));
-
-  tit('La cotización aparta su número de venta');
-  /*
-   * Entre el presupuesto y la conversión pasan ventas. Sin reserva, la
-   * conversión tenía que pedir número en ese momento y competir con ellas;
-   * con reserva, el número estaba apartado desde el principio.
-   *
-   * La contracara es que un presupuesto que nunca se convierte deja un hueco
-   * en la serie de ventas. Es deliberado: el número queda guardado por si se
-   * convierte más adelante, y el correlativo fiscal es el de la factura, que
-   * lleva su propia numeración.
-   */
-  const cotizar = async () => {
-    const r = await api('POST', '/api/sales', { ...base, tipo: 'cotizacion', estado: 'pendiente' });
-    if (r.json?.id) creados.push(r.json.id);
-    return r;
-  };
-
-  const presupuesto = await cotizar();
-  chk('la cotización se crea', 201, presupuesto.status);
-  chk('se numera como cotización', true, /^COT-/.test(presupuesto.json?.numero || ''));
-  chk('y aparta un número de venta', true, /^V-/.test(presupuesto.json?.numeroVenta || ''));
-  const apartado = correlativo(presupuesto.json.numeroVenta);
-
-  const enElMedio = [await vender(), await vender()];
-  chk('las ventas de mientras tanto entran', [201, 201], enElMedio.map((r) => r.status));
-  chk('y ninguna toma el número apartado', false,
-    enElMedio.some((r) => correlativo(r.json.numero) === apartado));
-  chk('van todas por encima de la reserva', true,
-    enElMedio.every((r) => correlativo(r.json.numero) > apartado));
-
-  const convertida = await api('POST',
-    `/api/sales/cotizacion/${encodeURIComponent(presupuesto.json.numero)}/convertir`, { locationId: local.id });
-  chk('la conversión entra', 200, convertida.status);
-  chk('usa exactamente el número apartado', apartado, correlativo(convertida.json?.numero));
-  chk('sobre la misma fila', presupuesto.json.id, convertida.json?.id);
-
-  tit('Una cotización sin convertir tampoco cede su número');
-  const sinConvertir = await cotizar();
-  const quemado = correlativo(sinConvertir.json.numeroVenta);
-  const posteriores = [await vender(), await vender()];
-  chk('las ventas siguientes lo saltean', false,
-    posteriores.some((r) => correlativo(r.json.numero) === quemado));
-
-  // Y el generador tampoco lo entrega si se le pregunta directo.
-  const proximoTrasReserva = await nextSaleNumber(negocio.id, 'venta');
-  chk('el generador no lo ofrece', false, correlativo(proximoTrasReserva) === quemado);
-
-  tit('Anular la cotización suelta el número');
-  /*
-   * La reserva existe para que el presupuesto pueda convertirse más adelante.
-   * Anulado, esa conversión no va a pasar nunca, así que retener el número es
-   * guardarle lugar a algo que no viene.
-   *
-   * Ojo con qué significa "soltarlo": el próximo número sale del máximo, así
-   * que sólo vuelve al uso si era el más alto. Si quedó en el medio de la
-   * serie, el hueco queda igual — y está bien, porque este número es interno.
-   */
-  const aAnular = await cotizar();
-  const suNumero = aAnular.json.numeroVenta;
-  chk('reserva al crearse', true, /^V-/.test(suNumero || ''));
-  chk('mientras vive, el generador no lo entrega', false,
-    (await nextSaleNumber(negocio.id, 'venta')) === suNumero);
-
-  const anulada = await api('POST',
-    `/api/sales/${encodeURIComponent(aAnular.json.numero)}/anular`, { motivo: 'Prueba de numeración' });
-  chk('la cotización se anula', 200, anulada.status);
-
-  const trasAnular = await Sale.findByPk(aAnular.json.id);
-  chk('la reserva quedó vacía', null, trasAnular?.numeroVenta ?? null);
-  chk('y el número vuelve a estar disponible', suNumero, await nextSaleNumber(negocio.id, 'venta'));
-
-  tit('Borrar la cotización también se lleva su reserva');
-  // La reserva vive en la misma fila, así que se va con ella. Se comprueba
-  // porque es la garantía de que borrar no deja un número tomado por nadie.
-  const aBorrar = await cotizar();
-  const numeroPerdido = aBorrar.json.numeroVenta;
-  await SaleItem.destroy({ where: { saleId: aBorrar.json.id } });
-  await (await Sale.findByPk(aBorrar.json.id)).destroy();
-  chk('el número queda libre otra vez', numeroPerdido, await nextSaleNumber(negocio.id, 'venta'));
-
-  tit('Cotizaciones simultáneas: cada una con su reserva');
-  const aLaVez = await Promise.all([cotizar(), cotizar(), cotizar(), cotizar()]);
-  chk('las cuatro se crean', 4, aLaVez.filter((r) => r.status === 201).length);
-  chk('con cuatro reservas distintas', 4,
-    new Set(aLaVez.map((r) => r.json?.numeroVenta).filter(Boolean)).size);
 
   tit('Varias cajas cobrando al mismo tiempo');
   const juntas = await Promise.all(Array.from({ length: 8 }, vender));

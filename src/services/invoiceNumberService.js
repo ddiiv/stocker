@@ -72,23 +72,19 @@ async function nextInvoiceNumber(businessId, saltar = 0, transaction = null) {
 }
 
 /*
- * El próximo número de venta mira DOS columnas: las ventas emitidas
- * (`numero`) y los números que las cotizaciones tienen reservados
- * (`numeroVenta`).
+ * El próximo número, mirando una sola columna: `numero`.
  *
- * Sin la segunda, una venta nueva tomaría el número que una cotización ya
- * tiene apartado, y al convertirla esa cotización chocaría contra el índice
- * único sin forma de destrabarse. Que es exactamente el problema que la
- * reserva viene a evitar.
+ * Durante un tiempo miró dos, porque las cotizaciones apartaban por adelantado
+ * el número de venta que iban a usar al convertirse, y una venta nueva no
+ * podía pisarlo. Las cotizaciones dejaron de convertirse, así que no hay nada
+ * reservado contra qué competir: el próximo número es el que sigue al último
+ * emitido, y nada más.
  *
- * Para las cotizaciones alcanza con `numero`: su serie es la COT-, y ninguna
- * reserva empieza con ese prefijo.
+ * Cada tipo lleva su propia serie —V- y COT-— así que no se estorban.
  */
 async function nextSaleNumber(businessId, tipo, saltar = 0, transaction = null) {
-  const esCotizacion = tipo === 'cotizacion';
-  const prefijo = (esCotizacion ? 'COT-' : 'V-') + mesActual();
-  const columnas = esCotizacion ? ['numero'] : ['numero', 'numeroVenta'];
-  const ultimo = await ultimoCorrelativo(Sale, businessId, prefijo, transaction, columnas);
+  const prefijo = (tipo === 'cotizacion' ? 'COT-' : 'V-') + mesActual();
+  const ultimo = await ultimoCorrelativo(Sale, businessId, prefijo, transaction, ['numero']);
   return armar(prefijo, ultimo + 1 + saltar);
 }
 

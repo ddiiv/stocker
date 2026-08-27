@@ -21,7 +21,7 @@ const MODULOS = [
   { key: 'dashboard',    label: 'Dashboard',      descripcion: 'Métricas del negocio, evolución de ventas y rendimiento de productos.' },
   { key: 'stock',        label: 'Stock',          descripcion: 'Productos, variantes, ajustes de stock y escaneo con lector.' },
   { key: 'ventas',       label: 'Ventas',         descripcion: 'Punto de venta, registro de ventas y cobros.' },
-  { key: 'cotizaciones', label: 'Cotizaciones',   descripcion: 'Presupuestos y su conversión en venta.' },
+  { key: 'cotizaciones', label: 'Cotizaciones',   descripcion: 'Emitir presupuestos. Son sólo eso: no se convierten en venta ni descuentan stock.' },
   { key: 'clientes',     label: 'Clientes',       descripcion: 'Alta y edición de clientes, consulta de padrón AFIP.' },
   { key: 'facturacion',  label: 'Facturación',    descripcion: 'Facturas electrónicas, CUITs del negocio y configuración de ARCA.' },
   { key: 'pagos',        label: 'Métodos de pago', descripcion: 'Medios de pago disponibles y sus recargos o descuentos.' },

@@ -126,29 +126,43 @@ const fallo = async (fn) => { try { await fn(); return null; } catch (e) { retur
     const t2 = await sequelize.transaction();
     const msg = await fallo(() => descontarStockVenta(venta2, t2, {}));
     await t2.rollback();
-    chk('la venta se frena', true, /No hay stock suficiente/.test(msg || ''));
+    chk('la venta se frena', true, /Falta stock/.test(msg || ''));
     chk('y dice en qué local', true, new RegExp(B.nombre).test(msg || ''));
     /*
-     * Que el mensaje mencione el total de los otros locales es lo que convierte
-     * el error en algo accionable: hay mercadería, sólo que en otro lado, y lo
-     * que corresponde es transferir y no reponer.
+     * Que el mensaje mencione los otros locales es lo que convierte el error en
+     * algo accionable: hay mercadería, sólo que en otro lado, y lo que
+     * corresponde es transferir y no dar de alta nada.
      */
-    chk('y que hay en otros locales', true, /en total entre todos los locales/.test(msg || ''));
+    chk('y que hay en otros locales', true, /en otros locales/.test(msg || ''));
 
-    // Y con la política de mostrador sale igual, dejando el negativo a la vista.
+    /*
+     * Con la política de mostrador tampoco sale sola: se pide confirmación.
+     *
+     * Antes acá salía igual y dejaba el local en −1, "a la vista" para
+     * regularizar. Ahora hay dos caminos y ninguno pasa por el negativo: sin
+     * confirmar se frena, y confirmando se da de alta primero.
+     */
     await negocio.update({ ventaSinStock: 'permitir' });
     const t2b = await sequelize.transaction();
-    await descontarStockVenta(venta2, t2b, {});
-    await t2b.commit();
-    chk('con "permitir" la salida se hace', -1, await enLocal(B));
-    chk('y el movimiento explica el negativo', true,
-      /por regularizar/.test((await StockMovement.findOne({
-        where: { productVariantId: v.id }, order: [['id', 'DESC']],
+    const msgSinConfirmar = await fallo(() => descontarStockVenta(venta2, t2b, {}));
+    await t2b.rollback();
+    chk('con "permitir" tampoco sale sola', true, /Falta stock/.test(msgSinConfirmar || ''));
+    chk('y el local sigue en cero', 0, await enLocal(B));
+
+    const t2c = await sequelize.transaction();
+    const r2c = await descontarStockVenta(venta2, t2c, { confirmarAltaStock: true, motivo: 'QA confirmada' });
+    await t2c.commit();
+    chk('confirmando, la salida se hace', 0, await enLocal(B));
+    chk('y avisa cuánto dio de alta', 1, r2c?.altas?.[0]?.unidades);
+    chk('el movimiento dice que fue declarado', true,
+      /Alta confirmada al vender/.test((await StockMovement.findOne({
+        where: { productVariantId: v.id, tipo: 'ingreso' }, order: [['id', 'DESC']],
       }))?.motivo || ''));
     // Se deshace para no ensuciar las comprobaciones que siguen.
-    const t2c = await sequelize.transaction();
-    await devolverStockVenta(venta2, t2c, { motivo: 'QA deshacer' });
-    await t2c.commit();
+    const t2d = await sequelize.transaction();
+    await devolverStockVenta(venta2, t2d, { motivo: 'QA deshacer' });
+    await t2d.commit();
+    await stock.mover({ variantId: v.id, businessId: negocio.id, locationId: B.id, fijar: 0, tipo: 'ajuste', motivo: 'QA' });
 
     tit('7. ANULAR DEVUELVE AL MISMO LOCAL');
     const t3 = await sequelize.transaction();
