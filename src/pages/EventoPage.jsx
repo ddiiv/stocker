@@ -83,26 +83,67 @@ export default function EventoPage() {
   const [trabajando, setTrabajando] = useState(false);
 
   const [prefijo, setPrefijo] = useState("EVENTO");
+  /*
+   * El prefijo que efectivamente se le pidió al servidor.
+   *
+   * Va separado de lo que se está tipeando porque cada tecla disparaba una
+   * recarga entera: escribir "EVE" pedía tres veces las dos listas y, peor,
+   * cada pedido ponía `cargando` en true y la pantalla se vaciaba y volvía a
+   * dibujarse. Desde afuera parecía que la página se recargaba sola mientras
+   * se escribía.
+   */
+  const [prefijoPedido, setPrefijoPedido] = useState("EVENTO");
   const [elegidos, setElegidos] = useState(() => new Set());
   const [busqueda, setBusqueda] = useState("");
   const [rMinorista, setRMinorista] = useState({ base: "minorista", modo: "igual", valor: 0 });
   const [rMayorista, setRMayorista] = useState({ base: "mayorista", modo: "igual", valor: 0 });
   const [reaplicando, setReaplicando] = useState(false);
 
-  const cargar = useCallback(async () => {
-    setCargando(true); setError("");
+  /*
+   * Medio segundo de espera antes de preguntar.
+   *
+   * El prefijo sólo cambia el código que se propone para cada producto, así
+   * que no hay ninguna urgencia en consultarlo letra por letra. Se espera a
+   * que la persona deje de escribir.
+   */
+  useEffect(() => {
+    const id = setTimeout(() => setPrefijoPedido(prefijo), 500);
+    return () => clearTimeout(id);
+  }, [prefijo]);
+
+  const cargar = useCallback(async ({ silencioso = false } = {}) => {
+    /*
+     * Recargar por el prefijo NO vacía la pantalla.
+     *
+     * `cargando` dibuja el esqueleto en lugar de todo el contenido. Está bien
+     * la primera vez, cuando no hay nada que mostrar; en un refresco es tirar
+     * abajo una tabla que la persona está mirando —con productos ya tildados—
+     * para volver a dibujar casi lo mismo.
+     */
+    if (!silencioso) setCargando(true);
+    setError("");
     try {
-      const [c, g] = await Promise.all([fetchCandidatos(prefijo), fetchProductosFeria()]);
+      const [c, g] = await Promise.all([fetchCandidatos(prefijoPedido), fetchProductosFeria()]);
       setDatos(c);
       setGenerados(g);
     } catch (e) {
       setError(mensajeDeError(e, "No se pudo cargar el catálogo."));
     } finally {
-      setCargando(false);
+      if (!silencioso) setCargando(false);
     }
-  }, [prefijo]);
+  }, [prefijoPedido]);
 
-  useEffect(() => { cargar(); }, [cargar]);
+  useEffect(() => {
+    /*
+     * Con datos en pantalla, el refresco es silencioso.
+     *
+     * `datos` se lee acá y no va en las dependencias a propósito: agregarlo
+     * haría que el efecto se dispare cada vez que llega la respuesta, que a su
+     * vez vuelve a pedir, y así para siempre.
+     */
+    cargar({ silencioso: datos !== null });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cargar]);
 
   const pendientes = useMemo(
     () => (datos?.productos || []).filter((p) => !p.generado),
@@ -225,7 +266,8 @@ export default function EventoPage() {
                 {/* Se recorta a tres para que el código quede legible y para que
                     todos los de evento empiecen igual. */}
                 <p className="mt-1 text-xs text-ink-500">
-                  Se usan los primeros 3 caracteres: <span className="font-mono">{(datos?.prefijo || "FER")}</span>
+                  Se usan los primeros 3 caracteres:{" "}
+                  <span className="font-mono">{datos?.prefijo || "EVE"}</span>
                 </p>
               </div>
             </div>
