@@ -167,6 +167,33 @@ const COLUMNAS_ESPERADAS = {
  * hay que crear el nuevo y recién después borrar el viejo.
  */
 const INDICES = [
+  /*
+   * El SKU de un producto es único DENTRO del negocio, no en todo Stocker.
+   *
+   * Las bases viejas traen `uq_products_sku` sobre la columna sola, de cuando
+   * el sistema era de un solo negocio. Con eso, que un negocio use "REM-001"
+   * le impide usarlo a todos los demás — y en indumentaria los códigos cortos
+   * se repiten entre comercios todo el tiempo.
+   *
+   * Se ve al importar un catálogo: la planilla entra, encuentra un SKU que ya
+   * usa OTRO cliente y rebota con "ya tenés un producto con ese SKU", que
+   * además miente — el producto no es suyo y no lo puede ver ni editar.
+   *
+   * El esquema nuevo ya lo declara bien; esto es para las bases que vienen de
+   * antes. Es exactamente lo que se hizo con las variantes acá abajo.
+   */
+  {
+    tabla: 'products',
+    nombre: 'uq_products_biz_sku',
+    columnas: ['businessId', 'sku'],
+    unico: true,
+    // Mismo cuidado que con las variantes: un índice único trata los NULL como
+    // un valor más, así que no se crea hasta que ninguna fila quedó sin negocio.
+    requiere: 'SELECT COUNT(*) AS faltan FROM products WHERE businessId IS NULL',
+    requierePg: 'SELECT COUNT(*) AS faltan FROM products WHERE "businessId" IS NULL',
+    // El global se va recién cuando el nuevo está en pie.
+    reemplaza: 'uq_products_sku',
+  },
   {
     tabla: 'product_variants',
     nombre: 'uq_variants_business_sku',

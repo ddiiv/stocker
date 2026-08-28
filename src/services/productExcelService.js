@@ -162,7 +162,7 @@ const HEADER_TO_KEY = Object.fromEntries(COLUMNS.map((c) => [c.header.trim().toL
  * Tope de filas por importación. Ver el comentario en importProductsXlsx.
  * Se exporta para que la pantalla lo diga ANTES de que alguien arme el archivo.
  */
-const MAX_FILAS = 2000;
+const MAX_FILAS = 5000;
 
 function readSheetRows(worksheet, columnasStock = [], columnaStockSimple = null) {
   const headerRow = worksheet.getRow(1);
@@ -271,9 +271,17 @@ async function importProductsXlsx(businessId, buffer, { locationId = null } = {}
    * sin sistema a TODOS los negocios mientras dura. Y el que la mandó ni se
    * entera, porque su pedido muere por timeout mucho antes de terminar.
    *
-   * Dos mil es una carga de catálogo completa para la enorme mayoría, y entra
-   * cómoda en el tiempo de un pedido. Más que eso se parte en varios archivos:
-   * es una molestia chica comparada con el servidor caído.
+   * El número sale de medir, no de estimar: un catálogo real de 1.994 filas
+   * —132 productos con sus variantes— tarda 17 segundos, o sea unos 8,5 ms por
+   * fila. Con eso, cinco mil filas son unos 43 segundos: entra en el tiempo de
+   * un pedido y deja margen de sobra sobre un catálogo grande de verdad.
+   *
+   * El primer número que puse fue 2.000, y ese mismo catálogo de 1.994 filas
+   * quedaba a seis de rebotar. Un tope que un cliente real roza al primer
+   * intento no es un tope, es una trampa.
+   *
+   * Más que esto se parte en varios archivos: es una molestia chica comparada
+   * con el servidor caído.
    */
   if (rows.length > MAX_FILAS) {
     throw Object.assign(
