@@ -137,7 +137,7 @@ export default function StockPage() {
               /* El tope se dice ANTES de elegir el archivo, no después de
                  subirlo: armar una planilla de cinco mil filas y enterarse al
                  rechazarla es tirar el trabajo de una tarde. */
-              title="Máximo 2.000 filas por archivo (una fila = un producto con su variante)"
+              title="Máximo 5.000 filas por archivo (una fila = un producto con su variante)"
             />
             <button className="btn-ghost" onClick={handleImportClick} disabled={importing}>
               <Upload size={15} /> {importing ? "Importando…" : "Importar Excel"}
