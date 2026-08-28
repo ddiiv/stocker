@@ -199,3 +199,41 @@ server.on('error', (err) => {
   console.error(`✖ No se pudo escuchar en el puerto ${PORT}: ${detalle}`);
   process.exit(1);
 });
+
+/*
+ * Apagado ordenado: Railway manda SIGTERM en cada deploy.
+ *
+ * Sin escucharlo, Node muere por la señal y npm lo reporta como si el comando
+ * hubiera fallado:
+ *
+ *   npm error command failed
+ *   npm error signal SIGTERM
+ *
+ * No falló nada — es un reinicio normal— pero queda escrito como error en cada
+ * deploy, y a fuerza de aparecer entrena a no mirar los logs. El día que haya
+ * un error de verdad va a estar abajo de ése.
+ *
+ * Se cierra el servidor, se deja terminar lo que esté en vuelo y se sale con
+ * cero, que es lo que npm entiende como "terminó bien".
+ *
+ * El plazo existe porque `close()` espera a que se cierren todas las conexiones
+ * abiertas, y una que quedó colgada dejaría el contenedor sin salir hasta que
+ * la plataforma lo mate a la fuerza — volviendo al mismo mensaje.
+ */
+function apagar(senal) {
+  console.log(`Recibido ${senal}: cerrando el servidor.`);
+  const plazo = setTimeout(() => {
+    console.warn('  Quedaron conexiones abiertas: se sale igual.');
+    process.exit(0);
+  }, 10000);
+  plazo.unref();
+
+  server.close(() => {
+    clearTimeout(plazo);
+    console.log('  Servidor cerrado.');
+    process.exit(0);
+  });
+}
+
+process.on('SIGTERM', () => apagar('SIGTERM'));
+process.on('SIGINT',  () => apagar('SIGINT'));
