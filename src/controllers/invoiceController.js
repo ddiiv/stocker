@@ -9,6 +9,7 @@ const { generateInvoicePdf, generateInvoicePdfBuffer } = require('../services/pd
 const { sendInvoiceEmail } = require('../services/emailService');
 const { sendInvoiceWhatsapp } = require('../services/whatsappService');
 const { exigirCupo } = require('../services/planService');
+const { log, sinDatos } = require('../utils/logger');
 
 // GET /api/invoices
 const getInvoices = async (req, res, next) => {
@@ -293,7 +294,7 @@ const createInvoice = async (req, res, next) => {
     // Generar PDF (fuera de la transacción)
     const items = await InvoiceItem.findAll({ where: { invoiceId: invoice.id } });
     const pdfPath = await generateInvoicePdf(invoice.toJSON(), items, business.toJSON()).catch((err) => {
-      console.error('[PDF] Error generando PDF:', err.message);
+      log.error('factura', 'no se pudo generar el PDF', { motivo: sinDatos(err.message, 160) });
       return null;
     });
 
@@ -313,7 +314,7 @@ const createInvoice = async (req, res, next) => {
     // Notificaciones
     if (finalEmail && enviarEmail) {
       sendInvoiceEmail({ to: finalEmail, clienteNombre, invoice: invoice.toJSON(), pdfPath: absPdf, business: business.toJSON() })
-        .catch((err) => console.error('[email]', err.message))
+        .catch((err) => log.error('factura', 'no se pudo enviar por email', { motivo: sinDatos(err.message, 160) }))
         .finally(() => { if (absPdf) fse.remove(absPdf).catch(() => {}); });
     } else if (absPdf) {
       // Sin mail que lo adjunte, el archivo no tiene ningún uso.
@@ -322,7 +323,7 @@ const createInvoice = async (req, res, next) => {
 
     if (clienteWhatsapp && enviarWhatsapp) {
       sendInvoiceWhatsapp({ telefono: clienteWhatsapp, clienteNombre, invoice: invoice.toJSON(), business: business.toJSON() })
-        .catch((err) => console.error('[whatsapp]', err.message));
+        .catch((err) => log.error('factura', 'no se pudo enviar por WhatsApp', { motivo: sinDatos(err.message, 160) }));
     }
 
     const full = await Invoice.findByPk(invoice.id, { include: [{ model: InvoiceItem, as: 'items' }] });

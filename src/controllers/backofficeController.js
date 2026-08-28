@@ -66,7 +66,7 @@ const login = async (req, res, next) => {
 
     if (!admin || !admin.activo || !okPass) {
       await bloqueo.registrar({ req, tipo: 'platform', identificador: email, exito: false });
-      log.warn('backoffice', 'intento de acceso fallido', { email: mask.email(email), ip: ip(req) });
+      log.warn('backoffice', 'intento de acceso fallido', { email: mask.email(email), ip: mask.ip(ip(req)) });
       return res.status(401).json(generico);
     }
 
@@ -83,7 +83,7 @@ const login = async (req, res, next) => {
       // exactamente lo que se ve cuando alguien ya tiene la contraseña y le
       // falta el segundo factor.
       await bloqueo.registrar({ req, tipo: 'platform', identificador: email, exito: false });
-      log.warn('backoffice', 'código de segundo factor inválido', { email: mask.email(email), ip: ip(req) });
+      log.warn('backoffice', 'código de segundo factor inválido', { email: mask.email(email), ip: mask.ip(ip(req)) });
       return res.status(401).json(generico);
     }
 
@@ -94,7 +94,7 @@ const login = async (req, res, next) => {
     const token = crearSesion({ type: 'platform', platformAdminId: admin.id, rol: admin.rol });
     setAuthCookie(res, token);
 
-    log.info('backoffice', 'acceso concedido', { admin: admin.id, rol: admin.rol, ip: ip(req) });
+    log.info('backoffice', 'acceso concedido', { admin: admin.id, rol: admin.rol, ip: mask.ip(ip(req)) });
     res.json({ admin: sanitize(admin) });
   } catch (e) { next(e); }
 };

@@ -17,7 +17,8 @@
 require('dotenv').config({ path: __dirname + '/../.env' });
 
 const { COLUMNAS_ESPERADAS } = require('../src/database/ensureColumns');
-const fuente = require('fs').readFileSync(__dirname + '/../src/database/ensureColumns.js', 'utf8');
+const ARCHIVO = __dirname + '/../src/database/ensureColumns.js';
+const fuente = require('fs').readFileSync(ARCHIVO, 'utf8');
 
 let ok = 0, ko = 0;
 const chk = (t, cond, detalle) => {
@@ -38,8 +39,18 @@ const { RELLENOS } = (() => {
     /module\.exports = \{([^}]*)\}/,
     'module.exports = {$1, RELLENOS, INDICES }',
   );
+  /*
+   * El `require` tiene que resolver desde el archivo de verdad, no desde acá.
+   *
+   * Se le pasaba el `require` de este script, así que cualquier import interno
+   * de ensureColumns —'../utils/logger', por ejemplo— se buscaba dentro de
+   * scripts/ y explotaba con MODULE_NOT_FOUND. La prueba se caía por dónde
+   * estaba parada, no por lo que estaba probando.
+   */
+  const { createRequire } = require('module');
+  const requerirDesdeElArchivo = createRequire(ARCHIVO);
   // eslint-disable-next-line no-new-func
-  new Function('module', 'exports', 'require', codigo)(mod, mod.exports, require);
+  new Function('module', 'exports', 'require', codigo)(mod, mod.exports, requerirDesdeElArchivo);
   return mod.exports;
 })();
 

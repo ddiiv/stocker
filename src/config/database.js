@@ -24,7 +24,23 @@ const isDev        = process.env.NODE_ENV === 'development';
  * adentro. Para depurar una consulta puntual está DB_LOG_SQL=true, que nunca
  * debe activarse en producción.
  */
-const logSqlCrudo = process.env.DB_LOG_SQL === 'true';
+/*
+ * El SQL crudo NUNCA sale en producción, diga lo que diga la variable.
+ *
+ * `DB_LOG_SQL=true` existe para depurar una consulta puntual en la máquina de
+ * uno. Que alcance con cargar una variable de entorno para volcar emails,
+ * CUITs, hashes de contraseña y tokens de AFIP a los logs de Railway es un
+ * arma cargada al alcance de la mano: se prende para mirar algo, se olvida
+ * prendida, y queda escrito para siempre.
+ *
+ * Se lo ata a NODE_ENV, que en producción no lo elige quien está depurando.
+ */
+const enProduccion = process.env.NODE_ENV === 'production';
+const logSqlCrudo = process.env.DB_LOG_SQL === 'true' && !enProduccion;
+
+if (process.env.DB_LOG_SQL === 'true' && enProduccion) {
+  console.warn('[db] DB_LOG_SQL está prendida pero se ignora: en producción el SQL crudo no se registra.');
+}
 
 function logConsulta(sql) {
   if (logSqlCrudo) return console.log(sql);

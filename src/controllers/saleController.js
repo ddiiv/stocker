@@ -17,6 +17,7 @@ const { generateSalePdf, generateSaleTicketPdf } = require('../services/pdfServi
 const fse = require('fs-extra');
 const { sendSaleReceiptToCustomer, sendSaleNotificationToBusiness } = require('../services/emailService');
 const { sendSaleWhatsapp, sendSaleNotificationWhatsapp } = require('../services/whatsappService');
+const { log, sinDatos } = require('../utils/logger');
 
 // Genera PDF de la venta y dispara mails (cliente + negocio) sin bloquear la request.
 async function notifySaleAsync(saleId, businessId) {
@@ -39,7 +40,7 @@ async function notifySaleAsync(saleId, businessId) {
     const pdfPath = await generateSalePdf(sale.toJSON(), sale.items.map((i) => i.toJSON()), business.toJSON(), {
       cliente: sale.cliente?.toJSON() || null,
       emisor:  emisor?.toJSON()       || null,
-    }).catch((err) => { console.error('[PDF venta] ', err.message); return null; });
+    }).catch((err) => { log.error('venta', 'no se pudo generar el PDF', { motivo: sinDatos(err.message, 160) }); return null; });
 
     const absPdf = pdfPath ? path.resolve(pdfPath) : null;
 
@@ -73,7 +74,7 @@ async function notifySaleAsync(saleId, businessId) {
         emisor: emisor?.toJSON() || null,
         pdfPath: absPdf,
       })
-        .catch((err) => console.error('[email cliente]', err.message))
+        .catch((err) => log.error('venta', 'no se pudo avisar al cliente por email', { motivo: sinDatos(err.message, 160) }))
         .finally(limpiar);
     }
     // Aviso interno al negocio (siempre)
@@ -89,7 +90,7 @@ async function notifySaleAsync(saleId, businessId) {
         empleado: sale.empleado?.toJSON() || null,
         pdfPath: absPdf,
       })
-        .catch((err) => console.error('[email negocio]', err.message))
+        .catch((err) => log.error('venta', 'no se pudo avisar al negocio por email', { motivo: sinDatos(err.message, 160) }))
         .finally(limpiar);
     }
 
@@ -104,7 +105,7 @@ async function notifySaleAsync(saleId, businessId) {
         sale:     sale.toJSON(),
         business: business.toJSON(),
         emisor:   emisor?.toJSON() || null,
-      }).catch((err) => console.error('[whatsapp cliente]', err.message));
+      }).catch((err) => log.error('venta', 'no se pudo avisar al cliente por WhatsApp', { motivo: sinDatos(err.message, 160) }));
     }
 
     /*
@@ -122,9 +123,9 @@ async function notifySaleAsync(saleId, businessId) {
       empleado: sale.empleado?.toJSON() || null,
       local:    sale.local?.toJSON()    || null,
       emisor:   emisor?.toJSON()        || null,
-    }).catch((err) => console.error('[whatsapp negocio]', err.message));
+    }).catch((err) => log.error('venta', 'no se pudo avisar al negocio por WhatsApp', { motivo: sinDatos(err.message, 160) }));
   } catch (err) {
-    console.error('[notifySaleAsync]', err.message);
+    log.error('venta', 'falló el aviso de la venta', { motivo: sinDatos(err.message, 160) });
   }
 }
 

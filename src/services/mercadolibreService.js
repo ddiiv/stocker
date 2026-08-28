@@ -123,9 +123,9 @@ async function conectarConCodigo({ businessId, code }) {
   // log porque cambiar de cuenta invalida los vínculos SKU↔publicación viejos.
   const existente = await MercadoLibreAccount.findOne({ where: { businessId } });
   if (existente && existente.mlUserId && existente.mlUserId !== valores.mlUserId) {
-    console.warn(
-      `[ML] El negocio ${businessId} cambió de cuenta: ${existente.nickname || existente.mlUserId} → ${valores.nickname || valores.mlUserId}.`,
-    );
+    // El nickname y el id de ML identifican al vendedor: queda el hecho de que
+    // cambió, que es lo que explica los vínculos SKU↔publicación rotos.
+    log.warn('mercadolibre', 'el negocio cambió de cuenta conectada', { negocio: businessId });
   }
   if (existente) {
     await existente.update(valores);

@@ -1,5 +1,6 @@
 const axios = require('axios');
 const { log, mask } = require('../utils/logger');
+const { sinDatos } = require('../utils/logger');
 
 // Cache en memoria para no golpear la API externa repetidas veces (24h)
 const cache = new Map();
@@ -139,7 +140,8 @@ async function fetchFromAfipPadron(cuit) {
     if (/computador no autorizado/i.test(msg) || /ya posee un TA valido/i.test(msg)) {
       return null;
     }
-    console.warn('[padron AFIP]', msg);
+    // El mensaje de AFIP suele traer el CUIT consultado adentro.
+    console.warn('[padron AFIP]', sinDatos(msg, 160));
     return null;
   }
 }

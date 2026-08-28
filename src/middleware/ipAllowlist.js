@@ -1,6 +1,6 @@
 const dns = require('node:dns').promises;
 const { parsearLista, estaEnLista, normalizar, coincide } = require('../utils/ip');
-const { log } = require('../utils/logger');
+const { log, mask } = require('../utils/logger');
 
 /*
  * Restricción por IP para el backoffice.
@@ -149,7 +149,14 @@ const restringirBackoffice = async (req, res, next) => {
    */
   const pareceInterna = /^(10\.|127\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|fd|fe80:|::1$)/i.test(ip);
   log.warn('backoffice', 'acceso rechazado por IP', {
-    ip, ruta: req.originalUrl,
+    /*
+     * Va la huella, no la dirección.
+     *
+     * Alcanza para ver si es siempre la misma máquina insistiendo. Quien tiene
+     * que cargar su IP en la lista la averigua con GET /api/mi-ip, que se la
+     * dice a quien pregunta sin dejarla escrita en ningún log.
+     */
+    ip: mask.ip(ip), ruta: req.originalUrl,
     ...(pareceInterna ? { aviso: 'la IP resuelta es interna: revisá TRUST_PROXY_HOPS, se está leyendo el salto equivocado' } : {}),
   });
   return res.status(404).json({ message: 'No encontrado.' });

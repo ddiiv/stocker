@@ -10,7 +10,7 @@ const bloqueo = require('../services/bloqueoService');
 const { crearSesion, IDLE_MIN } = require('../utils/session');
 const { setAuthCookie, clearAuthCookie } = require('../utils/authCookie');
 const { sendPasswordResetCode, sendPasswordResetAlert } = require('../services/emailService');
-const { log, mask } = require('../utils/logger');
+const { log, mask, sinDatos } = require('../utils/logger');
 
 function clientIp(req) {
   const xff = req.headers['x-forwarded-for'];
@@ -288,7 +288,7 @@ const forgotPassword = async (req, res, next) => {
       businessName: business.nombreNegocio,
       expiresInMinutes: CODE_EXPIRATION_MIN,
     }).catch((err) => {
-      console.error('[email reset code]', err.message);
+      log.error('auth', 'no se pudo enviar el código de recuperación', { motivo: sinDatos(err.message, 160) });
       return { _error: err.message };
     });
 
@@ -369,7 +369,7 @@ const verifyResetCode = async (req, res, next) => {
           businessName: result.business.nombreNegocio,
           attemptedAt: new Date(),
           ip,
-        }).catch((err) => console.error('[email alert]', err.message));
+        }).catch((err) => log.error('auth', 'no se pudo enviar el aviso de seguridad', { motivo: sinDatos(err.message, 160) }));
         await result.reset.update({ alertSentAt: new Date() });
       }
 

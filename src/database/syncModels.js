@@ -1,5 +1,6 @@
 require('dotenv').config();
 const { db } = require('../models');
+const { sinDatos } = require('../utils/logger');
 
 async function sync() {
   try {
@@ -19,7 +20,7 @@ async function sync() {
     console.log('✔  Modelos sincronizados correctamente.');
     process.exit(0);
   } catch (err) {
-    console.error('✖  Error al sincronizar:', err.message);
+    console.error('✖  Error al sincronizar:', sinDatos(err.message, 160));
     process.exit(1);
   }
 }

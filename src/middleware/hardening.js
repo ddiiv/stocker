@@ -1,4 +1,4 @@
-const { log } = require('../utils/logger');
+const { log, mask } = require('../utils/logger');
 const { normalizar } = require('../utils/ip');
 
 /*
@@ -66,7 +66,7 @@ const MAX_PARAMS = 40;
 const ESCRITURA = new Set(['POST', 'PUT', 'PATCH']);
 
 function cortar(req, res, motivo, detalle = {}) {
-  log.warn('hardening', motivo, { ip: normalizar(req.ip), ruta: req.originalUrl?.slice(0, 120), ...detalle });
+  log.warn('hardening', motivo, { ip: mask.ip(normalizar(req.ip)), ruta: req.originalUrl?.slice(0, 120), ...detalle });
   // 400 y no 403: es una petición mal formada, no un permiso que falta.
   return res.status(400).json({ message: 'Petición inválida.' });
 }
@@ -84,7 +84,7 @@ const filtrarPeticion = (req, res, next) => {
   }
   if (RUTAS_DE_ESCANEO.some((rx) => rx.test(req.path))) {
     // 404 seco: a un escáner no se le explica nada.
-    log.warn('hardening', 'ruta de escaneo', { ip: normalizar(req.ip), ruta: req.path.slice(0, 80) });
+    log.warn('hardening', 'ruta de escaneo', { ip: mask.ip(normalizar(req.ip)), ruta: req.path.slice(0, 80) });
     return res.status(404).json({ message: 'No encontrado.' });
   }
   next();

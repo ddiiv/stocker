@@ -1,5 +1,7 @@
 const ExcelJS = require('exceljs');
+const { Op } = require('sequelize');
 const { Product, ProductVariant, BusinessLocation } = require('../models');
+const { exigirCupo } = require('./planService');
 const stockService = require('./stockService');
 const precioService = require('./precioService');
 
@@ -156,6 +158,12 @@ async function exportProductsXlsx(businessId) {
  */
 const HEADER_TO_KEY = Object.fromEntries(COLUMNS.map((c) => [c.header.trim().toLowerCase(), c.key]));
 
+/*
+ * Tope de filas por importación. Ver el comentario en importProductsXlsx.
+ * Se exporta para que la pantalla lo diga ANTES de que alguien arme el archivo.
+ */
+const MAX_FILAS = 2000;
+
 function readSheetRows(worksheet, columnasStock = [], columnaStockSimple = null) {
   const headerRow = worksheet.getRow(1);
   const colIndexToKey = {};
@@ -249,6 +257,40 @@ async function importProductsXlsx(businessId, buffer, { locationId = null } = {}
   });
 
   const rows = readSheetRows(worksheet, columnasStock, columnaStockSimple);
+
+  /*
+   * Cuántas filas entran de una.
+   *
+   * Cada fila es un producto×variante y cuesta varias consultas: buscar el
+   * padre, buscar la variante, escribirla y mover stock por cada local. Todo
+   * eso pasa dentro de UN pedido HTTP, con el archivo entero en memoria.
+   *
+   * Sin tope, un .xlsx de 10 MB —lo que deja pasar el límite de subida— puede
+   * traer más de cien mil filas. Eso no es una importación lenta: es el
+   * proceso reteniendo el archivo, agotando el pool de conexiones y dejando
+   * sin sistema a TODOS los negocios mientras dura. Y el que la mandó ni se
+   * entera, porque su pedido muere por timeout mucho antes de terminar.
+   *
+   * Dos mil es una carga de catálogo completa para la enorme mayoría, y entra
+   * cómoda en el tiempo de un pedido. Más que eso se parte en varios archivos:
+   * es una molestia chica comparada con el servidor caído.
+   */
+  if (rows.length > MAX_FILAS) {
+    throw Object.assign(
+      new Error(
+        `El archivo tiene ${rows.length.toLocaleString('es-AR')} filas y el máximo por importación es `
+        + `${MAX_FILAS.toLocaleString('es-AR')}. Cada fila es un producto con su variante. `
+        + 'Partilo en varios archivos y subilos de a uno.'
+      ),
+      /*
+       * En `detalles` porque es lo que el manejador de errores vuelca en la
+       * respuesta. Puesto suelto en el error, la pantalla recibe el 413 sin
+       * saber que es por el tope y no puede decir cuántas filas sobran.
+       */
+      { status: 413, detalles: { codigo: 'ARCHIVO_MUY_GRANDE', filas: rows.length, maximo: MAX_FILAS } },
+    );
+  }
+
   const summary = { productsCreated: 0, productsUpdated: 0, variantsCreated: 0, variantsUpdated: 0, errors: [] };
 
   for (const c of columnasStock) {
@@ -263,6 +305,29 @@ async function importProductsXlsx(businessId, buffer, { locationId = null } = {}
     if (!sku) { summary.errors.push(`Fila ${row._row}: falta "SKU Padre".`); continue; }
     if (!bySku.has(sku)) bySku.set(sku, []);
     bySku.get(sku).push(row);
+  }
+
+  /*
+   * El tope de SKUs del plan, antes de escribir nada.
+   *
+   * La importación era la única puerta que no lo miraba: se podía entrar por
+   * acá con veinte mil variantes en un plan de cinco mil. Se cuenta sólo lo
+   * que va a NACER —lo que ya existe se actualiza y no ocupa lugar nuevo— así
+   * que una corrección masiva de precios sobre el catálogo entero no rebota.
+   */
+  const skusEnArchivo = [...new Set(rows.map((r) => {
+    const padre = toStr(r.sku);
+    if (!padre) return null;
+    const v1 = toStr(r.variante1Valor), v2 = toStr(r.variante2Valor);
+    return toStr(r.skuVariante) || (v1 || v2 ? `${padre}-${[v1, v2].filter(Boolean).join('-')}` : padre);
+  }).filter(Boolean))];
+
+  if (skusEnArchivo.length) {
+    const yaExisten = await ProductVariant.count({
+      where: { businessId, sku: { [Op.in]: skusEnArchivo } },
+    });
+    const nuevas = skusEnArchivo.length - yaExisten;
+    if (nuevas > 0) await exigirCupo(businessId, 'skus', nuevas);
   }
 
   for (const [sku, productRows] of bySku) {
@@ -417,4 +482,4 @@ async function importProductsXlsx(businessId, buffer, { locationId = null } = {}
   return summary;
 }
 
-module.exports = { exportProductsXlsx, importProductsXlsx };
+module.exports = { exportProductsXlsx, importProductsXlsx, MAX_FILAS };

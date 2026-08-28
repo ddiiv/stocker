@@ -1,5 +1,5 @@
 const axios = require('axios');
-const { log, mask } = require('../utils/logger');
+const { log, mask, sinDatos } = require('../utils/logger');
 
 /*
  * Integración WhatsApp Cloud API (Meta) — proveedor por defecto.
@@ -72,7 +72,17 @@ async function sendViaMeta({ to, text, templateName, templateLang }) {
     const code    = errData.code;
     const msg     = errData.message || err.message;
     const details = errData.error_data?.details || errData.error_user_msg;
-    console.error(`[whatsapp meta] TEXT falló code=${code} sub=${errData.error_subcode || '-'} msg="${msg}"${details ? ' details="' + details + '"' : ''}`);
+    /*
+     * El mensaje de Meta trae el número adentro.
+     *
+     * "Invalid parameter: 5491145552231 is not a valid WhatsApp user" y
+     * parecidos. El código de error es lo que dice qué pasó y qué hacer; el
+     * texto sólo lo repite con el teléfono del cliente pegado.
+     */
+    log.error('whatsapp', 'Meta rechazó el mensaje de texto', {
+      code, sub: errData.error_subcode || '-', motivo: sinDatos(msg, 120),
+      ...(details ? { detalle: sinDatos(details, 120) } : {}),
+    });
     attempts.push({ mode: 'text', code, msg, details });
 
     // Códigos que se resuelven cambiando a template (fuera ventana 24h / mensaje no entregable)
@@ -93,7 +103,10 @@ async function sendViaMeta({ to, text, templateName, templateLang }) {
     } catch (err2) {
       const errData2 = err2.response?.data?.error || {};
       const msg2 = errData2.message || err2.message;
-      console.error(`[whatsapp meta] TEMPLATE ${templateName} falló code=${errData2.code} sub=${errData2.error_subcode || '-'} msg="${msg2}"`);
+      log.error('whatsapp', 'Meta rechazó la plantilla', {
+        plantilla: templateName, code: errData2.code,
+        sub: errData2.error_subcode || '-', motivo: sinDatos(msg2, 120),
+      });
       attempts.push({ mode: 'template', template: templateName, code: errData2.code, msg: msg2 });
       return { ok: false, provider: 'meta', error: msg2, code: errData2.code, attempts };
     }
@@ -116,7 +129,7 @@ async function sendViaCallMeBot({ to, text }) {
 async function sendWhatsappMessage({ telefono, mensaje }) {
   const to = normalizeToE164(telefono);
   if (!to) {
-    console.warn('[whatsapp] telefono vacío o inválido');
+    log.warn('whatsapp', 'teléfono vacío o inválido');
     return { ok: false, error: 'telefono inválido' };
   }
 
@@ -129,7 +142,7 @@ async function sendWhatsappMessage({ telefono, mensaje }) {
   } else if (process.env.WHATSAPP_API_KEY) {
     result = await sendViaCallMeBot({ to, text: mensaje });
   } else {
-    console.warn('[whatsapp] Sin credenciales configuradas (WHATSAPP_META_TOKEN o WHATSAPP_API_KEY) — mensaje omitido');
+    log.warn('whatsapp', 'sin credenciales configuradas — mensaje omitido');
     return { ok: false, error: 'sin credenciales' };
   }
 

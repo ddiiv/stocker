@@ -14,6 +14,7 @@
  */
 
 const { DataTypes, Op } = require('sequelize');
+const { sinDatos } = require('../utils/logger');
 
 // tabla → { columna: definición }
 const COLUMNAS_ESPERADAS = {
@@ -490,7 +491,7 @@ async function ensureColumns(sequelize) {
         await qi.addColumn(tabla, nombre, definicion);
         agregadas.push(`${tabla}.${nombre}`);
       } catch (err) {
-        console.warn(`[schema] No se pudo agregar ${tabla}.${nombre}: ${err.message}`);
+        console.warn(`[schema] No se pudo agregar ${tabla}.${nombre}: ${sinDatos(err.message, 160)}`);
       }
     }
   }
@@ -505,7 +506,7 @@ async function ensureColumns(sequelize) {
       await sequelize.query(esPostgres ? relleno.sql : relleno.sqlMssql);
       console.log(`[schema] ${relleno.descripcion}`);
     } catch (err) {
-      console.warn(`[schema] No se pudo aplicar "${relleno.descripcion}": ${err.message}`);
+      console.warn(`[schema] No se pudo aplicar "${relleno.descripcion}": ${sinDatos(err.message, 160)}`);
     }
   }
 
@@ -561,7 +562,7 @@ async function heredarFeaturesEnUso() {
       if (pedidos > 0) heredadas.push('reposicion');
       if (ferias > 0 || productosFeria > 0) heredadas.push('eventos');
     } catch (err) {
-      console.warn(`[schema] no se pudo mirar el uso del negocio ${negocio.id}: ${err.message}`);
+      console.warn(`[schema] no se pudo mirar el uso del negocio ${negocio.id}: ${sinDatos(err.message, 160)}`);
       continue;
     }
 
@@ -612,7 +613,7 @@ async function liberarNumeroDeCotizaciones(sequelize) {
   } catch (err) {
     // La columna puede no existir todavía en un primer arranque. El próximo la
     // encuentra, y mientras tanto no hay nada que soltar.
-    console.warn(`[schema] no se pudo soltar la reserva de las cotizaciones: ${err.message}`);
+    console.warn(`[schema] no se pudo soltar la reserva de las cotizaciones: ${sinDatos(err.message, 160)}`);
   }
 }
 
@@ -679,7 +680,7 @@ async function asegurarIndices(sequelize, esPostgres) {
         }
       }
     } catch (err) {
-      console.warn(`[schema] No se pudo asegurar el índice ${idx.nombre}: ${err.message}`);
+      console.warn(`[schema] No se pudo asegurar el índice ${idx.nombre}: ${sinDatos(err.message, 160)}`);
     }
   }
 }

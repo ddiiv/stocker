@@ -28,7 +28,7 @@ require('dotenv').config({ path: __dirname + '/../.env' });
 
 const API = process.env.API || 'http://localhost:3000';
 const {
-  Business, BusinessLocation, ProductVariant, VariantStock, Sale, SaleItem,
+  Business, BusinessLocation, Product, ProductVariant, VariantStock, Sale, SaleItem,
 } = require('../src/models');
 
 let ok = 0, ko = 0;
@@ -40,18 +40,21 @@ const chk = (t, e, o) => {
 const tit = (t) => console.log(`\n\x1b[1m${t}\x1b[0m`);
 
 function sesion() {
-  let cookie = '';
-  return async (metodo, ruta, cuerpo) => {
+  // La cookie queda accesible desde afuera: la subida del .xlsx va con FormData
+  // y no puede pasar por este helper, que manda JSON.
+  const pedir = async (metodo, ruta, cuerpo) => {
     const r = await fetch(`${API}${ruta}`, {
       method: metodo,
-      headers: { 'Content-Type': 'application/json', ...(cookie ? { Cookie: cookie } : {}) },
+      headers: { 'Content-Type': 'application/json', ...(pedir.cookie ? { Cookie: pedir.cookie } : {}) },
       body: cuerpo ? JSON.stringify(cuerpo) : undefined,
     });
     const set = r.headers.getSetCookie?.() || [];
-    if (set.length) cookie = set.map((c) => c.split(';')[0]).join('; ');
+    if (set.length) pedir.cookie = set.map((c) => c.split(';')[0]).join('; ');
     let json = null; try { json = JSON.parse(await r.text()); } catch { /* no json */ }
     return { status: r.status, json };
   };
+  pedir.cookie = '';
+  return pedir;
 }
 
 (async () => {
@@ -110,6 +113,51 @@ function sesion() {
     const vivo = await api('GET', '/api/auth/me');
     chk('y el servidor sigue en pie', 200, vivo.status);
   }
+
+  tit('LA IMPORTACIÓN TIENE UN TOPE DE FILAS');
+  /*
+   * Sin tope, un .xlsx de 10 MB —lo que deja pasar el límite de subida— puede
+   * traer más de cien mil filas, cada una con varias consultas, todo dentro de
+   * UN pedido. Eso no es una importación lenta: es el proceso reteniendo el
+   * archivo y agotando el pool mientras dura, con TODOS los negocios abajo.
+   */
+  const ExcelJS = require('exceljs');
+  const { MAX_FILAS } = require('../src/services/productExcelService');
+  chk('el tope está declarado', true, Number.isInteger(MAX_FILAS) && MAX_FILAS > 0);
+
+  const armarPlanilla = async (filas) => {
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet('Productos');
+    ws.addRow(['SKU Padre', 'Título', 'Precio Minorista', 'SKU Variante']);
+    for (let i = 0; i < filas; i++) ws.addRow([`QA-IMP-${i}`, `QA ${i}`, 100, `QA-IMP-${i}-U`]);
+    return Buffer.from(await wb.xlsx.writeBuffer());
+  };
+
+  const subir = async (buffer) => {
+    const form = new FormData();
+    form.append('file', new Blob([buffer], {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    }), 'qa.xlsx');
+    const r = await fetch(`${API}/api/products/import`, {
+      method: 'POST', headers: { Cookie: api.cookie }, body: form,
+    });
+    let json = null; try { json = JSON.parse(await r.text()); } catch { /* no json */ }
+    return { status: r.status, json };
+  };
+
+  const pasada = await subir(await armarPlanilla(MAX_FILAS + 1));
+  chk('un archivo con una fila de más se rechaza', 413, pasada.status);
+  chk('con un código que la pantalla puede leer', 'ARCHIVO_MUY_GRANDE', pasada.json?.codigo);
+  chk('y diciendo cuál es el máximo', true,
+    new RegExp(String(MAX_FILAS).replace(/(\d)(?=(\d{3})+$)/g, '$1.')).test(pasada.json?.message || ''));
+
+  /*
+   * Que rechace ANTES de escribir es el punto.
+   *
+   * Un rechazo a mitad de camino dejaría medio catálogo importado y la otra
+   * mitad no, sin forma de saber dónde se cortó.
+   */
+  chk('sin crear nada', 0, await Product.count({ where: { sku: 'QA-IMP-0' } }));
 
   tit('Limpieza');
   for (const id of creados) {

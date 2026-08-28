@@ -9,6 +9,7 @@ require('./src/models'); // carga asociaciones
 
 const routes              = require('./src/routes');
 const { errorHandler, notFound } = require('./src/middleware/errorHandler');
+const { log, mask, sinDatos } = require('./src/utils/logger');
 
 const app = express();
 
@@ -111,7 +112,17 @@ app.use(cors({
     if (!origin) return cb(null, true);
     if (origenPermitido(origin)) return cb(null, true);
 
-    console.warn(`[cors] Origen rechazado: ${origin}`);
+    /*
+     * No se escribe el origen tal cual.
+     *
+     * Lo elige quien llama, así que es texto ajeno yendo a parar a nuestros
+     * logs: sirve para ensuciarlos —saltos de línea, líneas falsas— y para
+     * dejar ahí lo que se le ocurra. Con el host alcanza para saber quién
+     * rebotó, y se recorta.
+     */
+    let host = 'desconocido';
+    try { host = new URL(origin).host.slice(0, 60); } catch { /* origen ilegible */ }
+    log.warn('cors', 'origen rechazado', { host });
     // Se responde sin permiso en vez de lanzar: un throw acá termina en un 500
     // y en el log del servidor como si fuera un error nuestro.
     cb(null, false);
@@ -350,9 +361,16 @@ async function start() {
     // Con '::' Linux acepta también IPv4 mapeado, así que no perdemos nada.
     const server = app.listen(PORT, '::', () => {
       const dir = server.address();
-      console.log(`✔ Stocker API escuchando en ${dir.address}:${dir.port} (IPv4 + IPv6)`);
+      /*
+       * El puerto sí, la dirección de bind y la ruta en disco no.
+       *
+       * `dir.address` y la carpeta de PDFs son detalle de la máquina, no del
+       * servicio: no ayudan a diagnosticar nada que el puerto no diga ya, y
+       * una captura de estos logs no tiene por qué contar cómo está armado el
+       * servidor por dentro.
+       */
+      console.log(`✔ Stocker API escuchando en el puerto ${dir.port} (IPv4 + IPv6)`);
       console.log(`  El servicio del front debe apuntar a: http://<nombre-de-este-servicio>.railway.internal:${dir.port}`);
-      console.log(`  PDFs en: ${pdfDir}`);
 
       /*
        * Estado de las defensas, en el arranque.
@@ -392,7 +410,7 @@ async function start() {
         console.log('    ✖ Ningún origen configurado. Si algún front le pega por otro dominio, lo va a rechazar.');
       }
       for (const [variable, url] of CORS_DESCARTADOS) {
-        console.log(`    ✖ ${variable}=${url} — es un dominio interno, un navegador nunca lo manda como Origin.`);
+        console.log(`    ✖ ${variable} apunta a un dominio interno, y un navegador nunca lo manda como Origin.`);
         console.log(`      Cargá ahí el dominio PÚBLICO del servicio.`);
       }
       if (process.env.NODE_ENV !== 'production') {
@@ -421,17 +439,69 @@ async function start() {
        */
       const correo = require('./src/config/correo').estado();
       console.log('  ── Correo ──');
-      console.log(`    Envía todo (ventas, facturas, caja, códigos) .. ${correo.casillas.noreply}`
+      /*
+       * Las casillas van con el usuario tapado y el dominio a la vista.
+       *
+       * El dominio es lo que hay que verificar en el deploy —que sea el
+       * nuestro y no el de pruebas— y el usuario exacto no aporta a eso. Saber
+       * de qué casilla sale cada mail le sirve sobre todo a quien quiera
+       * hacerse pasar por ella.
+       */
+      const casilla = (v) => {
+        if (!v) return '(sin definir)';
+        const [usuario, dominio] = String(v).split('@');
+        if (!dominio) return mask.nombre(v);
+        // Se tapa el usuario y se deja el dominio: es el dato que hay que
+        // verificar acá —que sea el nuestro y no el de pruebas— y el usuario
+        // exacto sólo le sirve a quien quiera hacerse pasar por esa casilla.
+        return `${usuario.slice(0, 2)}${'*'.repeat(Math.max(1, usuario.length - 2))}@${dominio}`;
+      };
+      console.log(`    Envía todo (ventas, facturas, caja, códigos) .. ${casilla(correo.casillas.noreply)}`
         + `${correo.credencialPropia ? ' · credencial propia' : ' · SIN credencial propia'}`);
-      console.log(`    Recibe reportes de soporte ................... ${correo.casillas.soporte}`
+      console.log(`    Recibe reportes de soporte ................... ${casilla(correo.casillas.soporte)}`
         + `${correo.soporteConCredencial ? ' · con credencial' : ''}`);
-      console.log(`    Cuenta principal (admin, SPF/DKIM) .......... ${correo.casillas.oficial}`);
+      console.log(`    Cuenta principal (admin, SPF/DKIM) .......... ${casilla(correo.casillas.oficial)}`);
       if (correo.avisos.length) {
         for (const a of correo.avisos) console.log(`    ✖ ${a}`);
       } else {
         console.log('    ✔ La cuenta que autentica es la que figura como remitente: Gmail no lo reescribe.');
       }
     });
+
+    /*
+     * Apagado ordenado: Railway manda SIGTERM en cada deploy.
+     *
+     * Sin escucharlo, Node muere por la señal y npm lo reporta como si el
+     * comando hubiera fallado —"npm error signal SIGTERM"— en CADA deploy. No
+     * falló nada, pero queda escrito como error, y a fuerza de aparecer entrena
+     * a no mirar los logs. El día que haya un error de verdad va a estar abajo
+     * de ése.
+     *
+     * Acá además importa cerrar bien y no sólo salir: puede haber una venta a
+     * medio commitear. `close()` deja de aceptar conexiones nuevas y espera a
+     * que terminen las que están en curso.
+     *
+     * El plazo es porque `close()` espera a TODAS las conexiones abiertas, y
+     * una que quedó colgada dejaría el contenedor sin salir hasta que la
+     * plataforma lo mate a la fuerza — volviendo al mismo mensaje.
+     */
+    const apagar = (senal) => {
+      console.log(`Recibido ${senal}: cerrando el servidor.`);
+      const plazo = setTimeout(() => {
+        console.warn('  Quedaron conexiones abiertas: se sale igual.');
+        process.exit(0);
+      }, 10000);
+      plazo.unref();
+
+      server.close(async () => {
+        clearTimeout(plazo);
+        try { await sequelize.close(); } catch { /* ya estaba cerrada */ }
+        console.log('  Servidor cerrado.');
+        process.exit(0);
+      });
+    };
+    process.on('SIGTERM', () => apagar('SIGTERM'));
+    process.on('SIGINT',  () => apagar('SIGINT'));
 
     server.on('error', (err) => {
       console.error(`✖ No se pudo escuchar en el puerto ${PORT}: ${err.code || err.message}`);
@@ -443,8 +513,20 @@ async function start() {
     // estar en el esquema. Y los errores de Sequelize suelen traer el detalle
     // en `original`, no en `message` — que a veces viene vacío.
     const detalle = error.original?.message || error.parent?.message || error.message || error.name;
-    console.error(`✖ Falló el arranque: ${detalle}`);
-    if (error.sql) console.error(`  Sentencia: ${String(error.sql).slice(0, 300)}`);
+    /*
+     * El mensaje va sin los valores que trae adentro, y la sentencia no va.
+     *
+     * Un error de Postgres llega con el dato pegado al texto —"Key (email)=(…)
+     * already exists"— y `error.sql` es la consulta entera, con los valores del
+     * WHERE y del INSERT. Escribirlos acá es filtrar por el peor lugar posible:
+     * los logs de arranque son los que más se comparten en una captura cuando
+     * algo no levanta.
+     *
+     * Queda el tipo de error y su forma, que es lo que hace falta para saber si
+     * el problema es de credenciales, de esquema o de red.
+     */
+    console.error(`✖ Falló el arranque: ${sinDatos(detalle)}`);
+    if (error.sql) console.error(`  Falló una sentencia ${String(error.sql).trim().split(/\s+/)[0].toUpperCase()}.`);
     process.exit(1);
   }
 }
@@ -465,7 +547,7 @@ async function start() {
 process.on('unhandledRejection', (razon) => {
   const err = razon instanceof Error ? razon : new Error(String(razon));
   console.error('✖ Promesa rechazada sin manejar (el servidor sigue en pie):');
-  console.error(`  ${err.name}: ${err.message}`);
+  console.error(`  ${err.name}: ${sinDatos(err.message)}`);
   if (err.stack) console.error(err.stack.split('\n').slice(1, 8).join('\n'));
 });
 
@@ -480,7 +562,7 @@ process.on('unhandledRejection', (razon) => {
  */
 process.on('uncaughtException', (err) => {
   console.error('✖ El proceso se detuvo por un error no capturado:');
-  console.error(`  ${err.name}: ${err.message}`);
+  console.error(`  ${err.name}: ${sinDatos(err.message)}`);
   if (err.stack) console.error(err.stack.split('\n').slice(1, 10).join('\n'));
   process.exit(1);
 });

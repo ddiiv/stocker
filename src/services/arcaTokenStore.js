@@ -16,6 +16,7 @@
 
 const fs   = require('fs');
 const path = require('path');
+const { sinDatos } = require('../utils/logger');
 
 const memCache = new Map();
 const TA_DIR = path.join(__dirname, '..', '..', 'storage', 'arca-ta');
@@ -82,7 +83,7 @@ async function set(clave, ta, expiraEn) {
     } catch (err) {
       // No es fatal: seguimos teniendo memoria y disco. Pero avisamos, porque
       // en producción significa que el próximo deploy va a perder el TA.
-      console.warn('[ARCA] No se pudo guardar el TA en la base:', err.message);
+      console.warn('[ARCA] No se pudo guardar el TA en la base:', sinDatos(err.message, 160));
     }
   }
 
