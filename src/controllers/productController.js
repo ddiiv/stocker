@@ -129,8 +129,23 @@ const getProducts = async (req, res, next) => {
      * normal y otro de feria— y las columnas de stock quedarían en cero sin que
      * eso signifique nada.
      */
+    /*
+     * Las condiciones se acumulan y se juntan con AND al final.
+     *
+     * No es una preferencia de estilo: excluir los de evento y buscar por texto
+     * son las DOS un `Op.or`, y las dos se escribían en `where[Op.or]`. La
+     * segunda pisaba a la primera, así que apenas alguien escribía algo en el
+     * buscador del catálogo normal, el filtro de "no es de evento" desaparecía
+     * y aparecían mezclados. Sin buscar andaba bien, que es lo que hacía que
+     * costara verlo.
+     *
+     * En la solapa de evento no pasaba porque ésa usa `esFeria`, una clave
+     * suelta que la búsqueda no toca.
+     */
+    const condiciones = [];
+
     if (feria === '1' || feria === 'true') where.esFeria = true;
-    else Object.assign(where, NO_ES_FERIA);
+    else condiciones.push(NO_ES_FERIA);
     if (categoria) where.categoria = categoria;
     if (genero)    where.genero    = genero;
     if (search) {
@@ -160,13 +175,17 @@ const getProducts = async (req, res, next) => {
       });
       const idsPorVariante = conVariante.map((v) => v.productId);
 
-      where[Op.or] = [
-        { titulo: { [like]: texto } },
-        { sku:    { [like]: texto } },
-        { skuAgrupador: { [like]: texto } },
-        ...(idsPorVariante.length ? [{ id: { [Op.in]: idsPorVariante } }] : []),
-      ];
+      condiciones.push({
+        [Op.or]: [
+          { titulo: { [like]: texto } },
+          { sku:    { [like]: texto } },
+          { skuAgrupador: { [like]: texto } },
+          ...(idsPorVariante.length ? [{ id: { [Op.in]: idsPorVariante } }] : []),
+        ],
+      });
     }
+
+    if (condiciones.length) where[Op.and] = condiciones;
 
     const offset = (Math.max(1, Number(page)) - 1) * Math.min(Number(limit), 100);
     const { count, rows } = await Product.findAndCountAll({

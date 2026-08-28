@@ -19,6 +19,19 @@ const { Op } = require('sequelize');
  * Preguntarlo con un OR explícito funciona igual en los dos motores y no
  * depende de que el relleno haya corrido.
  */
+/*
+ * OJO al mezclarlo con otra condición.
+ *
+ * Esto ES un `Op.or`. Volcarlo en un `where` que ya tenga el suyo —con
+ * `Object.assign` o con spread— hace que uno pise al otro en silencio, y el
+ * que se pierde no deja rastro: la consulta corre igual y devuelve de más.
+ * Pasó en el listado de productos, donde la búsqueda por texto también usa
+ * `Op.or`: bastaba con escribir algo en el buscador para que los de evento se
+ * colaran en el catálogo normal.
+ *
+ * Si el `where` puede tener otro `Op.or`, junten las dos condiciones bajo un
+ * `Op.and` en vez de asignarlas sueltas.
+ */
 const NO_ES_FERIA = { [Op.or]: [{ esFeria: false }, { esFeria: null }] };
 
 /** Para un `where` que ya usa la columna: `{ ...soloNormales() }`. */

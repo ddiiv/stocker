@@ -352,6 +352,50 @@ function sesion() {
   } catch (e) { rechazoManual = e; }
   chk('mover() lo rechaza', 'FERIA_SIN_STOCK', rechazoManual?.codigo);
 
+  tit('15. BUSCAR NO MEZCLA LOS DOS CATÁLOGOS');
+  /*
+   * El defecto que esto fija: excluir los de evento y buscar por texto son las
+   * DOS un `Op.or`, y las dos se escribían en la misma clave del `where`. La
+   * búsqueda pisaba a la exclusión, así que apenas se escribía algo en el
+   * buscador del catálogo normal aparecían los de evento mezclados.
+   *
+   * Sin buscar andaba bien. Por eso se prueba con y sin búsqueda: el bloque 11
+   * pasaba en verde mientras el bug estaba vivo.
+   */
+  const nombreComun = 'QA Mezcla';
+  const normal = await Product.create({
+    businessId: negocio.id, sku: 'QA-MEZCLA', skuAgrupador: 'QA-MEZCLA',
+    titulo: `${nombreComun} local`, precioMinorista: 100, precioMayorista: 80, costo: 40, activo: true,
+  });
+  const varNormal = await ProductVariant.create({
+    productId: normal.id, businessId: negocio.id, sku: 'QA-MEZCLA-1',
+    variante1Nombre: 'Color', variante1Valor: 'Rojo', stock: 0, stockMinimo: 0, activo: true,
+  });
+  const deEventoMezcla = await api('POST', '/api/feria/productos', {
+    titulo: `${nombreComun} evento`, sku: 'qa-mezcla-ev', precioMinorista: 200,
+  });
+  chk('se crean los dos', 201, deEventoMezcla.status);
+
+  const buscaNormal = await api(`GET`, `/api/products?limit=200&search=${encodeURIComponent(nombreComun)}`);
+  const titulosNormal = (buscaNormal.json?.data || []).map((p) => p.titulo);
+  chk('buscando en el catálogo del local, aparece el del local', true,
+    titulosNormal.includes(`${nombreComun} local`));
+  chk('y NO aparece el de evento', false, titulosNormal.includes(`${nombreComun} evento`));
+
+  const buscaEvento = await api(`GET`, `/api/products?limit=200&feria=1&search=${encodeURIComponent(nombreComun)}`);
+  const titulosEvento = (buscaEvento.json?.data || []).map((p) => p.titulo);
+  chk('buscando en evento, aparece el de evento', true,
+    titulosEvento.includes(`${nombreComun} evento`));
+  chk('y NO aparece el del local', false, titulosEvento.includes(`${nombreComun} local`));
+
+  // Buscando por SKU de variante, que es el otro camino de la búsqueda.
+  const porSku = await api('GET', '/api/products?limit=200&search=QA-MEZCLA');
+  chk('buscando por SKU tampoco se cuelan', 0,
+    (porSku.json?.data || []).filter((p) => p.esFeria).length);
+
+  await ProductVariant.destroy({ where: { id: varNormal.id } });
+  await Product.destroy({ where: { id: normal.id } });
+
   tit('Limpieza');
   for (const id of aBorrar.ventas) {
     await SaleItem.destroy({ where: { saleId: id } });
