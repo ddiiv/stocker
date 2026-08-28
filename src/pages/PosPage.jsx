@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import {
   ScanLine, Trash2, Plus, Minus, XCircle, ShoppingCart,
-  Receipt, Loader2, UserCircle2, NotebookPen,
+  Receipt, Loader2, UserCircle2, UserPlus, NotebookPen,
 } from "lucide-react";
 import { scanProduct } from "../services/productService";
 import { createSale, printSaleTicket } from "../services/salesService";
@@ -18,6 +18,7 @@ import { esAdministradorTotal } from "../utils/permissions";
 import PaymentSplit, { lineasParaApi, calcularTotales } from "../components/sales/PaymentSplit";
 import AvisoCredito from "../components/sales/AvisoCredito";
 import ModalStockFaltante from "../components/sales/ModalStockFaltante";
+import ClienteRapidoModal from "../components/clients/ClienteRapidoModal";
 import { leerCarrito, guardarCarrito, borrarCarrito, LATIDO_MS } from "../utils/carritoPos";
 
 export default function PosPage() {
@@ -58,6 +59,9 @@ export default function PosPage() {
   const [altaStock, setAltaStock] = useState(null);
   // Aviso de que el carrito se recuperó de la vez anterior.
   const [avisoCarrito, setAvisoCarrito] = useState(null);
+  // Alta de cliente sin salir del cobro. Va montado acá adentro a propósito:
+  // navegar a Clientes desmonta el punto de venta y arranca el reloj del carrito.
+  const [altaCliente, setAltaCliente] = useState(false);
   const [resaltado, setResaltado] = useState(null);
   const inputRef = useRef(null);
   const resaltadoTimer = useRef(null);
@@ -491,6 +495,23 @@ export default function PosPage() {
         * ser de hace medio minuto. Cancelar no toca el carrito — la salida
         * natural es ir a contar y volver.
         */}
+      {/*
+        * Alta de cliente, sin moverse de acá.
+        *
+        * El carrito no se toca: este modal se monta dentro del punto de venta,
+        * así que no hay desmontaje ni navegación. Al guardar, el cliente queda
+        * elegido en la venta que se está cobrando.
+        */}
+      <ClienteRapidoModal
+        open={altaCliente}
+        onClose={() => setAltaCliente(false)}
+        onCreado={(c) => {
+          setClientes((prev) => [c, ...prev]);
+          setClientId(c.id);
+          setBuscarCliente("");
+        }}
+      />
+
       <ModalStockFaltante
         open={Boolean(faltantesServidor)}
         onClose={() => setFaltantesServidor(null)}
@@ -713,12 +734,13 @@ export default function PosPage() {
                   value={buscarCliente}
                   onChange={(e) => setBuscarCliente(e.target.value)}
                 />
-                {buscarCliente.trim().length >= 2 && (
-                  <div className="mt-1 max-h-40 overflow-y-auto rounded-md border border-line">
-                    {clientes
-                      .filter((c) => `${c.nombre} ${c.apellido || ""}`.toLowerCase().includes(buscarCliente.toLowerCase()))
-                      .slice(0, 8)
-                      .map((c) => (
+                {buscarCliente.trim().length >= 2 && (() => {
+                  const encontrados = clientes
+                    .filter((c) => `${c.nombre} ${c.apellido || ""}`.toLowerCase().includes(buscarCliente.toLowerCase()))
+                    .slice(0, 8);
+                  return (
+                    <div className="mt-1 max-h-40 overflow-y-auto rounded-md border border-line">
+                      {encontrados.map((c) => (
                         <button
                           key={c.id} type="button"
                           className="block w-full px-3 py-2 text-left text-sm hover:bg-paper-100"
@@ -727,8 +749,25 @@ export default function PosPage() {
                           {c.nombre} {c.apellido || ""}
                         </button>
                       ))}
-                  </div>
-                )}
+                      {/* Buscar y no encontrar es JUSTO el momento de ofrecer
+                          darlo de alta: es cuando el cajero ya sabe que no está. */}
+                      {encontrados.length === 0 && (
+                        <p className="px-3 py-2 text-xs text-ink-500">
+                          No hay ningún cliente con ese nombre.
+                        </p>
+                      )}
+                    </div>
+                  );
+                })()}
+
+                <button
+                  type="button"
+                  className="btn-ghost mt-2 w-full justify-center border border-dashed border-line text-xs"
+                  onClick={() => setAltaCliente(true)}
+                >
+                  <UserPlus size={13} /> Registrar un cliente nuevo
+                </button>
+
                 <p className="mt-2 flex items-center gap-1.5 text-xs text-ink-500">
                   <UserCircle2 size={13} />
                   {esFiado

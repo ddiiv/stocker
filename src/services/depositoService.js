@@ -21,11 +21,12 @@ export async function fetchIngresos(filtros = {}) {
  * @param {"etiquetas"|"conteo"} origen  etiquetas sube el stock ya; conteo espera firma.
  */
 /*
- * `payload` acepta `items` (líneas sueltas) y `curvas`, o las dos.
+ * `payload` acepta `items` (líneas) y, todavía, `curvas`.
  *
- * Una curva es una corrida completa: "20 curvas de negro" son 20 de cada talle
- * de ese color. El servidor la expande a líneas, así que el remito que queda
- * guardado es igual al de un ingreso cargado a mano.
+ * La pantalla ya no manda `curvas`: expande la serie a líneas antes de mandar,
+ * usando los valores que devolvió el servidor, para que todo lo que se va a
+ * ingresar se vea en una sola lista. El campo se mantiene en la API porque
+ * sigue siendo la forma corta para integraciones.
  */
 export async function crearIngreso(payload) {
   const { data } = await http.post("/deposito/ingresos", payload);
@@ -33,13 +34,16 @@ export async function crearIngreso(payload) {
 }
 
 /*
- * Qué talles abre una curva de ese producto y ese color.
+ * Qué abre una serie de ese producto fijando ese valor.
  *
- * Se consulta antes de cargar para poder mostrar la corrida: sin esto, "20
- * curvas" es un número que no dice cuántas unidades entran.
+ * Se consulta antes de cargar para poder mostrar lo que entra: sin esto, "20
+ * series" es un número que no dice cuántas unidades son.
+ *
+ * `eje` dice cuál de las dos variantes se fija: 'variante1' o 'variante2'. Es
+ * lo que separa "20 series de color Negro" de "20 series de talle M".
  */
-export async function fetchCurva({ productId, valor }) {
-  const { data } = await http.get("/deposito/curva", { params: { productId, valor } });
+export async function fetchSerie({ productId, valor, eje }) {
+  const { data } = await http.get("/deposito/curva", { params: { productId, valor, eje } });
   return data;
 }
 

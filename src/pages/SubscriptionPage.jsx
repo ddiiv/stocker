@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import {
   CreditCard, Landmark, Download, Check, X, AlertTriangle, Loader2,
   RefreshCw, ArrowUpRight, Trash2, Users, Building2, Store, Tags, FileText,
-  SearchCheck, Mail,
+  SearchCheck, Mail, Minus,
 } from "lucide-react";
 import {
   fetchSuscripcion, fetchPlanes, fetchPagos, crearCheckout,
@@ -10,6 +10,33 @@ import {
   solicitarBaja, cancelarBaja, descargarRecibo, verificarPagos,
 } from "../services/billingService";
 import { PageHeader, Card } from "../components/ui/Layout";
+
+/*
+ * Las funciones que separan un plan de otro, en el orden en que se venden.
+ *
+ * La clave tiene que coincidir con FEATURES de back/src/config/planes.js. Si
+ * allá se agrega una y acá no, el plan la incluye pero el cliente no se entera:
+ * paga por algo que la pantalla no le muestra.
+ *
+ * Se listan TODAS en cada tarjeta, tildadas o tachadas. Mostrar sólo las que
+ * el plan tiene deja al que mira el plan barato sin saber qué se está
+ * perdiendo, que es justo la información por la que entró a esta pantalla.
+ */
+const FUNCIONES = [
+  { clave: "facturacion",       label: "Facturación electrónica ARCA" },
+  { clave: "importacionMasiva", label: "Alta y edición por planilla" },
+  { clave: "eventos",           label: "Eventos: vender sin llevar stock" },
+  { clave: "facturacionMasiva", label: "Facturación por lote" },
+  { clave: "cuentasCorrientes", label: "Cuentas corrientes y fiado" },
+  { clave: "ecommerce",         label: "Mercado Libre" },
+  { clave: "compras",           label: "Proveedores y órdenes de compra" },
+  { clave: "deposito",          label: "Depósito: ingreso de mercadería y series" },
+  { clave: "reposicion",        label: "Reposición entre depósito y locales" },
+  { clave: "multiDeposito",     label: "Stock separado por local" },
+  { clave: "listasPrecios",     label: "Listas de precios por cliente" },
+  { clave: "api",               label: "API para integraciones" },
+];
+
 import Modal from "../components/ui/Modal";
 import { formatCurrency, formatDate } from "../utils/formatters";
 
@@ -312,9 +339,35 @@ export default function SubscriptionPage() {
                 <li>{tope(p.maxCuits)} CUIT{p.maxCuits === 1 ? "" : "s"}</li>
                 <li>{tope(p.maxEmpleados)} usuario{p.maxEmpleados === 1 ? "" : "s"}</li>
                 <li>{tope(p.maxLocales)} local{p.maxLocales === 1 ? "" : "es"}</li>
-                <li className={p.features?.ecommerce ? "text-teal-600" : "text-ink-400"}>
-                  {p.features?.ecommerce ? "Con Mercado Libre" : "Sin Mercado Libre"}
-                </li>
+              </ul>
+
+              {/*
+                * Qué funciones entran, tildadas una por una.
+                *
+                * Antes de esto la tarjeta mostraba cinco topes y UNA sola
+                * función —Mercado Libre— escrita a mano. Todo lo demás que
+                * separa un plan de otro no estaba en ninguna pantalla: el
+                * cliente no tenía forma de saber qué ganaba pagando el doble.
+                *
+                * La lista sale de FUNCIONES y no del objeto que manda el
+                * servidor: hace falta poder mostrar también las que el plan NO
+                * tiene, que es justamente lo que hace visible la diferencia.
+                */}
+              <ul className="mt-3 space-y-1 border-t border-line pt-3 text-xs">
+                {FUNCIONES.map((f) => {
+                  const incluida = Boolean(p.features?.[f.clave]);
+                  return (
+                    <li key={f.clave} className={`flex items-start gap-1.5 ${incluida ? "text-ink-700" : "text-ink-400"}`}>
+                      {incluida
+                        ? <Check size={13} className="mt-0.5 shrink-0 text-teal-600" />
+                        : <Minus size={13} className="mt-0.5 shrink-0 text-ink-300" />}
+                      <span className={incluida ? "" : "line-through decoration-ink-300"}>{f.label}</span>
+                    </li>
+                  );
+                })}
+              </ul>
+
+              <ul className="mt-3 space-y-1 text-xs text-ink-700">
                 <li className="text-ink-500">{p.soporte}</li>
               </ul>
               {!esActual && (

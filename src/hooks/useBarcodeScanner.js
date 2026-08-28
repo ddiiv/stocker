@@ -27,11 +27,27 @@ export function useBarcodeScanner({
   maxIntervaloMs = 50,
   finLecturaMs = 120,
   ventanaActividadMs = 10000,
+  /*
+   * Enfriamiento entre lecturas del MISMO código.
+   *
+   * Un lector apoyado sobre la etiqueta dispara varias veces por segundo, y
+   * algunos mandan la lectura dos veces por configuración. Sin esto, pasar una
+   * prenda sumaba tres unidades al carrito, y cada lectura además pegaba un
+   * pedido al servidor: el mostrador terminaba corrigiendo cantidades a mano.
+   *
+   * Se enfría por CÓDIGO y no en general: escanear dos prendas distintas
+   * seguidas es lo normal y frenar eso sería peor que el problema. Escanear la
+   * misma dos veces a propósito —dos unidades iguales— pide medio segundo de
+   * espera, o el botón + de la línea, que es más rápido.
+   */
+  enfriamientoMs = 500,
 } = {}) {
   const buffer = useRef("");
   const ultimaTecla = useRef(0);
   const timerFin = useRef(null);
   const timerActividad = useRef(null);
+  // Último código emitido y cuándo, para el enfriamiento.
+  const ultimaEmision = useRef({ codigo: "", en: 0 });
 
   const [ultimoCodigo, setUltimoCodigo] = useState("");
   const [scannerActivo, setScannerActivo] = useState(false);
@@ -58,6 +74,23 @@ export function useBarcodeScanner({
       buffer.current = "";
       const limpio = String(codigo || "").trim();
       if (limpio.length < minLargo) return false;
+
+      /*
+       * La misma lectura, dos veces seguidas, es una sola.
+       *
+       * Se limpia el input igual y se cuenta como actividad: para quien está
+       * gatillando, el lector "anduvo". Lo único que no pasa es el segundo
+       * pedido al servidor.
+       */
+      const ahora = Date.now();
+      if (ultimaEmision.current.codigo === limpio
+        && ahora - ultimaEmision.current.en < enfriamientoMs) {
+        if (limpiarInput) limpiarInput.value = "";
+        marcarActividad();
+        return false;
+      }
+      ultimaEmision.current = { codigo: limpio, en: ahora };
+
       if (limpiarInput) limpiarInput.value = "";
       setUltimoCodigo(limpio);
       setLecturas((n) => n + 1);
@@ -122,7 +155,7 @@ export function useBarcodeScanner({
       document.removeEventListener("paste", handlePaste);
       clearTimeout(timerFin.current);
     };
-  }, [activo, minLargo, maxIntervaloMs, finLecturaMs, marcarActividad]);
+  }, [activo, minLargo, maxIntervaloMs, finLecturaMs, enfriamientoMs, marcarActividad]);
 
   // Limpia los temporizadores al desmontar, para no dejar un setState colgado.
   useEffect(() => () => {

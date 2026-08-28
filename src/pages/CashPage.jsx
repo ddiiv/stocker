@@ -59,8 +59,16 @@ export default function CashPage() {
     e.preventDefault();
     setEnviando(true); setError("");
     try {
-      const r = await cerrarTurno({ montoDeclarado: Number(montoDeclarado) || 0, notaCierre });
-      setResultadoCierre(r.turno || r);
+      /*
+       * Se guarda la respuesta ENTERA, no sólo el turno.
+       *
+       * El servidor manda el desglose —de dónde sale el esperado— y acá se
+       * descartaba con `r.turno || r`. El cajero veía "faltan $12.400" y no
+       * tenía contra qué compararlo: ni cuánto entró en efectivo, ni cuántas
+       * ventas fueron, ni cuánto se retiró. Explicar la diferencia es
+       * justamente para lo que existe ese desglose.
+       */
+      setResultadoCierre({ ...(r.turno || r), desglose: r.desglose || null });
       setModalCierre(false); setMontoDeclarado(""); setNotaCierre("");
       await load();
     } catch (err) {
@@ -129,9 +137,101 @@ export default function CashPage() {
               </p>
             </div>
           </div>
-          {Number(resultadoCierre.diferencia) !== 0 && (
-            <p className="mt-3 text-sm text-ink-600">
-              {Number(resultadoCierre.diferencia) < 0 ? "Faltó" : "Sobró"} efectivo respecto de lo esperado. Se avisó al dueño.
+          {/*
+            * De dónde sale el número esperado.
+            *
+            * Se muestra SIEMPRE, cuadre o no. Cuando cuadra confirma que el
+            * cálculo es el que el cajero tenía en la cabeza; cuando no cuadra
+            * es lo único que permite ir a buscar dónde está la diferencia.
+            */}
+          {resultadoCierre.desglose && (
+            <div className="mt-4 rounded-md bg-paper-100 px-3 py-2.5 text-sm">
+              <p className="mb-1.5 text-xs font-medium uppercase tracking-wide text-ink-600">
+                Cómo se llegó a los {formatCurrency(resultadoCierre.montoEsperado)}
+              </p>
+              <dl className="space-y-1">
+                <div className="flex justify-between text-ink-600">
+                  <dt>Con lo que abriste</dt><dd>{formatCurrency(resultadoCierre.desglose.montoInicial)}</dd>
+                </div>
+                <div className="flex justify-between text-ink-600">
+                  <dt>
+                    Ventas cobradas en efectivo
+                    {resultadoCierre.desglose.ventasEnEfectivo > 0 && (
+                      <span className="text-ink-500"> · {resultadoCierre.desglose.ventasEnEfectivo} venta(s)</span>
+                    )}
+                  </dt>
+                  <dd>+ {formatCurrency(resultadoCierre.desglose.efectivoVentas)}</dd>
+                </div>
+                {resultadoCierre.desglose.ingresos > 0 && (
+                  <div className="flex justify-between text-ink-600">
+                    <dt>Otros ingresos</dt><dd>+ {formatCurrency(resultadoCierre.desglose.ingresos)}</dd>
+                  </div>
+                )}
+                {resultadoCierre.desglose.egresos > 0 && (
+                  <div className="flex justify-between text-ink-600">
+                    <dt>Gastos pagados de la caja</dt><dd>− {formatCurrency(resultadoCierre.desglose.egresos)}</dd>
+                  </div>
+                )}
+                {resultadoCierre.desglose.retiros > 0 && (
+                  <div className="flex justify-between text-ink-600">
+                    <dt>Retiros</dt><dd>− {formatCurrency(resultadoCierre.desglose.retiros)}</dd>
+                  </div>
+                )}
+                <div className="flex justify-between border-t border-line pt-1 font-medium text-ink-950">
+                  <dt>Tendría que haber</dt><dd>{formatCurrency(resultadoCierre.montoEsperado)}</dd>
+                </div>
+                <div className="flex justify-between text-ink-950">
+                  <dt>Contaste</dt><dd>{formatCurrency(resultadoCierre.montoDeclarado)}</dd>
+                </div>
+              </dl>
+            </div>
+          )}
+
+          {/*
+            * Qué significa la diferencia, en plata y en palabras.
+            *
+            * Faltar y sobrar no son lo mismo y no se arreglan igual: el
+            * faltante se busca contra las ventas cobradas en efectivo, el
+            * sobrante casi siempre es un movimiento que no se cargó.
+            */}
+          {Number(resultadoCierre.diferencia) < 0 ? (
+            <div className="mt-3 rounded-md border border-brick-500/30 bg-brick-50 px-3 py-2.5 text-sm text-brick-500">
+              <p className="font-medium">
+                Faltan {formatCurrency(Math.abs(Number(resultadoCierre.diferencia)))} en la caja.
+              </p>
+              <p className="mt-1 text-ink-700">
+                {resultadoCierre.desglose?.efectivoVentas > 0 ? (
+                  <>
+                    Se cobraron {formatCurrency(resultadoCierre.desglose.efectivoVentas)} en efectivo
+                    {resultadoCierre.desglose.ventasEnEfectivo > 0
+                      ? ` en ${resultadoCierre.desglose.ventasEnEfectivo} venta${resultadoCierre.desglose.ventasEnEfectivo === 1 ? "" : "s"}`
+                      : ""}
+                    {" "}y en el cajón hay {formatCurrency(resultadoCierre.montoDeclarado)}. Esa plata está
+                    registrada como cobrada pero no está contada.
+                  </>
+                ) : (
+                  <>En el cajón hay menos de lo que debería según lo que se abrió y lo que se movió.</>
+                )}
+              </p>
+              <p className="mt-1.5 text-ink-700">
+                Antes de dar por cerrado: fijate si quedó un retiro sin cargar, un gasto pagado de la
+                caja, o un vuelto mal dado. Si aparece, cargalo como movimiento y el próximo cierre
+                arranca derecho. Se le avisó al dueño con este mismo detalle.
+              </p>
+            </div>
+          ) : Number(resultadoCierre.diferencia) > 0 ? (
+            <div className="mt-3 rounded-md border border-brass-500/40 bg-brass-50 px-3 py-2.5 text-sm text-brass-800">
+              <p className="font-medium">
+                Sobran {formatCurrency(Number(resultadoCierre.diferencia))} en la caja.
+              </p>
+              <p className="mt-1 text-ink-700">
+                Suele ser una venta cobrada en efectivo que se registró con otro medio de pago, o
+                plata que entró sin cargarse como ingreso. Se le avisó al dueño.
+              </p>
+            </div>
+          ) : (
+            <p className="mt-3 rounded-md border border-teal-500/30 bg-teal-50 px-3 py-2.5 text-sm text-teal-700">
+              La caja cierra exacta: lo contado coincide peso por peso con lo que tenía que haber.
             </p>
           )}
           <button className="btn-ghost mt-3 text-xs" onClick={() => setResultadoCierre(null)}>Entendido</button>

@@ -4,7 +4,7 @@ import {
 } from "lucide-react";
 import { PageHeader, Card, EmptyState } from "../components/ui/Layout";
 import SelectorArticulos from "../components/deposito/SelectorArticulos";
-import CargaPorCurvas from "../components/deposito/CargaPorCurvas";
+import CargaPorSeries from "../components/deposito/CargaPorSeries";
 import ArmadoPedido from "../components/deposito/ArmadoPedido";
 import HistorialReposiciones from "../components/deposito/HistorialReposiciones";
 import {
@@ -43,9 +43,14 @@ export default function DepositoPage() {
   const [depositos, setDepositos] = useState([]);
   const [locationId, setLocationId] = useState("");
   const [origen, setOrigen] = useState("etiquetas");
+  /*
+   * Una sola lista de lo que se va a ingresar.
+   *
+   * Antes había dos —`items` sueltos y `curvas` sin expandir— y el total del
+   * remito no estaba en ninguna pantalla: había que sumarlo de cabeza entre
+   * las dos. Ahora la serie se expande a líneas al agregarla y todo cae acá.
+   */
   const [items, setItems] = useState([]);
-  // Curvas pendientes de guardar. El servidor las expande a líneas al crear.
-  const [curvas, setCurvas] = useState([]);
   const [notas, setNotas] = useState("");
   const [guardando, setGuardando] = useState(false);
   const [error, setError] = useState("");
@@ -111,8 +116,27 @@ export default function DepositoPage() {
 
   const necesitaElegirDeposito = depositos.length > 1;
 
+  /*
+   * Suma las líneas de una serie a lo que ya hay.
+   *
+   * Si una serie y una línea suelta caen sobre la misma variante se suman, que
+   * es lo que hace el servidor desde siempre: dos renglones del mismo SKU en
+   * un remito son la misma prenda contada dos veces.
+   */
+  function agregarLineas(nuevas) {
+    setItems((prev) => {
+      const porId = new Map(prev.map((i) => [i.productVariantId, { ...i }]));
+      for (const l of nuevas) {
+        const ya = porId.get(l.productVariantId);
+        if (ya) ya.cantidad += l.cantidad;
+        else porId.set(l.productVariantId, l);
+      }
+      return [...porId.values()];
+    });
+  }
+
   async function guardar() {
-    if (!items.length && !curvas.length) { setError("Agregá al menos un artículo o una curva."); return; }
+    if (!items.length) { setError("Agregá al menos un artículo."); return; }
     if (necesitaElegirDeposito && !locationId) { setError("Elegí en qué depósito estás cargando."); return; }
     setGuardando(true); setError(""); setAviso("");
     try {
@@ -122,10 +146,8 @@ export default function DepositoPage() {
         items: items.filter((i) => i.cantidad > 0).map((i) => ({
           productVariantId: i.productVariantId, cantidad: i.cantidad,
         })),
-        // `_resumen` es sólo para mostrarlo acá: no viaja al servidor.
-        curvas: curvas.map(({ _resumen, ...c }) => c),
       });
-      setItems([]); setCurvas([]); setNotas("");
+      setItems([]); setNotas("");
       setAviso(origen === "etiquetas"
         ? `${ingreso.numero} cargado: el stock ya está en el depósito. Generá las etiquetas y pegalas en cada prenda.`
         : `${ingreso.numero} enviado a oficina. El stock sube cuando lo acepten.`);
@@ -347,42 +369,16 @@ export default function DepositoPage() {
           </div>
 
           {/*
-            * Dos formas de cargar el mismo remito.
+            * Dos formas de cargar el mismo remito, una sola lista.
             *
-            * Por curvas es como llega la mercadería del proveedor: corridas
-            * completas de un modelo y un color. Suelto es para lo que llega
-            * descabalado. Conviven, y si una curva y una línea suelta caen
-            * sobre el mismo talle, el servidor las suma.
+            * Por series es como llega la mercadería del proveedor: conjuntos
+            * completos de un modelo. Suelto es para lo que llega descabalado.
+            * Lo que se arma por serie se expande a líneas y cae en la misma
+            * tabla de abajo, así que el total de lo que se va a ingresar se
+            * lee en un solo lado. Si una serie y una línea suelta caen sobre
+            * la misma variante, se suman.
             */}
-          <CargaPorCurvas onAgregar={(c) => setCurvas((cs) => [...cs, c])} />
-
-          {curvas.length > 0 && (
-            <div className="mt-3 rounded-md border border-line bg-paper-50 p-3">
-              <p className="mb-2 text-xs font-medium uppercase tracking-wide text-ink-600">
-                Curvas cargadas
-              </p>
-              <ul className="divide-y divide-line/60">
-                {curvas.map((c, i) => (
-                  <li key={`${c.productId}-${c.valor || ""}-${i}`} className="flex items-center justify-between gap-3 py-1.5 text-sm">
-                    <span className="text-ink-900">
-                      {c._resumen.titulo}
-                      {c._resumen.color && <span className="text-ink-500"> · {c._resumen.color}</span>}
-                    </span>
-                    <span className="flex items-center gap-2 text-xs text-ink-600">
-                      {c._resumen.unidades} un. en {c._resumen.talles} talles
-                      <button
-                        className="rounded p-1 text-brick-500 hover:bg-paper-200"
-                        onClick={() => setCurvas((cs) => cs.filter((_, j) => j !== i))}
-                        aria-label={`Quitar la curva de ${c._resumen.titulo}`}
-                      >
-                        ✕
-                      </button>
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
+          <CargaPorSeries onAgregar={agregarLineas} />
 
           <div className="mt-4">
             <SelectorArticulos
@@ -399,7 +395,24 @@ export default function DepositoPage() {
               value={notas} onChange={(e) => setNotas(e.target.value)} />
           </div>
 
-          <div className="mt-4 flex justify-end">
+          {/*
+            * El total del remito, a la vista.
+            *
+            * Con series de veinte unidades cada una, "cuántas prendas entran"
+            * deja de ser evidente mirando los renglones. Es el número contra el
+            * que alguien va a contar los bultos del camión.
+            */}
+          <div className="mt-4 flex flex-wrap items-center justify-end gap-3">
+            {items.length > 0 && (
+              <p className="mr-auto text-sm text-ink-600">
+                <strong className="text-ink-950">{items.length}</strong> artículo{items.length === 1 ? "" : "s"}
+                {" · "}
+                <strong className="text-ink-950">
+                  {items.reduce((n, i) => n + (Number(i.cantidad) || 0), 0)}
+                </strong>{" "}
+                unidades en total
+              </p>
+            )}
             <button className="btn-accent" disabled={guardando || !items.length} onClick={guardar}>
               {guardando ? <><Loader2 size={15} className="animate-spin" /> Guardando…</>
                 : origen === "etiquetas" ? <><Tag size={15} /> Cargar y generar etiquetas</>
