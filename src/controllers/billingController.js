@@ -26,6 +26,24 @@ const DATOS_TRANSFERENCIA = {
 };
 
 // GET /api/billing/planes — catálogo público para la pantalla de planes
+/*
+ * GET /api/billing/features
+ *
+ * El catálogo de funciones: qué existe, cómo se llama y para qué sirve.
+ *
+ * Va aparte de los planes y es público porque lo consumen dos pantallas
+ * distintas —la de suscripción del cliente y la de planes del backoffice— y
+ * las dos lo tenían escrito a mano. Cuando entraron Eventos, Depósito y
+ * Reposición, ninguna de las dos se enteró: el backoffice mostraba nueve
+ * funciones de doce y no había forma de tildar las que faltaban.
+ */
+const getFeatures = async (_req, res, next) => {
+  try {
+    const { CATALOGO_FEATURES } = require('../config/planes');
+    res.json(CATALOGO_FEATURES);
+  } catch (e) { next(e); }
+};
+
 const getPlanes = async (_req, res, next) => {
   try {
     const planes = await Plan.findAll({ where: { activo: true }, order: [['orden', 'ASC']] });
@@ -470,7 +488,7 @@ const descargarRecibo = async (req, res, next) => {
 };
 
 module.exports = {
-  getPlanes, getSuscripcion, getPagos, crearCheckout,
+  getPlanes, getFeatures, getSuscripcion, getPagos, crearCheckout,
   informarTransferencia, getDatosTransferencia, webhookMercadoPago,
   cambiarRenovacion, solicitarBaja, cancelarBaja, descargarRecibo, verificarPagos,
 };

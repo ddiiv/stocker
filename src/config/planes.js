@@ -45,6 +45,37 @@ const FEATURES = {
   EVENTOS:              'eventos',              // catálogo de evento (venta sin stock)
 };
 
+/*
+ * Las funciones como se muestran: orden, nombre y para qué sirven.
+ *
+ * Existe porque la misma lista estaba escrita a mano en tres lugares —el
+ * backoffice, la pantalla de suscripción y la landing— y las tres se
+ * desincronizaron. El backoffice se quedó en nueve funciones cuando ya eran
+ * doce: un operador no podía ver ni tocar Eventos, Depósito ni Reposición, y
+ * la tarjeta de un plan mostraba menos de lo que el plan realmente daba.
+ *
+ * El orden es el comercial, no el alfabético: de lo que trae el plan más
+ * barato hacia lo que justifica el más caro. Es el orden en que se leen las
+ * tarjetas comparándolas de izquierda a derecha.
+ *
+ * `ayuda` es para el backoffice, donde quien tilda la casilla no siempre sabe
+ * qué habilita.
+ */
+const CATALOGO_FEATURES = [
+  { clave: FEATURES.FACTURACION,        label: 'Facturación electrónica ARCA',        ayuda: 'Emitir comprobantes fiscales.' },
+  { clave: FEATURES.IMPORTACION_MASIVA, label: 'Alta y edición por planilla',         ayuda: 'Cargar y actualizar el catálogo desde Excel.' },
+  { clave: FEATURES.EVENTOS,            label: 'Eventos: vender sin llevar stock',    ayuda: 'Catálogo de evento: se registra qué se vendió, no cuánto queda.' },
+  { clave: FEATURES.FACTURACION_MASIVA, label: 'Facturación por lote',                ayuda: 'Emitir muchos comprobantes de una vez.' },
+  { clave: FEATURES.CUENTAS_CORRIENTES, label: 'Cuentas corrientes y fiado',          ayuda: 'Vender a cuenta y llevar el saldo del cliente.' },
+  { clave: FEATURES.ECOMMERCE,          label: 'Mercado Libre',                       ayuda: 'Publicar y sincronizar el stock con Mercado Libre.' },
+  { clave: FEATURES.COMPRAS,            label: 'Proveedores y órdenes de compra',     ayuda: 'Registrar compras y llevar el circuito con proveedores.' },
+  { clave: FEATURES.DEPOSITO,           label: 'Depósito: ingreso de mercadería',     ayuda: 'Recibir mercadería, cargarla por series y generar etiquetas.' },
+  { clave: FEATURES.REPOSICION,         label: 'Reposición entre depósito y locales', ayuda: 'Pedidos del local, aprobación y despacho desde el depósito.' },
+  { clave: FEATURES.MULTI_DEPOSITO,     label: 'Stock separado por local',            ayuda: 'Cada sucursal con su propio inventario.' },
+  { clave: FEATURES.LISTAS_PRECIOS,     label: 'Listas de precios por cliente',       ayuda: 'Precios distintos según el cliente o el canal.' },
+  { clave: FEATURES.API,                label: 'API para integraciones',              ayuda: 'Acceso programático para sistemas a medida.' },
+];
+
 const PLANES = [
   {
     codigo: 'inicial',
@@ -150,4 +181,4 @@ const DIAS_TRIAL = 14;
 // mientras la plata está en camino es un problema de soporte, no de cobranza.
 const DIAS_GRACIA = 3;
 
-module.exports = { FEATURES, PLANES, PLAN_POR_DEFECTO, DIAS_TRIAL, DIAS_GRACIA };
+module.exports = { FEATURES, CATALOGO_FEATURES, PLANES, PLAN_POR_DEFECTO, DIAS_TRIAL, DIAS_GRACIA };

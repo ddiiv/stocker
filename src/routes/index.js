@@ -97,6 +97,8 @@ r.post('/auth/reset-password',        passwordResetLimiter, validatePasswordBody
  * validando la firma y consultando el pago contra la API de MP.
  */
 r.get ('/billing/planes',          billingCtrl.getPlanes);
+// El catálogo de funciones, para que ninguna pantalla lo escriba a mano.
+r.get ('/billing/features',        billingCtrl.getFeatures);
 r.post('/billing/webhook/mercadopago', billingCtrl.webhookMercadoPago);
 r.get ('/billing/suscripcion',     requireAuth, requireOwner, billingCtrl.getSuscripcion);
 r.get ('/billing/pagos',           requireAuth, requireOwner, billingCtrl.getPagos);
@@ -147,6 +149,7 @@ r.put ('/backoffice/cuentas/:id/suscripcion', requirePlatformAdmin, backofficeCt
 r.post('/backoffice/pagos/:id/aprobar',   requirePlatformAdmin, backofficeCtrl.aprobarPago);
 r.post('/backoffice/pagos/:id/rechazar',  requirePlatformAdmin, backofficeCtrl.rechazarPago);
 r.get ('/backoffice/planes',         requirePlatformAdmin, backofficeCtrl.listarPlanes);
+r.get ('/backoffice/planes/catalogo', requirePlatformAdmin, backofficeCtrl.catalogoDeFeatures);
 r.put ('/backoffice/planes/:codigo', requirePlatformAdmin, backofficeCtrl.editarPlan);
 r.get ('/backoffice/mercadopago',    requirePlatformAdmin, backofficeCtrl.estadoMercadoPago);
 r.get ('/backoffice/seguridad',      requirePlatformAdmin, backofficeCtrl.estadoSeguridad);

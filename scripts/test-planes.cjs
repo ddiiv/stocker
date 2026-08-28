@@ -24,7 +24,8 @@ const {
   Business, BusinessLocation, Plan, Subscription, Product, ProductVariant, VariantStock,
 } = require('../src/models');
 const planService = require('../src/services/planService');
-const { FEATURES, PLANES } = require('../src/config/planes');
+const { FEATURES, CATALOGO_FEATURES, PLANES } = require('../src/config/planes');
+const backoffice = require('../src/controllers/backofficeController');
 
 let ok = 0, ko = 0;
 const chk = (t, e, o) => {
@@ -188,6 +189,106 @@ function sesion() {
     chk('el pro tiene depósito', true, await planService.tieneFeature(negocio.id, 'deposito'));
     const sinPermiso = await api('POST', '/api/deposito/ingresos/999999/aceptar');
     chk('pero la ruta sigue pidiendo su permiso', true, [403, 404].includes(sinPermiso.status));
+
+    // ─────────────────────────────────────────────────────────────
+    tit('8. EL CATÁLOGO NO SE DESINCRONIZA');
+    /*
+     * Ésta es la prueba que evita que el defecto vuelva.
+     *
+     * La lista de funciones estaba escrita a mano en tres pantallas —el
+     * backoffice, la suscripción del cliente y la landing— y cuando el backend
+     * pasó de nueve a doce, ninguna se enteró. El backoffice mostraba nueve y
+     * no tenía casilla para tildar las tres nuevas: un operador no podía ni
+     * ver ni cambiar un tercio de lo que vende.
+     *
+     * Ahora las pantallas piden el catálogo. Lo único que hay que garantizar
+     * es que el catálogo cubra exactamente las claves que existen.
+     */
+    const claves = Object.values(FEATURES).sort();
+    const delCatalogo = CATALOGO_FEATURES.map((f) => f.clave).sort();
+    chk('el catálogo cubre todas las funciones', claves, delCatalogo);
+    chk('todas tienen nombre visible', 0, CATALOGO_FEATURES.filter((f) => !f.label).length);
+    chk('y todas explican qué hacen', 0, CATALOGO_FEATURES.filter((f) => !f.ayuda).length);
+    chk('sin claves repetidas', CATALOGO_FEATURES.length, new Set(delCatalogo).size);
+
+    const publico = await api('GET', '/api/billing/features');
+    chk('el catálogo se sirve por HTTP', 200, publico.status);
+    chk('con las doce', CATALOGO_FEATURES.length, publico.json?.length);
+
+    // ─────────────────────────────────────────────────────────────
+    tit('9. GUARDAR UN PLAN NO BORRA LO QUE NO NOMBRA');
+    /*
+     * Antes esto era `patch.features = req.body.features` sin mirar nada: un
+     * cuerpo parcial borraba en silencio todo lo que no nombrara. Es
+     * exactamente lo que iba a pasar con las tres funciones nuevas el día que
+     * alguien guardara desde la pantalla vieja.
+     */
+    const llamar = async (codigo, body) => {
+      let salida = { status: 200, json: null };
+      const res = {
+        status(c) { salida.status = c; return this; },
+        json(j) { salida.json = j; return this; },
+      };
+      await backoffice.editarPlan(
+        { admin: { id: 0, rol: 'owner' }, params: { codigo }, body },
+        res,
+        (e) => { throw e; },
+      );
+      return salida;
+    };
+
+    const proAntes = await Plan.findOne({ where: { codigo: 'pro' } });
+    const featuresAntes = typeof proAntes.features === 'string'
+      ? JSON.parse(proAntes.features || '{}') : { ...proAntes.features };
+    const editadoAntes = proAntes.editadoEn;
+
+    await llamar('pro', { features: { api: true } });
+    const proDespues = await Plan.findOne({ where: { codigo: 'pro' } });
+    const featuresDespues = typeof proDespues.features === 'string'
+      ? JSON.parse(proDespues.features || '{}') : proDespues.features;
+
+    chk('la función nombrada cambia', true, featuresDespues.api);
+    chk('eventos sigue estando', true, featuresDespues.eventos);
+    chk('depósito también', true, featuresDespues.deposito);
+    chk('y reposición', true, featuresDespues.reposicion);
+
+    // ─────────────────────────────────────────────────────────────
+    tit('10. UNA FUNCIÓN QUE NO EXISTE SE RECHAZA');
+    /*
+     * Una clave mal escrita entraba y quedaba para siempre: un plan que dice
+     * tener algo que ninguna ruta mira. Se ve recién cuando un cliente
+     * reclama por una función que compró y no aparece.
+     */
+    const inventada = await llamar('pro', { features: { superPoderes: true } });
+    chk('se rechaza', 400, inventada.status);
+    chk('diciendo cuál', ['superPoderes'], inventada.json?.desconocidas);
+
+    const noObjeto = await llamar('pro', { features: ['facturacion'] });
+    chk('un array tampoco pasa', 400, noObjeto.status);
+
+    // ─────────────────────────────────────────────────────────────
+    tit('11. LOS CINCO TOPES SE PUEDEN EDITAR');
+    /*
+     * maxSkus y maxComprobantes no estaban en el bucle del controlador: la
+     * pantalla los ofrecía, el operador los cambiaba, veía "actualizado" y no
+     * pasaba nada. Silencioso, que es la peor forma de fallar.
+     */
+    const skusAntes = proDespues.maxSkus;
+    const compAntes = proDespues.maxComprobantes;
+    await llamar('pro', { maxSkus: 12345, maxComprobantes: 6789 });
+    const conTopes = await Plan.findOne({ where: { codigo: 'pro' } });
+    chk('maxSkus se guarda', 12345, conTopes.maxSkus);
+    chk('maxComprobantes también', 6789, conTopes.maxComprobantes);
+
+    // Se deja el plan como estaba, incluido el sello de "editado a mano".
+    await conTopes.update({
+      features: featuresAntes, maxSkus: skusAntes,
+      maxComprobantes: compAntes, editadoEn: editadoAntes,
+    });
+    const restaurado = await Plan.findOne({ where: { codigo: 'pro' } });
+    chk('el plan queda como estaba', skusAntes, restaurado.maxSkus);
+    chk('sin quedar marcado como tocado a mano', editadoAntes, restaurado.editadoEn);
+
   } finally {
     tit('Limpieza');
     await sub.update({ planId: planOriginal });

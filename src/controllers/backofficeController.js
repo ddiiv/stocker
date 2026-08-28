@@ -5,6 +5,7 @@ const {
   PlatformAdmin, PlatformSetting, Plan, Subscription, SubscriptionPayment,
   Business, Employee, BusinessCuit, Sale,
 } = require('../models');
+const { CATALOGO_FEATURES } = require('../config/planes');
 const planService = require('../services/planService');
 const totp = require('../utils/totp');
 const mp = require('../services/mercadopagoService');
@@ -335,6 +336,17 @@ const listarPlanes = async (_req, res, next) => {
 };
 
 /*
+ * GET /api/backoffice/planes/catalogo
+ *
+ * Qué funciones existen. El backoffice lo pide para armar las casillas en vez
+ * de tenerlas escritas: la lista de acá se quedó en nueve cuando ya eran doce,
+ * y un operador no podía ver ni tocar las tres que faltaban.
+ */
+const catalogoDeFeatures = async (_req, res, next) => {
+  try { res.json(CATALOGO_FEATURES); } catch (e) { next(e); }
+};
+
+/*
  * PUT /api/backoffice/planes/:codigo
  *
  * Editar un plan lo marca como tocado a mano: a partir de ahí la semilla de
@@ -358,12 +370,53 @@ const editarPlan = async (req, res, next) => {
         return res.status(400).json({ message: 'El precio no puede ser negativo.' });
       }
     }
-    for (const tope of ['maxCuits', 'maxEmpleados', 'maxLocales']) {
+    /*
+     * Los CINCO topes, no tres.
+     *
+     * Faltaban maxSkus y maxComprobantes: se mostraban en la pantalla del
+     * cliente y en la del backoffice, pero no había forma de cambiarlos sin
+     * entrar a la base. Cotizarle un tope distinto a un cliente es
+     * exactamente para lo que existe esta pantalla.
+     */
+    for (const tope of ['maxCuits', 'maxEmpleados', 'maxLocales', 'maxSkus', 'maxComprobantes']) {
       if (req.body?.[tope] !== undefined) {
         patch[tope] = req.body[tope] === null ? null : Math.max(0, Number(req.body[tope]) || 0);
       }
     }
-    if (req.body?.features !== undefined) patch.features = req.body.features;
+
+    /*
+     * Las funciones se validan contra el catálogo, y se mezclan.
+     *
+     * Antes esto era `patch.features = req.body.features` sin mirar nada.
+     * Dos problemas reales: una clave mal escrita entraba y quedaba ahí para
+     * siempre sin que ninguna ruta la mirara —un plan que dice tener algo que
+     * no existe—, y un cuerpo parcial borraba en silencio todo lo que no
+     * nombrara. Justamente lo que iba a pasar con Eventos, Depósito y
+     * Reposición el día que alguien guardara desde la pantalla vieja.
+     *
+     * Se mezcla sobre lo que el plan ya tiene: así un pedido que nombra una
+     * sola función cambia esa y nada más.
+     */
+    if (req.body?.features !== undefined) {
+      const entrada = req.body.features;
+      if (typeof entrada !== 'object' || entrada === null || Array.isArray(entrada)) {
+        return res.status(400).json({ message: 'Las funciones tienen que venir como un objeto.' });
+      }
+      const validas = new Set(CATALOGO_FEATURES.map((f) => f.clave));
+      const desconocidas = Object.keys(entrada).filter((k) => !validas.has(k));
+      if (desconocidas.length) {
+        return res.status(400).json({
+          message: `Estas funciones no existen: ${desconocidas.join(', ')}.`,
+          desconocidas,
+        });
+      }
+      const actuales = typeof plan.features === 'string'
+        ? JSON.parse(plan.features || '{}')
+        : (plan.features || {});
+      const merge = { ...actuales };
+      for (const [clave, valor] of Object.entries(entrada)) merge[clave] = Boolean(valor);
+      patch.features = merge;
+    }
     if (req.body?.activo !== undefined) patch.activo = Boolean(req.body.activo);
     if (req.body?.orden !== undefined) patch.orden = Number(req.body.orden) || 0;
 
@@ -542,7 +595,7 @@ module.exports = {
   login, logout, yo, activarTotp,
   listarCuentas, verCuenta, editarSuscripcion,
   aprobarPago, rechazarPago,
-  listarPlanes, editarPlan,
+  listarPlanes, catalogoDeFeatures, editarPlan,
   getAjustes, editarAjustes, resumen, estadoMercadoPago, estadoSeguridad,
   CLAVES_PUBLICAS,
 };
