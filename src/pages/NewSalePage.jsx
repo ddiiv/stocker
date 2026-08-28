@@ -61,7 +61,14 @@ export default function NewSalePage() {
         if (pos.length === 1) setLocationId(pos[0].id);
       });
     }
-    fetchClients().then(setClients);
+    /*
+     * No se trae el padrón entero.
+     *
+     * La lista de clientes sólo se dibuja cuando hay una búsqueda escrita
+     * (más abajo: `clients.length > 0 && clientSearch`), así que este pedido
+     * de todos los clientes del negocio no se usaba para nada. El buscador de
+     * abajo ya pregunta al servidor con lo que se escribe.
+     */
     fetchPaymentMethods({ soloActivos: true })
       .then((m) => {
         setMetodos(m);
@@ -71,8 +78,16 @@ export default function NewSalePage() {
   }, [puedeElegirVendedor]);
 
   useEffect(() => {
-    const t = setTimeout(() => { if (clientSearch) fetchClients(clientSearch).then(setClients); }, 300);
-    return () => clearTimeout(t);
+    if (!clientSearch) { setClients([]); return undefined; }
+    let vigente = true;
+    const t = setTimeout(() => {
+      fetchClients(clientSearch, { limit: 8 })
+        .then((c) => { if (vigente) setClients(c.data || c); })
+        .catch(() => { if (vigente) setClients([]); });
+    }, 300);
+    // `vigente` corta la respuesta de una búsqueda vieja que llegue tarde y
+    // pise a la nueva: escribiendo rápido salen varias en camino a la vez.
+    return () => { vigente = false; clearTimeout(t); };
   }, [clientSearch]);
 
   function addItem(variant) {

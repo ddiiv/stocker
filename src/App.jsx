@@ -1,52 +1,73 @@
+import { lazy, Suspense } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { AuthProvider } from "./context/AuthContext";
 import { PermissionGuardProvider } from "./context/PermissionGuardContext";
 import ProtectedRoute from "./components/layout/ProtectedRoute";
-import PaymentMethodsPage from "./pages/PaymentMethodsPage";
-import CashPage from "./pages/CashPage";
-import AccountPage from "./pages/AccountPage";
-import SubscriptionPage from "./pages/SubscriptionPage";
 import PermissionRoute from "./components/layout/PermissionRoute";
 import OwnerRoute from "./components/layout/OwnerRoute";
 import AppLayout from "./components/layout/AppLayout";
 
 import LoginPage from "./pages/LoginPage";
-import RegisterPage from "./pages/RegisterPage";
-import ForgotPasswordPage from "./pages/ForgotPasswordPage";
-import DashboardPage from "./pages/DashboardPage";
-import StockPage from "./pages/StockPage";
-import ProductDetailPage from "./pages/ProductDetailPage";
-import SalesPage from "./pages/SalesPage";
-import NewSalePage from "./pages/NewSalePage";
-import SaleDetailPage from "./pages/SaleDetailPage";
-import BillingPage from "./pages/BillingPage";
-import EmployeesPage from "./pages/EmployeesPage";
-import ClientsPage from "./pages/ClientsPage";
-import ClientAccountsPage from "./pages/ClientAccountsPage";
-import VariantTypesPage from "./pages/VariantTypesPage";
-import MercadoLibrePage from "./pages/MercadoLibrePage";
-import SalesTimelinePage from "./pages/SalesTimelinePage";
-import ProductMetricsPage from "./pages/ProductMetricsPage";
-import StockMovementsPage from "./pages/StockMovementsPage";
-import SkuBuilderPage from "./pages/SkuBuilderPage";
-import LabelsPage from "./pages/LabelsPage";
-import StockByLocationPage from "./pages/StockByLocationPage";
-import DepositoPage from "./pages/DepositoPage";
-import AnalisisPage from "./pages/AnalisisPage";
-import SoportePage from "./pages/SoportePage";
-import EventoPage from "./pages/EventoPage";
-import StockARegularizarPage from "./pages/StockARegularizarPage";
-import ReposicionPage from "./pages/ReposicionPage";
-import ScanStockPage from "./pages/ScanStockPage";
-import PosPage from "./pages/PosPage";
-import BusinessCuitsPage from "./pages/BusinessCuitsPage";
-import ArcaConfigPage from "./pages/ArcaConfigPage";
+
+/*
+ * Cada pantalla se descarga cuando se entra a ella.
+ *
+ * Estaban las treinta y cinco importadas de una: un solo archivo de 1,3 MB que
+ * el navegador bajaba y parseaba ENTERO antes de dibujar la pantalla de login.
+ * La cajera que sólo usa el punto de venta pagaba la descarga del dashboard,
+ * de los gráficos, del lector de cámara y de la configuración de ARCA — todo
+ * lo que no va a abrir nunca.
+ *
+ * En el mostrador eso no es una métrica: es la diferencia entre abrir la caja
+ * en un segundo o mirar una pantalla en blanco mientras hay gente esperando,
+ * en una máquina vieja y con la conexión que haya.
+ *
+ * El login queda importado de entrada, junto con el armazón: es lo primero que
+ * se ve y hacerle esperar un segundo pedido sería cambiar un problema por otro.
+ */
+const PaymentMethodsPage = lazy(() => import("./pages/PaymentMethodsPage"));
+const CashPage = lazy(() => import("./pages/CashPage"));
+const AccountPage = lazy(() => import("./pages/AccountPage"));
+const SubscriptionPage = lazy(() => import("./pages/SubscriptionPage"));
+const RegisterPage = lazy(() => import("./pages/RegisterPage"));
+const ForgotPasswordPage = lazy(() => import("./pages/ForgotPasswordPage"));
+const DashboardPage = lazy(() => import("./pages/DashboardPage"));
+const StockPage = lazy(() => import("./pages/StockPage"));
+const ProductDetailPage = lazy(() => import("./pages/ProductDetailPage"));
+const SalesPage = lazy(() => import("./pages/SalesPage"));
+const NewSalePage = lazy(() => import("./pages/NewSalePage"));
+const SaleDetailPage = lazy(() => import("./pages/SaleDetailPage"));
+const BillingPage = lazy(() => import("./pages/BillingPage"));
+const EmployeesPage = lazy(() => import("./pages/EmployeesPage"));
+const ClientsPage = lazy(() => import("./pages/ClientsPage"));
+const ClientAccountsPage = lazy(() => import("./pages/ClientAccountsPage"));
+const VariantTypesPage = lazy(() => import("./pages/VariantTypesPage"));
+const MercadoLibrePage = lazy(() => import("./pages/MercadoLibrePage"));
+const SalesTimelinePage = lazy(() => import("./pages/SalesTimelinePage"));
+const ProductMetricsPage = lazy(() => import("./pages/ProductMetricsPage"));
+const StockMovementsPage = lazy(() => import("./pages/StockMovementsPage"));
+const SkuBuilderPage = lazy(() => import("./pages/SkuBuilderPage"));
+const LabelsPage = lazy(() => import("./pages/LabelsPage"));
+const StockByLocationPage = lazy(() => import("./pages/StockByLocationPage"));
+const DepositoPage = lazy(() => import("./pages/DepositoPage"));
+const AnalisisPage = lazy(() => import("./pages/AnalisisPage"));
+const SoportePage = lazy(() => import("./pages/SoportePage"));
+const EventoPage = lazy(() => import("./pages/EventoPage"));
+const StockARegularizarPage = lazy(() => import("./pages/StockARegularizarPage"));
+const ReposicionPage = lazy(() => import("./pages/ReposicionPage"));
+const ScanStockPage = lazy(() => import("./pages/ScanStockPage"));
+const PosPage = lazy(() => import("./pages/PosPage"));
+const BusinessCuitsPage = lazy(() => import("./pages/BusinessCuitsPage"));
+const ArcaConfigPage = lazy(() => import("./pages/ArcaConfigPage"));
 
 export default function App() {
   return (
     <BrowserRouter>
       <AuthProvider>
        <PermissionGuardProvider>
+        {/* Mientras baja el pedazo de la pantalla, algo tiene que haber:
+            una pantalla en blanco se lee como "se colgó". */}
+        <Suspense fallback={<PantallaCargando />}>
         <Routes>
           <Route path="/login" element={<LoginPage />} />
           <Route path="/registro" element={<RegisterPage />} />
@@ -103,8 +124,24 @@ export default function App() {
           <Route path="/" element={<Navigate to="/dashboard" replace />} />
           <Route path="*" element={<Navigate to="/dashboard" replace />} />
         </Routes>
+        </Suspense>
        </PermissionGuardProvider>
       </AuthProvider>
     </BrowserRouter>
+  );
+}
+
+/*
+ * Lo que se ve mientras llega el pedazo de la pantalla.
+ *
+ * Deliberadamente sobrio y sin animación de spinner: en una red del local esto
+ * dura menos de lo que tarda el ojo en registrarlo, y un spinner que aparece y
+ * desaparece a los 80ms se percibe como un parpadeo, que es peor que nada.
+ */
+function PantallaCargando() {
+  return (
+    <div className="flex min-h-screen items-center justify-center bg-paper-100">
+      <div className="h-8 w-8 animate-pulse rounded-md bg-brass-500/30" />
+    </div>
   );
 }

@@ -37,9 +37,32 @@ export default function PosPage() {
   const [locationId, setLocationId] = useState("");
   const [employees, setEmployees] = useState([]);
   const [locations, setLocations] = useState([]);
+  /*
+   * El buscador de clientes pregunta al servidor, no filtra en memoria.
+   *
+   * Antes se traía el padrón COMPLETO al montar la pantalla y se filtraba acá.
+   * Con cuarenta clientes no se nota; con veinte mil son varios megabytes de
+   * JSON que el servidor arma, la red mueve y la máquina del mostrador retiene
+   * — cada vez que alguien entra al punto de venta, que ahora es a cada rato
+   * porque el carrito sobrevive a la navegación.
+   *
+   * Y era gasto puro: la lista no se muestra hasta escribir dos letras, así
+   * que ese padrón entero no se usaba para nada hasta que había una búsqueda.
+   *
+   * `clientes` pasa a ser el resultado de la última búsqueda, nada más.
+   */
   const [clientes, setClientes] = useState([]);
-  const [clientId, setClientId] = useState("");
+  const [buscandoClientes, setBuscandoClientes] = useState(false);
+  /*
+   * El cliente elegido se guarda entero, no por id.
+   *
+   * Su nombre y su cuenta corriente se muestran en pantalla, y si sólo se
+   * guardara el id habría que ir a buscarlo a una lista que ya no está
+   * completa. Son trescientos bytes.
+   */
+  const [clienteSel, setClienteSel] = useState(null);
   const [buscarCliente, setBuscarCliente] = useState("");
+  const clientId = clienteSel?.id || "";
   // "contado" se cobra ahora; "cuenta_corriente" se fía y se cobra después.
   const [condicionPago, setCondicionPago] = useState("contado");
   // Fiar no obliga a entregar: se puede dejar la mercadería señada en el local.
@@ -80,7 +103,6 @@ export default function PosPage() {
         if (ls.length === 1) setLocationId(String(ls[0].id));
       }).catch(() => {});
     }
-    fetchClients().then((c) => setClientes(c.data || c)).catch(() => {});
     fetchPaymentMethods({ soloActivos: true })
       .then((m) => {
         setMetodos(m);
@@ -133,9 +155,9 @@ export default function PosPage() {
    * restaurarlos daría una suma que no cuadra sin que se entienda por qué.
    */
   const carritoActual = useCallback(() => ({
-    items, clientId, buscarCliente, condicionPago, seLoLleva,
+    items, clienteSel, condicionPago, seLoLleva,
     locationId, employeeId,
-  }), [items, clientId, buscarCliente, condicionPago, seLoLleva, locationId, employeeId]);
+  }), [items, clienteSel, condicionPago, seLoLleva, locationId, employeeId]);
 
   // Guardado inicial: sólo después de restaurar, para no pisar lo guardado con
   // el carrito vacío del primer render.
@@ -148,8 +170,12 @@ export default function PosPage() {
 
     const c = guardado.carrito;
     setItems(c.items || []);
-    setClientId(c.clientId || "");
-    setBuscarCliente(c.buscarCliente || "");
+    /*
+     * Se restaura el cliente entero. Antes se guardaba sólo el id y el nombre
+     * salía de la lista completa; sin esa lista, el carrito recuperado
+     * mostraría "Cliente" a secas.
+     */
+    setClienteSel(c.clienteSel || null);
     setCondicionPago(c.condicionPago || "contado");
     setSeLoLleva(c.seLoLleva !== false);
     if (c.locationId) setLocationId(c.locationId);
@@ -214,6 +240,26 @@ export default function PosPage() {
     borrarCarrito();
   }
 
+  /*
+   * Se pregunta al dejar de escribir, no en cada tecla.
+   *
+   * Dos letras es el mismo umbral con el que ya se mostraba la lista: no
+   * cambia lo que ve la cajera, sólo de dónde salen los nombres.
+   */
+  useEffect(() => {
+    const q = buscarCliente.trim();
+    if (q.length < 2) { setClientes([]); return undefined; }
+    let vigente = true;
+    setBuscandoClientes(true);
+    const id = setTimeout(() => {
+      fetchClients(q, { limit: 8 })
+        .then((c) => { if (vigente) setClientes(c.data || c); })
+        .catch(() => { if (vigente) setClientes([]); })
+        .finally(() => { if (vigente) setBuscandoClientes(false); });
+    }, 300);
+    return () => { vigente = false; clearTimeout(id); };
+  }, [buscarCliente]);
+
   const totalUnidades = items.reduce((s, i) => s + i.cantidad, 0);
 
   /*
@@ -234,7 +280,7 @@ export default function PosPage() {
   const total = items.reduce((s, i) => s + precioDe(i) * i.cantidad, 0);
 
   const esFiado = condicionPago === "cuenta_corriente";
-  const clienteElegido = clientes.find((c) => String(c.id) === String(clientId)) || null;
+  const clienteElegido = clienteSel;
 
   // El backend rechaza el cobro si los importes no suman el total. Chequearlo
   // acá evita mandar una venta que ya se sabe que va a fallar.
@@ -358,7 +404,7 @@ export default function PosPage() {
       setAltaStock(venta.altaStock || null);
       setFaltantesServidor(null);
       setItems([]);
-      setClientId("");
+      setClienteSel(null);
       setBuscarCliente("");
       setCondicionPago("contado");
       setSeLoLleva(true);
@@ -506,8 +552,7 @@ export default function PosPage() {
         open={altaCliente}
         onClose={() => setAltaCliente(false)}
         onCreado={(c) => {
-          setClientes((prev) => [c, ...prev]);
-          setClientId(c.id);
+          setClienteSel(c);
           setBuscarCliente("");
         }}
       />
@@ -717,12 +762,9 @@ export default function PosPage() {
             {clientId ? (
               <div className="flex items-center justify-between rounded-md border border-line bg-paper-100 px-3 py-2">
                 <span className="text-sm text-ink-900">
-                  {(() => {
-                    const c = clientes.find((x) => String(x.id) === String(clientId));
-                    return c ? `${c.nombre} ${c.apellido || ""}`.trim() : "Cliente";
-                  })()}
+                  {`${clienteSel?.nombre || ""} ${clienteSel?.apellido || ""}`.trim() || "Cliente"}
                 </span>
-                <button type="button" className="btn-ghost px-2 py-1 text-xs" onClick={() => { setClientId(""); setBuscarCliente(""); }}>
+                <button type="button" className="btn-ghost px-2 py-1 text-xs" onClick={() => { setClienteSel(null); setBuscarCliente(""); }}>
                   Quitar
                 </button>
               </div>
@@ -734,31 +776,28 @@ export default function PosPage() {
                   value={buscarCliente}
                   onChange={(e) => setBuscarCliente(e.target.value)}
                 />
-                {buscarCliente.trim().length >= 2 && (() => {
-                  const encontrados = clientes
-                    .filter((c) => `${c.nombre} ${c.apellido || ""}`.toLowerCase().includes(buscarCliente.toLowerCase()))
-                    .slice(0, 8);
-                  return (
-                    <div className="mt-1 max-h-40 overflow-y-auto rounded-md border border-line">
-                      {encontrados.map((c) => (
-                        <button
-                          key={c.id} type="button"
-                          className="block w-full px-3 py-2 text-left text-sm hover:bg-paper-100"
-                          onClick={() => { setClientId(c.id); setBuscarCliente(""); }}
-                        >
-                          {c.nombre} {c.apellido || ""}
-                        </button>
-                      ))}
-                      {/* Buscar y no encontrar es JUSTO el momento de ofrecer
-                          darlo de alta: es cuando el cajero ya sabe que no está. */}
-                      {encontrados.length === 0 && (
-                        <p className="px-3 py-2 text-xs text-ink-500">
-                          No hay ningún cliente con ese nombre.
-                        </p>
-                      )}
-                    </div>
-                  );
-                })()}
+                {buscarCliente.trim().length >= 2 && (
+                  <div className="mt-1 max-h-40 overflow-y-auto rounded-md border border-line">
+                    {clientes.map((c) => (
+                      <button
+                        key={c.id} type="button"
+                        className="block w-full px-3 py-2 text-left text-sm hover:bg-paper-100"
+                        onClick={() => { setClienteSel(c); setBuscarCliente(""); }}
+                      >
+                        {c.nombre} {c.apellido || ""}
+                      </button>
+                    ))}
+                    {/* Buscar y no encontrar es JUSTO el momento de ofrecer
+                        darlo de alta: es cuando el cajero ya sabe que no está.
+                        Se distingue de "todavía estoy buscando", que si dijera
+                        lo mismo haría dar de alta un cliente que ya existe. */}
+                    {clientes.length === 0 && (
+                      <p className="px-3 py-2 text-xs text-ink-500">
+                        {buscandoClientes ? "Buscando…" : "No hay ningún cliente con ese nombre."}
+                      </p>
+                    )}
+                  </div>
+                )}
 
                 <button
                   type="button"

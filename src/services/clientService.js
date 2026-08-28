@@ -1,7 +1,13 @@
 import { http } from "../lib/http";
 
-export async function fetchClients(search) {
-  const params = search ? { search } : {};
+export async function fetchClients(search, { limit } = {}) {
+  const params = {};
+  if (search) params.search = search;
+  /*
+   * `limit` lo usan las pantallas de venta, que necesitan un buscador y no el
+   * padrón entero. La de Clientes lo omite: ahí sí hay que verlo completo.
+   */
+  if (limit) params.limit = limit;
   const { data } = await http.get("/clients", { params });
   return data;
 }
