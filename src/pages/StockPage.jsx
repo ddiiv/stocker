@@ -131,7 +131,14 @@ export default function StockPage() {
         subtitle="Productos agrupados por SKU agrupador. Hacé click en uno para ver y editar sus variantes."
         actions={
           <div className="flex flex-wrap items-center gap-2">
-            <input ref={fileInputRef} type="file" accept=".xlsx" className="hidden" onChange={handleImportFile} />
+            <input
+              ref={fileInputRef} type="file" accept=".xlsx" className="hidden"
+              onChange={handleImportFile}
+              /* El tope se dice ANTES de elegir el archivo, no después de
+                 subirlo: armar una planilla de cinco mil filas y enterarse al
+                 rechazarla es tirar el trabajo de una tarde. */
+              title="Máximo 2.000 filas por archivo (una fila = un producto con su variante)"
+            />
             <button className="btn-ghost" onClick={handleImportClick} disabled={importing}>
               <Upload size={15} /> {importing ? "Importando…" : "Importar Excel"}
             </button>
