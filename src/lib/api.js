@@ -24,6 +24,10 @@ export const rechazarPago = (id, motivo) =>
 
 // ── Planes ───────────────────────────────────────────────────────
 export const getPlanes = () => http.get("/backoffice/planes").then((r) => r.data);
+/* Qué funciones existen, con su nombre y para qué sirve cada una. Se pide en
+   vez de tenerlas escritas acá: la lista local se quedó en nueve de doce. */
+export const getCatalogoFeatures = () =>
+  http.get("/backoffice/planes/catalogo").then((r) => r.data);
 export const editarPlan = (codigo, payload) =>
   http.put(`/backoffice/planes/${codigo}`, payload).then((r) => r.data);
 

@@ -15,23 +15,24 @@ import { Card, PageHead, Aviso, Cargando, Modal, Campo } from "../components/ui"
  * dice en vez de dejarlo como un efecto invisible.
  */
 
-const FEATURES = [
-  ["facturacion",       "Facturación ARCA"],
-  ["facturacionMasiva", "Facturación masiva"],
-  ["ecommerce",         "Mercado Libre y e-commerce"],
-  ["compras",           "Compras y proveedores"],
-  ["cuentasCorrientes", "Cuentas corrientes"],
-  ["multiDeposito",     "Multi-depósito"],
-  ["listasPrecios",     "Listas de precios"],
-  ["importacionMasiva", "Importación por Excel"],
-  ["api",               "API de integraciones"],
-];
+/*
+ * Las funciones NO se escriben acá.
+ *
+ * Estaban: nueve pares clave-etiqueta a mano. Cuando el backend pasó a doce
+ * —Eventos, Depósito y Reposición— esta lista no se enteró, y el efecto era
+ * peor que cosmético: la tarjeta de un plan mostraba menos de lo que el plan
+ * daba, y en el editor no había casilla para tocarlas. Un operador no podía
+ * ni ver ni cambiar tres de las doce funciones que vende.
+ *
+ * Ahora las trae el servidor, que es el único que sabe cuáles existen.
+ */
 
 export default function PlanesPage() {
   const { admin } = useAdmin();
   const comercial = puede(admin, "owner");
 
   const [planes, setPlanes] = useState([]);
+  const [features, setFeatures] = useState([]);
   const [cargando, setCargando] = useState(true);
   const [error, setError] = useState("");
   const [ok, setOk] = useState("");
@@ -39,7 +40,11 @@ export default function PlanesPage() {
 
   async function cargar() {
     setCargando(true); setError("");
-    try { setPlanes(await api.getPlanes()); }
+    try {
+      const [ps, cat] = await Promise.all([api.getPlanes(), api.getCatalogoFeatures()]);
+      setPlanes(ps);
+      setFeatures(cat);
+    }
     catch (e) { setError(mensajeDe(e, "No se pudieron cargar los planes.")); }
     finally { setCargando(false); }
   }
@@ -96,9 +101,9 @@ export default function PlanesPage() {
             </dl>
 
             <ul className="mt-3 flex flex-wrap gap-1">
-              {FEATURES.filter(([clave]) => p.features?.[clave]).map(([clave, texto]) => (
-                <li key={clave} className="rounded-[2px] border border-line px-1.5 py-0.5 text-[10px] text-dim">
-                  {texto}
+              {features.filter((f) => p.features?.[f.clave]).map((f) => (
+                <li key={f.clave} className="rounded-[2px] border border-line px-1.5 py-0.5 text-[10px] text-dim" title={f.ayuda}>
+                  {f.label}
                 </li>
               ))}
             </ul>
@@ -121,6 +126,7 @@ export default function PlanesPage() {
 
       <ModalPlan
         plan={editando}
+        features={features}
         onClose={() => setEditando(null)}
         onGuardado={(m) => { setEditando(null); setOk(m); cargar(); }}
         onError={setError}
@@ -138,7 +144,7 @@ function Fila({ k, v }) {
   );
 }
 
-function ModalPlan({ plan, onClose, onGuardado, onError }) {
+function ModalPlan({ plan, features, onClose, onGuardado, onError }) {
   const [form, setForm] = useState(null);
   const [guardando, setGuardando] = useState(false);
 
@@ -242,15 +248,18 @@ function ModalPlan({ plan, onClose, onGuardado, onError }) {
 
         <div>
           <p className="label">Funciones incluidas</p>
+          {/* El `title` con la ayuda no es adorno: quien tilda la casilla no
+              siempre sabe qué habilita "Reposición" o "Multi-depósito". */}
           <div className="grid gap-1.5 sm:grid-cols-2">
-            {FEATURES.map(([clave, texto]) => (
-              <label key={clave} className="flex items-center gap-2 text-sm text-dim">
+            {features.map((f) => (
+              <label key={f.clave} className="flex items-start gap-2 text-sm text-dim" title={f.ayuda}>
                 <input
                   type="checkbox"
-                  checked={Boolean(form.features[clave])}
-                  onChange={() => toggleFeature(clave)}
+                  className="mt-0.5"
+                  checked={Boolean(form.features[f.clave])}
+                  onChange={() => toggleFeature(f.clave)}
                 />
-                {texto}
+                {f.label}
               </label>
             ))}
           </div>
