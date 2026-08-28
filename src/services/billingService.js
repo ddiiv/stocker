@@ -1,5 +1,17 @@
 import { http } from "../lib/http";
 
+/*
+ * Qué funciones existen, con su nombre.
+ *
+ * Se pide en vez de tenerlas escritas en la pantalla: la misma lista vivía a
+ * mano acá, en el backoffice y en la landing, y las tres se desincronizaron
+ * cuando entraron Eventos, Depósito y Reposición.
+ */
+export async function fetchFeatures() {
+  const { data } = await http.get("/billing/features");
+  return data;
+}
+
 /** Catálogo de planes. Público: lo necesita quien está en modo lectura. */
 export async function fetchPlanes() {
   const { data } = await http.get("/billing/planes");

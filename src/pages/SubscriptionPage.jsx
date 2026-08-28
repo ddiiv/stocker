@@ -5,37 +5,12 @@ import {
   SearchCheck, Mail, Minus,
 } from "lucide-react";
 import {
-  fetchSuscripcion, fetchPlanes, fetchPagos, crearCheckout,
+  fetchSuscripcion, fetchPlanes, fetchFeatures, fetchPagos, crearCheckout,
   fetchDatosTransferencia, informarTransferencia, cambiarRenovacion,
   solicitarBaja, cancelarBaja, descargarRecibo, verificarPagos,
 } from "../services/billingService";
 import { PageHeader, Card } from "../components/ui/Layout";
 
-/*
- * Las funciones que separan un plan de otro, en el orden en que se venden.
- *
- * La clave tiene que coincidir con FEATURES de back/src/config/planes.js. Si
- * allá se agrega una y acá no, el plan la incluye pero el cliente no se entera:
- * paga por algo que la pantalla no le muestra.
- *
- * Se listan TODAS en cada tarjeta, tildadas o tachadas. Mostrar sólo las que
- * el plan tiene deja al que mira el plan barato sin saber qué se está
- * perdiendo, que es justo la información por la que entró a esta pantalla.
- */
-const FUNCIONES = [
-  { clave: "facturacion",       label: "Facturación electrónica ARCA" },
-  { clave: "importacionMasiva", label: "Alta y edición por planilla" },
-  { clave: "eventos",           label: "Eventos: vender sin llevar stock" },
-  { clave: "facturacionMasiva", label: "Facturación por lote" },
-  { clave: "cuentasCorrientes", label: "Cuentas corrientes y fiado" },
-  { clave: "ecommerce",         label: "Mercado Libre" },
-  { clave: "compras",           label: "Proveedores y órdenes de compra" },
-  { clave: "deposito",          label: "Depósito: ingreso de mercadería y series" },
-  { clave: "reposicion",        label: "Reposición entre depósito y locales" },
-  { clave: "multiDeposito",     label: "Stock separado por local" },
-  { clave: "listasPrecios",     label: "Listas de precios por cliente" },
-  { clave: "api",               label: "API para integraciones" },
-];
 
 import Modal from "../components/ui/Modal";
 import { formatCurrency, formatDate } from "../utils/formatters";
@@ -68,6 +43,7 @@ const ESTADO_PAGO = {
 export default function SubscriptionPage() {
   const [sub, setSub] = useState(null);
   const [planes, setPlanes] = useState([]);
+  const [funciones, setFunciones] = useState([]);
   const [pagos, setPagos] = useState([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState("");
@@ -82,8 +58,10 @@ export default function SubscriptionPage() {
   async function load() {
     setLoading(true); setError("");
     try {
-      const [s, p, h] = await Promise.all([fetchSuscripcion(), fetchPlanes(), fetchPagos()]);
-      setSub(s); setPlanes(p); setPagos(h);
+      const [s, p, f, h] = await Promise.all([
+        fetchSuscripcion(), fetchPlanes(), fetchFeatures(), fetchPagos(),
+      ]);
+      setSub(s); setPlanes(p); setFunciones(f); setPagos(h);
     } catch (e) {
       setError(e.response?.data?.message || "No se pudo cargar la suscripción.");
     } finally { setLoading(false); }
@@ -354,14 +332,14 @@ export default function SubscriptionPage() {
                 * tiene, que es justamente lo que hace visible la diferencia.
                 */}
               <ul className="mt-3 space-y-1 border-t border-line pt-3 text-xs">
-                {FUNCIONES.map((f) => {
+                {funciones.map((f) => {
                   const incluida = Boolean(p.features?.[f.clave]);
                   return (
                     <li key={f.clave} className={`flex items-start gap-1.5 ${incluida ? "text-ink-700" : "text-ink-400"}`}>
                       {incluida
                         ? <Check size={13} className="mt-0.5 shrink-0 text-teal-600" />
                         : <Minus size={13} className="mt-0.5 shrink-0 text-ink-300" />}
-                      <span className={incluida ? "" : "line-through decoration-ink-300"}>{f.label}</span>
+                      <span className={incluida ? "" : "line-through decoration-ink-300"} title={f.ayuda}>{f.label}</span>
                     </li>
                   );
                 })}
