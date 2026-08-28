@@ -70,6 +70,19 @@ const createLocation = async (req, res, next) => {
     if (tipo && !TIPOS_LOCAL.includes(tipo)) {
       return res.status(400).json({ message: `El tipo tiene que ser uno de: ${tiposValidos()}.` });
     }
+
+    /*
+     * El tope de locales del plan, que nunca se controlaba.
+     *
+     * `maxLocales` se medía y se mostraba en la pantalla de suscripción, pero
+     * ninguna ruta lo exigía: un plan de dos locales podía crear veinte. Es el
+     * único de los cinco topes que estaba así, y como los depósitos y los
+     * locales de evento también son locales, el agujero se agrandaba justo
+     * ahora que esas funciones entran al plan.
+     */
+    const { exigirCupo } = require('../services/planService');
+    await exigirCupo(req.auth.businessId, 'locales');
+
     const regla = reglaMayorista.normalizar(req.body);
     const loc = await BusinessLocation.create({
       businessId: req.auth.businessId, nombre, direccion, telefono, tipo: tipo || 'local',

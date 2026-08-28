@@ -105,6 +105,9 @@ const COLUMNAS_ESPERADAS = {
     // Política de venta sin stock. Los negocios que ya existen arrancan en
     // 'permitir': es lo que pide el mostrador y lo que evita perder la venta.
     ventaSinStock: { type: DataTypes.STRING(10), allowNull: false, defaultValue: 'permitir' },
+    // Funciones que el negocio conserva aunque su plan no las incluya. La
+    // llena `heredarFeaturesEnUso` una sola vez. Ver el modelo Business.
+    featuresHeredadas: { type: DataTypes.STRING(255), allowNull: true },
   },
   products: {
     // Producto de feria: se vende sin llevar inventario. Ver el modelo.
@@ -507,9 +510,74 @@ async function ensureColumns(sequelize) {
   }
 
   await liberarNumeroDeCotizaciones(sequelize);
+  await heredarFeaturesEnUso(sequelize);
   await asegurarIndices(sequelize, esPostgres);
 
   return agregadas;
+}
+
+/*
+ * Le respeta a cada negocio las funciones que ya venía usando.
+ *
+ * Depósito, reposición y eventos existieron sin puerta durante meses:
+ * cualquier cuenta los usaba, pagara lo que pagara. El día que entran al
+ * catálogo de planes, cortarle el acceso a quien ya tiene mercadería cargada o
+ * el catálogo de evento armado sería dejarlo afuera de SUS datos por un cambio
+ * comercial nuestro.
+ *
+ * Así que se saca una foto: quien ya tenía datos de esa función, la conserva.
+ * Quien todavía no la usó, pasa por la puerta como corresponde.
+ *
+ * Corre una sola vez por negocio —la marca es la columna ya escrita— y por eso
+ * la foto es del momento del despliegue y no se mueve después. Es exactamente
+ * lo que se quiere: si se recalculara en cada arranque, cualquiera se abriría
+ * la función usándola una vez el día que le corten.
+ */
+async function heredarFeaturesEnUso() {
+  const { Business, BusinessLocation, StockIngreso, PedidoReposicion, Product } = require('../models');
+
+  let negocios;
+  try {
+    negocios = await Business.findAll({ where: { featuresHeredadas: null }, attributes: ['id'] });
+  } catch {
+    // La columna todavía no existe (primer arranque del deploy). El próximo la
+    // encuentra.
+    return;
+  }
+  if (!negocios.length) return;
+
+  let marcados = 0;
+  for (const negocio of negocios) {
+    const heredadas = [];
+    try {
+      const [depositos, ingresos, pedidos, ferias, productosFeria] = await Promise.all([
+        BusinessLocation.count({ where: { businessId: negocio.id, tipo: 'deposito' } }),
+        StockIngreso.count({ where: { businessId: negocio.id } }),
+        PedidoReposicion.count({ where: { businessId: negocio.id } }),
+        BusinessLocation.count({ where: { businessId: negocio.id, tipo: 'feria' } }),
+        Product.count({ where: { businessId: negocio.id, esFeria: true } }),
+      ]);
+      if (depositos > 0 || ingresos > 0) heredadas.push('deposito');
+      if (pedidos > 0) heredadas.push('reposicion');
+      if (ferias > 0 || productosFeria > 0) heredadas.push('eventos');
+    } catch (err) {
+      console.warn(`[schema] no se pudo mirar el uso del negocio ${negocio.id}: ${err.message}`);
+      continue;
+    }
+
+    /*
+     * Se escribe SIEMPRE, aunque la lista quede vacía.
+     *
+     * La cadena vacía es la marca de "a éste ya lo miramos". Dejarlo en NULL
+     * haría que el próximo arranque lo volviera a mirar, y con eso la foto
+     * dejaría de ser una foto.
+     */
+    await negocio.update({ featuresHeredadas: heredadas.join(',') });
+    if (heredadas.length) marcados += 1;
+  }
+  if (marcados) {
+    console.log(`[schema] ${marcados} negocio(s) conservan funciones que ya usaban antes de entrar al plan`);
+  }
 }
 
 /*

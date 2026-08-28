@@ -186,10 +186,21 @@ r.post('/account/password/confirmar', requireAuth, requireOwner, validatePasswor
  * la feria, en cambio, es el punto de venta de siempre — no hay rutas de venta
  * acá.
  */
+/*
+ * Depósito, reposición y eventos entran al catálogo de planes.
+ *
+ * Se cierran sólo los POST. Los GET quedan abiertos a propósito: un negocio
+ * que baja de plan tiene que poder seguir MIRANDO la mercadería que cargó y
+ * los pedidos que hizo. Cerrarle la lectura sería quitarle sus datos, no una
+ * función.
+ *
+ * Y quien ya venía usando esto antes de que existiera la puerta la conserva:
+ * lo resuelve requireFeature contra `featuresHeredadas` (ver ensureColumns).
+ */
 r.get ('/feria/candidatos', requireAuth, requirePermission('stock', 'ver'),    feriaCtrl.getCandidatos);
 r.get ('/feria/productos',  requireAuth, requireAnyPermission(['stock', 'ventas'], 'ver'), feriaCtrl.getProductos);
-r.post('/feria/generar',    requireAuth, requirePermission('stock', 'editar'), feriaCtrl.postGenerar);
-r.post('/feria/precios',    requireAuth, requirePermission('stock', 'editar'), feriaCtrl.postPrecios);
+r.post('/feria/generar',    requireAuth, requirePermission('stock', 'editar'), requireFeature(FEATURES.EVENTOS), feriaCtrl.postGenerar);
+r.post('/feria/precios',    requireAuth, requirePermission('stock', 'editar'), requireFeature(FEATURES.EVENTOS), feriaCtrl.postPrecios);
 
 // ── Locations ─────────────────────────────────────────────────────
 // El listado queda con requireAuth solo: lo necesitan casi todas las pantallas
@@ -377,9 +388,9 @@ r.delete('/payment-methods/:id', requireAuth, requirePermission('pagos','editar'
 r.get   ('/deposito/lugares',                requireAuth, requireAnyPermission(['deposito','reposicion','stock'],'ver'), depositoCtrl.lugares);
 r.get   ('/deposito/ingresos',               requireAuth, requireAnyPermission(['deposito','aprobaciones'],'ver'),       depositoCtrl.listar);
 r.get   ('/deposito/curva',                  requireAuth, requirePermission('deposito','ver'),                          depositoCtrl.curva);
-r.post  ('/deposito/ingresos',               requireAuth, requirePermission('deposito','editar'),                        depositoCtrl.crear);
+r.post  ('/deposito/ingresos',               requireAuth, requirePermission('deposito','editar'), requireFeature(FEATURES.DEPOSITO),  depositoCtrl.crear);
 r.post  ('/deposito/ingresos/:id/etiquetas', requireAuth, requirePermission('deposito','ver'),                           depositoCtrl.etiquetas);
-r.post  ('/deposito/ingresos/:id/aceptar',   requireAuth, requirePermission('aprobaciones','editar'),                    depositoCtrl.aceptar);
+r.post  ('/deposito/ingresos/:id/aceptar',   requireAuth, requirePermission('aprobaciones','editar'), requireFeature(FEATURES.DEPOSITO), depositoCtrl.aceptar);
 r.post  ('/deposito/ingresos/:id/rechazar',  requireAuth, requirePermission('aprobaciones','editar'),                    depositoCtrl.rechazar);
 r.post  ('/deposito/ingresos/:id/anular',    requireAuth, requirePermission('aprobaciones','editar'),                    depositoCtrl.anular);
 
@@ -399,9 +410,9 @@ r.get   ('/reposicion/pedidos/:id/disponibilidad', requireAuth, requireAnyPermis
 // Cargar mercadería que estaba en el estante sin registrar, para completar el
 // pedido. Es un ingreso al depósito y por eso pide permiso de depósito.
 r.post  ('/reposicion/pedidos/:id/registrar-faltante', requireAuth, requirePermission('deposito','editar'), reposicionCtrl.registrarFaltante);
-r.post  ('/reposicion/pedidos',              requireAuth, requirePermission('reposicion','editar'),   reposicionCtrl.crear);
+r.post  ('/reposicion/pedidos',              requireAuth, requirePermission('reposicion','editar'), requireFeature(FEATURES.REPOSICION), reposicionCtrl.crear);
 r.post  ('/reposicion/pedidos/:id/cancelar', requireAuth, requirePermission('reposicion','editar'),   reposicionCtrl.cancelar);
-r.post  ('/reposicion/pedidos/:id/despachar',requireAuth, requirePermission('reposicion','editar'),   reposicionCtrl.despachar);
+r.post  ('/reposicion/pedidos/:id/despachar',requireAuth, requirePermission('reposicion','editar'), requireFeature(FEATURES.REPOSICION), reposicionCtrl.despachar);
 r.post  ('/reposicion/pedidos/:id/recibir',  requireAuth, requirePermission('reposicion','editar'),   reposicionCtrl.recibir);
 r.post  ('/reposicion/pedidos/:id/aprobar',  requireAuth, requirePermission('aprobaciones','editar'), reposicionCtrl.aprobar);
 r.post  ('/reposicion/pedidos/:id/rechazar', requireAuth, requirePermission('aprobaciones','editar'), reposicionCtrl.rechazar);

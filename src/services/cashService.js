@@ -72,17 +72,27 @@ async function efectivoCobrado(turno) {
   });
 
   let total = 0;
+  /*
+   * Se cuentan también las ventas, no sólo la plata.
+   *
+   * Al cerrar con faltante, "faltan $12.400" no le dice nada a nadie. "Faltan
+   * $12.400 de los $210.000 que entraron en efectivo por 14 ventas" convierte
+   * un número suelto en algo contra lo que se puede ir a revisar.
+   */
+  let cantidad = 0;
   for (const venta of ventas) {
+    let deEsta = 0;
     if (venta.pagos?.length) {
       for (const pago of venta.pagos) {
-        if (cuentaComoEfectivo(pago)) total += Number(pago.montoFinal);
+        if (cuentaComoEfectivo(pago)) deEsta += Number(pago.montoFinal);
       }
     } else if (PARECE_EFECTIVO.test(venta.medioPago || '')) {
       // Ventas sin detalle de pagos (las de antes de esta función).
-      total += Number(venta.totalCobrado) || Number(venta.total);
+      deEsta = Number(venta.totalCobrado) || Number(venta.total);
     }
+    if (deEsta) { total += deEsta; cantidad += 1; }
   }
-  return redondear(total);
+  return { total: redondear(total), cantidad };
 }
 
 /** Ingresos, egresos y retiros cargados a mano en el turno. */
@@ -109,7 +119,7 @@ async function movimientosDelTurno(cashShiftId) {
  * diferencia en vez de ver sólo un total que no cierra.
  */
 async function estadoDeTurno(turno) {
-  const efectivoVentas = await efectivoCobrado(turno);
+  const { total: efectivoVentas, cantidad: ventasEnEfectivo } = await efectivoCobrado(turno);
   const { movimientos, ingresos, egresos, retiros } = await movimientosDelTurno(turno.id);
 
   const montoEsperado = redondear(
@@ -121,6 +131,7 @@ async function estadoDeTurno(turno) {
     desglose: {
       montoInicial: redondear(turno.montoInicial),
       efectivoVentas,
+      ventasEnEfectivo,
       ingresos,
       egresos,
       retiros,

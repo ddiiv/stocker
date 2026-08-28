@@ -31,6 +31,18 @@ const FEATURES = {
   LISTAS_PRECIOS:       'listasPrecios',        // precios por cliente
   API:                  'api',                  // API para integraciones a medida
   IMPORTACION_MASIVA:   'importacionMasiva',    // alta/edición por Excel
+  /*
+   * El circuito de mercadería, que hasta ahora no estaba en ningún plan.
+   *
+   * Son tres funciones grandes que cualquier cuenta usaba sin importar qué
+   * pagara. Van separadas y no como una sola porque se compran distinto: un
+   * negocio de una sucursal que hace ferias quiere EVENTOS y no necesita
+   * depósito; uno de cinco sucursales necesita DEPOSITO y REPOSICION y capaz
+   * nunca pisa una feria.
+   */
+  DEPOSITO:             'deposito',             // ingreso de mercadería y series
+  REPOSICION:           'reposicion',           // pedidos local ↔ depósito
+  EVENTOS:              'eventos',              // catálogo de evento (venta sin stock)
 };
 
 const PLANES = [
@@ -49,6 +61,13 @@ const PLANES = [
     features: {
       [FEATURES.FACTURACION]:        true,
       [FEATURES.IMPORTACION_MASIVA]: true,   // carga por planilla
+      /*
+       * Eventos entra desde el plan más barato a propósito: el que vende en
+       * ferias suele ser justamente el negocio chico de un solo local, y es la
+       * función que le resuelve el día. Cobrársela aparte sería empujarlo a
+       * anotar las ventas en un cuaderno.
+       */
+      [FEATURES.EVENTOS]:            true,
       [FEATURES.FACTURACION_MASIVA]: false,
       [FEATURES.ECOMMERCE]:          false,
       [FEATURES.COMPRAS]:            false,
@@ -56,6 +75,10 @@ const PLANES = [
       [FEATURES.MULTI_DEPOSITO]:     false,
       [FEATURES.LISTAS_PRECIOS]:     false,
       [FEATURES.API]:                false,
+      // Depósito y reposición sólo tienen sentido con más de un punto de
+      // venta, que es lo que empieza a pasar recién en el Pro.
+      [FEATURES.DEPOSITO]:           false,
+      [FEATURES.REPOSICION]:         false,
     },
   },
   {
@@ -77,6 +100,9 @@ const PLANES = [
       [FEATURES.COMPRAS]:            true,
       [FEATURES.IMPORTACION_MASIVA]: true,
       [FEATURES.CUENTAS_CORRIENTES]: true,
+      [FEATURES.EVENTOS]:            true,
+      [FEATURES.DEPOSITO]:           true,
+      [FEATURES.REPOSICION]:         true,
       [FEATURES.MULTI_DEPOSITO]:     false,
       [FEATURES.LISTAS_PRECIOS]:     false,
       [FEATURES.API]:                false,

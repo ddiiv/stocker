@@ -75,20 +75,27 @@ const lugares = async (req, res, next) => {
  * Plan B (`origen: 'conteo'`): queda pendiente de que oficina lo acepte.
  */
 /*
- * GET /api/deposito/curva?productId=..&valor=Negro
+ * GET /api/deposito/curva?productId=..&valor=Negro&eje=variante1
  *
- * Qué talles abre una curva de ese producto y ese color, para que la pantalla
- * muestre la corrida antes de confirmar. Sin esto habría que adivinar cuántas
- * unidades son 20 curvas.
+ * Qué abre una serie de ese producto fijando ese valor, para que la pantalla
+ * muestre lo que va a entrar antes de confirmar. Sin esto habría que adivinar
+ * cuántas unidades son 20 series.
+ *
+ * `eje` dice cuál de las dos variantes se fija. Es lo que hace que "20 series
+ * de color Negro" y "20 series de talle M" sean cosas distintas: la primera
+ * entra 20 por cada talle, la segunda 20 por cada color.
  */
 const curva = async (req, res, next) => {
   try {
     const productId = Number(req.query.productId);
     if (!productId) return res.status(400).json({ message: 'Falta el producto.' });
-    const data = await deposito.ejeDeCurva(productId, req.auth.businessId, req.query.valor, null, { exigirValor: false });
+    const data = await deposito.ejeDeCurva(
+      productId, req.auth.businessId, req.query.valor, null,
+      { exigirValor: false, eje: req.query.eje },
+    );
     res.json({
       ...data,
-      // Lo que entra si se cargan N curvas parejas, para poder mostrarlo antes.
+      // Lo que entra si se cargan N series parejas, para poder mostrarlo antes.
       unidadesPorCurva: data.valores.length,
     });
   } catch (e) { next(e); }

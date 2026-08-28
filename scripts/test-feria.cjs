@@ -106,6 +106,22 @@ function sesion() {
   await limpiar();
 
   tit('1. EL PUESTO DE FERIA ES UN TIPO DE LUGAR');
+  /*
+   * Se le hace lugar al local de prueba antes de crearlo.
+   *
+   * `maxLocales` pasó a exigirse de verdad —se medía y se mostraba, pero
+   * ninguna ruta lo controlaba— y el negocio demo está justo en su tope. Sin
+   * esto, esta prueba fallaría por el cupo y no por lo que quiere probar, que
+   * es que el tipo `feria` se acepta.
+   *
+   * Se toca el PLAN y no el negocio porque el tope vive ahí, y se restaura en
+   * el `finally` de más abajo pase lo que pase.
+   */
+  const { Plan } = require('../src/models');
+  const planDemo = await Plan.findByPk((await require('../src/services/planService').estadoDe(negocio.id)).plan.id);
+  const topeOriginal = planDemo.maxLocales;
+  await planDemo.update({ maxLocales: topeOriginal == null ? null : topeOriginal + 2 });
+
   const puesto = await api('POST', '/api/locations', {
     nombre: `Feria QA ${Date.now()}`, direccion: 'Puesto 14, La Salada', tipo: 'feria',
   });
@@ -260,6 +276,8 @@ function sesion() {
   const soloFeria = await api('GET', '/api/feria/productos');
   chk('pero sí está en su propia pantalla', true,
     (soloFeria.json || []).some((p) => p.sku === creado.sku));
+
+  await planDemo.update({ maxLocales: topeOriginal });
 
   tit('Limpieza');
   for (const id of aBorrar.ventas) {

@@ -53,6 +53,20 @@ const Business = db.define('Business', {
    * lo genera se marca y se lista aparte.
    */
   ventaSinStock: { type: DataTypes.STRING(10), allowNull: false, defaultValue: 'permitir' },
+  /*
+   * Funciones que el negocio conserva aunque su plan ya no las incluya.
+   *
+   * Cuando una función que era libre pasa a estar en un plan, cortársela de un
+   * día para el otro a quien ya la venía usando —con mercadería cargada en el
+   * depósito, o el catálogo de evento armado— es dejarlo sin acceso a SUS
+   * datos por un cambio comercial. Acá quedan anotadas, separadas por coma, en
+   * el momento en que la puerta se pone.
+   *
+   * Es una foto, no una regla viva: sólo se llena una vez, para las cuentas
+   * que ya tenían datos. Una cuenta nueva nace con esto vacío y pasa por la
+   * puerta como corresponde.
+   */
+  featuresHeredadas: { type: DataTypes.STRING(255), allowNull: true },
 }, { tableName: 'businesses' });
 
 /* ─── Plan (catálogo comercial) ────────────────────────────────────

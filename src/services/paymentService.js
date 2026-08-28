@@ -14,14 +14,21 @@ const { PaymentMethod } = require('../models');
  * La suma de los `monto` tiene que dar el total de la venta. Los ajustes van
  * por encima: no se cubre mercadería con el recargo.
  *
- * Sobre cuándo se aplica el ajuste configurado en cada medio:
+ * Sobre el ajuste configurado en cada medio:
  *
- *   · Un solo medio  → se aplica el suyo. Transferencia sola lleva su recargo.
- *   · Varios medios  → no se aplica ninguno. Si el cliente reparte el pago
- *                      entre efectivo y transferencia, no se le cobra recargo.
+ * Se aplica SIEMPRE, sobre el importe de su propia línea. Pagar $300 por
+ * transferencia con 5% de recargo cuesta $315, sea la transferencia sola o
+ * combinada con efectivo.
  *
- * En ambos casos el operador puede fijar un ajuste explícito por línea, y ese
- * gana siempre: los descuentos por efectivo, por ejemplo, se dan a mano.
+ * Antes no era así: con dos o más medios no se aplicaba ninguno. La intención
+ * era buena —no castigar al que reparte— pero dejaba una puerta abierta:
+ * dividir el pago era la forma de no pagar el recargo, y el negocio terminaba
+ * absorbiendo el costo de la transferencia sin enterarse. Y sobre todo era
+ * difícil de explicar, porque el mismo medio costaba distinto según con qué se
+ * lo combinara.
+ *
+ * El operador puede fijar un ajuste explícito por línea, y ese gana siempre:
+ * los descuentos por efectivo, por ejemplo, se dan a mano.
  */
 
 const redondear = (n) => Math.round(Number(n) * 100) / 100;
@@ -59,9 +66,6 @@ async function calcularPagos(pagos, totalVenta, businessId) {
   const metodos = await PaymentMethod.findAll({ where: { businessId } });
   const porId = new Map(metodos.map((m) => [m.id, m]));
 
-  // Define si corresponde aplicar los ajustes configurados (ver más abajo).
-  const esCobroUnico = pagos.length === 1;
-
   const lineas = [];
   let sumaMontos = 0;
   let recargoPagos = 0;
@@ -84,21 +88,18 @@ async function calcularPagos(pagos, totalVenta, businessId) {
     if (!nombre) throw new ErrorPagos(`Falta indicar con qué se cobra el pago ${i + 1}.`);
 
     /*
-     * El ajuste configurado en el medio de pago se aplica solo cuando la venta
-     * se cobra con UN solo medio: una transferencia sola lleva su recargo, y
-     * un pago en efectivo no lleva descuento salvo que se lo den a mano.
+     * El ajuste del medio, sobre el importe de ESTA línea.
      *
-     * Cuando el cobro se reparte entre varios medios no se aplica ninguno
-     * automáticamente. Es la práctica del negocio: si el cliente pone una
-     * parte en efectivo y otra por transferencia, no se le cobra el recargo.
+     * No importa con cuántos medios se reparta el cobro: cada parte lleva el
+     * ajuste de su propio medio, calculado sobre lo que se paga con él. Es la
+     * única forma de que el recargo de la transferencia sea el mismo número
+     * siempre y de que el cajero pueda explicarlo en el mostrador.
      *
-     * En los dos casos, un ajuste explícito en la línea gana sobre todo esto:
-     * el operador puede ponerlo o sacarlo sin tocar la configuración.
+     * Un ajuste explícito en la línea gana: el operador puede ponerlo o
+     * sacarlo sin tocar la configuración del medio.
      */
     const vieneExplicito = pago?.ajustePct !== undefined && pago?.ajustePct !== null && pago?.ajustePct !== '';
-    const ajustePct = vieneExplicito
-      ? Number(pago.ajustePct)
-      : (esCobroUnico ? Number(metodo?.ajustePct || 0) : 0);
+    const ajustePct = vieneExplicito ? Number(pago.ajustePct) : Number(metodo?.ajustePct || 0);
 
     if (!Number.isFinite(ajustePct) || Math.abs(ajustePct) > 100) {
       throw new ErrorPagos(`El ajuste del pago ${i + 1} debe estar entre -100% y 100%.`);

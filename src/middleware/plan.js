@@ -1,4 +1,4 @@
-const { estadoDe } = require('../services/planService');
+const { estadoDe, heredaFeature } = require('../services/planService');
 
 /*
  * Control de plan y suscripción.
@@ -57,6 +57,20 @@ const requireFeature = (clave) => async (req, res, next) => {
     }
 
     if (plan?.features?.[clave]) return next();
+
+    /*
+     * Lo que el negocio ya venía usando no se le corta.
+     *
+     * Depósito, reposición y eventos existieron sin puerta durante meses. El
+     * día que entraron al catálogo, cortarle el acceso a quien ya tenía
+     * mercadería cargada sería dejarlo afuera de sus propios datos por un
+     * cambio comercial.
+     */
+    const { Business } = require('../models');
+    const negocio = await Business.findByPk(req.auth.businessId, {
+      attributes: ['id', 'featuresHeredadas'],
+    });
+    if (heredaFeature(negocio, clave)) return next();
 
     return res.status(402).json({
       motivo: 'plan',

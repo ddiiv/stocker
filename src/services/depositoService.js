@@ -157,12 +157,13 @@ async function armarItems(items, businessId, t = null) {
 }
 
 /*
- * Ingreso por curvas.
+ * Ingreso por series.
  *
- * Una curva es cómo llega la mercadería del proveedor: no se compran unidades
- * sueltas, se compran corridas. "20 curvas de pantalón recto negro" quiere
- * decir 20 de cada talle de ese color — si el modelo tiene 5 talles, entran
- * 100 unidades y 20 quedan en cada una.
+ * Una serie es cómo llega la mercadería del proveedor: no se compran unidades
+ * sueltas, se compran conjuntos del mismo modelo que comparten una variante y
+ * se diferencian en la otra. "20 series de pantalón recto negro" quiere decir
+ * 20 de cada talle de ese color — si el modelo tiene 5 talles, entran 100
+ * unidades y 20 quedan en cada una.
  *
  * Cargarlo talle por talle es escribir cinco líneas para decir una sola cosa, y
  * con veinte modelos por camión es donde aparecen los errores de tipeo.
@@ -170,19 +171,38 @@ async function armarItems(items, businessId, t = null) {
  * Se expande acá, en el servidor, y no en la pantalla: la regla queda escrita
  * una sola vez, se puede probar, y el ingreso sigue guardándose como líneas
  * planas — así todo lo que ya existe (el remito, las etiquetas, la aprobación
- * de oficina) funciona sin enterarse de que hubo una curva.
- */
-
-/*
- * Sobre qué eje se abre la curva, y qué valores tiene.
+ * de oficina) funciona sin enterarse de que hubo una serie.
  *
- * Con dos dimensiones —color y talle— se fija el color y la curva recorre los
- * talles, que es el caso de indumentaria. Con una sola, la curva recorre esa:
- * "20 curvas" de un producto que sólo tiene colores son 20 de cada color. Sin
- * esta segunda forma, un producto de una dimensión no podría cargarse por
- * curva y habría que explicar por qué.
+ * (Antes esto se llamaba "curva". El nombre cambió en la interfaz porque una
+ * curva, en indumentaria, es la corrida de talles y nada más; acá el conjunto
+ * puede armarse sobre cualquiera de las dos variantes.)
  */
-async function ejeDeCurva(productId, businessId, valorFijo, t = null, { exigirValor = true } = {}) {
+/*
+ * El eje de una serie: qué variante se fija y cuál se recorre.
+ *
+ * Una serie es un conjunto de artículos del mismo modelo que comparten una
+ * variante y se diferencian en la otra. Cuál de las dos se fija cambia por
+ * completo lo que entra:
+ *
+ *   Remera · colores Negro/Blanco · talles S/M/L
+ *   3 series fijando el COLOR Negro  → 3 unidades de cada talle  = 9 unidades
+ *   3 series fijando el TALLE M      → 3 unidades de cada color  = 6 unidades
+ *
+ * Hasta acá el eje estaba cableado: siempre se fijaba variante1 y se recorría
+ * variante2. Para el que compra por color eso alcanzaba; para el que compra
+ * "diez de cada color en talle M" no había forma de cargarlo sin escribir
+ * línea por línea.
+ *
+ * @param eje  'variante1' (se fija variante1, se recorre variante2) o
+ *             'variante2' (al revés). Por defecto 'variante1', que es como
+ *             venía funcionando: las series ya cargadas siguen significando
+ *             lo mismo.
+ */
+const EJES = ['variante1', 'variante2'];
+
+async function ejeDeCurva(productId, businessId, valorFijo, t = null, { exigirValor = true, eje = 'variante1' } = {}) {
+  const cual = EJES.includes(eje) ? eje : 'variante1';
+
   const variantes = await ProductVariant.findAll({
     where: { productId, businessId, activo: true },
     include: [{ model: Product, as: 'producto', attributes: ['id', 'titulo', 'esFeria'], required: true }],
@@ -193,12 +213,33 @@ async function ejeDeCurva(productId, businessId, valorFijo, t = null, { exigirVa
     throw error('Los productos de evento no llevan stock: no entran al depósito.', 400, { codigo: 'FERIA_SIN_STOCK' });
   }
 
-  const tieneDos = variantes.some((v) => v.variante2Valor);
+  /*
+   * Que el producto tenga dos dimensiones se pregunta con `every`, no con
+   * `some`.
+   *
+   * Con `some` alcanzaba que UNA sola variante tuviera segundo valor para
+   * tratar al producto entero como de dos dimensiones. Un catálogo a medio
+   * cargar —diez colores sin talle y uno con talle— entraba por esa rama y
+   * pedía elegir un valor que la mayoría de las variantes no tenía, dejando
+   * series de una sola unidad sin que se entendiera por qué.
+   */
+  const tieneDos = variantes.every((v) => v.variante1Valor && v.variante2Valor);
+
+  const nombreDe = (v, cual2) => (cual2 === 'variante2' ? v.variante2Nombre : v.variante1Nombre);
+  const valorDe  = (v, cual2) => (cual2 === 'variante2' ? v.variante2Valor : v.variante1Valor);
+  const contrario = cual === 'variante1' ? 'variante2' : 'variante1';
 
   if (!tieneDos) {
+    /*
+     * Una sola dimensión: no hay nada que fijar y el eje pedido no aplica.
+     * Se recorre lo único que existe y se dice que fue así, para que la
+     * pantalla no ofrezca una elección que no cambia nada.
+     */
     return {
       titulo: variantes[0].producto.titulo,
       eje: variantes[0].variante1Nombre || 'Variante',
+      ejeUsado: 'variante1',
+      unaDimension: true,
       fijo: null,
       valores: variantes.map((v) => ({
         variantId: v.id, valor: v.variante1Valor || '(única)', sku: v.sku,
@@ -208,9 +249,9 @@ async function ejeDeCurva(productId, businessId, valorFijo, t = null, { exigirVa
 
   const fijo = String(valorFijo || '').trim();
   if (!fijo) {
-    const opciones = [...new Set(variantes.map((v) => v.variante1Valor).filter(Boolean))];
+    const opciones = [...new Set(variantes.map((v) => valorDe(v, cual)).filter(Boolean))];
     /*
-     * Al cargar hace falta el color sí o sí. Al previsualizar, en cambio, la
+     * Al cargar hace falta el valor sí o sí. Al previsualizar, en cambio, la
      * pantalla justamente necesita saber cuáles hay para poder ofrecerlos: es
      * el paso "entrás el producto y salen los colores".
      */
@@ -218,19 +259,21 @@ async function ejeDeCurva(productId, businessId, valorFijo, t = null, { exigirVa
       return {
         titulo: variantes[0].producto.titulo,
         necesitaValor: true,
-        ejeFijo: variantes[0].variante1Nombre || 'Variante',
+        ejeUsado: cual,
+        ejeFijo: nombreDe(variantes[0], cual) || 'Variante',
+        ejeRecorrido: nombreDe(variantes[0], contrario) || 'Variante',
         opciones,
         valores: [],
       };
     }
     throw error(
-      `Elegí ${(variantes[0].variante1Nombre || 'la variante').toLowerCase()} para armar la curva: ${opciones.join(', ')}.`,
+      `Elegí ${(nombreDe(variantes[0], cual) || 'la variante').toLowerCase()} para armar la serie: ${opciones.join(', ')}.`,
       400,
     );
   }
 
   const dela = variantes.filter(
-    (v) => String(v.variante1Valor || '').toLowerCase() === fijo.toLowerCase(),
+    (v) => String(valorDe(v, cual) || '').toLowerCase() === fijo.toLowerCase(),
   );
   if (!dela.length) {
     throw error(`No hay variantes de "${fijo}" en ese producto.`, 404);
@@ -238,9 +281,15 @@ async function ejeDeCurva(productId, businessId, valorFijo, t = null, { exigirVa
 
   return {
     titulo: variantes[0].producto.titulo,
-    eje: dela[0].variante2Nombre || 'Talle',
-    fijo: dela[0].variante1Valor,
-    valores: dela.map((v) => ({ variantId: v.id, valor: v.variante2Valor || '(única)', sku: v.sku })),
+    eje: nombreDe(dela[0], contrario) || (contrario === 'variante2' ? 'Talle' : 'Color'),
+    ejeUsado: cual,
+    ejeFijo: nombreDe(dela[0], cual) || 'Variante',
+    fijo: valorDe(dela[0], cual),
+    valores: dela.map((v) => ({
+      variantId: v.id,
+      valor: valorDe(v, contrario) || '(única)',
+      sku: v.sku,
+    })),
   };
 }
 
@@ -255,15 +304,15 @@ async function expandirCurvas(curvas, businessId, t = null) {
   const lineas = [];
   for (const c of Array.isArray(curvas) ? curvas : []) {
     const productId = Number(c?.productId);
-    if (!productId) throw error('Cada curva necesita el producto.', 400);
+    if (!productId) throw error('Cada serie necesita el producto.', 400);
 
-    const { valores, titulo } = await ejeDeCurva(productId, businessId, c?.valor, t);
+    const { valores, titulo } = await ejeDeCurva(productId, businessId, c?.valor, t, { eje: c?.eje });
 
     const porValor = c?.porValor && typeof c.porValor === 'object' ? c.porValor : null;
     const pareja = Number(c?.cantidad);
 
     if (!porValor && (!Number.isInteger(pareja) || pareja <= 0)) {
-      throw error(`Poné cuántas curvas entran de "${titulo}".`, 400);
+      throw error(`Poné cuántas series entran de "${titulo}".`, 400);
     }
 
     let algo = false;
@@ -278,7 +327,7 @@ async function expandirCurvas(curvas, businessId, t = null) {
       lineas.push({ productVariantId: v.variantId, cantidad: n });
       algo = true;
     }
-    if (!algo) throw error(`La curva de "${titulo}" quedó sin ninguna unidad.`, 400);
+    if (!algo) throw error(`La serie de "${titulo}" quedó sin ninguna unidad.`, 400);
   }
   return lineas;
 }

@@ -167,7 +167,20 @@ function precioDeSuscripcion(sub) {
 async function tieneFeature(businessId, clave) {
   const { plan, soloLectura } = await estadoDe(businessId);
   if (soloLectura) return false;
-  return Boolean(plan?.features?.[clave]);
+  if (plan?.features?.[clave]) return true;
+  return heredaFeature(await Business.findByPk(businessId, { attributes: ['id', 'featuresHeredadas'] }), clave);
+}
+
+/*
+ * Si el negocio conserva una función que su plan no incluye.
+ *
+ * Pasa cuando una función que era libre se mete en un plan: el que ya la venía
+ * usando no puede quedarse afuera de sus propios datos por un cambio de
+ * catálogo. La lista se llena una sola vez, al poner la puerta.
+ */
+function heredaFeature(negocio, clave) {
+  if (!negocio?.featuresHeredadas) return false;
+  return String(negocio.featuresHeredadas).split(',').map((x) => x.trim()).includes(clave);
 }
 
 /** Primer instante del mes corriente, en hora local. */
@@ -300,6 +313,6 @@ async function trialsPorVencer(dias = 2) {
 }
 
 module.exports = {
-  sembrarPlanes, iniciarTrial, estadoDe, tieneFeature, usoDe, exigirCupo,
+  sembrarPlanes, iniciarTrial, estadoDe, tieneFeature, heredaFeature, usoDe, exigirCupo,
   acreditarPago, trialsPorVencer, precioDeSuscripcion, ErrorPlan, DIAS_TRIAL,
 };
