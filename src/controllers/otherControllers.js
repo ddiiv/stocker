@@ -210,7 +210,29 @@ const getClients = async (req, res, next) => {
         { email:    { [like]: `%${search}%` } },
       ];
     }
-    const clients = await Client.findAll({ where, order: [['nombre', 'ASC']] });
+
+    /*
+     * `limit` para quien sólo necesita un puñado.
+     *
+     * El punto de venta y Nueva venta usan esto como buscador: la persona
+     * escribe dos letras y elige de una lista corta. Traían el padrón entero
+     * —todos los clientes del negocio— para filtrarlo en el navegador, en cada
+     * apertura de la pantalla. Con cuarenta clientes no se nota; con veinte
+     * mil son varios megabytes de JSON que el servidor arma y la máquina del
+     * mostrador tiene que retener.
+     *
+     * Es opcional a propósito: la pantalla de Clientes administra el padrón y
+     * necesita verlo completo. Recortarle la lista en silencio sería peor que
+     * el problema que esto resuelve.
+     */
+    const pedido = Number(req.query.limit);
+    const limit = Number.isFinite(pedido) && pedido > 0 ? Math.min(pedido, 100) : null;
+
+    const clients = await Client.findAll({
+      where,
+      order: [['nombre', 'ASC']],
+      ...(limit ? { limit } : {}),
+    });
     res.json(clients);
   } catch (e) { next(e); }
 };
