@@ -25,7 +25,15 @@ const { exigirCupo } = require('./planService');
  * 100% y ensuciaría el análisis del negocio entero.
  */
 
-const PREFIJO_POR_DEFECTO = 'FER';
+/*
+ * Con qué empiezan los códigos de evento si nadie dice otra cosa.
+ *
+ * Decía 'FER', de cuando esto se llamaba feria. La pantalla siempre manda su
+ * propio prefijo, así que sólo afectaba a quien llamara la API sin pasarlo —
+ * pero ahí quedaba un código que no se parece a nada de lo que el sistema
+ * llama evento.
+ */
+const PREFIJO_POR_DEFECTO = 'EVE';
 
 /** Tres caracteres, sin espacios ni acentos, en mayúscula. */
 function normalizarPrefijo(valor) {
@@ -122,7 +130,109 @@ function preciosDe(original, regla) {
 }
 
 /** El SKU de feria de un producto, sin comprobar si ya existe. */
-const skuDeFeria = (skuOriginal, prefijo) => `${prefijo}${String(skuOriginal || '').trim()}`;
+/*
+ * El código se arma en mayúscula.
+ *
+ * Los generados salían bien de casualidad: heredan el SKU del original, que ya
+ * viene en mayúscula. Uno cargado a mano puede venir tipeado como sea, y
+ * "EVEqa-suelto" al lado de "EVEBA-010" en el listado —o en el escáner— se lee
+ * como dos cosas distintas.
+ */
+const skuDeFeria = (skuOriginal, prefijo) => `${prefijo}${String(skuOriginal || '').trim().toUpperCase()}`;
+
+/*
+ * Un producto de evento cargado a mano.
+ *
+ * Generar desde el catálogo cubre el caso normal —lo que ya se vende en el
+ * local, con otro precio para la feria— pero no el otro, que es igual de real:
+ * mercadería que SÓLO se vende en eventos y nunca estuvo en el catálogo. Un
+ * saldo comprado para el fin de semana, una promoción armada para un puesto.
+ *
+ * Sin esto había que inventarle un producto al catálogo normal, generarle su
+ * versión de evento y después acordarse de dar de baja el original. Tres pasos
+ * y un producto fantasma para cargar una prenda.
+ *
+ * Nace igual que uno generado —una sola variante, sin color ni talle, stock
+ * cero para siempre— salvo por `origenProductId`, que queda en null: no salió
+ * de ningún lado.
+ */
+async function crearManual({ businessId, titulo, sku, precioMinorista, precioMayorista, costo, categoria, genero, prefijo, transaction: t = null }) {
+  const nombre = String(titulo || '').trim();
+  if (!nombre) throw error('El producto necesita un título.');
+
+  const base = String(sku || '').trim();
+  if (!base) throw error('El producto necesita un código.');
+
+  const minorista = Number(precioMinorista);
+  if (!Number.isFinite(minorista) || minorista < 0) {
+    throw error('El precio minorista tiene que ser un número.');
+  }
+  /*
+   * Sin mayorista, se usa el minorista.
+   *
+   * Un producto de evento tiene los dos precios y la regla mayorista del
+   * puesto elige cuál cobrar. Dejarlo en cero haría que una venta mayorista
+   * saliera gratis.
+   */
+  const mayorista = precioMayorista === undefined || precioMayorista === null || precioMayorista === ''
+    ? minorista
+    : Number(precioMayorista);
+  if (!Number.isFinite(mayorista) || mayorista < 0) {
+    throw error('El precio mayorista tiene que ser un número.');
+  }
+
+  /*
+   * El prefijo se aplica igual que a los generados.
+   *
+   * Es lo que hace que todos los códigos de evento empiecen igual y se
+   * distingan de un vistazo en el escáner y en el listado. Cargar uno a mano
+   * no es razón para romper esa convención.
+   */
+  const pre = normalizarPrefijo(prefijo);
+  const codigo = skuDeFeria(base, pre);
+
+  const chocado = await Product.findOne({ where: { businessId, sku: codigo }, transaction: t });
+  if (chocado) throw error(`El código ${codigo} ya está usado por otro producto.`, 409);
+
+  // Ocupa un SKU del plan, igual que cualquier otro producto.
+  await exigirCupo(businessId, 'skus', 1);
+
+  const producto = await Product.create({
+    businessId,
+    sku: codigo,
+    skuAgrupador: codigo,
+    titulo: nombre,
+    categoria: categoria || null,
+    genero: genero || null,
+    precioMinorista: redondear(minorista),
+    precioMayorista: redondear(mayorista),
+    costo: costo === undefined || costo === null || costo === '' ? 0 : Number(costo) || 0,
+    variantes: {},
+    esFeria: true,
+    origenProductId: null,
+    activo: true,
+    fechaActualizacion: new Date(),
+  }, { transaction: t });
+
+  const variante = await ProductVariant.create({
+    productId: producto.id,
+    businessId,
+    sku: codigo,
+    variante1Nombre: null, variante1Valor: null,
+    variante2Nombre: null, variante2Valor: null,
+    // El stock queda en cero y no se toca nunca: estos productos no lo llevan.
+    stock: 0,
+    stockMinimo: 0,
+    activo: true,
+  }, { transaction: t });
+
+  return {
+    productId: producto.id, variantId: variante.id, sku: codigo,
+    titulo: producto.titulo,
+    precioMinorista: Number(producto.precioMinorista),
+    precioMayorista: Number(producto.precioMayorista),
+  };
+}
 
 /*
  * Genera los productos de feria de un lote de padres.
@@ -347,6 +457,7 @@ async function tienePuestos(businessId) {
 }
 
 module.exports = {
+  crearManual,
   generar, reaplicarPrecios, candidatos, tienePuestos,
   normalizarPrefijo, skuDeFeria, normalizarReglaPrecio, preciosDe,
   PREFIJO_POR_DEFECTO, MODOS_PRECIO, BASES_PRECIO,

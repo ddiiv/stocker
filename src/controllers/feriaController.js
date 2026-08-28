@@ -83,4 +83,30 @@ const postPrecios = async (req, res, next) => {
   }
 };
 
-module.exports = { getCandidatos, postGenerar, getProductos, postPrecios };
+/*
+ * POST /api/feria/productos
+ *
+ * Un producto de evento cargado a mano, sin pasar por el catálogo normal.
+ *
+ * Es para la mercadería que SÓLO se vende en eventos: un saldo comprado para
+ * el fin de semana, una promoción armada para el puesto. Antes había que
+ * inventarle un producto al catálogo, generarle su versión de evento y
+ * acordarse de dar de baja el original.
+ */
+const postManual = async (req, res, next) => {
+  const t = await sequelize.transaction();
+  try {
+    const creado = await feriaService.crearManual({
+      businessId: req.auth.businessId,
+      ...req.body,
+      transaction: t,
+    });
+    await t.commit();
+    res.status(201).json({ ...creado, mensaje: `${creado.titulo} agregado al catálogo de evento con el código ${creado.sku}.` });
+  } catch (error) {
+    await t.rollback().catch(() => {});
+    next(error);
+  }
+};
+
+module.exports = { getCandidatos, postGenerar, postManual, getProductos, postPrecios };

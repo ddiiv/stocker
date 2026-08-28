@@ -203,6 +203,8 @@ r.post('/account/password/confirmar', requireAuth, requireOwner, validatePasswor
 r.get ('/feria/candidatos', requireAuth, requirePermission('stock', 'ver'),    feriaCtrl.getCandidatos);
 r.get ('/feria/productos',  requireAuth, requireAnyPermission(['stock', 'ventas'], 'ver'), feriaCtrl.getProductos);
 r.post('/feria/generar',    requireAuth, requirePermission('stock', 'editar'), requireFeature(FEATURES.EVENTOS), feriaCtrl.postGenerar);
+// Un producto de evento cargado a mano, sin original en el catálogo.
+r.post('/feria/productos',  requireAuth, requirePermission('stock', 'editar'), requireFeature(FEATURES.EVENTOS), feriaCtrl.postManual);
 r.post('/feria/precios',    requireAuth, requirePermission('stock', 'editar'), requireFeature(FEATURES.EVENTOS), feriaCtrl.postPrecios);
 
 // ── Locations ─────────────────────────────────────────────────────

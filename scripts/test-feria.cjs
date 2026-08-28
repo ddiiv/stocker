@@ -279,6 +279,79 @@ function sesion() {
 
   await planDemo.update({ maxLocales: topeOriginal });
 
+  tit('10. UN PRODUCTO DE EVENTO CARGADO A MANO');
+  // No hace falta anotarlos: `limpiar()` borra todos los productos de evento
+  // del negocio al terminar.
+  /*
+   * Hay mercadería que SÓLO se vende en eventos y nunca estuvo en el catálogo:
+   * un saldo comprado para el fin de semana. Antes había que inventarle un
+   * producto al catálogo normal, generarle su versión de evento y acordarse de
+   * dar de baja el original.
+   */
+  const manual = await api('POST', '/api/feria/productos', {
+    titulo: 'QA Saldo suelto', sku: 'qa-suelto', precioMinorista: 5000, precioMayorista: 3500,
+  });
+  chk('se crea', 201, manual.status);
+  chk('con el prefijo del catálogo de evento', true, /^[A-Z0-9]{3}QA-SUELTO$/.test(manual.json?.sku || ''));
+  chk('y los dos precios', [5000, 3500], [manual.json?.precioMinorista, manual.json?.precioMayorista]);
+
+  const prodManual = await Product.findByPk(manual.json.productId);
+  chk('queda marcado como de evento', true, prodManual?.esFeria);
+  chk('sin producto de origen', null, prodManual?.origenProductId ?? null);
+  const varsManual = await ProductVariant.findAll({ where: { productId: prodManual.id } });
+  chk('con una sola variante', 1, varsManual.length);
+  chk('sin color ni talle', [null, null],
+    [varsManual[0].variante1Valor ?? null, varsManual[0].variante2Valor ?? null]);
+
+  tit('11. NO SE MEZCLA CON EL CATÁLOGO NORMAL');
+  const normales = await api('GET', '/api/products?limit=200');
+  chk('no aparece entre los del local', false,
+    (normales.json?.data || []).some((p) => p.id === prodManual.id));
+  const deEvento = await api('GET', '/api/products?limit=200&feria=1');
+  chk('sí aparece pidiendo los de evento', true,
+    (deEvento.json?.data || []).some((p) => p.id === prodManual.id));
+
+  tit('12. SIN MAYORISTA, SE USA EL MINORISTA');
+  /*
+   * Dejarlo en cero haría que una venta mayorista en el puesto saliera gratis.
+   */
+  const sinMay = await api('POST', '/api/feria/productos', {
+    titulo: 'QA Saldo sin mayorista', sku: 'qa-sinmay', precioMinorista: 7200,
+  });
+  chk('se crea', 201, sinMay.status);
+  chk('el mayorista iguala al minorista', 7200, sinMay.json?.precioMayorista);
+
+  tit('13. LO QUE FALTA SE RECHAZA');
+  const sinTitulo = await api('POST', '/api/feria/productos', { sku: 'qa-x', precioMinorista: 100 });
+  chk('sin título', 400, sinTitulo.status);
+  const sinSku = await api('POST', '/api/feria/productos', { titulo: 'QA', precioMinorista: 100 });
+  chk('sin código', 400, sinSku.status);
+  const sinPrecio = await api('POST', '/api/feria/productos', { titulo: 'QA', sku: 'qa-y' });
+  chk('sin precio', 400, sinPrecio.status);
+  const negativo = await api('POST', '/api/feria/productos', { titulo: 'QA', sku: 'qa-z', precioMinorista: -5 });
+  chk('con precio negativo', 400, negativo.status);
+
+  const repetido = await api('POST', '/api/feria/productos', {
+    titulo: 'QA Otro', sku: 'qa-suelto', precioMinorista: 999,
+  });
+  chk('un código ya usado', 409, repetido.status);
+  chk('y dice cuál', true, /ya está usado/.test(repetido.json?.message || ''));
+
+  tit('14. TAMPOCO LLEVA STOCK');
+  /*
+   * Es la misma garantía que para los generados: `mover()` corta con error, no
+   * en silencio. Que un producto de evento llegue hasta ahí significa que hay
+   * un camino mal escrito.
+   */
+  let rechazoManual = null;
+  try {
+    await stockService.mover({
+      variantId: varsManual[0].id, businessId: negocio.id, locationId: puesto.json.id,
+      delta: 5, tipo: 'ingreso', motivo: 'QA',
+    });
+  } catch (e) { rechazoManual = e; }
+  chk('mover() lo rechaza', 'FERIA_SIN_STOCK', rechazoManual?.codigo);
+
   tit('Limpieza');
   for (const id of aBorrar.ventas) {
     await SaleItem.destroy({ where: { saleId: id } });
