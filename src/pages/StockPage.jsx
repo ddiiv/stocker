@@ -20,12 +20,25 @@ export default function StockPage() {
   const [importResult, setImportResult] = useState(null);
   const [importError, setImportError] = useState("");
   const fileInputRef = useRef(null);
+  /*
+   * De qué catálogo se está mirando.
+   *
+   * Son dos mundos distintos y no se mezclan: los productos del local llevan
+   * stock, variantes y reposición; los de evento no llevan stock y tienen una
+   * sola variante. Mostrarlos juntos daría una tabla donde la mitad de las
+   * filas tiene la columna de stock vacía sin que se entienda por qué.
+   *
+   * Antes el catálogo de evento no se veía desde acá en ningún lado: existía
+   * sólo en su propia pantalla.
+   */
+  const [catalogo, setCatalogo] = useState("locales");
+  const esEvento = catalogo === "evento";
 
-  async function load(term = "") {
+  async function load(term = "", cual = catalogo) {
     setLoading(true);
     setError("");
     try {
-      const data = await fetchProductGroups({ search: term });
+      const data = await fetchProductGroups({ search: term, evento: cual === "evento" });
       setGroups(data);
     } catch (e) {
       setError(e.response?.data?.message || "Error al cargar productos");
@@ -56,7 +69,16 @@ export default function StockPage() {
     }
     const t = setTimeout(() => load(search), 300);
     return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [search]);
+
+  /* Cambiar de catálogo recarga en el momento: no es lo que se escribe, es
+     una decisión tomada, y esperar 300 ms se siente como que no respondió. */
+  function cambiarCatalogo(cual) {
+    if (cual === catalogo) return;
+    setCatalogo(cual);
+    load(search, cual);
+  }
 
   async function handleExport() {
     setExporting(true);
@@ -141,6 +163,36 @@ export default function StockPage() {
         </div>
       )}
 
+      {/*
+        * Los dos catálogos, separados.
+        *
+        * Va arriba del buscador porque decide sobre QUÉ se busca: buscar una
+        * remera en el catálogo equivocado y no encontrarla es lo que hace
+        * pensar que el producto no está cargado.
+        */}
+      <div className="mb-4 inline-grid grid-cols-2 gap-1 rounded-md bg-paper-100 p-1">
+        {[
+          { v: "locales", texto: "Locales de venta" },
+          { v: "evento",  texto: "Evento" },
+        ].map((op) => (
+          <button
+            key={op.v}
+            type="button"
+            onClick={() => cambiarCatalogo(op.v)}
+            className={`rounded px-4 py-1.5 text-sm font-medium transition-colors ${
+              catalogo === op.v ? "bg-paper-50 text-ink-950 shadow-sm" : "text-ink-600 hover:text-ink-900"
+            }`}
+          >
+            {op.texto}
+          </button>
+        ))}
+      </div>
+      <p className="mb-4 text-xs text-ink-500">
+        {esEvento
+          ? "Productos que se venden en los locales de evento: no llevan stock, sólo queda registrado qué se vendió."
+          : "Productos con stock, que se venden en los locales y el canal online."}
+      </p>
+
       <div className="mb-5 flex items-center gap-3">
         <div className="relative flex-1 max-w-md">
           <Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-ink-400" />
@@ -154,7 +206,17 @@ export default function StockPage() {
       {loading ? (
         <div className="card p-0">{Array.from({ length: 6 }).map((_, i) => <div key={i} className="h-16 animate-pulse border-b border-line last:border-0" />)}</div>
       ) : groups.length === 0 ? (
-        <EmptyState icon={Boxes} title="No se encontraron productos" description={search ? `Sin resultados para "${search}".` : "Todavía no cargaste productos."} />
+        <EmptyState
+          icon={Boxes}
+          title="No se encontraron productos"
+          description={
+            search
+              ? `Sin resultados para "${search}" en ${esEvento ? "el catálogo de evento" : "los locales de venta"}.`
+              : esEvento
+                ? "Todavía no hay productos de evento. Se cargan desde la sección Evento."
+                : "Todavía no cargaste productos."
+          }
+        />
       ) : (
         /* La tabla scrollea de costado en pantallas chicas. Con
            `overflow-hidden` sus últimas columnas quedaban cortadas y sin forma
@@ -166,9 +228,13 @@ export default function StockPage() {
               <tr className="border-b border-line bg-paper-100 text-left text-xs uppercase tracking-wide text-ink-600">
                 <th className="px-4 py-3 font-medium">Producto</th>
                 <th className="px-4 py-3 font-medium">Categoría</th>
-                <th className="px-4 py-3 font-medium">Variantes</th>
+                {/* Un producto de evento tiene UNA variante por definición y
+                    no lleva stock: esas dos columnas serían "1 (0 colores, 0
+                    talles)" y "0 un." en todas las filas — ruido que además
+                    hace pensar que falta cargar algo. */}
+                {!esEvento && <th className="px-4 py-3 font-medium">Variantes</th>}
                 <th className="px-4 py-3 font-medium">Precio desde</th>
-                <th className="px-4 py-3 font-medium">Stock total</th>
+                {!esEvento && <th className="px-4 py-3 font-medium">Stock total</th>}
                 <th className="px-4 py-3 font-medium" />
               </tr>
             </thead>
@@ -180,13 +246,17 @@ export default function StockPage() {
                     <span className="tag-chip mt-1">{g.skuAgrupador}</span>
                   </td>
                   <td className="px-4 py-3 text-ink-700">{g.categoria} · {g.genero}</td>
-                  <td className="px-4 py-3 text-ink-700">{g.variants.length} ({g.colores.length} colores, {g.talles.length} talles)</td>
+                  {!esEvento && (
+                    <td className="px-4 py-3 text-ink-700">{g.variants.length} ({g.colores.length} colores, {g.talles.length} talles)</td>
+                  )}
                   <td className="px-4 py-3 text-ink-900">{formatCurrency(g.precioDesde)}</td>
+                  {!esEvento && (
                   <td className="px-4 py-3">
                     <span className={`badge ${g.stockTotal === 0 ? "badge-out" : g.stockTotal <= 10 ? "badge-low" : "badge-ok"}`}>
                       {g.stockTotal} un.
                     </span>
                   </td>
+                  )}
                   <td className="px-4 py-3 text-right">
                     <div className="flex justify-end gap-1">
                       <Link to={`/stock/${g.skuAgrupador}`} className="btn-ghost px-3 py-1.5 text-xs">Ver / editar</Link>

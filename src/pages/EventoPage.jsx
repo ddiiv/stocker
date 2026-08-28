@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Store, Tag, AlertTriangle, Check, RefreshCw } from "lucide-react";
+import { Store, Tag, AlertTriangle, Check, RefreshCw, PackagePlus } from "lucide-react";
 import { PageHeader, Card, EmptyState } from "../components/ui/Layout";
+import ProductoManualModal from "../components/evento/ProductoManualModal";
 import { fetchCandidatos, generarFeria, fetchProductosFeria, reaplicarPrecios } from "../services/feriaService";
 import { formatCurrency } from "../utils/formatters";
 import { mensajeDeError } from "../utils/errores";
@@ -98,6 +99,7 @@ export default function EventoPage() {
   const [rMinorista, setRMinorista] = useState({ base: "minorista", modo: "igual", valor: 0 });
   const [rMayorista, setRMayorista] = useState({ base: "mayorista", modo: "igual", valor: 0 });
   const [reaplicando, setReaplicando] = useState(false);
+  const [altaManual, setAltaManual] = useState(false);
 
   /*
    * Medio segundo de espera antes de preguntar.
@@ -216,13 +218,33 @@ export default function EventoPage() {
 
   return (
     <div>
+      <ProductoManualModal
+        open={altaManual}
+        onClose={() => setAltaManual(false)}
+        prefijo={datos?.prefijo}
+        onCreado={(c) => {
+          setAviso(c.mensaje || "Producto agregado al catálogo de evento.");
+          /* Se recarga en silencio: la lista de generados tiene que incluirlo
+             ya, pero vaciar la pantalla para eso sería un parpadeo de más. */
+          cargar({ silencioso: true });
+        }}
+      />
+
       <PageHeader
         title="Evento"
         subtitle="Productos que se venden sin llevar stock: sólo queda registrado qué se vendió"
         actions={
-          <button className="btn-ghost" onClick={cargar} disabled={cargando}>
-            <RefreshCw size={15} /> Actualizar
-          </button>
+          <div className="flex flex-wrap items-center gap-2">
+            {/* Cargar a mano va arriba, al lado de Actualizar, y no escondido
+                abajo del generador: es una de las dos formas de sumar un
+                producto de evento, no un caso raro. */}
+            <button className="btn-accent" onClick={() => setAltaManual(true)}>
+              <PackagePlus size={15} /> Producto nuevo
+            </button>
+            <button className="btn-ghost" onClick={cargar} disabled={cargando}>
+              <RefreshCw size={15} /> Actualizar
+            </button>
+          </div>
         }
       />
 

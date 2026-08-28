@@ -1,8 +1,18 @@
 import { http } from "../lib/http";
 
-export async function fetchProductGroups({ search = "" } = {}) {
+/*
+ * `evento` elige de qué catálogo se trae.
+ *
+ * Son dos mundos que no se mezclan: los productos del local llevan stock y
+ * variantes; los de evento no llevan stock y tienen una sola variante. El
+ * servidor ya los separaba —devolvía sólo los normales salvo que se le pidiera
+ * lo contrario— pero la pantalla no tenía cómo pedir los otros, así que el
+ * catálogo de evento no se veía desde Stock en ningún lado.
+ */
+export async function fetchProductGroups({ search = "", evento = false } = {}) {
   const params = { limit: 200 };
   if (search) params.search = search;
+  if (evento) params.feria = 1;
   const { data } = await http.get("/products", { params });
   return groupBySkuAgrupador(data.data || []);
 }

@@ -42,6 +42,18 @@ export async function reaplicarPrecios({ productIds, precio }) {
   return data;
 }
 
+/*
+ * Carga un producto de evento a mano.
+ *
+ * Para la mercadería que sólo se vende en eventos y nunca estuvo en el
+ * catálogo normal. El servidor le pone el prefijo al código, igual que a los
+ * generados: así todos los de evento empiezan igual.
+ */
+export async function crearProductoDeEvento(datos) {
+  const { data } = await http.post("/feria/productos", datos);
+  return data;
+}
+
 export async function fetchProductosFeria() {
   const { data } = await http.get("/feria/productos");
   return data;
