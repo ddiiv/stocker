@@ -55,10 +55,36 @@ export default function CashPage() {
     } finally { setEnviando(false); }
   }
 
+/*
+ * Qué decirle a quien no pudo cerrar la caja.
+ *
+ * Hasta acá cualquier fallo daba "No se pudo cerrar el turno", y eso tapó un
+ * defecto de código durante días: la llamada al servidor se había perdido en
+ * una edición, el navegador tiraba un ReferenceError, el catch lo convertía en
+ * ese mismo mensaje y la cajera reintentaba pensando que era la conexión.
+ *
+ * Un error del servidor y un error nuestro no son lo mismo y no se resuelven
+ * igual: uno se reintenta, el otro hay que reportarlo. Se distinguen, y el
+ * segundo además queda en la consola con el error entero, que es lo único que
+ * permite ubicarlo después.
+ */
+function mensajeDeCierre(err) {
+  if (err?.response) {
+    return err.response.data?.message || "No se pudo cerrar el turno. Probá de nuevo.";
+  }
+  if (err instanceof TypeError || err instanceof ReferenceError) {
+    // eslint-disable-next-line no-console
+    console.error("[caja] error de la aplicación al cerrar el turno:", err);
+    return "Hay una falla en la aplicación, no en tu cierre. El turno sigue abierto: avisá a soporte.";
+  }
+  return "No se pudo cerrar el turno: revisá la conexión y probá de nuevo.";
+}
+
   async function handleCerrar(e) {
     e.preventDefault();
     setEnviando(true); setError("");
     try {
+      const r = await cerrarTurno({ montoDeclarado: Number(montoDeclarado) || 0, notaCierre });
       /*
        * Se guarda la respuesta ENTERA, no sólo el turno.
        *
@@ -72,7 +98,7 @@ export default function CashPage() {
       setModalCierre(false); setMontoDeclarado(""); setNotaCierre("");
       await load();
     } catch (err) {
-      setError(err.response?.data?.message || "No se pudo cerrar el turno");
+      setError(mensajeDeCierre(err));
     } finally { setEnviando(false); }
   }
 
