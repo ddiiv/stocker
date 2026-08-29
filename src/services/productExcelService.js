@@ -2,6 +2,7 @@ const ExcelJS = require('exceljs');
 const { Op } = require('sequelize');
 const { Product, ProductVariant, BusinessLocation } = require('../models');
 const { exigirCupo } = require('./planService');
+const { NO_ES_FERIA } = require('../utils/feria');
 const stockService = require('./stockService');
 const precioService = require('./precioService');
 
@@ -56,7 +57,25 @@ const vacia = (v) => v === '' || v === null || v === undefined;
 async function buildExportWorkbook(businessId) {
   const [products, locales] = await Promise.all([
     Product.findAll({
-      where: { businessId },
+      /*
+       * Los de evento NO se exportan.
+       *
+       * Esta planilla es el catálogo del local: tiene columnas de stock por
+       * sucursal, de talle y de color. Un producto de evento no lleva nada de
+       * eso —no tiene stock, ni talle, ni color— así que salía con esas
+       * columnas vacías, mezclado entre los demás.
+       *
+       * El problema no era estético: quien exporta para corregir precios abre
+       * la planilla y ve el catálogo de evento adentro del de venta, sin nada
+       * que los distinga. Es la misma separación que ya hace la pantalla de
+       * Stock y el listado de productos; el export era el único lugar que la
+       * ignoraba.
+       *
+       * El catálogo de evento se administra desde su propia pantalla, que es
+       * donde tiene sentido: se genera desde el catálogo normal o se carga a
+       * mano, y no se toca por planilla.
+       */
+      where: { businessId, ...NO_ES_FERIA },
       include: [{ model: ProductVariant, as: 'productVariants' }],
       order: [['titulo', 'ASC']],
     }),
@@ -357,6 +376,27 @@ async function importProductsXlsx(businessId, buffer, { locationId = null } = {}
     };
 
     let product = await Product.findOne({ where: { businessId, sku } });
+
+    /*
+     * Una planilla no puede tocar un producto de evento.
+     *
+     * Aunque el export ya no los incluya, alguien puede escribir el código a
+     * mano o reusar un archivo viejo. Actualizarlo por acá le aplicaría
+     * semántica de catálogo normal —precios por variante, stock por local— a
+     * algo que no tiene ni variantes ni stock, y la fila de stock terminaría
+     * rebotando contra `stockService.mover` con un error que no explica nada.
+     *
+     * Se avisa por fila en vez de cortar la importación entera: el resto del
+     * archivo es válido y no hay razón para perderlo.
+     */
+    if (product?.esFeria) {
+      summary.errors.push(
+        `Fila ${first._row}: "${sku}" es un producto de evento y no se edita por planilla. `
+        + 'Se cambia desde la sección Evento.'
+      );
+      continue;
+    }
+
     if (product) {
       await product.update(fields);
       summary.productsUpdated++;

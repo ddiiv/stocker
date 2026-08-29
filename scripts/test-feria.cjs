@@ -34,18 +34,22 @@ const chk = (t, e, o) => {
 const tit = (t) => console.log(`\n\x1b[1m${t}\x1b[0m`);
 
 function sesion() {
+  // La cookie queda a la vista: la subida del .xlsx va con FormData y no puede
+  // pasar por este helper, que manda JSON.
   let cookie = '';
-  return async (metodo, ruta, cuerpo) => {
+  const pedir = async (metodo, ruta, cuerpo) => {
     const r = await fetch(`${API}${ruta}`, {
       method: metodo,
       headers: { 'Content-Type': 'application/json', ...(cookie ? { Cookie: cookie } : {}) },
       body: cuerpo ? JSON.stringify(cuerpo) : undefined,
     });
     const set = r.headers.getSetCookie?.() || [];
-    if (set.length) cookie = set.map((c) => c.split(';')[0]).join('; ');
+    if (set.length) { cookie = set.map((c) => c.split(';')[0]).join('; '); pedir.cookie = cookie; }
     let json = null; try { json = JSON.parse(await r.text()); } catch { /* no json */ }
     return { status: r.status, json };
   };
+  pedir.cookie = '';
+  return pedir;
 }
 
 (async () => {
@@ -395,6 +399,74 @@ function sesion() {
 
   await ProductVariant.destroy({ where: { id: varNormal.id } });
   await Product.destroy({ where: { id: normal.id } });
+
+  tit('16. EXPORTAR E IMPORTAR NO MEZCLA LOS CATÁLOGOS');
+  /*
+   * El export es la planilla del catálogo del LOCAL: tiene columnas de stock
+   * por sucursal, de talle y de color. Los de evento salían ahí adentro, con
+   * todas esas columnas vacías y sin nada que los distinguiera — quien exporta
+   * para corregir precios abría el archivo y encontraba el catálogo de evento
+   * mezclado con el de venta.
+   */
+  const paraExportar = await api('POST', '/api/feria/productos', {
+    titulo: 'QA Ida y vuelta', sku: 'qa-iv', precioMinorista: 5000,
+  });
+  chk('se crea el de evento', 201, paraExportar.status);
+
+  const exportado = await fetch(`${API}/api/products/export`, { headers: { Cookie: api.cookie } });
+  chk('el export responde', 200, exportado.status);
+
+  const ExcelJS = require('exceljs');
+  const buf = Buffer.from(await exportado.arrayBuffer());
+  const wb = new ExcelJS.Workbook();
+  await wb.xlsx.load(buf);
+  const hoja = wb.worksheets[0];
+
+  const skusExportados = [];
+  hoja.eachRow((fila, n) => { if (n > 1 && fila.values[1]) skusExportados.push(String(fila.values[1])); });
+  chk('el de evento NO sale en el export', false, skusExportados.includes(paraExportar.json.sku));
+  chk('pero el catálogo del local sí sale', true, skusExportados.length > 0);
+
+  tit('17. UNA PLANILLA NO EDITA UN PRODUCTO DE EVENTO');
+  /*
+   * Aunque el export ya no los incluya, alguien puede escribir el código a
+   * mano o reusar un archivo viejo. Se avisa por fila y se sigue con el resto.
+   */
+  const wb2 = new ExcelJS.Workbook();
+  const ws2 = wb2.addWorksheet('Productos');
+  ws2.addRow(['SKU Padre', 'Título', 'Precio Minorista', 'SKU Variante']);
+  ws2.addRow([paraExportar.json.sku, 'Intento de pisarlo', 99, `${paraExportar.json.sku}`]);
+  ws2.addRow(['QA-NORMAL-OK', 'Producto normal del mismo archivo', 1500, 'QA-NORMAL-OK-U']);
+
+  const form = new FormData();
+  form.append('file', new Blob([Buffer.from(await wb2.xlsx.writeBuffer())], {
+    type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  }), 'qa.xlsx');
+  const imp = await fetch(`${API}/api/products/import`, {
+    method: 'POST', headers: { Cookie: api.cookie }, body: form,
+  });
+  const resumen = await imp.json();
+  chk('la importación entra', 200, imp.status);
+  chk('avisa que ese es de evento', true,
+    (resumen.errors || []).some((e) => /es un producto de evento/.test(e)));
+
+  const intacto = await Product.findByPk(paraExportar.json.productId);
+  chk('el precio del de evento no cambió', 5000, Number(intacto.precioMinorista));
+  chk('y sigue siendo de evento', true, intacto.esFeria);
+
+  /*
+   * El resto del archivo entra igual: perder las filas buenas por una mala
+   * obligaría a partir la planilla a mano para encontrar cuál era.
+   */
+  chk('el producto normal del mismo archivo sí se creó', 1,
+    await Product.count({ where: { businessId: negocio.id, sku: 'QA-NORMAL-OK' } }));
+
+  const normalQA = await Product.findOne({ where: { businessId: negocio.id, sku: 'QA-NORMAL-OK' } });
+  if (normalQA) {
+    const vs = (await ProductVariant.findAll({ where: { productId: normalQA.id } })).map((v) => v.id);
+    if (vs.length) await ProductVariant.destroy({ where: { id: vs } });
+    await Product.destroy({ where: { id: normalQA.id } });
+  }
 
   tit('Limpieza');
   for (const id of aBorrar.ventas) {
