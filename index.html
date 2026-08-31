@@ -832,12 +832,12 @@ footer { border-top: 1px solid var(--line-soft); padding-block: 2rem; }
             <div><dt>Soporte</dt><dd>Mail y chat</dd></div>
           </dl>
           <ul class="plan-feats">
-            <li class="yes">Facturación ARCA</li>
+            <li class="yes" data-feature="facturacion">Facturación ARCA</li>
             <li class="yes">Punto de venta y stock</li>
-            <li class="yes">Carga por planilla</li>
-            <li class="yes">Eventos: vender sin llevar stock</li>
-            <li class="no">Depósito y reposición</li>
-            <li class="no">Integración con Mercado Libre</li>
+            <li class="yes" data-feature="importacionMasiva">Carga por planilla</li>
+            <li class="yes" data-feature="eventos">Eventos: vender sin llevar stock</li>
+            <li class="no" data-feature="deposito,reposicion">Depósito y reposición</li>
+            <li class="no" data-feature="ecommerce">Integración con Mercado Libre</li>
           </ul>
           <a class="btn btn-ghost" href="#contacto">Probar gratis</a>
         </article>
@@ -861,10 +861,10 @@ footer { border-top: 1px solid var(--line-soft); padding-block: 2rem; }
           </dl>
           <ul class="plan-feats">
             <li class="yes">Todo lo del Inicial</li>
-            <li class="yes">Depósito: ingreso por series y etiquetas</li>
-            <li class="yes">Reposición entre depósito y locales</li>
-            <li class="yes">Integración con Mercado Libre</li>
-            <li class="yes">Cuentas corrientes y fiado</li>
+            <li class="yes" data-feature="deposito">Depósito: ingreso por series y etiquetas</li>
+            <li class="yes" data-feature="reposicion">Reposición entre depósito y locales</li>
+            <li class="yes" data-feature="ecommerce">Integración con Mercado Libre</li>
+            <li class="yes" data-feature="cuentasCorrientes">Cuentas corrientes y fiado</li>
           </ul>
           <a class="btn btn-primary" href="#contacto">Probar gratis</a>
         </article>
@@ -887,10 +887,10 @@ footer { border-top: 1px solid var(--line-soft); padding-block: 2rem; }
           </dl>
           <ul class="plan-feats">
             <li class="yes">Todo lo del Pro</li>
-            <li class="yes">Multi-depósito y listas de precios</li>
-            <li class="yes">API para integraciones propias</li>
-            <li class="yes">Facturación masiva ilimitada</li>
-            <li class="yes">Importación y exportación completa</li>
+            <li class="yes" data-feature="multiDeposito,listasPrecios">Multi-depósito y listas de precios</li>
+            <li class="yes" data-feature="api">API para integraciones propias</li>
+            <li class="yes" data-feature="facturacionMasiva">Facturación masiva ilimitada</li>
+            <li class="yes" data-feature="importacionMasiva">Importación y exportación completa</li>
           </ul>
           <a class="btn btn-ghost" href="#contacto">Probar gratis</a>
         </article>
@@ -914,9 +914,9 @@ footer { border-top: 1px solid var(--line-soft); padding-block: 2rem; }
           </dl>
           <ul class="plan-feats">
             <li class="yes">Todo lo del Pro</li>
-            <li class="yes">Cuentas corrientes y cobranzas</li>
-            <li class="yes">Multi-depósito y listas de precios</li>
-            <li class="yes">API para integraciones propias</li>
+            <li class="yes" data-feature="cuentasCorrientes">Cuentas corrientes y cobranzas</li>
+            <li class="yes" data-feature="multiDeposito,listasPrecios">Multi-depósito y listas de precios</li>
+            <li class="yes" data-feature="api">API para integraciones propias</li>
             <li class="yes">Migración de datos asistida</li>
           </ul>
           <a class="btn btn-ghost" href="#contacto">Pedir cotización</a>
@@ -1145,6 +1145,30 @@ footer { border-top: 1px solid var(--line-soft); padding-block: 2rem; }
           if (!dt || !dd) return;
           var valor = topes[dt.textContent.trim()];
           if (valor) dd.textContent = valor;
+        });
+
+        /*
+         * El tilde y la cruz de cada función salen del backoffice.
+         *
+         * El texto de cada bullet se queda escrito acá —es una página de venta
+         * y "Depósito: ingreso por series y etiquetas" vende mejor que
+         * "deposito"— pero si el plan la incluye o no lo decide el catálogo.
+         *
+         * Antes esto también estaba escrito: el día que Eventos, Depósito y
+         * Reposición entraron a los planes hubo que editar este HTML a mano, y
+         * hasta que alguien se acordara la página vendía algo distinto de lo
+         * que el sistema daba.
+         *
+         * `data-feature` acepta varias claves separadas por coma para los
+         * bullets que juntan dos funciones: el tilde sólo va si están todas.
+         * Un bullet sin el atributo no se toca — "Punto de venta y stock" o
+         * "Migración de datos asistida" no dependen del catálogo.
+         */
+        var features = plan.features || {};
+        card.querySelectorAll("[data-feature]").forEach(function (li) {
+          var claves = li.getAttribute("data-feature").split(",");
+          var todas = claves.every(function (k) { return features[k.trim()] === true; });
+          li.className = todas ? "yes" : "no";
         });
       });
 
