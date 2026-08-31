@@ -1,4 +1,5 @@
 const { Plan, PlatformSetting } = require('../models');
+const { CATALOGO_FEATURES } = require('../config/planes');
 
 /*
  * Datos que consume la página pública de Stocker.
@@ -87,7 +88,27 @@ const datosLanding = async (_req, res, next) => {
         maxComprobantes: p.maxComprobantes,
         soporte: p.soporte,
         requiereCotizacion: p.requiereCotizacion,
+        /*
+         * Las funciones, para que la página pública deje de tenerlas escritas.
+         *
+         * Los precios y los topes ya viajaban; las funciones no, así que el día
+         * que Eventos, Depósito y Reposición entraron al catálogo hubo que
+         * editar el HTML de la landing a mano. Un cambio hecho en el backoffice
+         * seguía sin verse ahí, que es justo lo que el resto de este endpoint
+         * viene a evitar.
+         *
+         * Se manda el objeto entero y no una lista curada: la página decide qué
+         * bullets muestra y con cuál texto —es una página de venta, no una
+         * tabla— pero el tilde y la cruz salen de acá.
+         */
+        features: (typeof p.features === 'string' ? JSON.parse(p.features || '{}') : (p.features || {})),
       })),
+      /*
+       * El nombre visible de cada función, por si la página quiere listarlas
+       * sin tenerlas escritas. Es el mismo catálogo que usan el backoffice y la
+       * pantalla de suscripción.
+       */
+      features: CATALOGO_FEATURES,
     });
   } catch (e) { next(e); }
 };

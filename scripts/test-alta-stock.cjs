@@ -61,6 +61,22 @@ function sesion() {
     where: { businessId: negocio.id, tipo: 'local', activo: true }, order: [['id', 'ASC']],
   });
   const [A, B] = locales;
+  /*
+   * El fixture, comprobado antes de empezar.
+   *
+   * Sin esto, un demo con un solo local de venta reventaba cincuenta líneas
+   * más abajo con "Cannot read properties of undefined (reading 'id')" — un
+   * mensaje que no dice ni qué falta ni dónde mirar. Pasó de verdad: un local
+   * había quedado con el tipo cambiado y encontrar la causa llevó más que
+   * arreglarla.
+   */
+  if (!A || !B) {
+    console.error(
+      `\x1b[31m✖ Esta prueba necesita DOS locales de tipo "local" en el negocio demo, y hay ${locales.length}.\x1b[0m\n`
+      + '  Revisá en Empleados → Locales que ninguno haya quedado con otro tipo.',
+    );
+    process.exit(1);
+  }
   const metodo = await PaymentMethod.findOne({ where: { businessId: negocio.id } });
   const rol = await Role.findOne({ where: { businessId: negocio.id, nombre: 'Vendedor' } })
     || await Role.findOne({ where: { businessId: negocio.id } });

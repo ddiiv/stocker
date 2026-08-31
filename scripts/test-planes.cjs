@@ -46,7 +46,7 @@ function sesion() {
     const set = r.headers.getSetCookie?.() || [];
     if (set.length) cookie = set.map((c) => c.split(';')[0]).join('; ');
     let json = null; try { json = JSON.parse(await r.text()); } catch { /* no json */ }
-    return { status: r.status, json };
+    return { status: r.status, json, cacheControl: r.headers.get('cache-control') || '' };
   };
 }
 
@@ -289,6 +289,65 @@ function sesion() {
     chk('el plan queda como estaba', skusAntes, restaurado.maxSkus);
     chk('sin quedar marcado como tocado a mano', editadoAntes, restaurado.editadoEn);
 
+
+    // ─────────────────────────────────────────────────────────────
+    tit('12. LO QUE SE EDITA EN EL BACKOFFICE LLEGA A LA PÁGINA PÚBLICA');
+    /*
+     * La landing tenía los precios y los topes sincronizados, pero las
+     * funciones escritas a mano en el HTML. El día que Eventos, Depósito y
+     * Reposición entraron al catálogo hubo que editar esa página aparte, y
+     * hasta que alguien se acordara vendía algo distinto de lo que el sistema
+     * daba.
+     *
+     * Esto comprueba el circuito entero: se edita por donde edita el
+     * backoffice y se lee por donde lee la página.
+     */
+    const publico1 = await api('GET', '/api/public/landing');
+    chk('la página pública responde', 200, publico1.status);
+    chk('y trae el catálogo de funciones con su nombre', true,
+      Array.isArray(publico1.json?.features) && publico1.json.features.length === CATALOGO_FEATURES.length);
+
+    const proPublico = (publico1.json?.planes || []).find((x) => x.codigo === 'pro');
+    chk('cada plan viaja con sus funciones', true, Boolean(proPublico?.features));
+    chk('el Pro sale con Mercado Libre', true, proPublico.features.ecommerce);
+
+    // Se edita por el mismo camino que usa el backoffice.
+    const proParaLanding = await Plan.findOne({ where: { codigo: 'pro' } });
+    const featuresParaLanding = typeof proParaLanding.features === 'string'
+      ? JSON.parse(proParaLanding.features || '{}') : { ...proParaLanding.features };
+    const precioParaLanding = proParaLanding.precioMensual;
+    const editadoParaLanding = proParaLanding.editadoEn;
+
+    await llamar('pro', { features: { ecommerce: false }, precioMensual: 123456 });
+
+    const publico2 = await api('GET', '/api/public/landing');
+    const proTrasEditar = (publico2.json?.planes || []).find((x) => x.codigo === 'pro');
+    chk('apagar una función se ve en la página', false, proTrasEditar.features.ecommerce);
+    chk('y cambiar el precio también', 123456, proTrasEditar.precioMensual);
+    chk('sin tocar las demás funciones', true, proTrasEditar.features.deposito);
+
+    /*
+     * La respuesta NO puede quedar cacheada por un intermediario: si el proxy
+     * de Railway o un CDN se la guardan, un cambio del backoffice deja de
+     * verse y no hay forma de saber por qué.
+     */
+    chk('y la respuesta se revalida siempre', true, /no-cache/.test(publico2.cacheControl));
+
+    /*
+     * Se restaura con un UPDATE por `where`, no sobre la instancia.
+     *
+     * `proParaLanding` se leyó ANTES de editar, así que en memoria ya tiene los
+     * valores originales: pedirle que se actualice a lo que cree que ya es no
+     * genera ninguna escritura, y el plan quedaba editado. La prueba se caía
+     * en su propia limpieza y dejaba el catálogo tocado.
+     */
+    await Plan.update(
+      { features: featuresParaLanding, precioMensual: precioParaLanding, editadoEn: editadoParaLanding },
+      { where: { codigo: 'pro' } },
+    );
+    const proRestaurado = (await api('GET', '/api/public/landing')).json.planes.find((x) => x.codigo === 'pro');
+    chk('el plan queda como estaba', [true, Number(precioParaLanding)],
+      [proRestaurado.features.ecommerce, proRestaurado.precioMensual]);
   } finally {
     tit('Limpieza');
     await sub.update({ planId: planOriginal });

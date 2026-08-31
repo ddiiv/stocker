@@ -369,8 +369,7 @@ async function start() {
        * una captura de estos logs no tiene por qué contar cómo está armado el
        * servidor por dentro.
        */
-      console.log(`✔ Stocker API escuchando en el puerto ${dir.port} (IPv4 + IPv6)`);
-      console.log(`  El servicio del front debe apuntar a: http://<nombre-de-este-servicio>.railway.internal:${dir.port}`);
+      console.log(`✔ Stocker API escuchando`);
 
       /*
        * Estado de las defensas, en el arranque.

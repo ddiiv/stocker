@@ -46,6 +46,12 @@ function sesion() {
   const negocio = await Business.findOne({ where: { email: 'demo@stocker.app' } });
   const locales = await BusinessLocation.findAll({ where: { businessId: negocio.id, activo: true }, order: [['id', 'ASC']] });
   const [A, B] = locales;
+  // Mismo resguardo que en test-alta-stock: sin dos locales de venta, el fallo
+  // aparece cincuenta líneas después y no dice qué falta.
+  if (!A || !B) {
+    console.error(`\x1b[31m✖ Hacen falta DOS locales de tipo "local" en el demo, y hay ${locales.length}.\x1b[0m`);
+    process.exit(1);
+  }
   const metodo = await PaymentMethod.findOne({ where: { businessId: negocio.id } });
 
   const prod = await Product.create({
