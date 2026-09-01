@@ -54,12 +54,16 @@ const callback = async (req, res, next) => {
 
     // El state tiene que ser uno que hayamos firmado nosotros: si no, alguien
     // está intentando enganchar su cuenta de ML a un negocio ajeno.
-    const businessId = ml.leerState(state);
-    if (!businessId) {
+    const abierto = ml.leerState(state);
+    if (!abierto) {
       return volver({ ml_error: 'La autorización no es válida o venció. Reintentá desde la app.' });
     }
 
-    await ml.conectarConCodigo({ businessId, code });
+    // El verifier de PKCE vuelve adentro del state: es la mitad que prueba que
+    // este `code` es del pedido que salió de acá y no de otro.
+    await ml.conectarConCodigo({
+      businessId: abierto.businessId, code, verifier: abierto.verifier,
+    });
     volver({ ml_ok: '1' });
   } catch (e) {
     const detalle = e.response?.data?.message || e.message;

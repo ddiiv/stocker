@@ -21,6 +21,7 @@
  */
 
 const { NO_ES_FERIA } = require('../utils/feria');
+const crypto = require('crypto');
 const axios = require('axios');
 const { MercadoLibreAccount, MercadoLibreLink, ProductVariant, Product, VariantStock } = require('../models');
 const stockService = require('./stockService');
@@ -68,15 +69,46 @@ function estaConfigurado() {
 // a mano .../callback?code=<suyo>&state=<id de la víctima>, dejando su cuenta
 // de MercadoLibre enganchada al negocio de otro. Al firmarlo, un state que no
 // haya salido de acá no valida. Los 10 minutos acotan la ventana de reuso.
-function firmarState(businessId) {
-  return signToken({ tipo: 'ml_oauth', businessId }, { expiresIn: '10m' });
+/*
+ * ── PKCE ──────────────────────────────────────────────────────────
+ *
+ * Se manda un `code_challenge` en la ida y el `code_verifier` en la vuelta.
+ * MercadoLibre los cruza y así el `code` que viaja por la barra del navegador
+ * no le sirve a nadie más: sin el verifier no se canjea por un token.
+ *
+ * Para MercadoLibre estos campos son opcionales, PERO si la aplicación tiene
+ * PKCE activado en el panel pasan a ser obligatorios, y sin ellos la
+ * autorización falla para todas las cuentas por igual. Se mandan siempre: si
+ * la app no lo tiene activado no molestan, y si lo tiene, es la diferencia
+ * entre andar y no andar.
+ *
+ * El verifier viaja adentro del `state`, que va firmado y dura diez minutos.
+ * Es un compromiso conocido: quien pueda leer el state lee el verifier. Se
+ * acepta porque acá el PKCE es una defensa de más y no la única —el canje
+ * pide igual el client_secret, que no sale del servidor—, y porque la
+ * alternativa, guardarlo del lado del servidor, se rompe con dos instancias o
+ * con un deploy en el medio de la autorización. Un usuario que quedó a mitad
+ * de camino porque justo se reinició el proceso es peor que esto.
+ */
+function generarPkce() {
+  const verifier = crypto.randomBytes(32).toString('base64url'); // 43 caracteres
+  const challenge = crypto.createHash('sha256').update(verifier).digest('base64url');
+  return { verifier, challenge };
+}
+
+function firmarState(businessId, verifier) {
+  return signToken({ tipo: 'ml_oauth', businessId, v: verifier }, { expiresIn: '10m' });
 }
 
 function leerState(state) {
   try {
     const payload = verifyToken(String(state || ''));
     if (payload?.tipo !== 'ml_oauth') return null;
-    return Number(payload.businessId) || null;
+    const businessId = Number(payload.businessId) || null;
+    if (!businessId) return null;
+    // El verifier puede no estar: un state emitido antes de que existiera PKCE
+    // y usado dentro de sus diez minutos. Se deja pasar sin él.
+    return { businessId, verifier: payload.v || null };
   } catch {
     return null; // firma inválida, vencido o manipulado
   }
@@ -84,25 +116,34 @@ function leerState(state) {
 
 function urlAutorizacion(businessId) {
   const c = config();
+  const { verifier, challenge } = generarPkce();
   const params = new URLSearchParams({
     response_type: 'code',
     client_id:     c.clientId,
     redirect_uri:  c.redirectUri,
-    state:         firmarState(businessId),
+    state:         firmarState(businessId, verifier),
+    code_challenge: challenge,
+    code_challenge_method: 'S256',
   });
   return `${ML_AUTH}/authorization?${params}`;
 }
 
 /** Canjea el `code` del callback por tokens y guarda la cuenta. */
-async function conectarConCodigo({ businessId, code }) {
+async function conectarConCodigo({ businessId, code, verifier = null }) {
   const c = config();
-  const { data } = await axios.post(`${ML_API}/oauth/token`, new URLSearchParams({
+  const cuerpo = {
     grant_type:    'authorization_code',
     client_id:     c.clientId,
     client_secret: c.clientSecret,
     code,
     redirect_uri:  c.redirectUri,
-  }), { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
+  };
+  // El verifier sólo si la ida llevó challenge. Mandarlo vacío es peor que no
+  // mandarlo: MercadoLibre lo compara igual y no coincide con nada.
+  if (verifier) cuerpo.code_verifier = verifier;
+
+  const { data } = await axios.post(`${ML_API}/oauth/token`, new URLSearchParams(cuerpo),
+    { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
 
   const perfil = await axios.get(`${ML_API}/users/me`, {
     headers: { Authorization: `Bearer ${data.access_token}` },
