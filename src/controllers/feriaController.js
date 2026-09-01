@@ -1,6 +1,7 @@
 const sequelize = require('../config/database');
 const feriaService = require('../services/feriaService');
 const { Product, ProductVariant } = require('../models');
+const listaPrecios = require('../services/listaPreciosService');
 
 /*
  * Catálogo de feria: generación y consulta.
@@ -109,4 +110,34 @@ const postManual = async (req, res, next) => {
   }
 };
 
-module.exports = { getCandidatos, postGenerar, postManual, getProductos, postPrecios };
+/*
+ * GET /api/feria/lista-precios  →  PDF
+ *
+ * El papel que se apoya en la mesa del puesto: precio, qué colores y qué talles
+ * hay de cada modelo, y el código para escanear sin buscar la prenda.
+ *
+ * Va como GET y no como POST porque no cambia nada: es un informe. Eso además
+ * permite abrirlo en una pestaña y mandarlo a imprimir sin más vueltas.
+ */
+const getListaPrecios = async (req, res, next) => {
+  try {
+    const { Business } = require('../models');
+    const negocio = await Business.findByPk(req.auth.businessId, {
+      attributes: ['id', 'nombreNegocio'],
+    });
+    const { buffer, filas, avisos } = await listaPrecios.generarListaPrecios(req.auth.businessId, negocio);
+
+    /*
+     * Los avisos viajan en una cabecera y no en el cuerpo: el cuerpo es el PDF.
+     * Si algún código quedó con barras demasiado finas, la pantalla lo muestra
+     * DESPUÉS de descargarlo — enterarse en el puesto sería tarde.
+     */
+    if (avisos.length) res.set('X-Aviso', encodeURIComponent(avisos.join(' ')));
+    res.set('X-Filas', String(filas));
+    res.set('Content-Type', 'application/pdf');
+    res.set('Content-Disposition', `inline; filename="lista-precios-evento.pdf"`);
+    res.send(buffer);
+  } catch (error) { next(error); }
+};
+
+module.exports = { getCandidatos, postGenerar, postManual, getProductos, postPrecios, getListaPrecios };

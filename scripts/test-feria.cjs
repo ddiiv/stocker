@@ -468,6 +468,65 @@ function sesion() {
     await Product.destroy({ where: { id: normalQA.id } });
   }
 
+  tit('18. LA LISTA DE PRECIOS DEL PUESTO');
+  /*
+   * Es el papel que se apoya en la mesa: precio, qué colores y qué talles hay
+   * de cada modelo, y el código para escanear sin buscar la prenda.
+   *
+   * La vuelta que la hace útil es que las variantes salen del producto
+   * ORIGINAL: el de evento no tiene ni color ni talle por definición, y eso es
+   * justamente lo que el vendedor necesita saber para revolver la pila.
+   */
+  const { __datosDeLista, generarListaPrecios } = require('../src/services/listaPreciosService');
+
+  const paraLista = await api('POST', '/api/feria/generar', {
+    productIds: [origen.id], prefijo: 'EVE',
+    precio: {
+      minorista: { base: 'minorista', modo: 'igual', valor: 0 },
+      mayorista: { base: 'mayorista', modo: 'igual', valor: 0 },
+    },
+  });
+  chk('hay al menos un producto de evento', true, paraLista.status === 201 || paraLista.status === 200);
+
+  const filas = await __datosDeLista(negocio.id);
+  chk('la lista trae filas', true, filas.length > 0);
+
+  const fila = filas.find((f) => f.sku && f.sku.endsWith(origen.sku));
+  chk('cada fila lleva su código de evento', true, Boolean(fila?.sku));
+  chk('con los dos precios', true, fila.precioMinorista > 0 && fila.precioMayorista > 0);
+  chk('y las variantes del producto ORIGINAL', true, fila.var1.length > 0);
+  chk('con el nombre de la variante', true, Boolean(fila.var1Nombre));
+
+  /*
+   * Los valores no se repiten: el original tiene una variante por cada
+   * combinación color×talle, así que sin agrupar el mismo color saldría tantas
+   * veces como talles haya.
+   */
+  chk('sin valores repetidos', fila.var1.length, new Set(fila.var1).size);
+
+  tit('19. LOS TALLES SE ORDENAN COMO SE LEEN');
+  /*
+   * Alfabéticamente, "S, M, L" sale "L, M, S" — correcto para una máquina y
+   * absurdo para cualquiera que haya visto una pila de ropa. Y los talles de
+   * niño salían "10, 2, 4", que encima parece un error de carga.
+   */
+  const { __ordenarValores } = require('../src/services/listaPreciosService');
+  chk('la escala de letras', ['XS', 'S', 'M', 'L', 'XL'], __ordenarValores(['L', 'M', 'S', 'XL', 'XS']));
+  chk('los números por su valor', ['2', '4', '10', '38'], __ordenarValores(['38', '10', '2', '4']));
+  chk('y lo que no es talle, alfabético', ['Beige', 'Negro', 'Verde'],
+    __ordenarValores(['Verde', 'Beige', 'Negro']));
+
+  tit('20. EL PDF SALE Y AVISA SI UN CÓDIGO NO SE VA A LEER');
+  const pdf = await generarListaPrecios(negocio.id, { nombreNegocio: 'QA' });
+  chk('devuelve un PDF', '%PDF', pdf.buffer.slice(0, 4).toString());
+  chk('con las filas que corresponden', filas.length, pdf.filas);
+  chk('y sin avisos de códigos ilegibles', 0, pdf.avisos.length);
+
+  const porHttp = await fetch(`${API}/api/feria/lista-precios`, { headers: { Cookie: api.cookie } });
+  chk('el endpoint responde', 200, porHttp.status);
+  chk('con tipo PDF', true, /application\/pdf/.test(porHttp.headers.get('content-type') || ''));
+  chk('y dice cuántas filas trae', String(filas.length), porHttp.headers.get('x-filas'));
+
   tit('Limpieza');
   for (const id of aBorrar.ventas) {
     await SaleItem.destroy({ where: { saleId: id } });
