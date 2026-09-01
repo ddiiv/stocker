@@ -25,7 +25,10 @@ function soloCampos(body, permitidos) {
 
 const CAMPOS_LOCAL   = ['nombre', 'direccion', 'telefono', 'activo', 'tipo',
   // La regla de precio mayorista es propia de cada local. Ver reglaMayoristaService.
-  'mayoristaModo', 'mayoristaCantidad', 'mayoristaMonto'];
+  'mayoristaModo', 'mayoristaCantidad', 'mayoristaMonto',
+  // Si este local abastece lo que se vende por internet: su stock se publica y
+  // de ahí se descuentan los pedidos online. Ver stockService.stockOnline.
+  'abasteceOnline'];
 const CAMPOS_CLIENTE = ['nombre', 'apellido', 'email', 'telefono', 'whatsapp',
   'cuit', 'dni', 'direccion', 'tipo', 'notas'];
 

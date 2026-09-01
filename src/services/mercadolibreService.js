@@ -22,7 +22,7 @@
 
 const { NO_ES_FERIA } = require('../utils/feria');
 const axios = require('axios');
-const { MercadoLibreAccount, MercadoLibreLink, ProductVariant, Product, BusinessLocation } = require('../models');
+const { MercadoLibreAccount, MercadoLibreLink, ProductVariant, Product, VariantStock } = require('../models');
 const stockService = require('./stockService');
 const { signToken, verifyToken } = require('../utils/jwt');
 const { log } = require('../utils/logger');
@@ -258,44 +258,31 @@ async function actualizarStock(token, { mlItemId, mlVariationId, cantidad }) {
  * @param {boolean} opts.simular  Si es true, calcula los cambios pero no los envía.
  * @param {string[]} opts.skus    Si viene, sincroniza solo esos SKUs.
  */
-/*
- * De qué lugar sale el stock que se publica.
- *
- * El elegido en la cuenta; si no hay, el primero de tipo `online`. Nunca el
- * total de la variante: desde que el stock es por local, ese total incluye el
- * depósito, donde la mercadería rota todo el tiempo y puede salir para una
- * sucursal en cualquier momento. Publicarlo es ofrecer online algo que quizá
- * ya no esté para despachar.
- *
- * Sin ningún lugar designado devuelve null y la sincronización se frena con un
- * mensaje, en vez de caer al total en silencio y volver al problema de antes.
- */
-async function lugarDePublicacion(businessId, cuenta = null) {
-  const acc = cuenta || await MercadoLibreAccount.findOne({ where: { businessId } });
-
-  if (acc?.locationId) {
-    const elegido = await BusinessLocation.findOne({
-      where: { id: acc.locationId, businessId, activo: true },
-    });
-    if (elegido) return elegido;
-  }
-
-  return BusinessLocation.findOne({
-    where: { businessId, activo: true, tipo: 'online' },
-    order: [['id', 'ASC']],
-  });
-}
-
 async function sincronizarStock(businessId, { simular = false, skus = null } = {}) {
   const cuenta = await MercadoLibreAccount.findOne({ where: { businessId } });
   if (!cuenta) throw Object.assign(new Error('No hay una cuenta de MercadoLibre conectada.'), { status: 400 });
 
-  const lugar = await lugarDePublicacion(businessId, cuenta);
-  if (!lugar) {
+  /*
+   * Se publica la suma de los locales que abastecen las ventas online.
+   *
+   * Antes se publicaba el stock de UN local designado, y eso obligaba a tener
+   * mercadería apartada ahí para poder vender por internet. En un negocio con
+   * varias sucursales que despachan de donde haya, esa cuenta siempre estaba
+   * mal: o se publicaba de menos y se perdían ventas, o se apartaba stock que
+   * al mostrador le hacía falta.
+   *
+   * Ahora la tienda online no guarda nada: administra. El stock vendible por
+   * internet es el que está en los locales de venta, y el descuento sale de
+   * ahí. Cuál local abastece se marca por local, así una sucursal que no
+   * despacha envíos puede quedar afuera sin dejar de vender por mostrador.
+   */
+  const locales = await stockService.localesQueAbastecenOnline(businessId);
+  if (!locales.length) {
     throw Object.assign(
       new Error(
-        'No hay un lugar designado para publicar en MercadoLibre. Marcá uno de tus locales como "Online / Envíos" '
-        + 'desde Empleados → Locales: es el stock que se va a publicar.',
+        'Ningún local está marcado para abastecer las ventas online. Marcá al menos uno desde '
+        + 'Empleados → Locales: ese es el stock que se va a publicar y del que se van a descontar '
+        + 'las ventas por internet.',
       ),
       { status: 409, detalles: { codigo: 'SIN_LUGAR_ONLINE' } },
     );
@@ -324,30 +311,52 @@ async function sincronizarStock(businessId, { simular = false, skus = null } = {
     }],
   });
 
+  /*
+   * El stock de todas las variantes en una sola consulta.
+   *
+   * Preguntarlo de a una eran tantas idas a la base como artículos publicados:
+   * con dos mil variantes, dos mil consultas por sincronización. Se trae todo
+   * junto y se suma en memoria, que es una lectura chica y acotada al negocio.
+   */
+  const filasStock = await VariantStock.findAll({
+    where: { businessId, locationId: locales.map((l) => l.id) },
+    attributes: ['productVariantId', 'stock'],
+  });
+  const stockPorVariante = new Map();
+  for (const f of filasStock) {
+    stockPorVariante.set(
+      f.productVariantId,
+      (stockPorVariante.get(f.productVariantId) || 0) + (Number(f.stock) || 0),
+    );
+  }
+
+  const sincronizados = [];
+  const sinPublicacion = [];
+
   const resultados = [];
   for (const v of variantes) {
     if (skus && !skus.includes(v.sku)) continue;
     const destino = porSku.get(v.sku);
-    if (!destino) continue; // el SKU no está publicado en ML
+    if (!destino) { sinPublicacion.push(v.id); continue; } // el SKU no está publicado en ML
 
     /*
-     * El stock DEL LUGAR de publicación, no el total.
+     * El stock que abastece online, no el total.
      *
      * El negativo se publica como cero: un artículo que quedó en -3 por
      * venderse sin cargar no tiene nada para despachar, y mandar el negativo
      * a ML sería pedirle que ofrezca deuda.
      */
-    const enLugar = await stockService.stockEn(v.id, lugar.id);
-    const cantidad = Math.max(0, Number(enLugar) || 0);
+    const cantidad = Math.max(0, stockPorVariante.get(v.id) || 0);
     const fila = {
       sku: v.sku, titulo: v.producto.titulo,
       mlItemId: destino.mlItemId, mlVariationId: destino.mlVariationId,
       stockStocker: cantidad, stockMl: destino.stockActual ?? null,
-      lugar: lugar.nombre,
+      lugar: locales.map((l) => l.nombre).join(', '),
       manual: Boolean(destino.manual),
     };
 
     if (destino.stockActual === cantidad) {
+      sincronizados.push(v.id);
       resultados.push({ ...fila, estado: 'sin-cambios' });
       continue;
     }
@@ -359,6 +368,7 @@ async function sincronizarStock(businessId, { simular = false, skus = null } = {
 
     try {
       await actualizarStock(token, { ...destino, cantidad });
+      sincronizados.push(v.id);
       resultados.push({ ...fila, estado: 'actualizado' });
       await MercadoLibreLink.update(
         { ultimoStockEnviado: cantidad, ultimaSync: new Date(), ultimoError: null },
@@ -382,11 +392,39 @@ async function sincronizarStock(businessId, { simular = false, skus = null } = {
 
   if (!simular) {
     await cuenta.update({ ultimaSync: new Date(), ultimoError: null });
+
+    /*
+     * Queda anotado en la variante si está sincronizada o no.
+     *
+     * Es lo que después se ve en Stock, al lado del artículo. Sin esto la única
+     * forma de saber si algo está publicado era abrir la sincronización y leer
+     * el listado entero.
+     *
+     * Se escribe de a dos consultas y no de a una por variante: son las mismas
+     * dos sin importar si el catálogo tiene diez artículos o dos mil.
+     *
+     * Hoy guarda una plataforma sola porque hay una sola. Cuando entre
+     * Jumpseller hay que juntar las dos acá, no pisar una con la otra.
+     */
+    if (sincronizados.length) {
+      await ProductVariant.update(
+        { sincronizadoCon: 'mercadolibre', sincronizadoEn: new Date() },
+        { where: { id: sincronizados } },
+      );
+    }
+    // El que dejó de estar publicado deja de figurar como sincronizado: si no,
+    // una publicación borrada en ML seguiría mostrándose como al día para siempre.
+    if (sinPublicacion.length) {
+      await ProductVariant.update(
+        { sincronizadoCon: null, sincronizadoEn: null },
+        { where: { id: sinPublicacion, sincronizadoCon: 'mercadolibre' } },
+      );
+    }
   }
 
   return {
     simulado: simular,
-    lugar: { id: lugar.id, nombre: lugar.nombre, tipo: lugar.tipo },
+    lugares: locales.map((l) => ({ id: l.id, nombre: l.nombre, tipo: l.tipo })),
     publicacionesEncontradas: publicaciones.length,
     skusEnMl: porSku.size,
     resultados,
@@ -478,7 +516,6 @@ function marcarParaSync(businessId, sku) {
 
 module.exports = {
   estaConfigurado,
-  lugarDePublicacion,
   marcarParaSync,
   urlAutorizacion,
   leerState,
