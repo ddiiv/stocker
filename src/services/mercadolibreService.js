@@ -76,11 +76,14 @@ function estaConfigurado() {
  * MercadoLibre los cruza y así el `code` que viaja por la barra del navegador
  * no le sirve a nadie más: sin el verifier no se canjea por un token.
  *
- * Para MercadoLibre estos campos son opcionales, PERO si la aplicación tiene
- * PKCE activado en el panel pasan a ser obligatorios, y sin ellos la
- * autorización falla para todas las cuentas por igual. Se mandan siempre: si
- * la app no lo tiene activado no molestan, y si lo tiene, es la diferencia
- * entre andar y no andar.
+ * Va apagado salvo que se pida con ML_PKCE=1, y tiene que coincidir con el
+ * tilde "Requiere PKCE" del panel de la aplicación. Los dos lados van juntos:
+ * con el tilde puesto y sin mandar el challenge, la autorización falla para
+ * todas las cuentas por igual; al revés, mandarlo cuando la app no lo espera
+ * es meter un campo que MercadoLibre no pidió en el único momento del flujo
+ * que no se puede probar sin una cuenta real.
+ *
+ * O sea: primero el tilde en el panel, después la variable. Nunca al revés.
  *
  * El verifier viaja adentro del `state`, que va firmado y dura diez minutos.
  * Es un compromiso conocido: quien pueda leer el state lee el verifier. Se
@@ -90,14 +93,20 @@ function estaConfigurado() {
  * con un deploy en el medio de la autorización. Un usuario que quedó a mitad
  * de camino porque justo se reinició el proceso es peor que esto.
  */
+function usaPkce() {
+  return process.env.ML_PKCE === '1';
+}
+
 function generarPkce() {
   const verifier = crypto.randomBytes(32).toString('base64url'); // 43 caracteres
   const challenge = crypto.createHash('sha256').update(verifier).digest('base64url');
   return { verifier, challenge };
 }
 
-function firmarState(businessId, verifier) {
-  return signToken({ tipo: 'ml_oauth', businessId, v: verifier }, { expiresIn: '10m' });
+function firmarState(businessId, verifier = null) {
+  const payload = { tipo: 'ml_oauth', businessId };
+  if (verifier) payload.v = verifier;
+  return signToken(payload, { expiresIn: '10m' });
 }
 
 function leerState(state) {
@@ -116,15 +125,17 @@ function leerState(state) {
 
 function urlAutorizacion(businessId) {
   const c = config();
-  const { verifier, challenge } = generarPkce();
+  const pkce = usaPkce() ? generarPkce() : null;
   const params = new URLSearchParams({
     response_type: 'code',
     client_id:     c.clientId,
     redirect_uri:  c.redirectUri,
-    state:         firmarState(businessId, verifier),
-    code_challenge: challenge,
-    code_challenge_method: 'S256',
+    state:         firmarState(businessId, pkce?.verifier || null),
   });
+  if (pkce) {
+    params.set('code_challenge', pkce.challenge);
+    params.set('code_challenge_method', 'S256');
+  }
   return `${ML_AUTH}/authorization?${params}`;
 }
 
