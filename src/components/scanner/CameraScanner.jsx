@@ -33,6 +33,16 @@ import { obtenerDetector, hayNativo, camaraDisponible } from "../../utils/detect
  * etiqueta no tiene que cargar veinte unidades sin querer.
  */
 
+/*
+ * Cuánto se ignora un código ya leído, por defecto.
+ *
+ * La cámara mira cuatro veces por segundo y no se dispara con un gatillo: si
+ * queda apoyada sobre una etiqueta, sin esto carga una unidad tras otra. Dos
+ * segundos es lo que tarda una persona en pasar a la prenda siguiente.
+ *
+ * Quien necesite otro número lo pasa por `repetirMs`. En el mostrador, por
+ * ejemplo, dos prendas iguales seguidas son de lo más común.
+ */
 const REPETIR_MS = 2000;
 const MS_ENTRE_LECTURAS = 250;   // 4 por segundo: instantáneo para la mano, y no calienta el teléfono
 const GUARDADO = "stocker.scanner.recuadro";
@@ -55,7 +65,7 @@ function recuadroGuardado() {
   return POR_DEFECTO;
 }
 
-export default function CameraScanner({ onScan, activo = true, onEstado }) {
+export default function CameraScanner({ onScan, activo = true, onEstado, repetirMs = REPETIR_MS }) {
   const videoRef  = useRef(null);
   const contRef   = useRef(null);
   const streamRef = useRef(null);
@@ -68,6 +78,7 @@ export default function CameraScanner({ onScan, activo = true, onEstado }) {
   // Sin las refs quedarían congelados en el valor del primer render.
   const onScanRef = useRef(onScan);   useEffect(() => { onScanRef.current = onScan; }, [onScan]);
   const activoRef = useRef(activo);   useEffect(() => { activoRef.current = activo; }, [activo]);
+  const repetirRef = useRef(repetirMs); useEffect(() => { repetirRef.current = repetirMs; }, [repetirMs]);
 
   const [roi, setRoi] = useState(recuadroGuardado);
   const roiRef = useRef(roi);
@@ -155,7 +166,7 @@ export default function CameraScanner({ onScan, activo = true, onEstado }) {
           if (!codigo?.rawValue) return;
           const valor = codigo.rawValue.trim();
           const ahora = Date.now();
-          if (valor === ultimo.current.codigo && ahora - ultimo.current.ts < REPETIR_MS) return;
+          if (valor === ultimo.current.codigo && ahora - ultimo.current.ts < repetirRef.current) return;
           ultimo.current = { codigo: valor, ts: ahora };
           setDestello(true); setTimeout(() => setDestello(false), 220);
           navigator.vibrate?.(60);

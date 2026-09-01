@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import {
-  ScanLine, Trash2, Plus, Minus, XCircle, ShoppingCart,
+  ScanLine, Camera, Trash2, Plus, Minus, XCircle, ShoppingCart,
   Receipt, Loader2, UserCircle2, UserPlus, NotebookPen,
 } from "lucide-react";
 import { scanProduct } from "../services/productService";
@@ -10,6 +10,8 @@ import { fetchEmployees, fetchLocalesDeVenta } from "../services/employeeService
 import { fetchClients } from "../services/clientService";
 import { fetchPaymentMethods } from "../services/paymentMethodService";
 import { useBarcodeScanner } from "../hooks/useBarcodeScanner";
+import { camaraDisponible } from "../components/scanner/CameraScanner";
+import ScannerVentaCamara from "../components/scanner/ScannerVentaCamara";
 import { formatCurrency } from "../utils/formatters";
 import { esMayorista as evaluarMayorista, describir as describirRegla } from "../utils/reglaMayorista";
 import { PageHeader, Card } from "../components/ui/Layout";
@@ -87,6 +89,22 @@ export default function PosPage() {
   const [altaCliente, setAltaCliente] = useState(false);
   const [resaltado, setResaltado] = useState(null);
   const inputRef = useRef(null);
+
+  /*
+   * Escanear con la cámara del teléfono.
+   *
+   * El mostrador tiene lector USB, pero el resto del negocio no: una feria, un
+   * local chico, o el día que el lector se rompe. Se resuelve con lo que
+   * siempre hay a mano, que es un teléfono, y es el mismo escaneo que ya se usa
+   * para stock.
+   *
+   * `escaneando` frena la cámara mientras la lectura anterior está yendo al
+   * servidor: sin eso, apuntar tres segundos a la misma etiqueta encola varios
+   * pedidos y las unidades entran desordenadas.
+   */
+  const [camaraAbierta, setCamaraAbierta] = useState(false);
+  const [escaneando, setEscaneando] = useState(false);
+  const hayCamara = camaraDisponible();
   const resaltadoTimer = useRef(null);
 
   useEffect(() => () => clearTimeout(resaltadoTimer.current), []);
@@ -328,6 +346,7 @@ export default function PosPage() {
 
   async function procesarCodigo(codigo) {
     setError("");
+    setEscaneando(true);
     try {
       const p = await scanProduct(codigo, localEfectivo || null);
       setItems((prev) => {
@@ -348,12 +367,20 @@ export default function PosPage() {
     } catch (e) {
       setError(e.response?.data?.message || `No se encontró el código ${codigo}`);
       beep(220, 200);
+    } finally {
+      setEscaneando(false);
     }
   }
 
   // Siempre activo salvo mientras se está cobrando, para que un escaneo
   // accidental no altere una venta que ya se está registrando.
-  const { scannerActivo, lecturas } = useBarcodeScanner({ onScan: procesarCodigo, activo: !cobrando });
+  /*
+   * El teclado deja de escucharse con la cámara abierta: los dos lectores
+   * apuntan a la misma función y una lectura entraría dos veces.
+   */
+  const { scannerActivo, lecturas } = useBarcodeScanner({
+    onScan: procesarCodigo, activo: !cobrando && !camaraAbierta,
+  });
 
   function submitManual(e) {
     e.preventDefault();
@@ -588,6 +615,25 @@ export default function PosPage() {
                 />
                 {lecturas > 0 && (
                   <span className="shrink-0 text-xs tabular-nums text-ink-500">{lecturas} lect.</span>
+                )}
+                {/*
+                  * Sólo si el navegador puede abrir la cámara. Un botón que al
+                  * tocarlo avisa que no se puede es peor que no tenerlo: en el
+                  * mostrador se toca igual y se pierde el tiempo ahí.
+                  *
+                  * `type="button"` porque está adentro del formulario del
+                  * código: sin eso, tocarlo lo envía y busca el código vacío.
+                  */}
+                {hayCamara && (
+                  <button
+                    type="button"
+                    onClick={() => setCamaraAbierta(true)}
+                    className="btn-ghost shrink-0 gap-1.5 px-2.5 py-1.5 text-xs"
+                    title="Escanear con la cámara del teléfono"
+                  >
+                    <Camera size={15} />
+                    <span className="hidden sm:inline">Cámara</span>
+                  </button>
                 )}
               </div>
             </form>
@@ -893,6 +939,27 @@ export default function PosPage() {
           )}
         </div>
       </div>
+
+      {/*
+        * Se monta sólo cuando está abierta, y no oculta con CSS: la cámara del
+        * teléfono se apaga al desmontarse el componente. Escondida seguiría
+        * prendida, con su luz y su consumo, y el empleado creyendo que la
+        * cerró.
+        */}
+      {camaraAbierta && (
+        <ScannerVentaCamara
+          onScan={procesarCodigo}
+          onCerrar={() => setCamaraAbierta(false)}
+          items={items}
+          onCantidad={cambiarCantidad}
+          precioDe={precioDe}
+          formatCurrency={formatCurrency}
+          total={total}
+          error={error}
+          procesando={escaneando}
+          resaltado={resaltado}
+        />
+      )}
     </div>
   );
 }
