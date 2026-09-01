@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Store, Tag, AlertTriangle, Check, RefreshCw, PackagePlus } from "lucide-react";
+import { Store, Tag, AlertTriangle, Check, RefreshCw, PackagePlus, Printer } from "lucide-react";
 import { PageHeader, Card, EmptyState } from "../components/ui/Layout";
 import ProductoManualModal from "../components/evento/ProductoManualModal";
-import { fetchCandidatos, generarFeria, fetchProductosFeria, reaplicarPrecios } from "../services/feriaService";
+import { fetchCandidatos, generarFeria, fetchProductosFeria, reaplicarPrecios, descargarListaPrecios } from "../services/feriaService";
 import { formatCurrency } from "../utils/formatters";
 import { mensajeDeError } from "../utils/errores";
 
@@ -100,6 +100,7 @@ export default function EventoPage() {
   const [rMayorista, setRMayorista] = useState({ base: "mayorista", modo: "igual", valor: 0 });
   const [reaplicando, setReaplicando] = useState(false);
   const [altaManual, setAltaManual] = useState(false);
+  const [imprimiendo, setImprimiendo] = useState(false);
 
   /*
    * Medio segundo de espera antes de preguntar.
@@ -216,6 +217,27 @@ export default function EventoPage() {
     await cargar();
   }
 
+  /*
+   * La lista de precios del puesto.
+   *
+   * Es lo que se apoya en la mesa: precio, qué colores y qué talles hay de cada
+   * modelo, y el código para escanear sin tener que buscar la prenda entre la
+   * pila. Por eso el aviso de códigos finos se muestra acá y no se descarta:
+   * un código que no lee convierte la lista en un adorno.
+   */
+  async function imprimirLista() {
+    setImprimiendo(true); setError(""); setAviso("");
+    try {
+      const { aviso: avisoImpresion, filas } = await descargarListaPrecios();
+      if (avisoImpresion) setError(avisoImpresion);
+      else setAviso(`Lista con ${filas} producto(s) lista para imprimir.`);
+    } catch (e) {
+      setError(mensajeDeError(e, "No se pudo armar la lista de precios."));
+    } finally {
+      setImprimiendo(false);
+    }
+  }
+
   return (
     <div>
       <ProductoManualModal
@@ -240,6 +262,11 @@ export default function EventoPage() {
                 producto de evento, no un caso raro. */}
             <button className="btn-accent" onClick={() => setAltaManual(true)}>
               <PackagePlus size={15} /> Producto nuevo
+            </button>
+            {/* La lista sólo tiene sentido con algo cargado: sin productos de
+                evento saldría una hoja con el encabezado y nada más. */}
+            <button className="btn-ghost" onClick={imprimirLista} disabled={imprimiendo || generados.length === 0}>
+              <Printer size={15} /> {imprimiendo ? "Armando…" : "Lista de precios"}
             </button>
             <button className="btn-ghost" onClick={cargar} disabled={cargando}>
               <RefreshCw size={15} /> Actualizar

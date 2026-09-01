@@ -43,6 +43,42 @@ export async function reaplicarPrecios({ productIds, precio }) {
 }
 
 /*
+ * La lista de precios del puesto, en PDF.
+ *
+ * Se pide como blob y se abre en una pestaña: es un papel para imprimir, y
+ * mandarlo directo a la impresora desde acá le sacaría a la persona la
+ * posibilidad de mirarlo antes de gastar diez hojas.
+ *
+ * Si algún código quedó con barras demasiado finas para imprimirse bien, el
+ * servidor lo avisa en una cabecera. Se devuelve junto al PDF para que la
+ * pantalla lo muestre: enterarse en el puesto, con el lector fallando y gente
+ * esperando, es tarde.
+ */
+export async function descargarListaPrecios() {
+  const r = await http.get("/feria/lista-precios", { responseType: "blob" });
+  const aviso = r.headers?.["x-aviso"] ? decodeURIComponent(r.headers["x-aviso"]) : null;
+  const filas = Number(r.headers?.["x-filas"] || 0);
+
+  const url = window.URL.createObjectURL(new Blob([r.data], { type: "application/pdf" }));
+  const ventana = window.open(url, "_blank");
+  if (!ventana) {
+    // El navegador bloqueó la pestaña: se descarga, que es la otra forma de
+    // que el papel llegue a la impresora.
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "lista-precios-evento.pdf";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  }
+  // Se libera después: revocarla en el acto deja la pestaña recién abierta sin
+  // nada que mostrar.
+  setTimeout(() => window.URL.revokeObjectURL(url), 5000);
+
+  return { aviso, filas };
+}
+
+/*
  * Carga un producto de evento a mano.
  *
  * Para la mercadería que sólo se vende en eventos y nunca estuvo en el
