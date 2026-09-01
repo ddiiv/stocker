@@ -9,6 +9,7 @@ const { register, login, employeeLogin, logout, me, forgotPassword, verifyResetC
 const { validatePasswordBody } = require('../utils/passwordPolicy');
 const productCtrl  = require('../controllers/productController');
 const feriaCtrl    = require('../controllers/feriaController');
+const colaCtrl     = require('../controllers/colaOnlineController');
 const employeeCtrl = require('../controllers/employeeController');
 const saleCtrl     = require('../controllers/saleController');
 const invoiceCtrl  = require('../controllers/invoiceController');
@@ -200,6 +201,17 @@ r.post('/account/password/confirmar', requireAuth, requireOwner, validatePasswor
  * Y quien ya venía usando esto antes de que existiera la puerta la conserva:
  * lo resuelve requireFeature contra `featuresHeredadas` (ver ensureColumns).
  */
+/*
+ * Lista de espera de venta online.
+ *
+ * Todo pedido de una plataforma pasa por acá antes de tocar el inventario. El
+ * permiso es de ventas porque eso es lo que se está registrando; el de stock no
+ * alcanzaría, y el de stock solo tampoco: quien integra necesita poder vender.
+ */
+r.post('/online/pedidos',   requireAuth, requirePermission('ventas', 'editar'), colaCtrl.postPedido);
+r.get ('/online/pedidos',   requireAuth, requireAnyPermission(['ventas', 'stock'], 'ver'), colaCtrl.getPedidos);
+r.post('/online/procesar',  requireAuth, requirePermission('ventas', 'editar'), colaCtrl.postProcesar);
+
 r.get ('/feria/candidatos', requireAuth, requirePermission('stock', 'ver'),    feriaCtrl.getCandidatos);
 r.get ('/feria/productos',  requireAuth, requireAnyPermission(['stock', 'ventas'], 'ver'), feriaCtrl.getProductos);
 // La lista de precios del puesto, en PDF. Es un informe: alcanza con poder ver.

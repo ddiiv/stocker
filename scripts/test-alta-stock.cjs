@@ -308,9 +308,13 @@ function sesion() {
     // ─────────────────────────────────────────────────────────────
     tit('Dos cajas peleando la última unidad');
     /*
-     * Sin confirmar, una sola puede ganar: la otra se topa con que ya no queda.
-     * Es el mismo lock de siempre, pero ahora el perdedor recibe la pregunta en
-     * vez de un error seco.
+     * Sin confirmar, una sola puede ganar: la otra se topa con que ya no queda,
+     * y recibe la pregunta en vez de un error seco.
+     *
+     * Lo que garantiza que no ganen las dos es la resta condicionada de
+     * `stockService.mover`: la base baja el stock sólo si todavía queda, en la
+     * misma operación con la que escribe. No hay una lectura previa de la que
+     * fiarse, así que no hay ventana entre mirar y restar.
      */
     await fijar(v1, A, 1);
     const [c1, c2] = await Promise.all([

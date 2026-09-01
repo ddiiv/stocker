@@ -11,7 +11,7 @@
  * Excel y devoluciones. Ningún otro archivo hace `variant.update({ stock })`.
  */
 
-const { Op } = require('sequelize');
+const { Op, literal } = require('sequelize');
 const { ProductVariant, VariantStock, BusinessLocation, StockMovement, Employee, Product } = require('../models');
 const { CON_STOCK } = require('../config/lugares');
 
@@ -201,8 +201,8 @@ async function mover({
   }
 
   const fila = await filaDe(variantId, local, businessId, t);
-  const stockAnterior = Number(fila.stock) || 0;
-  const stockNuevo = fijar !== null ? Number(fijar) : stockAnterior + Number(delta);
+  let stockAnterior = Number(fila.stock) || 0;
+  let stockNuevo = fijar !== null ? Number(fijar) : stockAnterior + Number(delta);
 
   if (stockNuevo < 0 && !permitirNegativo) {
     const err = new Error(`Quedaría en ${stockNuevo}: no se puede sacar más de lo que hay en el local.`);
@@ -211,7 +211,53 @@ async function mover({
     throw err;
   }
 
-  await fila.update({ stock: stockNuevo }, { transaction: t });
+  const saca = fijar === null && Number(delta) < 0 && !permitirNegativo;
+  if (saca) {
+    /*
+     * ── No vender dos veces la misma prenda ──────────────────────
+     *
+     * La resta se hace en la base y condicionada: bajá tanto, pero sólo si
+     * todavía hay tanto. Si no queda, no se actualiza ninguna fila y ahí nos
+     * enteramos.
+     *
+     * Antes esto era leer, restar en JavaScript y escribir. Alcanzaba mientras
+     * las ventas entraran de a una, pero con dos entrando juntas —una del salón
+     * y una de Mercado Libre, o dos plataformas sobre la última unidad— las dos
+     * leían "queda 1", las dos escribían 0, y se despachaban dos prendas que no
+     * existían. Se probó con el lock del SELECT y no alcanzó: sirve en un
+     * script suelto y no se aplicaba corriendo dentro del servidor.
+     *
+     * Con la resta condicionada no hay lectura de la que fiarse. Es la base la
+     * que decide, en la misma operación en la que escribe, y no hay ventana
+     * entre una cosa y la otra. Vale igual en SQL Server que en Postgres y no
+     * depende de en qué nivel de aislamiento esté la conexión.
+     *
+     * `permitirNegativo` sigue por el camino de siempre: ahí bajar de cero es
+     * justamente lo que se pidió.
+     */
+    const pide = -Number(delta);
+    const [filasTocadas] = await VariantStock.update(
+      { stock: literal(`stock - ${pide}`) },
+      { where: { id: fila.id, stock: { [Op.gte]: pide } }, transaction: t },
+    );
+
+    if (!filasTocadas) {
+      await fila.reload({ transaction: t });
+      const hay = Number(fila.stock) || 0;
+      const err = new Error(`Quedaría en ${hay - pide}: no se puede sacar más de lo que hay en el local.`);
+      err.status = 409;
+      err.disponible = hay;
+      throw err;
+    }
+
+    // El movimiento tiene que contar lo que pasó de verdad, no lo que se
+    // suponía al leer: entre la lectura y la resta el stock pudo haber cambiado.
+    await fila.reload({ transaction: t });
+    stockNuevo = Number(fila.stock) || 0;
+    stockAnterior = stockNuevo + pide;
+  } else {
+    await fila.update({ stock: stockNuevo }, { transaction: t });
+  }
   const total = await recalcularTotal(variantId, t);
 
   if (registrarMovimiento) {
@@ -253,6 +299,79 @@ async function mover({
 }
 
 /** Cuánto hay de una variante en un local. */
+/*
+ * ── De dónde sale lo que se vende por internet ─────────────────────
+ *
+ * De los locales marcados como `abasteceOnline`, y de ninguno más.
+ *
+ * No de la tienda `online`: ésa identifica el CANAL —sirve para saber que una
+ * venta vino de internet y no del mostrador— pero en la práctica no lleva
+ * inventario. Publicando su stock se ofrecían quince unidades teniendo dos mil
+ * ochocientas en los locales.
+ *
+ * Tampoco del depósito: su mercadería está para reponer los locales y puede
+ * salir hacia una sucursal en cualquier momento. Publicarla es ofrecer online
+ * algo que quizá ya esté en un camión.
+ */
+async function localesQueAbastecenOnline(businessId, t = null) {
+  const { BusinessLocation } = require('../models');
+  return BusinessLocation.findAll({
+    where: { businessId, activo: true, abasteceOnline: true },
+    attributes: ['id', 'nombre'],
+    order: [['id', 'ASC']],
+    transaction: t,
+  });
+}
+
+/**
+ * Cuántas unidades de una variante se pueden ofrecer online.
+ *
+ * Es la SUMA de los locales que abastecen. Publicar sólo el de uno dejaría sin
+ * ofrecer lo que hay en el otro, y el negocio pierde ventas que sí podía hacer.
+ */
+async function stockOnline(variantId, businessId, t = null) {
+  const locales = await localesQueAbastecenOnline(businessId, t);
+  if (!locales.length) return { total: 0, porLocal: [], sinLocales: true };
+
+  const porLocal = [];
+  let total = 0;
+  for (const l of locales) {
+    const n = await stockEn(variantId, l.id, t);
+    porLocal.push({ locationId: l.id, nombre: l.nombre, stock: n });
+    total += n;
+  }
+  return { total, porLocal, sinLocales: false };
+}
+
+/**
+ * Reparte un descuento online entre los locales que abastecen.
+ *
+ * Se saca primero del que MÁS tiene, y se sigue con el siguiente si no alcanza.
+ *
+ * Por qué del que más tiene y no por un orden fijo: con una prioridad fija, el
+ * primer local se vacía mientras el segundo queda intacto, y el vendedor del
+ * primero se queda sin nada para ofrecer en el salón. Sacando del más cargado
+ * los locales se emparejan solos, sin que nadie tenga que mantener un orden.
+ *
+ * Devuelve el reparto SIN escribir nada. Quien lo llama decide si mueve.
+ *
+ * @returns {{alcanza: boolean, falta: number, reparto: Array<{locationId, nombre, unidades}>}}
+ */
+async function repartirDescuentoOnline(variantId, businessId, cantidad, t = null) {
+  const { porLocal } = await stockOnline(variantId, businessId, t);
+  const candidatos = porLocal.filter((l) => l.stock > 0).sort((a, b) => b.stock - a.stock);
+
+  const reparto = [];
+  let restante = cantidad;
+  for (const l of candidatos) {
+    if (restante <= 0) break;
+    const toma = Math.min(l.stock, restante);
+    reparto.push({ locationId: l.locationId, nombre: l.nombre, unidades: toma });
+    restante -= toma;
+  }
+  return { alcanza: restante <= 0, falta: restante, reparto };
+}
+
 async function stockEn(variantId, locationId, t = null) {
   if (!locationId) return null;
   const fila = await VariantStock.findOne({
@@ -317,4 +436,8 @@ async function transferir({ variantId, businessId, desde, hacia, cantidad, emplo
   return { salida, entrada };
 }
 
-module.exports = { mover, stockEn, desglosePorVariante, transferir, localPorDefecto, resolverLocal, recalcularTotal, esVarianteDeFeria };
+module.exports = {
+  mover, stockEn, desglosePorVariante, transferir, localPorDefecto, resolverLocal,
+  recalcularTotal, esVarianteDeFeria,
+  localesQueAbastecenOnline, stockOnline, repartirDescuentoOnline,
+};

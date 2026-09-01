@@ -104,19 +104,54 @@ const updateLocation = async (req, res, next) => {
       return res.status(400).json({ message: `El tipo tiene que ser uno de: ${tiposValidos()}.` });
     }
     /*
-     * Convertir un local de venta en depósito no es un cambio de etiqueta: de
-     * un depósito no se vende. Si tiene mercadería, avisar antes es mejor que
-     * dejar al cajero descubriéndolo con un cliente adelante.
+     * Cambiar el tipo de un local que ya tiene operación NO es un cambio de
+     * etiqueta, y hay que avisarlo antes.
+     *
+     * El aviso estaba sólo para `deposito`. Faltaba justo el caso peor: pasar
+     * un local a `evento`. Un local de evento NO LLEVA STOCK por definición,
+     * así que convertir uno que tiene mercadería cargada y ventas hechas lo
+     * deja con un inventario que el sistema ya no va a mirar — sin una sola
+     * advertencia, con un clic en un desplegable.
+     *
+     * Pasó de verdad, dos veces, sobre locales con ciento setenta ventas y
+     * cuarenta y ocho artículos con stock. Se detectó porque las pruebas
+     * empezaron a fallar; en la cuenta de un cliente no habría fallado nada:
+     * simplemente el local dejaría de aparecer en Stock y nadie sabría por qué.
+     *
+     * Se pregunta por stock Y por ventas. Un local sin stock pero con historial
+     * sigue siendo un cambio grande: sus ventas dejan de contarse como ventas
+     * de local.
      */
-    if (tipo === 'deposito' && loc.tipo !== 'deposito') {
-      const { VariantStock } = require('../models');
-      const conStock = await VariantStock.count({ where: { locationId: loc.id, stock: { [Op.gt]: 0 } } });
-      if (conStock && req.body.confirmar !== true) {
+    const CON_INVENTARIO = ['local', 'online', 'deposito'];
+    const cambiaDeTipo = tipo && tipo !== loc.tipo;
+    const dejaDeLlevarStock = cambiaDeTipo
+      && CON_INVENTARIO.includes(loc.tipo)
+      && (tipo === 'feria' || tipo === 'deposito');
+
+    if (dejaDeLlevarStock && req.body.confirmar !== true) {
+      const { VariantStock, Sale } = require('../models');
+      const [conStock, ventas] = await Promise.all([
+        VariantStock.count({ where: { locationId: loc.id, stock: { [Op.gt]: 0 } } }),
+        Sale.count({ where: { locationId: loc.id } }),
+      ]);
+
+      if (conStock || ventas) {
+        const nombreNuevo = NOMBRES[tipo] || tipo;
+        const detalle = [
+          conStock ? `${conStock} artículo(s) con stock` : null,
+          ventas ? `${ventas} venta(s) registrada(s)` : null,
+        ].filter(Boolean).join(' y ');
+
         return res.status(409).json({
-          message: `"${loc.nombre}" tiene ${conStock} artículo(s) con stock y desde un depósito no se vende. `
-            + 'Confirmá si querés convertirlo igual: la mercadería queda ahí y sale por transferencia.',
-          codigo: 'LOCAL_CON_STOCK',
+          message: `"${loc.nombre}" tiene ${detalle}. `
+            + (tipo === 'feria'
+              ? `Un local de ${nombreNuevo} no lleva inventario: si lo convertís, ese stock deja de contarse `
+                + 'y el local desaparece de Stock y de Reposición.'
+              : 'Desde un depósito no se vende: la mercadería queda ahí y sale por transferencia.')
+            + ' Confirmá si querés convertirlo igual.',
+          codigo: 'LOCAL_CON_OPERACION',
           articulos: conStock,
+          ventas,
         });
       }
     }

@@ -28,6 +28,7 @@ const COLUMNAS_ESPERADAS = {
     tipo: { type: DataTypes.STRING(20), allowNull: false, defaultValue: 'local' },
     // Cuándo una venta de este local va a precio mayorista. Ver el modelo y
     // reglaMayoristaService: cada local tiene la suya.
+    abasteceOnline: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
     mayoristaModo:     { type: DataTypes.STRING(10), allowNull: true, defaultValue: 'cantidad' },
     mayoristaCantidad: { type: DataTypes.INTEGER, allowNull: true, defaultValue: 3 },
     mayoristaMonto:    { type: DataTypes.DECIMAL(12, 2), allowNull: true },
@@ -82,6 +83,10 @@ const COLUMNAS_ESPERADAS = {
     precioMinorista: { type: DataTypes.DECIMAL(12, 2), allowNull: true },
     precioMayorista: { type: DataTypes.DECIMAL(12, 2), allowNull: true },
     costo:           { type: DataTypes.DECIMAL(12, 2), allowNull: true },
+    // Con qué plataformas online quedó sincronizada esta variante, y cuándo.
+    // Ver el modelo: vacío significa que ninguna la encontró por SKU.
+    sincronizadoCon: { type: DataTypes.STRING(120), allowNull: true },
+    sincronizadoEn:  { type: DataTypes.DATE, allowNull: true },
   },
   payment_methods: {
     esEfectivo: { type: DataTypes.BOOLEAN, allowNull: true, defaultValue: false },
@@ -496,6 +501,29 @@ const RELLENOS = [
     reintentable: true,
     sql: `UPDATE business_locations SET tipo = 'local' WHERE tipo IS NULL OR tipo = ''`,
     sqlMssql: `UPDATE business_locations SET tipo = 'local' WHERE tipo IS NULL OR tipo = ''`,
+  },
+  {
+    /*
+     * Qué locales abastecen lo que se vende por internet.
+     *
+     * Los de tipo `local` sí; el resto no. Es lo que el negocio venía haciendo
+     * en la práctica —la prenda que se despacha sale del salón— sólo que hasta
+     * ahora el sistema publicaba el stock de la tienda `online`, que existe
+     * para identificar el canal y casi no lleva inventario. En el negocio de
+     * prueba eran quince unidades contra dos mil ochocientas.
+     *
+     * El depósito queda afuera a propósito: su mercadería está para reponer los
+     * locales y puede salir en cualquier momento. Publicarla es ofrecer online
+     * algo que quizá ya esté camino a una sucursal.
+     *
+     * Es el punto de partida, no una regla: cada local se puede destildar desde
+     * Empleados → Locales.
+     */
+    descripcion: 'los locales de venta pasan a abastecer las ventas online',
+    cuandoSeAgrega: 'business_locations.abasteceOnline',
+    reintentable: false,
+    sql: `UPDATE business_locations SET "abasteceOnline" = true WHERE tipo = 'local'`,
+    sqlMssql: `UPDATE business_locations SET abasteceOnline = 1 WHERE tipo = 'local'`,
   },
 ];
 

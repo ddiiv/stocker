@@ -316,6 +316,102 @@ const ArcaToken = db.define('ArcaToken', {
   expiraEn:  { type: DataTypes.DATE, allowNull: false },
 }, { tableName: 'arca_tokens' });
 
+/* ═══════════════════════════════════════════════════════════════════
+ * Lista de espera de venta online
+ *
+ * Todo pedido que llega de una plataforma —Mercado Libre, Jumpseller, la que
+ * venga— entra acá ANTES de tocar el inventario, y se procesa de a uno en
+ * orden de llegada.
+ *
+ * Por qué una cola y no descontar en el momento:
+ *
+ *   · Dos plataformas pueden vender la misma última unidad con medio segundo
+ *     de diferencia. Sin una fila, las dos leen "queda 1", las dos descuentan,
+ *     y el stock queda en −1 con dos clientes esperando la misma prenda. Con
+ *     la fila, la segunda se encuentra con cero y se rechaza — que es un
+ *     problema, pero UNO, y avisado.
+ *
+ *   · El orden de llegada es la regla de desempate, y es la única que se puede
+ *     explicar sin que nadie se sienta perjudicado: vendió primero el que
+ *     llegó primero.
+ *
+ *   · Un webhook puede llegar dos veces. El índice único sobre
+ *     (negocio, plataforma, pedido) hace que el segundo no descuente de nuevo.
+ *
+ * Lo rechazado NO se borra, y es a propósito: un rechazo significa que la
+ * plataforma ya vendió algo que no teníamos. Ese es exactamente el caso que
+ * hay que poder mirar al día siguiente.
+ * ═══════════════════════════════════════════════════════════════════ */
+const PedidoPlataforma = db.define('PedidoPlataforma', {
+  id:         { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
+  businessId: { type: DataTypes.INTEGER, allowNull: false },
+  // 'mercadolibre' | 'jumpseller' | el que se sume después.
+  plataforma: { type: DataTypes.STRING(20), allowNull: false },
+  /*
+   * El id del pedido EN la plataforma.
+   *
+   * Es la clave de la idempotencia: junto al negocio y la plataforma forma un
+   * índice único, así que el mismo pedido reenviado no descuenta dos veces.
+   */
+  pedidoExterno: { type: DataTypes.STRING(60), allowNull: false },
+
+  // pendiente → aceptado | parcial | rechazado
+  estado:     { type: DataTypes.STRING(12), allowNull: false, defaultValue: 'pendiente' },
+  /*
+   * Por qué se rechazó, o qué quedó afuera si fue parcial.
+   *
+   * Se guarda el texto y no un código porque quien lo lee es una persona
+   * mirando la lista, y necesita saber QUÉ artículo faltó, no un número.
+   */
+  motivo:     { type: DataTypes.STRING(500), allowNull: true },
+
+  /*
+   * Datos del comprador, como los manda la plataforma.
+   *
+   * El documento es lo que hace falta para facturar: sin él la venta online
+   * queda a consumidor final y después hay que ir a buscarlo a mano.
+   */
+  compradorNombre:    { type: DataTypes.STRING(150), allowNull: true },
+  compradorDocumento: { type: DataTypes.STRING(20),  allowNull: true },
+  compradorEmail:     { type: DataTypes.STRING(150), allowNull: true },
+
+  total:      { type: DataTypes.DECIMAL(12, 2), allowNull: true },
+
+  /*
+   * La venta de Stocker que salió de este pedido.
+   *
+   * Se guarda para poder ir del pedido de la plataforma a la venta y al revés.
+   * Sin esto, una venta online aparece en el listado sin forma de saber de
+   * dónde vino.
+   */
+  saleId:     { type: DataTypes.INTEGER, allowNull: true },
+
+  recibidoEn:  { type: DataTypes.DATE, allowNull: false, defaultValue: DataTypes.NOW },
+  procesadoEn: { type: DataTypes.DATE, allowNull: true },
+}, { tableName: 'plataforma_pedidos' });
+
+const PedidoPlataformaItem = db.define('PedidoPlataformaItem', {
+  id:       { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
+  pedidoId: { type: DataTypes.INTEGER, allowNull: false },
+  sku:      { type: DataTypes.STRING(80), allowNull: false },
+  cantidad: { type: DataTypes.INTEGER, allowNull: false },
+  /*
+   * La variante de Stocker, si el SKU existe.
+   *
+   * En null significa que la plataforma vendió un SKU que Stocker no tiene.
+   * Se guarda igual —con el SKU en texto— porque es la única forma de que
+   * alguien pueda ver qué se vendió sin descontar. Saltearlo en silencio
+   * dejaría un pedido con menos artículos de los que realmente tuvo.
+   */
+  productVariantId: { type: DataTypes.INTEGER, allowNull: true },
+  precioUnitario:   { type: DataTypes.DECIMAL(12, 2), allowNull: true },
+  // De qué local salió cada unidad, para poder rastrearlo después.
+  locationId:       { type: DataTypes.INTEGER, allowNull: true },
+}, { tableName: 'plataforma_pedido_items' });
+
+PedidoPlataforma.hasMany(PedidoPlataformaItem, { as: 'items', foreignKey: 'pedidoId' });
+PedidoPlataformaItem.belongsTo(PedidoPlataforma, { as: 'pedido', foreignKey: 'pedidoId' });
+
 // ─── MercadoLibreAccount (integración por negocio) ───────────────
 // Guarda el OAuth de ML. El access_token dura 6h y se renueva con el
 // refresh_token (que dura 6 meses y se rota en cada refresh, así que hay
@@ -450,6 +546,19 @@ const BusinessLocation = db.define('BusinessLocation', {
    * es lo que eran hasta ahora y cambiarlos por adivinanza rompería sus ventas.
    */
   tipo:       { type: DataTypes.STRING(20), allowNull: false, defaultValue: 'local' }, // local|deposito|online|feria
+  /*
+   * Si de este local sale la mercadería que se vende por internet.
+   *
+   * La tienda `online` existe para identificar el CANAL, no para llevar
+   * inventario: en la práctica lo que se vende por Mercado Libre o Jumpseller
+   * sale del salón. Publicar el stock del local `online` era publicar quince
+   * unidades teniendo dos mil ochocientas en los locales.
+   *
+   * Es un tilde por local y no un local fijo porque la decisión cambia: un
+   * negocio puede querer que su sucursal chica no aparezca online para no
+   * quedarse sin nada en el salón un sábado.
+   */
+  abasteceOnline: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
   /*
    * Cuándo una venta de este local pasa a precio mayorista.
    *
@@ -637,6 +746,21 @@ const ProductVariant = db.define('ProductVariant', {
   variante2Valor:  { type: DataTypes.STRING(80) },
   stock:           { type: DataTypes.INTEGER, defaultValue: 0 },
   stockMinimo:     { type: DataTypes.INTEGER, defaultValue: 5 },
+  /*
+   * Con qué plataformas online está sincronizada esta variante.
+   *
+   * Lista separada por comas: 'mercadolibre', 'mercadolibre,jumpseller', o
+   * vacío. Vacío significa que ninguna plataforma la encontró por SKU, y eso
+   * hay que poder verlo de un vistazo: una variante sin sincronizar es una que
+   * se puede vender online sin que Stocker se entere, o que no se ofrece
+   * aunque haya stock. Las dos cosas terminan en un reclamo.
+   *
+   * Se guarda como texto y no como tabla aparte porque es un dato derivado de
+   * la última sincronización: se reescribe entero cada vez y nadie lo cruza
+   * con otra cosa.
+   */
+  sincronizadoCon: { type: DataTypes.STRING(120), allowNull: true },
+  sincronizadoEn:  { type: DataTypes.DATE, allowNull: true },
   activo:          { type: DataTypes.BOOLEAN, defaultValue: true },
   /*
    * Precio propio de la variante. NULL = usa el del producto.
@@ -1281,6 +1405,7 @@ module.exports = {
   Plan, Subscription, SubscriptionPayment, PlatformAdmin, PlatformSetting, AuthAttempt,
   Business, BusinessLocation, BusinessCuit, BusinessArcaConfig, ArcaToken, VariantType, VariantStock,
   MercadoLibreAccount, MercadoLibreLink,
+  PedidoPlataforma, PedidoPlataformaItem,
   Role, Employee, EmployeeSession, PasswordResetCode, AccountChangeCode, Client,
   Product, ProductVariant, StockMovement,
   Sale, SaleItem, Invoice, InvoiceItem,
