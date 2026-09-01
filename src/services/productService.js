@@ -61,6 +61,10 @@ function groupBySkuAgrupador(products) {
       variante1Nombre: v.variante1Nombre, variante1Valor: v.variante1Valor,
       variante2Nombre: v.variante2Nombre, variante2Valor: v.variante2Valor,
       stock: v.stock, stockMinimo: v.stockMinimo,
+      // Con qué plataforma online está sincronizada, si con alguna. Lo escribe
+      // la sincronización de Mercado Libre; nulo es "no está publicada".
+      sincronizadoCon: v.sincronizadoCon || null,
+      sincronizadoEn: v.sincronizadoEn || null,
       /*
        * El precio de la variante si lo tiene; si no, el del producto.
        *
@@ -91,6 +95,14 @@ function groupBySkuAgrupador(products) {
       precioHasta: precios.length ? Math.max(...precios) : 0,
       colores: [...new Set(g.variants.map((v) => v.color).filter(Boolean))],
       talles:  [...new Set(g.variants.map((v) => v.talle).filter(Boolean))],
+      /*
+       * Cuántas variantes están publicadas online, de cuántas hay.
+       *
+       * Se cuenta y no se resume en un sí o un no porque el caso normal es el
+       * intermedio: se publican algunos talles y otros no. Un cartel que dijera
+       * sólo "sincronizado" taparía justo eso.
+       */
+      sincronizadas: g.variants.filter((v) => v.sincronizadoCon).length,
     };
   });
 }

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { Search, Boxes, RefreshCw, Plus, Download, Upload, Trash2 } from "lucide-react";
+import { Search, Boxes, RefreshCw, Plus, Download, Upload, Trash2, Store } from "lucide-react";
 import { fetchProductGroups, createProduct, deleteProduct, exportProductsExcel, importProductsExcel } from "../services/productService";
 import { fetchVariantTypes } from "../services/variantTypeService";
 import { formatCurrency } from "../utils/formatters";
@@ -250,7 +250,38 @@ export default function StockPage() {
                 <tr key={g.skuAgrupador} className="border-b border-line last:border-0 hover:bg-paper-100/70">
                   <td className="px-4 py-3">
                     <p className="font-medium text-ink-900">{g.title}</p>
-                    <span className="tag-chip mt-1">{g.skuAgrupador}</span>
+                    <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                      <span className="tag-chip">{g.skuAgrupador}</span>
+                      {/*
+                        * Si está publicado online, y hasta dónde.
+                        *
+                        * Sin esto la única forma de saberlo era abrir Mercado
+                        * Libre y buscar el SKU a mano. Y lo que más importa no
+                        * es el sí ni el no, sino el "algunas": un producto con
+                        * cuatro talles publicados de seis se ve igual de bien
+                        * en la publicación y sin embargo hay dos que nadie
+                        * puede comprar.
+                        */}
+                      {!esEvento && g.sincronizadas > 0 && (
+                        <span
+                          className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium ${
+                            g.sincronizadas === g.variants.length
+                              ? "bg-teal-50 text-teal-600"
+                              : "bg-brass-50 text-brass-700"
+                          }`}
+                          title={
+                            g.sincronizadas === g.variants.length
+                              ? "Todas las variantes están publicadas online"
+                              : `${g.sincronizadas} de ${g.variants.length} variantes están publicadas online`
+                          }
+                        >
+                          <Store size={11} />
+                          {g.sincronizadas === g.variants.length
+                            ? "En línea"
+                            : `En línea ${g.sincronizadas}/${g.variants.length}`}
+                        </span>
+                      )}
+                    </div>
                   </td>
                   <td className="px-4 py-3 text-ink-700">{g.categoria} · {g.genero}</td>
                   {!esEvento && (

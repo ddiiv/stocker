@@ -411,14 +411,24 @@ function LocalesCard({ locations, onChange }) {
        * pregunta y se reintenta con `confirmar`, en vez de dejar que el cambio
        * pase en silencio y que alguien lo descubra en la caja.
        */
-      if (r?.codigo === "LOCAL_CON_STOCK" && confirm(`${r.message}\n\n¿Convertirlo igual?`)) {
+      /*
+       * El servidor frena el cambio si el local ya tiene operación —stock o
+       * ventas— y devuelve el detalle. Se pregunta y se reintenta con
+       * `confirmar`, en vez de dejar que el cambio pase en silencio y que
+       * alguien lo descubra cuando el local desapareció de Stock.
+       *
+       * Se aceptan los dos códigos: el viejo, por si quedó una pantalla
+       * abierta contra un backend todavía sin desplegar.
+       */
+      if (["LOCAL_CON_OPERACION", "LOCAL_CON_STOCK"].includes(r?.codigo)
+        && confirm(`${r.message}\n\n¿Convertirlo igual?`)) {
         try {
           await updateLocation(loc.id, { tipo, confirmar: true });
           await onChange();
         } catch (e2) {
           setError(e2.response?.data?.message || "No se pudo cambiar el tipo.");
         }
-      } else if (r?.codigo !== "LOCAL_CON_STOCK") {
+      } else if (!["LOCAL_CON_OPERACION", "LOCAL_CON_STOCK"].includes(r?.codigo)) {
         setError(r?.message || "No se pudo cambiar el tipo.");
       }
     }
@@ -432,8 +442,8 @@ function LocalesCard({ locations, onChange }) {
       <h3 className="mb-1 font-display text-base font-semibold text-ink-950">Locales y depósitos</h3>
       <p className="mb-3 text-xs text-ink-500">
         La mercadería nueva entra por un <strong>depósito</strong> y de ahí se transfiere a los locales; desde un
-        depósito no se vende. El de <strong>Online / Envíos</strong> vende como un local, y su stock es el que se
-        publica en Mercado Libre.
+        depósito no se vende. Lo que se publica y se vende por internet es la suma de los locales marcados como
+        <strong> Abastece las ventas online</strong>, y de ahí se descuenta cuando entra un pedido.
       </p>
       {/* El evento es el único tipo que NO lleva inventario, y conviene decirlo
           acá: es lo que explica por qué no aparece en depósito ni reposición. */}
@@ -471,6 +481,32 @@ function LocalesCard({ locations, onChange }) {
                     * cómo se comporta el local. Un depósito no vende, así que no
                     * tiene sentido preguntárselo.
                     */}
+                  {/*
+                    * Si este local abastece lo que se vende por internet.
+                    *
+                    * La tienda online no guarda mercadería: administra. Lo que
+                    * se publica en Mercado Libre es la suma de los locales
+                    * marcados acá, y de ahí sale el descuento cuando entra una
+                    * venta. Un local que no despacha envíos se destilda y sigue
+                    * vendiendo por mostrador como siempre.
+                    *
+                    * El depósito no se pregunta: la mercadería que está ahí
+                    * todavía no está en ningún mostrador, y ofrecerla online
+                    * sería prometer algo que hay que mover antes de despachar.
+                    */}
+                  {l.tipo !== "deposito" && l.tipo !== "feria" && (
+                    <label className="mt-2 flex items-center justify-end gap-2 text-xs text-ink-600">
+                      <input
+                        type="checkbox"
+                        className="h-3.5 w-3.5 rounded border-line accent-brass-500"
+                        checked={Boolean(l.abasteceOnline)}
+                        disabled={guardando === l.id}
+                        onChange={(e) => cambiarRegla(l, { abasteceOnline: e.target.checked })}
+                      />
+                      Abastece las ventas online
+                    </label>
+                  )}
+
                   {l.tipo !== "deposito" && (
                     <ReglaMayoristaLocal
                       local={l}

@@ -188,12 +188,15 @@ export default function MercadoLibrePage() {
               {/* De dónde sale lo que se publica. Sin esto, un número que no
                   coincide con el catálogo parece un error de la integración
                   cuando en realidad es stock que está en otro lado. */}
-              {preview.lugar && (
+              {preview.lugares?.length > 0 && (
                 <p className="mb-4 rounded-md bg-paper-100 px-3 py-2 text-xs text-ink-600">
                   <Store size={13} className="mr-1 inline" />
-                  Se publica el stock de <strong className="text-ink-900">{preview.lugar.nombre}</strong>, no el total
-                  del negocio. Lo que está en el depósito o en las otras sucursales no se ofrece en MercadoLibre:
-                  así lo que se ve en la publicación es lo que se puede despachar.
+                  Se publica la suma de{" "}
+                  <strong className="text-ink-900">
+                    {preview.lugares.map((l) => l.nombre).join(", ")}
+                  </strong>
+                  , los locales marcados para abastecer las ventas online. El depósito queda afuera: lo que se
+                  ofrece en MercadoLibre es lo que se puede despachar hoy. Se cambia desde Empleados → Locales.
                 </p>
               )}
 
