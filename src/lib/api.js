@@ -17,6 +17,12 @@ export const getCuenta = (id) => http.get(`/backoffice/cuentas/${id}`).then((r) 
 export const editarSuscripcion = (id, payload) =>
   http.put(`/backoffice/cuentas/${id}/suscripcion`, payload).then((r) => r.data);
 
+// ── ARCA ─────────────────────────────────────────────────────────
+// Los CUIT esperando que hagamos el trámite de delegación en AFIP. Es la única
+// parte del alta de un cliente que no se puede automatizar.
+export const getDelegacionesArca = () =>
+  http.get("/backoffice/arca/delegaciones").then((r) => r.data);
+
 // ── Cobros ───────────────────────────────────────────────────────
 export const aprobarPago = (id) => http.post(`/backoffice/pagos/${id}/aprobar`).then((r) => r.data);
 export const rechazarPago = (id, motivo) =>
