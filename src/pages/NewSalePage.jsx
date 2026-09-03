@@ -2,7 +2,8 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Trash2, UserPlus, UserCircle2, Check } from "lucide-react";
 import ProductPicker from "../components/sales/ProductPicker";
-import { fetchEmployees, fetchLocalesDeVenta, fetchClients, createClient } from "../services/employeeService";
+import { fetchEmployees, fetchLocalesDeVenta, fetchClients } from "../services/employeeService";
+import ClienteRapidoModal from "../components/clients/ClienteRapidoModal";
 import { createSale } from "../services/salesService";
 import ModalStockFaltante from "../components/sales/ModalStockFaltante";
 import { fetchPaymentMethods } from "../services/paymentMethodService";
@@ -30,6 +31,7 @@ export default function NewSalePage() {
   const [cuits, setCuits] = useState([]);
   const [clients, setClients] = useState([]);
   const [clientSearch, setClientSearch] = useState("");
+  const [altaCliente, setAltaCliente] = useState(false);
   const [selectedClientId, setSelectedClientId] = useState("");
   const [consumidorFinal, setConsumidorFinal] = useState(false);
   const [employeeId, setEmployeeId] = useState("");
@@ -192,6 +194,20 @@ export default function NewSalePage() {
         accion="registrar"
         onConfirmar={() => handleSubmit(null, { confirmarAltaStock: true })}
       />
+      {/*
+        * El alta de cliente, con el padrón de ARCA y el aviso de CUIT repetido.
+        * Al crearlo queda elegido para esta venta: es lo que se estaba
+        * queriendo hacer cuando se abrió el modal.
+        */}
+      <ClienteRapidoModal
+        open={altaCliente}
+        onClose={() => setAltaCliente(false)}
+        onCreado={(c) => {
+          setSelectedClientId(c.id);
+          setConsumidorFinal(false);
+          setClientSearch(`${c.nombre} ${c.apellido || ""}`.trim());
+        }}
+      />
       <PageHeader title="Nueva venta / cotización" subtitle="Seleccioná los productos, el cliente y el empleado" />
       <AvisoError error={error} className="mb-4" />
 
@@ -291,10 +307,23 @@ export default function NewSalePage() {
                 </div>
               )}
             </div>
-            <p className="text-xs text-ink-500">
+            {/*
+              * Dar de alta acá mismo.
+              *
+              * Antes decía "creálo en la sección de Clientes": salir de la
+              * venta a medio armar, cargar la ficha, volver y empezar de nuevo.
+              * Es el mismo modal del punto de venta, con la misma consulta al
+              * padrón de ARCA y el mismo aviso si el CUIT ya está cargado.
+              */}
+            <button type="button" className="btn-ghost w-full justify-center text-sm"
+              onClick={() => setAltaCliente(true)}>
+              <UserPlus size={15} /> Registrar un cliente nuevo
+            </button>
+
+            <p className="mt-2 text-xs text-ink-500">
               {consumidorFinal
                 ? "La venta se registra como consumidor final, sin datos personales."
-                : "Si no está registrado podés elegir consumidor final o crearlo en la sección de Clientes."}
+                : "Si no está registrado, podés darlo de alta acá o elegir consumidor final."}
             </p>
           </Card>
         </div>

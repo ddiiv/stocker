@@ -26,6 +26,20 @@ export async function deleteClient(id) {
   await http.delete(`/clients/${id}`);
 }
 
+/*
+ * ¿Ya hay un cliente de este negocio con ese CUIT?
+ *
+ * Se pregunta mientras se escribe, antes de que la persona termine de cargar la
+ * ficha entera. Enterarse al apretar "Guardar" —con el cliente esperando en el
+ * mostrador— es tarde: hay que borrar todo y buscar el que ya estaba.
+ *
+ * El servidor lo rechaza igual al guardar; esto es para no llegar hasta ahí.
+ */
+export async function buscarClientePorCuit(cuit) {
+  const { data } = await http.get("/clients/por-cuit", { params: { cuit } });
+  return data;
+}
+
 export async function lookupCuit(cuit) {
   const clean = String(cuit || "").replace(/[^0-9]/g, "");
   if (clean.length !== 11) return null;

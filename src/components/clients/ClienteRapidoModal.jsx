@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Loader2, Check, AlertTriangle, UserPlus } from "lucide-react";
 import Modal from "../ui/Modal";
-import { lookupCuit, createClient } from "../../services/clientService";
+import { lookupCuit, createClient, buscarClientePorCuit } from "../../services/clientService";
 import { mensajeDeError } from "../../utils/errores";
 
 /*
@@ -32,6 +32,14 @@ const VACIO = { cuit: "", nombre: "", apellido: "", direccion: "", email: "", te
 export default function ClienteRapidoModal({ open, onClose, onCreado }) {
   const [form, setForm] = useState(VACIO);
   const [padron, setPadron] = useState(null);   // { loading } | { data } | { error }
+  /*
+   * El cliente que ya tiene ese CUIT, si lo hay.
+   *
+   * Dos fichas con el mismo CUIT son la misma persona cargada dos veces, y eso
+   * se paga después: la cuenta corriente repartida entre las dos y el histórico
+   * de compras partido al medio.
+   */
+  const [repetido, setRepetido] = useState(null);
   const [bloqueados, setBloqueados] = useState([]);
   const [guardando, setGuardando] = useState(false);
   const [error, setError] = useState("");
@@ -51,6 +59,7 @@ export default function ClienteRapidoModal({ open, onClose, onCreado }) {
     set("cuit", valor);
     setPadron(null);
     setBloqueados([]);
+    setRepetido(null);
     clearTimeout(debounce.current);
     const limpio = valor.replace(/[^0-9]/g, "");
     if (limpio.length !== 11) return;
@@ -59,6 +68,21 @@ export default function ClienteRapidoModal({ open, onClose, onCreado }) {
     // tiene sentido pegarle a ARCA una vez por tecla.
     debounce.current = setTimeout(async () => {
       setPadron({ loading: true });
+
+      /*
+       * Antes que nada: ¿este cliente ya está cargado?
+       *
+       * Si el CUIT ya existe en el negocio, cargarlo de nuevo parte en dos la
+       * cuenta corriente y el histórico de compras de la misma persona. Se
+       * avisa acá y se ofrece elegir el que ya estaba, en vez de dejar que
+       * termine de escribir la ficha entera para que el servidor la rechace.
+       */
+      const yaEsta = await buscarClientePorCuit(limpio).catch(() => null);
+      if (yaEsta?.existe) {
+        setRepetido(yaEsta.cliente);
+        setPadron(null);
+        return;
+      }
       const data = await lookupCuit(limpio);
       if (!data)          return setPadron({ error: "No se pudo consultar ARCA. Podés cargarlo a mano." });
       if (!data.valido)   return setPadron({ error: "Ese CUIT no es válido: revisá los números." });
@@ -110,7 +134,8 @@ export default function ClienteRapidoModal({ open, onClose, onCreado }) {
    */
   const cuitLimpio = String(form.cuit || "").replace(/\D/g, "");
   const cuitIncompleto = cuitLimpio.length > 0 && cuitLimpio.length !== 11;
-  const puedeGuardar = Boolean(form.nombre.trim()) && !cuitIncompleto && !guardando;
+  // Con el CUIT ya usado no se guarda: sería la misma persona dos veces.
+  const puedeGuardar = Boolean(form.nombre.trim()) && !cuitIncompleto && !repetido && !guardando;
 
   async function guardar() {
     setGuardando(true); setError("");
@@ -164,13 +189,39 @@ export default function ClienteRapidoModal({ open, onClose, onCreado }) {
               <AlertTriangle size={12} className="mt-0.5 shrink-0" /> {padron.error}
             </p>
           )}
-          {padron?.data?.valido && (
+          {padron?.data?.valido && !repetido && (
             <p className="mt-1 flex items-start gap-1 text-xs text-teal-600">
               <Check size={12} className="mt-0.5 shrink-0" />
               {padron.data.source === "afip"
                 ? "Datos traídos del padrón de ARCA."
                 : "CUIT válido, pero el padrón no respondió: revisá el nombre."}
             </p>
+          )}
+
+          {/*
+            * Ya está cargado: se ofrece elegirlo en vez de duplicarlo.
+            *
+            * El botón es la mitad que importa. Un cartel que sólo dice "ya
+            * existe" deja a la persona cerrando el modal y buscándolo a mano
+            * con el cliente esperando enfrente.
+            */}
+          {repetido && (
+            <div className="mt-2 rounded-md bg-brass-50 px-3 py-2 text-xs text-brass-800">
+              <p className="flex items-start gap-1">
+                <AlertTriangle size={12} className="mt-0.5 shrink-0" />
+                <span>
+                  Ya tenés un cliente con este CUIT:{" "}
+                  <strong>{`${repetido.nombre || ""} ${repetido.apellido || ""}`.trim()}</strong>.
+                </span>
+              </p>
+              <button
+                type="button"
+                className="btn-ghost mt-1.5 px-2 py-1 text-xs"
+                onClick={() => { onCreado?.(repetido); onClose?.(); }}
+              >
+                Usar ese cliente
+              </button>
+            </div>
           )}
         </div>
 
