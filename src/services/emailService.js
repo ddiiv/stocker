@@ -171,6 +171,60 @@ async function sendInvoiceEmail({ to, clienteNombre, invoice, pdfPath, business 
   log.info('email', 'factura enviada', { numero: invoice.numero, a: mask.email(to) });
 }
 
+/*
+ * ── La copia de la factura, para el negocio ───────────────────────
+ *
+ * El comprobante emitido es del negocio tanto como del cliente: es lo que va al
+ * libro de IVA ventas y lo que el contador pide a fin de mes. Hasta ahora salía
+ * sólo para el cliente, y del lado del negocio quedaba únicamente la fila en la
+ * pantalla — que sirve para mirar, no para archivar.
+ *
+ * Va con el mismo PDF adjunto y no con un link: el mail se reenvía al contador
+ * tal como llegó, y un link exige una sesión que el contador no tiene.
+ *
+ * Nunca frena la emisión. La factura ya tiene CAE de ARCA cuando esto corre: un
+ * problema de correo no puede deshacer un comprobante fiscal, así que se
+ * registra y se sigue.
+ */
+async function sendInvoiceCopyToBusiness({ to, invoice, pdfPath, business, clienteNombre }) {
+  if (!mailReady() || !to) return { enviado: false, motivo: 'sin casilla del negocio' };
+  const emisorNombre = invoice.emisorNombre || business.nombreNegocio;
+  const emisorCuit   = invoice.emisorCuit   || business.cuit;
+
+  const filas = [
+    ['Número', invoice.numero],
+    ['Tipo', `Factura ${invoice.tipo}`],
+    ['Cliente', `${clienteNombre || 'Consumidor Final'}${invoice.clienteCuit ? ` · CUIT ${invoice.clienteCuit}` : ''}`],
+    ['Total', money(invoice.total)],
+    ...(invoice.cae ? [['CAE', invoice.cae]] : []),
+    ...(invoice.cobroDestino ? [['Cobro acreditado en', invoice.cobroDestino]] : []),
+  ];
+
+  const body = `
+    <p>Se emitió un comprobante con el CUIT <strong>${escapeHtml(emisorCuit)}</strong>.</p>
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border:1px solid ${C.line};border-radius:6px;overflow:hidden;margin:12px 0;">
+      ${filas.map(([k, v], i) => `
+        <tr style="background:${i % 2 ? C.paper100 : C.paper50};">
+          <td style="padding:8px 10px;color:${C.ink600};width:170px;">${escapeHtml(k)}</td>
+          <td style="padding:8px 10px;color:${C.ink950};">${escapeHtml(String(v))}</td>
+        </tr>`).join('')}
+    </table>
+    <p style="color:${C.ink600};font-size:13px;">Copia para tu archivo. El cliente recibió la suya por separado.</p>`;
+
+  const info = await transport().sendMail({
+    from: correo.remitente(),
+    to,
+    subject: `Copia · Factura ${invoice.numero} · ${emisorNombre}`,
+    html: shell({ title: `Copia de factura ${invoice.tipo}`, businessName: emisorNombre, cuit: emisorCuit, bodyHtml: body }),
+    attachments: pdfPath ? [{ filename: `factura-${invoice.numero.replace(/\//g, '-')}.pdf`, path: pdfPath }] : [],
+  });
+  // El destino va enmascarado: es la casilla del dueño.
+  log.info('email', 'copia de factura enviada al negocio', {
+    numero: invoice.numero, a: mask.email(to),
+  });
+  return { enviado: true, messageId: info.messageId };
+}
+
 // ── Email VENTA al CLIENTE ────────────────────────────────────────
 async function sendSaleReceiptToCustomer({ to, cliente, sale, items, business, pdfPath, emisor }) {
   if (!mailReady() || !to) return;
@@ -627,4 +681,4 @@ async function sendDelegacionArcaPendiente({ negocio, cuit, nombre, ambiente, mo
   return { enviado: true, messageId: info.messageId };
 }
 
-module.exports = { sendInvoiceEmail, sendSaleReceiptToCustomer, sendSaleNotificationToBusiness, sendPasswordResetCode, sendPasswordResetAlert, sendCashDiscrepancyAlert, sendAccountChangeCode, sendAccountDeletionRequest, sendReporteProblema, sendDelegacionArcaPendiente, CASILLA_BACKOFFICE };
+module.exports = { sendInvoiceEmail, sendInvoiceCopyToBusiness, sendSaleReceiptToCustomer, sendSaleNotificationToBusiness, sendPasswordResetCode, sendPasswordResetAlert, sendCashDiscrepancyAlert, sendAccountChangeCode, sendAccountDeletionRequest, sendReporteProblema, sendDelegacionArcaPendiente, CASILLA_BACKOFFICE };

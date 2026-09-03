@@ -16,7 +16,7 @@ const invoiceCtrl  = require('../controllers/invoiceController');
 const {
   getLocations, createLocation, updateLocation, deleteLocation,
   getRoles, createRole, updateRole, deleteRole,
-  getClients, createClient, updateClient, deleteClient,
+  getClients, clientePorCuit, createClient, updateClient, deleteClient,
   getDashboard,
 } = require('../controllers/otherControllers');
 const { lookupCuit } = require('../controllers/arcaController');
@@ -274,6 +274,11 @@ r.get   ('/clients/:id/cuenta',    requireAuth, requirePermission('clientes','ve
 r.put   ('/clients/:id/cuenta',    requireAuth, requirePermission('pagos','editar'),    requireFeature(FEATURES.CUENTAS_CORRIENTES), creditCtrl.updateCuentaConfig);
 r.post  ('/clients/:id/cuenta/pagos', requireAuth, requirePermission('clientes','editar'), requireFeature(FEATURES.CUENTAS_CORRIENTES), creditCtrl.registrarPago);
 
+/*
+ * Va ANTES de '/clients/:id' por la misma razón que '/clients/cuentas': si no,
+ * Express toma "por-cuit" como si fuera un id.
+ */
+r.get   ('/clients/por-cuit', requireAuth, requirePermission('clientes','ver'), clientePorCuit);
 r.get   ('/clients',     requireAuth, requirePermission('clientes','ver'),    getClients);
 r.post  ('/clients',     requireAuth, requirePermission('clientes','editar'), createClient);
 r.put   ('/clients/:id', requireAuth, requirePermission('clientes','editar'), updateClient);

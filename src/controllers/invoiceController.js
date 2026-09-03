@@ -20,7 +20,7 @@ function textoDeDestinatarios(pagos) {
     .map((d) => `${d.nombre ? `${d.nombre} · ` : ''}CUIT ${d.cuit}`);
   return destinos.length ? destinos.join(' / ').slice(0, 300) : null;
 }
-const { sendInvoiceEmail } = require('../services/emailService');
+const { sendInvoiceEmail, sendInvoiceCopyToBusiness } = require('../services/emailService');
 const { sendInvoiceWhatsapp } = require('../services/whatsappService');
 const { exigirCupo } = require('../services/planService');
 const { log, sinDatos } = require('../utils/logger');
@@ -170,11 +170,31 @@ const createInvoice = async (req, res, next) => {
     const emisorCuit   = emisor?.cuit   || business.cuit;
     const emisorNombre = emisor?.nombre || business.nombreNegocio;
 
-    // Datos del cliente (del registro o ad-hoc)
-    const cliente       = sale.cliente;
-    const finalCuit     = clienteCuit     || cliente?.cuit     || null;
-    const finalEmail    = clienteEmail    || cliente?.email    || null;
-    const finalDireccion= clienteDireccion|| cliente?.direccion|| null;
+    /*
+     * ── Los datos del cliente registrado mandan ──────────────────
+     *
+     * Si la venta tiene un cliente asociado, la factura sale con SUS datos: los
+     * de la ficha, no los que vengan en el pedido. Los del cuerpo sólo sirven
+     * para la venta de mostrador sin cliente cargado, que es el único caso en
+     * que no hay de dónde sacarlos.
+     *
+     * Antes era `clienteCuit || cliente?.cuit`: el cuerpo pisaba a la ficha. Y
+     * eso no es sólo un problema de prolijidad. Es un comprobante fiscal: con
+     * un `clienteCuit` en el pedido se le podía emitir una factura a nombre de
+     * cualquier CUIT mientras la venta figuraba a nombre de otro cliente, y el
+     * comprobante ya emitido no se corrige, se anula con nota de crédito.
+     *
+     * Lo único que se sigue aceptando desde afuera para un cliente registrado
+     * es el email de envío: mandar el comprobante a otra casilla —la del
+     * contador, la del marido— no cambia a quién se le facturó.
+     */
+    const cliente        = sale.cliente;
+    const tieneFicha     = Boolean(cliente);
+    const finalCuit      = tieneFicha ? (cliente.cuit || null)      : (clienteCuit || null);
+    const finalDireccion = tieneFicha ? (cliente.direccion || null) : (clienteDireccion || null);
+    // El email sí puede cambiarse en el momento: es a dónde se manda, no a
+    // quién se le factura. Si no viene, el de la ficha.
+    const finalEmail     = clienteEmail || cliente?.email || null;
     const clienteNombre = cliente ? `${cliente.nombre} ${cliente.apellido || ''}`.trim() : (sale.clienteAdHoc || 'Consumidor Final');
     const clienteWhatsapp = cliente?.whatsapp || cliente?.telefono || null;
 
@@ -339,11 +359,49 @@ const createInvoice = async (req, res, next) => {
      */
     const absPdf = pdfPath ? path.resolve(pdfPath) : null;
 
-    // Notificaciones
+    /*
+     * ── Los dos mails: el del cliente y la copia del negocio ─────
+     *
+     * El comprobante es de los dos. El cliente lo necesita para su compra; el
+     * negocio, para el libro de IVA ventas y para lo que el contador pide a fin
+     * de mes. Hasta ahora salía sólo el del cliente y del lado del negocio
+     * quedaba la fila en la pantalla, que sirve para mirar y no para archivar.
+     *
+     * Los dos adjuntan el MISMO archivo, así que el borrado espera a que los
+     * dos terminen. Borrarlo apenas sale el primero dejaba al segundo
+     * adjuntando un archivo que ya no estaba, y ese mail llegaba sin la
+     * factura.
+     *
+     * Ninguno frena nada: la factura ya tiene CAE de ARCA cuando esto corre. Un
+     * problema de correo no deshace un comprobante fiscal, así que se registra
+     * y se sigue.
+     */
+    const envios = [];
     if (finalEmail && enviarEmail) {
-      sendInvoiceEmail({ to: finalEmail, clienteNombre, invoice: invoice.toJSON(), pdfPath: absPdf, business: business.toJSON() })
-        .catch((err) => log.error('factura', 'no se pudo enviar por email', { motivo: sinDatos(err.message, 160) }))
-        .finally(() => { if (absPdf) fse.remove(absPdf).catch(() => {}); });
+      envios.push(
+        sendInvoiceEmail({
+          to: finalEmail, clienteNombre, invoice: invoice.toJSON(),
+          pdfPath: absPdf, business: business.toJSON(),
+        }).catch((err) => log.error('factura', 'no se pudo enviar al cliente', {
+          motivo: sinDatos(err.message, 160),
+        })),
+      );
+    }
+    if (business.email) {
+      envios.push(
+        sendInvoiceCopyToBusiness({
+          to: business.email, invoice: invoice.toJSON(), pdfPath: absPdf,
+          business: business.toJSON(), clienteNombre,
+        }).catch((err) => log.error('factura', 'no se pudo enviar la copia al negocio', {
+          motivo: sinDatos(err.message, 160),
+        })),
+      );
+    }
+
+    if (envios.length) {
+      // Sin await sobre la respuesta: quien factura no tiene por qué esperar a
+      // que salga el correo. El archivo se borra cuando los dos terminaron.
+      Promise.all(envios).finally(() => { if (absPdf) fse.remove(absPdf).catch(() => {}); });
     } else if (absPdf) {
       // Sin mail que lo adjunte, el archivo no tiene ningún uso.
       await fse.remove(absPdf).catch(() => {});

@@ -1,5 +1,5 @@
 const { Op } = require('sequelize');
-const { cuitValido, emailValido } = require('../utils/identificadores');
+const { cuitValido, emailValido, normalizarCuit } = require('../utils/identificadores');
 const { sanitizarPermisos } = require('../config/permisos');
 const bcrypt = require('bcryptjs');
 const { BusinessLocation, Role, Client, Sale, SaleItem, Invoice, ProductVariant, Product, StockMovement } = require('../models');
@@ -291,12 +291,83 @@ function errorDeIdentificadores(body) {
   return null;
 }
 
+/*
+ * ¿Ya hay un cliente de este negocio con ese CUIT?
+ *
+ * El CUIT identifica a una persona ante ARCA: dos fichas con el mismo son la
+ * misma persona cargada dos veces, y eso se paga después —la cuenta corriente
+ * repartida entre las dos, el histórico de compras partido al medio, y dos
+ * direcciones distintas para la misma factura.
+ *
+ * Se compara por los once dígitos pelados y no por el texto: "20-11111111-2" y
+ * "20111111112" son el mismo CUIT, y comparar como cadena los deja pasar como
+ * si fueran dos. Por eso se normalizan los dos lados, el que llega y los que ya
+ * están.
+ *
+ * Y siempre dentro del negocio de la sesión: dos negocios distintos pueden
+ * tener al mismo cliente, y saber si un CUIT existe en otro negocio no es algo
+ * que se pueda contestar desde acá.
+ */
+async function clienteConMismoCuit(businessId, cuit, exceptoId = null) {
+  const digitos = normalizarCuit(cuit);
+  if (!digitos) return null;
+
+  const where = { businessId, cuit: { [Op.ne]: null } };
+  if (exceptoId) where.id = { [Op.ne]: exceptoId };
+
+  const candidatos = await Client.findAll({
+    where, attributes: ['id', 'nombre', 'apellido', 'cuit'],
+  });
+  return candidatos.find((c) => normalizarCuit(c.cuit) === digitos) || null;
+}
+
+const nombreDe = (c) => `${c.nombre || ''} ${c.apellido || ''}`.trim() || 'otro cliente';
+
+/*
+ * GET /api/clients/por-cuit?cuit=...
+ *
+ * Para avisar mientras se escribe, antes de que la persona termine de cargar
+ * la ficha entera. Enterarse al apretar "Guardar" —con el cliente esperando en
+ * el mostrador— es tarde: hay que borrar todo y buscar el que ya estaba.
+ *
+ * Devuelve el cliente que ya lo tiene, para poder ofrecer elegirlo en vez de
+ * dejar a la persona buscándolo a mano.
+ */
+const clientePorCuit = async (req, res, next) => {
+  try {
+    const cuit = req.query.cuit;
+    // Un CUIT a medio escribir todavía no es un CUIT: se contesta que no hay
+    // nada en vez de un error, porque esto se llama con cada tecla.
+    if (!normalizarCuit(cuit)) return res.json({ existe: false, cliente: null });
+
+    const repetido = await clienteConMismoCuit(req.auth.businessId, cuit);
+    res.json({
+      existe: Boolean(repetido),
+      cliente: repetido
+        ? { id: repetido.id, nombre: repetido.nombre, apellido: repetido.apellido, cuit: repetido.cuit }
+        : null,
+    });
+  } catch (e) { next(e); }
+};
+
 const createClient = async (req, res, next) => {
   try {
     const { nombre } = req.body;
     if (!nombre) return res.status(400).json({ message: 'El nombre es obligatorio.' });
     const malIdent = errorDeIdentificadores(req.body);
     if (malIdent) return res.status(400).json({ message: malIdent });
+
+    const repetido = await clienteConMismoCuit(req.auth.businessId, req.body?.cuit);
+    if (repetido) {
+      return res.status(409).json({
+        message: `Ya tenés un cliente con el CUIT ${req.body.cuit}: ${nombreDe(repetido)}. `
+          + 'Usá ese en vez de cargarlo de nuevo.',
+        codigo: 'CUIT_REPETIDO',
+        // El id va para que la pantalla pueda ofrecer elegirlo en vez de dejar
+        // a la persona buscándolo a mano después de haber escrito toda la ficha.
+        clienteId: repetido.id,
+      });
+    }
     // El businessId va DESPUÉS del spread a propósito: al revés, un businessId
     // enviado por el cliente pisaba el de la sesión y el cliente nacía en otro
     // negocio.
@@ -313,6 +384,19 @@ const updateClient = async (req, res, next) => {
     if (malIdent) return res.status(400).json({ message: malIdent });
     const client = await Client.findOne({ where: { id: req.params.id, businessId: req.auth.businessId } });
     if (!client) return res.status(404).json({ message: 'Cliente no encontrado.' });
+
+    // Al editar hay que excluirse a sí mismo: si no, guardar una ficha sin
+    // tocarle el CUIT choca contra su propio CUIT.
+    if (req.body?.cuit !== undefined) {
+      const repetido = await clienteConMismoCuit(req.auth.businessId, req.body.cuit, client.id);
+      if (repetido) {
+        return res.status(409).json({
+          message: `Ya tenés otro cliente con el CUIT ${req.body.cuit}: ${nombreDe(repetido)}.`,
+          codigo: 'CUIT_REPETIDO',
+          clienteId: repetido.id,
+        });
+      }
+    }
     await client.update(soloCampos(req.body, CAMPOS_CLIENTE));
     res.json(client);
   } catch (e) { next(e); }
@@ -442,6 +526,6 @@ const getDashboard = async (req, res, next) => {
 module.exports = {
   getLocations, createLocation, updateLocation, deleteLocation,
   getRoles, createRole, updateRole, deleteRole,
-  getClients, createClient, updateClient, deleteClient,
+  getClients, clientePorCuit, createClient, updateClient, deleteClient,
   getDashboard,
 };
