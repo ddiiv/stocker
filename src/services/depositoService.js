@@ -119,9 +119,18 @@ export async function cancelarPedido(id, motivo) {
   return data;
 }
 
-/** envios: [{ itemId, cantidad }] */
-export async function despacharPedido(id, envios) {
-  const { data } = await http.post(`/reposicion/pedidos/${id}/despachar`, { envios });
+/**
+ * envios: [{ itemId, cantidad }]
+ *
+ * `confirmarAltaStock` es la respuesta a "la mercadería está en el estante pero
+ * el ingreso nunca se cargó". Cuánto se da de alta lo calcula el servidor con
+ * lo que hay: acá sólo viaja el sí.
+ */
+export async function despacharPedido(id, envios, { confirmarAltaStock = false } = {}) {
+  const { data } = await http.post(`/reposicion/pedidos/${id}/despachar`, {
+    envios,
+    ...(confirmarAltaStock ? { confirmarAltaStock: true } : {}),
+  });
   return data;
 }
 

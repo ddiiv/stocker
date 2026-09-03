@@ -4,6 +4,7 @@ import {
 } from "lucide-react";
 import { PageHeader, Card } from "../components/ui/Layout";
 import SelectorArticulos from "../components/deposito/SelectorArticulos";
+import CargaPorSeries from "../components/deposito/CargaPorSeries";
 import {
   fetchLugares, fetchPedidos, crearPedido, aprobarPedido, rechazarPedido,
   cancelarPedido, despacharPedido, recibirPedido, fetchEnTransito,
@@ -71,6 +72,26 @@ export default function ReposicionPage() {
   const [locationId, setLocationId] = useState("");
   const [depositoId, setDepositoId] = useState("");
   const [items, setItems] = useState([]);
+
+  /*
+   * Las líneas que llegan de la carga por serie se suman a las que ya están.
+   *
+   * Por variante y no por posición: pedir la serie de un modelo y después
+   * agregar un talle suelto del mismo modelo tiene que dar una línea con la
+   * suma, no dos líneas del mismo SKU que el servidor después junta y deja al
+   * local sin entender qué pidió.
+   */
+  function agregarLineas(nuevas) {
+    setItems((prev) => {
+      const porId = new Map(prev.map((i) => [i.productVariantId, { ...i }]));
+      for (const l of nuevas) {
+        const ya = porId.get(l.productVariantId);
+        if (ya) ya.cantidad += l.cantidad;
+        else porId.set(l.productVariantId, l);
+      }
+      return [...porId.values()];
+    });
+  }
   const [notas, setNotas] = useState("");
   const [guardando, setGuardando] = useState(false);
 
@@ -308,6 +329,30 @@ export default function ReposicionPage() {
             etiquetaCantidad="Pido"
             locationId={depositoId ? Number(depositoId) : null}
           />
+
+          {/*
+            * Pedir por serie, como se carga en Depósito.
+            *
+            * Un local no repone de a un talle: repone la curva. Cargarla de a
+            * una variante son ocho búsquedas para pedir un modelo, y en la
+            * octava ya nadie se acuerda de cuál faltaba.
+            *
+            * Es el mismo componente que usa Depósito para ingresar, con la
+            * misma mecánica —producto padre, eje, cantidades por valor—, pero
+            * lo que arma es el pedido en vez del ingreso. Las líneas caen en la
+            * misma lista de arriba y se suman a las que ya estaban.
+            */}
+          <details className="mt-4 rounded-md border border-line">
+            <summary className="cursor-pointer px-3 py-2 text-sm font-medium text-ink-800">
+              Pedir por serie de un producto
+              <span className="ml-1 font-normal text-ink-500">
+                · toda la curva de un modelo de una vez
+              </span>
+            </summary>
+            <div className="border-t border-line p-3">
+              <CargaPorSeries onAgregar={agregarLineas} />
+            </div>
+          </details>
 
           <div className="mt-4">
             <label className="label">Nota (opcional)</label>

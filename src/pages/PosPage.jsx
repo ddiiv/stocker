@@ -17,7 +17,8 @@ import { esMayorista as evaluarMayorista, describir as describirRegla, reglaDelL
 import { PageHeader, Card } from "../components/ui/Layout";
 import { useAuth } from "../context/AuthContext";
 import { esAdministradorTotal } from "../utils/permissions";
-import PaymentSplit, { lineasParaApi, calcularTotales } from "../components/sales/PaymentSplit";
+import PaymentSplit, { lineasParaApi, calcularTotales, faltaDestinoCuit } from "../components/sales/PaymentSplit";
+import { fetchBusinessCuits } from "../services/businessCuitService";
 import AvisoCredito from "../components/sales/AvisoCredito";
 import ModalStockFaltante from "../components/sales/ModalStockFaltante";
 import ClienteRapidoModal from "../components/clients/ClienteRapidoModal";
@@ -113,6 +114,15 @@ export default function PosPage() {
   const [descuentoModo, setDescuentoModo] = useState("pct");
   const [descuentoValor, setDescuentoValor] = useState("");
 
+  /*
+   * Los CUIT del negocio, para los medios que caen en una cuenta bancaria.
+   *
+   * Se piden siempre y no sólo cuando hacen falta: son pocos, cambian casi
+   * nunca, y pedirlos recién al elegir "Transferencia" metería una espera justo
+   * en el momento en que el cliente está por pagar.
+   */
+  const [cuits, setCuits] = useState([]);
+
   const [camaraAbierta, setCamaraAbierta] = useState(false);
   const [escaneando, setEscaneando] = useState(false);
   const hayCamara = camaraDisponible();
@@ -132,6 +142,7 @@ export default function PosPage() {
         if (ls.length === 1) setLocationId(String(ls[0].id));
       }).catch(() => {});
     }
+    fetchBusinessCuits().then(setCuits).catch(() => setCuits([]));
     fetchPaymentMethods({ soloActivos: true })
       .then((m) => {
         setMetodos(m);
@@ -368,8 +379,16 @@ export default function PosPage() {
    * `faltantes` sigue existiendo pero sólo para pintar el aviso en la línea:
    * es una ayuda visual, no una decisión.
    */
+  /*
+   * Falta decir a qué CUIT entra alguno de los cobros.
+   *
+   * Se frena acá y no recién en el servidor: enterarse al apretar "Cobrar",
+   * con el cliente esperando y la venta armada, es la peor forma de enterarse.
+   */
+  const faltaCuit = !esFiado && faltaDestinoCuit(pagos, metodos);
+
   const puedeCobrar = items.length > 0 && !cobrando && hayLocal
-    && (esFiado ? Boolean(clientId) : (metodos.length > 0 && pagosCuadran));
+    && (esFiado ? Boolean(clientId) : (metodos.length > 0 && pagosCuadran && !faltaCuit));
 
   // El botón muestra lo que hay que pedirle al cliente, recargo incluido.
   // Fiando no se cobra nada ahora: lo que se anota es el neto de mercadería.
@@ -909,7 +928,7 @@ export default function PosPage() {
                 No hay medios de pago cargados. Pedile al dueño que configure al menos uno.
               </p>
             ) : (
-              <PaymentSplit metodos={metodos} total={total} lineas={pagos} onChange={setPagos} />
+              <PaymentSplit metodos={metodos} total={total} lineas={pagos} onChange={setPagos} cuits={cuits} />
             )}
           </Card>
 
@@ -1044,6 +1063,18 @@ export default function PosPage() {
                 ? <><NotebookPen size={16} /> Fiar {formatCurrency(totalBoton)}</>
                 : <>Cobrar {formatCurrency(totalBoton)}</>}
           </button>
+          {/*
+            * Por qué no se puede cobrar todavía.
+            *
+            * Un botón gris sin motivo es lo que hace que el cajero toque tres
+            * veces y después llame. El importe que no cuadra ya tiene su aviso
+            * en PaymentSplit; éste es el otro caso.
+            */}
+          {faltaCuit && (
+            <p className="rounded-md bg-brass-50 px-3 py-2 text-xs text-brass-700">
+              Elegí a qué CUIT entra cada cobro que no va al cajón.
+            </p>
+          )}
           {items.length > 0 && (
             <button className="btn-ghost w-full justify-center text-xs text-brick-500" onClick={vaciarCarrito}>
               Vaciar carrito

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Plus, CreditCard, PencilLine, Trash2, Banknote, TrendingUp, TrendingDown } from "lucide-react";
+import { Plus, CreditCard, PencilLine, Trash2, Banknote, Landmark, TrendingUp, TrendingDown } from "lucide-react";
 import {
   fetchPaymentMethods, createPaymentMethod, updatePaymentMethod, deletePaymentMethod,
 } from "../services/paymentMethodService";
@@ -8,7 +8,7 @@ import Modal from "../components/ui/Modal";
 import { useAuth } from "../context/AuthContext";
 import { canEdit } from "../utils/permissions";
 
-const vacio = { nombre: "", ajustePct: 0, esEfectivo: false, activo: true, notas: "" };
+const vacio = { nombre: "", ajustePct: 0, esEfectivo: false, destinoCuit: false, activo: true, notas: "" };
 
 export default function PaymentMethodsPage() {
   const { user } = useAuth();
@@ -40,6 +40,7 @@ export default function PaymentMethodsPage() {
       nombre: m.nombre,
       ajustePct: Number(m.ajustePct) || 0,
       esEfectivo: Boolean(m.esEfectivo),
+      destinoCuit: Boolean(m.destinoCuit),
       activo: Boolean(m.activo),
       notas: m.notas || "",
     });
@@ -145,6 +146,13 @@ export default function PaymentMethodsPage() {
                       <td className="px-4 py-3">
                         {m.esEfectivo ? (
                           <span className="inline-flex items-center gap-1 text-ink-700"><Banknote size={14} /> Sí</span>
+                        ) : m.destinoCuit ? (
+                          // No va al cajón pero sí a una cuenta: decirlo acá
+                          // evita tener que abrir cada medio para saber cuáles
+                          // van a pedir CUIT en el mostrador.
+                          <span className="inline-flex items-center gap-1 text-ink-500" title="No entra al arqueo: cae en una cuenta del negocio">
+                            <Landmark size={14} /> A cuenta
+                          </span>
                         ) : (
                           <span className="text-ink-500">No</span>
                         )}
@@ -212,12 +220,43 @@ export default function PaymentMethodsPage() {
           <label className="flex items-start gap-2 text-sm text-ink-700">
             <input
               type="checkbox" className="mt-0.5" checked={form.esEfectivo}
-              onChange={(e) => setForm({ ...form, esEfectivo: e.target.checked })}
+              onChange={(e) => setForm({
+                ...form,
+                esEfectivo: e.target.checked,
+                // El efectivo va al cajón: no cae en ninguna cuenta bancaria.
+                // Dejar las dos marcadas haría que el POS pida elegir CUIT para
+                // el efectivo, que es una pregunta sin respuesta.
+                destinoCuit: e.target.checked ? false : form.destinoCuit,
+              })}
             />
             <span>
               Es efectivo
               <span className="block text-xs text-ink-500">
                 Lo cobrado por este medio se suma al arqueo de caja. Marcalo sólo para dinero físico.
+              </span>
+            </span>
+          </label>
+
+          {/*
+            * La otra mitad de la pregunta.
+            *
+            * "¿Entra al arqueo?" y "¿a qué cuenta cae?" no son la misma
+            * pregunta al revés. Una tarjeta que liquida un agregador no va al
+            * cajón y tampoco cae en una cuenta del negocio ese día: obligarla a
+            * elegir CUIT sería pedir un dato inventado en cada venta.
+            */}
+          <label className={`flex items-start gap-2 text-sm ${form.esEfectivo ? "text-ink-400" : "text-ink-700"}`}>
+            <input
+              type="checkbox" className="mt-0.5" checked={form.destinoCuit}
+              disabled={form.esEfectivo}
+              onChange={(e) => setForm({ ...form, destinoCuit: e.target.checked })}
+            />
+            <span>
+              Entra a una cuenta del negocio
+              <span className="block text-xs text-ink-500">
+                Transferencia, débito, QR. Al cobrar se pregunta a qué CUIT entra, y ese
+                destinatario sale impreso en el ticket, en el PDF y en la factura.
+                {form.esEfectivo && " No aplica al efectivo: ése va al cajón."}
               </span>
             </span>
           </label>

@@ -30,7 +30,10 @@ export default function SelectorArticulos({ items, onChange, etiquetaCantidad = 
     const t = setTimeout(async () => {
       try {
         const { data } = await http.get("/products/buscar-variantes", {
-          params: { q, limit: 20, ...(locationId ? { locationId } : {}) },
+          // Sin productos de evento: no llevan stock, así que no se pueden
+          // ingresar al depósito. Verlos acá es invitar a cargar algo que
+          // después no se va a poder mover.
+          params: { q, limit: 20, sinEvento: 1, ...(locationId ? { locationId } : {}) },
         });
         setResultados(data.data || []);
         setActivo(0);

@@ -91,7 +91,7 @@ function repartir(lineas, total, idxEditado) {
   return copia;
 }
 
-export default function PaymentSplit({ metodos, total, lineas, onChange }) {
+export default function PaymentSplit({ metodos, total, lineas, onChange, cuits = [] }) {
   const esUnico = lineas.length === 1;
 
   // Con una sola línea el importe siempre es el total: que quede desfasado por
@@ -171,6 +171,43 @@ export default function PaymentSplit({ metodos, total, lineas, onChange }) {
               </button>
             )}
           </div>
+
+          {/*
+            * A qué CUIT del negocio entra esta plata.
+            *
+            * Sólo para los medios que caen en una cuenta bancaria: una
+            * transferencia, un débito, un QR. El efectivo va al cajón y no
+            * tiene a dónde elegir.
+            *
+            * Se pregunta y no se adivina. Con un solo CUIT la respuesta es
+            * obvia y se elige sola; con dos o más, elegir el primero en
+            * silencio pone la plata en la cuenta equivocada, y eso se descubre
+            * meses después cuando no cierra el extracto del banco.
+            */}
+          {l.metodo?.destinoCuit && (
+            <div className="mt-2">
+              <label className="label text-[11px]">Entra a</label>
+              {cuits.length === 0 ? (
+                <p className="rounded-md bg-brass-50 px-2.5 py-1.5 text-xs text-brass-700">
+                  No hay ningún CUIT cargado. Agregalo en Facturación para poder
+                  registrar a dónde entra este cobro.
+                </p>
+              ) : (
+                <select
+                  className="input"
+                  value={l.businessCuitId ?? ""}
+                  onChange={(e) => actualizar(idx, { businessCuitId: e.target.value })}
+                >
+                  <option value="">Elegí a qué CUIT…</option>
+                  {cuits.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.nombre} · {c.cuit}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </div>
+          )}
 
           <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-2">
             <div>
@@ -289,6 +326,30 @@ export function lineasParaApi(lineas, metodos, total) {
        * de verdad para el mismo número.
        */
       ...(manual ? { ajustePct: Number(l.ajusteManual) } : {}),
+      /*
+       * El CUIT destino sólo viaja si el medio lo pide.
+       *
+       * El servidor lo valida igual —comprueba que el CUIT sea del negocio de
+       * la sesión y lo exige cuando corresponde—, pero mandar uno para un medio
+       * que no lo lleva sería anotar un destinatario inventado en el ticket.
+       */
+      ...(metodo?.destinoCuit && l.businessCuitId
+        ? { businessCuitId: Number(l.businessCuitId) }
+        : {}),
     };
+  });
+}
+
+/*
+ * Si falta elegir el CUIT de algún cobro.
+ *
+ * La pantalla lo pregunta antes de habilitar el botón: el servidor lo rechaza
+ * igual, pero enterarse recién al apretar "Cobrar" —con el cliente esperando y
+ * la venta armada— es la peor forma de enterarse.
+ */
+export function faltaDestinoCuit(lineas, metodos) {
+  return lineas.some((l) => {
+    const metodo = metodos.find((m) => String(m.id) === String(l.paymentMethodId));
+    return Boolean(metodo?.destinoCuit) && !l.businessCuitId;
   });
 }

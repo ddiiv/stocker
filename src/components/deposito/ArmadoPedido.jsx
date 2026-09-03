@@ -131,16 +131,43 @@ export default function ArmadoPedido({ pedidoId, onCerrar, onDespachado }) {
     });
   }
 
-  async function despachar() {
+  /*
+   * Despachar, y si falta stock declarado, preguntar.
+   *
+   * El caso es cotidiano: la mercadería está en el estante y el ingreso nunca
+   * se cargó. Antes eso cortaba el despacho y obligaba a salir de acá, ir a
+   * Depósito, cargar el ingreso, volver y armar el pedido de nuevo. Ahora se
+   * pregunta con lo que falta a la vista y, confirmado, entra al depósito y
+   * sale al local en la misma operación.
+   *
+   * Se confirma con un `confirm` y no con un modal propio a propósito: es la
+   * misma pregunta que hace el punto de venta al vender sin stock, y responder
+   * dos preguntas distintas al mismo problema es lo que hace que la gente
+   * conteste sin leer.
+   */
+  async function despachar(confirmarAltaStock = false) {
     setTrabajando(true); setError(""); setAviso("");
     try {
       const envios = conStock.map((l) => ({ itemId: l.itemId, cantidad: Math.min(puesto(l), l.cubre) }));
-      const r = await despacharPedido(pedidoId, envios);
+      const r = await despacharPedido(pedidoId, envios, { confirmarAltaStock });
       setAviso(r.mensaje);
       await onDespachado?.();
       onCerrar?.();
     } catch (e) {
-      setError(mensajeDeError(e, "No se pudo despachar el pedido."));
+      const d = e.response?.data;
+      if (d?.codigo === "SIN_STOCK_DEPOSITO" && d.puedeConfirmar && !confirmarAltaStock) {
+        const detalle = (d.faltantes || [])
+          .map((f) => `· ${f.descripcion || f.sku}: hay ${f.hay} declaradas y se envían ${f.pide}`)
+          .join("\n");
+        const seguir = confirm(
+          `Falta stock declarado en el depósito:\n\n${detalle}\n\n`
+          + "¿La mercadería está físicamente? Si confirmás, se da de alta en el depósito "
+          + "y sale al local en la misma operación.",
+        );
+        if (seguir) { setTrabajando(false); return despachar(true); }
+      } else {
+        setError(mensajeDeError(e, "No se pudo despachar el pedido."));
+      }
     }
     setTrabajando(false);
   }
@@ -310,7 +337,7 @@ export default function ArmadoPedido({ pedidoId, onCerrar, onDespachado }) {
               ? "Todo junto. Al despachar, el stock sale del depósito y queda en camino."
               : `Faltan ${totalAPoner - totalPuesto} unidades por poner en la caja.`}
           </p>
-          <button className="btn-accent" disabled={trabajando || totalPuesto === 0} onClick={despachar}>
+          <button className="btn-accent" disabled={trabajando || totalPuesto === 0} onClick={() => despachar()}>
             {trabajando ? <><Loader2 size={15} className="animate-spin" /> Despachando…</>
               : <><Truck size={15} /> Despachar {totalPuesto} unidades</>}
           </button>

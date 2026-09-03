@@ -6,7 +6,8 @@ import { fetchEmployees, fetchLocalesDeVenta, fetchClients, createClient } from 
 import { createSale } from "../services/salesService";
 import ModalStockFaltante from "../components/sales/ModalStockFaltante";
 import { fetchPaymentMethods } from "../services/paymentMethodService";
-import PaymentSplit, { lineasParaApi, calcularTotales } from "../components/sales/PaymentSplit";
+import PaymentSplit, { lineasParaApi, calcularTotales, faltaDestinoCuit } from "../components/sales/PaymentSplit";
+import { fetchBusinessCuits } from "../services/businessCuitService";
 import { formatCurrency } from "../utils/formatters";
 import { esMayorista as evaluarMayorista, describir as describirRegla, reglaDelLocal } from "../utils/reglaMayorista";
 import { PageHeader, Card } from "../components/ui/Layout";
@@ -24,6 +25,9 @@ export default function NewSalePage() {
   const [items, setItems] = useState([]);
   const [employees, setEmployees] = useState([]);
   const [locations, setLocations] = useState([]);
+  // Los CUIT del negocio, para los medios de pago que caen en una cuenta
+  // bancaria. Ver PaymentSplit: con más de uno hay que elegir cuál cobra.
+  const [cuits, setCuits] = useState([]);
   const [clients, setClients] = useState([]);
   const [clientSearch, setClientSearch] = useState("");
   const [selectedClientId, setSelectedClientId] = useState("");
@@ -69,6 +73,7 @@ export default function NewSalePage() {
      * de todos los clientes del negocio no se usaba para nada. El buscador de
      * abajo ya pregunta al servidor con lo que se escribe.
      */
+    fetchBusinessCuits().then(setCuits).catch(() => setCuits([]));
     fetchPaymentMethods({ soloActivos: true })
       .then((m) => {
         setMetodos(m);
@@ -113,6 +118,9 @@ export default function NewSalePage() {
   // La misma regla que aplica el servidor, tomada del local elegido. Ver
   // utils/reglaMayorista: antes este `>= 3` estaba escrito tres veces.
   const localRegla = reglaDelLocal(locations, locationId, user);
+  // Sólo cuando la venta se marca como cobrada: una cotización todavía no
+  // define con qué se paga.
+  const faltaCuitDestino = tipo === "venta" && marcarPagada && faltaDestinoCuit(pagos, metodos);
   const totalEnLista = items.reduce((s, i) => s + (Number(i.precioUnitario) || 0) * i.cantidad, 0);
   const esMayorista   = evaluarMayorista(localRegla, totalUnidades, totalEnLista);
   const subtotal = items.reduce((s, i) => s + i.cantidad * (esMayorista ? i.precioMayorista : i.precioUnitario), 0);
@@ -390,7 +398,7 @@ export default function NewSalePage() {
                       No hay medios de pago cargados. Pedile al dueño que configure al menos uno.
                     </p>
                   ) : (
-                    <PaymentSplit metodos={metodos} total={total} lineas={pagos} onChange={setPagos} />
+                    <PaymentSplit metodos={metodos} total={total} lineas={pagos} onChange={setPagos} cuits={cuits} />
                   )
                 )}
               </div>
@@ -400,7 +408,17 @@ export default function NewSalePage() {
               <label className="label">Notas</label>
               <textarea className="input min-h-16" value={notas} onChange={(e) => setNotas(e.target.value)} />
             </div>
-            <button className="btn-accent mt-4 w-full" type="submit" disabled={submitting}>
+            {/*
+              * Falta decir a qué CUIT entra alguno de los cobros. Se avisa acá
+              * y no recién en el servidor: enterarse al guardar, con la venta
+              * armada, hace repetir todo el camino.
+              */}
+            {faltaCuitDestino && (
+              <p className="mt-3 rounded-md bg-brass-50 px-3 py-2 text-xs text-brass-700">
+                Elegí a qué CUIT entra cada cobro que no va al cajón.
+              </p>
+            )}
+            <button className="btn-accent mt-4 w-full" type="submit" disabled={submitting || faltaCuitDestino}>
               {submitting ? "Guardando…" : tipo === "venta" ? "Registrar venta" : "Guardar cotización"}
             </button>
           </Card>
