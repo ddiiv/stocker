@@ -299,6 +299,18 @@ const BusinessArcaConfig = db.define('BusinessArcaConfig', {
   delegacionVerificada: { type: DataTypes.BOOLEAN, defaultValue: false },
   ultimaVerificacion:   { type: DataTypes.DATE },
   ultimoError:          { type: DataTypes.STRING(500) },
+  /*
+   * Cuándo se avisó que este CUIT está esperando la delegación.
+   *
+   * El trámite de AFIP no se puede automatizar: alguien de Stocker tiene que
+   * entrar al Administrador de Relaciones y crear la relación en nombre del
+   * cliente. Lo que sí se puede es que nadie tenga que acordarse de avisar.
+   *
+   * Guarda la fecha y no un booleano para poder repetir el aviso si pasaron
+   * días y sigue pendiente, sin mandar uno por cada vez que el cliente aprieta
+   * "Verificar" —que es lo que hace cuando no le anda, o sea muchas veces.
+   */
+  delegacionAvisadaEn:  { type: DataTypes.DATE },
 }, { tableName: 'business_arca_configs' });
 
 // ─── ArcaToken (cache del TA de AFIP) ────────────────────────────

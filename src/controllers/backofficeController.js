@@ -3,7 +3,7 @@ const { Op } = require('sequelize');
 const sequelize = require('../config/database');
 const {
   PlatformAdmin, PlatformSetting, Plan, Subscription, SubscriptionPayment,
-  Business, Employee, BusinessCuit, Sale,
+  Business, Employee, BusinessCuit, Sale, BusinessArcaConfig,
 } = require('../models');
 const { CATALOGO_FEATURES } = require('../config/planes');
 const planService = require('../services/planService');
@@ -591,8 +591,72 @@ const resumen = async (_req, res, next) => {
   } catch (e) { next(e); }
 };
 
+/*
+ * GET /api/backoffice/arca/delegaciones
+ *
+ * Los CUIT de clientes esperando que alguien de Stocker haga el trámite en
+ * AFIP. Es la otra mitad del aviso por mail: el mail avisa cuando aparece uno,
+ * esta lista dice cuáles siguen abiertos.
+ *
+ * Hace falta que sea una lista y no sólo el mail. Un mail se lee una vez, se
+ * pospone y se pierde entre los otros; el trámite queda sin hacer y el cliente
+ * queda sin poder facturar sin que nadie lo sepa. Acá se ve cuántos hay y hace
+ * cuánto esperan, que es lo que convierte "me llegó un mail" en una cola.
+ */
+const delegacionesArca = async (req, res, next) => {
+  try {
+    const configs = await BusinessArcaConfig.findAll({
+      where: { delegacionVerificada: false },
+      order: [['ultimaVerificacion', 'DESC']],
+      limit: Math.min(Number(req.query.limit) || 100, 300),
+    });
+    if (!configs.length) return res.json({ pendientes: [] });
+
+    /*
+     * Los negocios y los CUIT en dos consultas y no una por fila: son pocas
+     * filas hoy, pero esta pantalla se mira entera cada vez y no hay razón
+     * para que crezca de a una consulta por cliente.
+     */
+    const [cuits, negocios] = await Promise.all([
+      BusinessCuit.findAll({
+        where: { id: configs.map((c) => c.businessCuitId) },
+        attributes: ['id', 'cuit', 'nombre', 'condicionIva'],
+      }),
+      Business.findAll({
+        where: { id: configs.map((c) => c.businessId) },
+        attributes: ['id', 'nombreNegocio', 'email', 'cuit'],
+      }),
+    ]);
+    const porCuit = new Map(cuits.map((c) => [c.id, c]));
+    const porNegocio = new Map(negocios.map((n) => [n.id, n]));
+
+    const dias = (f) => (f ? Math.floor((Date.now() - new Date(f).getTime()) / 86400000) : null);
+
+    res.json({
+      pendientes: configs.map((c) => {
+        const cu = porCuit.get(c.businessCuitId);
+        const ne = porNegocio.get(c.businessId);
+        return {
+          configId: c.id,
+          negocio: ne ? { id: ne.id, nombre: ne.nombreNegocio, email: ne.email } : null,
+          cuit: cu?.cuit || null,
+          nombreFiscal: cu?.nombre || null,
+          ambiente: c.ambiente,
+          ultimaVerificacion: c.ultimaVerificacion,
+          ultimoError: c.ultimoError,
+          avisadoEn: c.delegacionAvisadaEn,
+          // Hace cuánto que el cliente lo intenta. Es lo que ordena la cola por
+          // urgencia real y no por orden de llegada del mail.
+          diasEsperando: dias(c.ultimaVerificacion),
+        };
+      }),
+    });
+  } catch (e) { next(e); }
+};
+
 module.exports = {
   login, logout, yo, activarTotp,
+  delegacionesArca,
   listarCuentas, verCuenta, editarSuscripcion,
   aprobarPago, rechazarPago,
   listarPlanes, catalogoDeFeatures, editarPlan,

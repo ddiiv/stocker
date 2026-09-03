@@ -1,7 +1,7 @@
 const { Router } = require('express');
 const multer = require('multer');
 const { requireAuth, requirePermission, requireAnyPermission, requireOwner } = require('../middleware/auth');
-const { loginLimiter, passwordResetLimiter, registerLimiter } = require('../middleware/rateLimit');
+const { loginLimiter, passwordResetLimiter, registerLimiter, reporteLimiter } = require('../middleware/rateLimit');
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
@@ -154,6 +154,10 @@ r.get ('/backoffice/planes/catalogo', requirePlatformAdmin, backofficeCtrl.catal
 r.put ('/backoffice/planes/:codigo', requirePlatformAdmin, backofficeCtrl.editarPlan);
 r.get ('/backoffice/mercadopago',    requirePlatformAdmin, backofficeCtrl.estadoMercadoPago);
 r.get ('/backoffice/seguridad',      requirePlatformAdmin, backofficeCtrl.estadoSeguridad);
+// Los CUIT esperando que alguien haga el trámite de delegación en AFIP. Ver
+// backofficeController.delegacionesArca: el mail avisa cuando aparece uno,
+// esta lista es la que no deja que se pierda.
+r.get ('/backoffice/arca/delegaciones', requirePlatformAdmin, backofficeCtrl.delegacionesArca);
 r.get ('/backoffice/ajustes',        requirePlatformAdmin, backofficeCtrl.getAjustes);
 r.put ('/backoffice/ajustes',        requirePlatformAdmin, backofficeCtrl.editarAjustes);
 
@@ -442,7 +446,8 @@ r.post  ('/reposicion/pedidos/:id/rechazar', requireAuth, requirePermission('apr
  * el que se topa con el bug suele ser quien está atendiendo, no el dueño.
  */
 r.get ('/soporte/info',    requireAuth, soporteCtrl.info);
-r.post('/soporte/reporte', requireAuth, soporteCtrl.reportar);
+// Manda un mail por llamada: va con su propio límite. Ver reporteLimiter.
+r.post('/soporte/reporte', requireAuth, reporteLimiter, soporteCtrl.reportar);
 
 r.get ('/cash/turno-actual',   requireAuth, requirePermission('caja','ver'),    cashCtrl.turnoActual);
 r.post('/cash/abrir',          requireAuth, requirePermission('caja','editar'), cashCtrl.abrir);

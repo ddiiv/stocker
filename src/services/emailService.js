@@ -549,4 +549,82 @@ async function sendReporteProblema({ negocio, quien, email, tipo, asunto, detall
   return { enviado: true, messageId: info.messageId };
 }
 
-module.exports = { sendInvoiceEmail, sendSaleReceiptToCustomer, sendSaleNotificationToBusiness, sendPasswordResetCode, sendPasswordResetAlert, sendCashDiscrepancyAlert, sendAccountChangeCode, sendAccountDeletionRequest, sendReporteProblema, CASILLA_BACKOFFICE };
+/*
+ * Un CUIT de un cliente está esperando la delegación de AFIP.
+ *
+ * El trámite no se puede automatizar: alguien de Stocker tiene que entrar al
+ * Administrador de Relaciones de AFIP, ponerse "en nombre de" ese CUIT y crear
+ * la relación que nombra al certificado. Es a mano y va a seguir siéndolo.
+ *
+ * Lo que sí se automatiza es enterarse. Antes el cliente cargaba su CUIT,
+ * apretaba "Verificar", le salía un error que no puede resolver solo, y ahí
+ * empezaba: escribir, esperar, explicar cuál CUIT. Ahora el pedido llega solo,
+ * con el número adentro y los pasos al lado.
+ *
+ * El mail sale desde noreply pero responde al dueño del negocio: contestarle
+ * "ya está" es darle responder.
+ */
+async function sendDelegacionArcaPendiente({ negocio, cuit, nombre, ambiente, motivo, emailDueno }) {
+  if (!mailReady()) return { enviado: false, motivo: 'correo no configurado' };
+
+  const filas = [
+    ['Negocio', `${negocio?.nombreNegocio || '—'}${negocio?.cuit ? ` · CUIT ${negocio.cuit}` : ''}`],
+    ['CUIT a habilitar', `${cuit}${nombre ? ` — ${nombre}` : ''}`],
+    ['Ambiente', ambiente],
+    ['Qué contestó AFIP', motivo || '—'],
+    ['Cuándo', new Intl.DateTimeFormat('es-AR', { dateStyle: 'short', timeStyle: 'short' }).format(new Date())],
+  ];
+
+  /*
+   * Los pasos van en el mail y no en un link.
+   *
+   * Es un trámite que se hace cada varios meses: nadie se acuerda, y buscar el
+   * instructivo es la mitad del tiempo que lleva. El paso 2 es el que se hace
+   * mal casi siempre —se crea la relación en nombre propio en vez de en nombre
+   * del cliente— y por eso está escrito en dos renglones.
+   */
+  const pasos = [
+    'Entrar a AFIP con la clave fiscal de Stocker → Administrador de Relaciones.',
+    `Tocar "Actuar en nombre de" y elegir a ${cuit}. Este paso es el que se saltea: si la relación se crea en nombre propio, queda apuntando a nuestro CUIT y el token sale sin el del cliente.`,
+    'Nueva relación → Servicio: "Facturación Electrónica" (webservice wsfe, NO "Comprobantes en línea").',
+    'Representante: el alias del certificado (Computador Fiscal), no una persona.',
+    `Confirmar que se hizo en ${ambiente}: homologación y producción son listas separadas.`,
+    'Avisarle al cliente que apriete "Verificar" de nuevo.',
+  ];
+
+  const body = `
+    <p style="margin:0 0 12px;">Un cliente cargó un CUIT y AFIP todavía no reconoce que Stocker pueda facturar por él. El trámite es de nuestro lado.</p>
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border:1px solid ${C.line};border-radius:6px;overflow:hidden;margin:14px 0;">
+      ${filas.map(([k, v], i) => `
+        <tr style="background:${i % 2 ? C.paper100 : C.paper50};">
+          <td style="padding:7px 10px;color:${C.ink600};width:150px;">${escapeHtml(k)}</td>
+          <td style="padding:7px 10px;color:${C.ink950};">${escapeHtml(v)}</td>
+        </tr>`).join('')}
+    </table>
+    <p style="margin:16px 0 6px;color:${C.ink950};font-weight:600;">Los pasos</p>
+    <ol style="margin:0;padding-left:18px;color:${C.ink600};line-height:1.6;">
+      ${pasos.map((x) => `<li style="margin-bottom:6px;">${escapeHtml(x)}</li>`).join('')}
+    </ol>`;
+
+  const { from, to } = correo.haciaSoporte();
+  const info = await transport().sendMail({
+    from, to,
+    replyTo: emailDueno || correo.CASILLAS.soporte,
+    subject: `[ARCA] Falta delegar ${cuit} — ${negocio?.nombreNegocio || 'Stocker'}`,
+    html: shell({
+      title: 'Delegación de AFIP pendiente',
+      businessName: negocio?.nombreNegocio || 'Stocker',
+      bodyHtml: body,
+    }),
+    text: `Falta habilitar el CUIT ${cuit} (${nombre || 's/nombre'}) en ${ambiente}.\n\n`
+      + `${filas.map(([k, v]) => `${k}: ${v}`).join('\n')}\n\n${pasos.map((x, i) => `${i + 1}. ${x}`).join('\n')}`,
+  });
+
+  // El CUIT del cliente no va al log: alcanza con saber de qué negocio es.
+  log.info('email', 'aviso de delegación de ARCA enviado', {
+    negocio: negocio?.id, ambiente, destino: mask.email(to),
+  });
+  return { enviado: true, messageId: info.messageId };
+}
+
+module.exports = { sendInvoiceEmail, sendSaleReceiptToCustomer, sendSaleNotificationToBusiness, sendPasswordResetCode, sendPasswordResetAlert, sendCashDiscrepancyAlert, sendAccountChangeCode, sendAccountDeletionRequest, sendReporteProblema, sendDelegacionArcaPendiente, CASILLA_BACKOFFICE };

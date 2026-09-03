@@ -1,5 +1,7 @@
-const { BusinessCuit, BusinessArcaConfig } = require('../models');
+const { BusinessCuit, BusinessArcaConfig, Business } = require('../models');
 const arcaService = require('../services/arcaService');
+const email = require('../services/emailService');
+const { log } = require('../utils/logger');
 
 // GET /api/arca/cuits/:cuitId/config
 const getConfig = async (req, res, next) => {
@@ -61,7 +63,57 @@ const verifyDelegation = async (req, res, next) => {
       ultimoError:          result.ok ? null : (result.error || null),
     });
 
-    res.json({ ...result, config });
+    /*
+     * ── Avisar que hay un trámite esperando ──────────────────────
+     *
+     * El error 600 es el único que el cliente NO puede resolver solo: la
+     * relación la tiene que crear alguien de Stocker en el AFIP del cliente.
+     * Antes el circuito era: el cliente ve un error que no entiende, escribe,
+     * espera, explica cuál CUIT era. Ahora el pedido llega solo, con el número
+     * adentro y los pasos al lado.
+     *
+     * Se avisa una vez por día y no una por intento: "Verificar" es justamente
+     * lo que la persona aprieta cuando no le anda, o sea muchas veces seguidas.
+     * Y se sigue avisando mientras siga pendiente, porque un trámite que se
+     * avisó una vez hace tres semanas es un trámite que nadie hizo.
+     *
+     * El aviso nunca rompe la respuesta: si el correo no está configurado o
+     * falla, el cliente igual tiene que ver su diagnóstico.
+     */
+    const esperaDelegacion = !result.ok
+      && Array.isArray(result.erroresAfip)
+      && result.erroresAfip.some((x) => [600, 601].includes(x.codigo))
+      // Si nuestro propio certificado tampoco anda, el trámite pendiente no es
+      // éste: es otro, y de nuestro lado. Avisar de una delegación mandaría a
+      // hacer el trámite equivocado.
+      && result.certificadoPropio !== 'falla';
+
+    const UN_DIA = 24 * 60 * 60 * 1000;
+    const yaAvisado = config.delegacionAvisadaEn
+      && Date.now() - new Date(config.delegacionAvisadaEn).getTime() < UN_DIA;
+
+    if (esperaDelegacion && !yaAvisado) {
+      try {
+        const negocio = await Business.findByPk(req.auth.businessId, {
+          attributes: ['id', 'nombreNegocio', 'cuit', 'email'],
+        });
+        await email.sendDelegacionArcaPendiente({
+          negocio,
+          cuit:     cuit.cuit,
+          nombre:   cuit.nombre,
+          ambiente: config.ambiente,
+          motivo:   result.error || null,
+          emailDueno: negocio?.email || null,
+        });
+        await config.update({ delegacionAvisadaEn: new Date() });
+      } catch (e) {
+        log.warn('arca', 'no se pudo avisar la delegación pendiente', {
+          negocio: req.auth.businessId, motivo: e.message,
+        });
+      }
+    }
+
+    res.json({ ...result, config, avisoEnviado: esperaDelegacion && !yaAvisado });
   } catch (error) { next(error); }
 };
 

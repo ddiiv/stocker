@@ -33,6 +33,16 @@ const COLUMNAS_ESPERADAS = {
     mayoristaCantidad: { type: DataTypes.INTEGER, allowNull: true, defaultValue: 3 },
     mayoristaMonto:    { type: DataTypes.DECIMAL(12, 2), allowNull: true },
   },
+  business_arca_configs: {
+    /*
+     * Cuándo se avisó que este CUIT espera la delegación de AFIP.
+     *
+     * El trámite lo tiene que hacer una persona de Stocker en el Administrador
+     * de Relaciones, en nombre del cliente. No se puede automatizar; lo que sí
+     * se puede es que nadie dependa de acordarse.
+     */
+    delegacionAvisadaEn: { type: DataTypes.DATE, allowNull: true },
+  },
   pedidos_reposicion: {
     /*
      * El saldo del pedido: lo que se pidió y no llegó a salir del depósito.

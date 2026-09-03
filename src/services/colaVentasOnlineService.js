@@ -43,6 +43,12 @@ const PLATAFORMAS = ['mercadolibre', 'jumpseller'];
 const error = (mensaje, status = 400, extra = {}) =>
   Object.assign(new Error(mensaje), { status, ...extra });
 
+/** Recorta un texto al largo de su columna. Vacío se guarda como null. */
+const recortar = (v, largo) => {
+  const t = String(v ?? '').trim();
+  return t ? t.slice(0, largo) : null;
+};
+
 /**
  * Anota un pedido en la lista. No toca stock: sólo lo encola.
  *
@@ -57,13 +63,39 @@ async function encolar({ businessId, plataforma, pedidoExterno, items, comprador
   }
   const externo = String(pedidoExterno || '').trim();
   if (!externo) throw error('El pedido necesita el id que le dio la plataforma.');
+  /*
+   * Los topes existen para que un pedido no pueda voltear el proceso.
+   *
+   * El descuento corre entero adentro de una transacción y de a un pedido por
+   * negocio: un pedido con cien mil líneas dejaría esa transacción abierta
+   * minutos, con las filas de stock trabadas, y detrás toda la cola del negocio
+   * esperando. No hace falta mala intención —un webhook mal armado alcanza—,
+   * pero con un token válido es un pedido y el mostrador deja de vender.
+   *
+   * Los números son holgados a propósito: una venta online real de doscientas
+   * líneas no existe, y si algún día existe, el mensaje dice qué pasó en vez de
+   * cortar por tiempo de espera.
+   */
+  const MAX_LINEAS = 200;
+  const MAX_UNIDADES = 10000;
+  if (externo.length > 60) {
+    throw error('El id del pedido de la plataforma no puede pasar de 60 caracteres.');
+  }
   if (!Array.isArray(items) || !items.length) throw error('El pedido llegó sin artículos.');
+  if (items.length > MAX_LINEAS) {
+    throw error(`El pedido trae ${items.length} artículos y el máximo es ${MAX_LINEAS}.`);
+  }
 
   for (const i of items) {
-    if (!String(i?.sku || '').trim()) throw error('Cada artículo necesita su SKU.');
+    const sku = String(i?.sku || '').trim();
+    if (!sku) throw error('Cada artículo necesita su SKU.');
+    if (sku.length > 80) throw error(`El SKU "${sku.slice(0, 20)}…" es más largo de lo que puede existir en Stocker.`);
     const n = Number(i?.cantidad);
     if (!Number.isInteger(n) || n <= 0) {
-      throw error(`La cantidad de "${i.sku}" tiene que ser un entero mayor a cero.`);
+      throw error(`La cantidad de "${sku}" tiene que ser un entero mayor a cero.`);
+    }
+    if (n > MAX_UNIDADES) {
+      throw error(`La cantidad de "${sku}" (${n}) supera el máximo de ${MAX_UNIDADES} por línea.`);
     }
   }
 
@@ -85,9 +117,16 @@ async function encolar({ businessId, plataforma, pedidoExterno, items, comprador
     const pedido = await PedidoPlataforma.create({
       businessId, plataforma: cual, pedidoExterno: externo,
       estado: 'pendiente',
-      compradorNombre:    comprador.nombre    || null,
-      compradorDocumento: comprador.documento || null,
-      compradorEmail:     comprador.email     || null,
+      /*
+       * Los datos del comprador se recortan al tamaño de su columna.
+       *
+       * Vienen de la plataforma y no de nosotros: un nombre de mil caracteres
+       * haría fallar el INSERT con un error de base que no dice qué pasó, y el
+       * pedido —que es una venta real— se perdería por un campo informativo.
+       */
+      compradorNombre:    recortar(comprador.nombre, 150),
+      compradorDocumento: recortar(comprador.documento, 20),
+      compradorEmail:     recortar(comprador.email, 150),
       total: total != null ? total : null,
       recibidoEn: new Date(),
     }, { transaction: t });

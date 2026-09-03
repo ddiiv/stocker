@@ -108,7 +108,38 @@ const publicLimiter = rateLimit({
   handler: respuesta('Demasiadas peticiones. Probá de nuevo en un momento.'),
 });
 
+/*
+ * Todo lo que manda un mail a pedido de alguien.
+ *
+ * El límite general son 600 pedidos por minuto: para una pantalla está bien, y
+ * para un endpoint que escribe un mail por llamada es un grifo abierto. Con una
+ * cuenta —que cualquiera puede abrir— se pueden mandar cientos de mails por
+ * minuto a la casilla de soporte. No hace falta que el contenido moleste: el
+ * volumen alcanza para que el proveedor marque la cuenta de envío como spam, y
+ * ahí dejan de llegar las facturas y los códigos de recuperación de todos.
+ *
+ * Diez por hora y por cuenta es holgado para reportar un problema de verdad —el
+ * mismo problema no se reporta once veces— y corta el uso automático.
+ */
+const reporteLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  limit: 10,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  /*
+   * Por cuenta y no sólo por IP: un local con varias cajas sale por la misma
+   * IP, y limitar ahí haría que el reporte de una cajera bloquee el de otra.
+   * Sin sesión se cae a la IP, que es lo único que hay.
+   */
+  keyGenerator: (req) => {
+    const ip = ipKeyGenerator(req.ip);
+    const quien = req.auth?.businessId ? `n${req.auth.businessId}` : null;
+    return quien ? `${ip}|${quien}` : ip;
+  },
+  handler: respuesta('Ya mandaste varios reportes seguidos. Esperá un rato: los estamos leyendo.'),
+});
+
 module.exports = {
-  loginLimiter, passwordResetLimiter, registerLimiter,
+  loginLimiter, passwordResetLimiter, registerLimiter, reporteLimiter,
   apiLimiter, burstLimiter, publicLimiter,
 };

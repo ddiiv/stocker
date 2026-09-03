@@ -264,8 +264,43 @@ async function verifyDelegation({ businessCuit, ambiente = 'homologacion' }) {
      */
     const sinResultados = errores.every((x) => x.codigo === 602);
     if (errores.length && !sinResultados) {
+      /*
+       * ── ¿Falla el certificado, o falla la delegación? ───────────
+       *
+       * El 600 no distingue las dos cosas y son arreglos opuestos: uno se
+       * resuelve en el AFIP del cliente y el otro en el nuestro. Se pregunta lo
+       * mismo por el CUIT de Stocker, que no necesita delegación de nadie:
+       *
+       *   · Si por Stocker anda, el certificado, el WSAA y el ambiente están
+       *     bien. Lo único que falta es la relación de este cliente, y no tiene
+       *     sentido hacerle revisar nuestro certificado.
+       *   · Si por Stocker TAMBIÉN falla, el problema es nuestro y el cliente
+       *     puede haber hecho todo bien. Mandarlo a rehacer el trámite sería
+       *     hacerle perder el día por algo que no está de su lado.
+       *
+       * Es una llamada de más, y sólo se hace cuando ya falló: el costo es una
+       * espera en el caso que igual estaba roto.
+       */
+      let certificadoPropio = null;
+      const esDeRelaciones = errores.some((x) => [600, 601].includes(x.codigo));
+      const cuitStocker = String(process.env.ARCA_STOCKER_CUIT || '').replace(/\D/g, '');
+      if (esDeRelaciones && cuitStocker && cuitStocker !== String(businessCuit).replace(/\D/g, '')) {
+        try {
+          const propio = await cli.feParamGetPtosVenta({
+            cert, key, ambiente, cuitEmisor: cuitStocker,
+          });
+          const fallaPropio = (propio.errores || []).some((x) => [600, 601].includes(x.codigo));
+          certificadoPropio = fallaPropio ? 'falla' : 'anda';
+        } catch {
+          // Que la comprobación de más no se lleve puesto el diagnóstico
+          // principal: sin ella el mensaje es peor, no inexistente.
+          certificadoPropio = null;
+        }
+      }
+
       return {
         ...base,
+        certificadoPropio,
         ok: false,
         listoParaFacturar: false,
         error: errores.map((x) => `[${x.codigo}] ${x.mensaje}`).join(' · '),
@@ -279,8 +314,13 @@ async function verifyDelegation({ businessCuit, ambiente = 'homologacion' }) {
          * y de producción son dos listas distintas, y hacer el trámite en una y
          * consultar la otra da exactamente este error.
          */
-        hint: errores.some((x) => [600, 601].includes(x.codigo))
+        hint: esDeRelaciones
           ? `AFIP no reconoce que ${process.env.ARCA_STOCKER_CUIT} pueda facturar por ${String(businessCuit).replace(/\D/g, '')} en ${ambiente}.`
+            + (certificadoPropio === 'anda'
+              ? ' El certificado de Stocker sí factura por su propio CUIT en este ambiente, así que lo que falta es la relación de ESTE cliente, no el certificado.'
+              : certificadoPropio === 'falla'
+                ? ' Ojo: el certificado de Stocker tampoco factura por su propio CUIT en este ambiente. El problema es del certificado o del ambiente, no de la delegación del cliente.'
+                : '')
           : null,
         /*
          * Las tres causas, en orden de probabilidad.
@@ -291,11 +331,20 @@ async function verifyDelegation({ businessCuit, ambiente = 'homologacion' }) {
          * Mientras el mensaje decía sólo "revisá la delegación", el trámite ya
          * hecho parecía el problema y nadie miraba el paso que faltaba.
          */
-        causas: errores.some((x) => [600, 601].includes(x.codigo)) ? [
+        causas: !esDeRelaciones ? undefined : certificadoPropio === 'falla' ? [
+          'El certificado de Stocker no está habilitado para "Facturación Electrónica" en este ambiente, o el que está cargado no es el del ambiente que se consultó.',
+          'No hace falta que el cliente toque nada: el trámite que falta es de nuestro lado.',
+        ] : [
           'El certificado no está asignado a esa delegación. Aunque el cliente ya delegó "Facturación Electrónica" y figure Aceptada, falta crear la relación que nombra al Computador Fiscal como representante. Es el paso que habilita el "Delegable: SI".',
           'El servicio delegado es otro: "Comprobantes en línea" es para facturar a mano desde el sitio de AFIP; para Stocker tiene que ser "Facturación Electrónica" (webservice wsfe).',
           `El trámite se hizo en el otro ambiente: las relaciones de homologación y de producción son listas separadas, y acá se consultó ${ambiente}.`,
-        ] : undefined,
+          /*
+           * La cuarta, que es la que queda cuando el cliente jura haber hecho
+           * las tres anteriores. Y es la más fácil de hacer mal, porque la
+           * pantalla se ve igual en los dos casos.
+           */
+          'La relación del Computador Fiscal se creó en nombre propio y no en nombre del cliente. En el Administrador de Relaciones hay que entrar primero por "Actuar en nombre de" y elegir al cliente; recién ahí, "Nueva relación" → servicio "Facturación Electrónica" → representante: el alias del certificado. Hecho en nombre propio, la relación queda apuntando a nuestro CUIT y el token sale sin el del cliente, que es exactamente este error.',
+        ],
         erroresAfip: errores,
       };
     }
