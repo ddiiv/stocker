@@ -79,3 +79,31 @@ export const MODOS_MAYORISTA = [
   { key: "siempre",  label: "Siempre mayorista" },
   { key: "nunca",    label: "Siempre minorista" },
 ];
+
+/*
+ * La regla del local desde el que se está vendiendo.
+ *
+ * Hay dos maneras de tenerla y hace falta buscar en las dos, porque cada rol
+ * llega con una sola:
+ *
+ *   · El dueño elige el local de una lista que sí pide al servidor.
+ *   · El empleado no pide esa lista —tiene un local y no elige—, pero su
+ *     sesión ya trae el local entero, con la regla adentro.
+ *
+ * Mirar sólo la lista es el bug que tuvimos: para el empleado nunca había
+ * coincidencia, la regla quedaba en null, y `esMayorista` caía en la regla de
+ * fábrica. En pantalla se leía "Mayorista desde 3 prendas" —que es la de
+ * fábrica, no la del negocio— así que parecía configurada y cobraba otra cosa.
+ * Con "siempre mayorista" puesto, el empleado cobraba todo a minorista.
+ *
+ * Devuelve null sólo si de verdad no se sabe de qué local se trata. Ahí el que
+ * llama decide: `esMayorista` con null usa la regla de fábrica, que es lo
+ * razonable cuando todavía no se eligió local.
+ */
+export function reglaDelLocal(locations, localId, user) {
+  if (!localId) return null;
+  const enLista = (locations || []).find((l) => String(l.id) === String(localId));
+  if (enLista) return enLista;
+  const propio = user?.local;
+  return propio && String(propio.id) === String(localId) ? propio : null;
+}

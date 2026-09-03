@@ -280,7 +280,26 @@ export default function SaleDetailPage() {
           </table>
           <div className="mt-4 space-y-2 border-t border-line pt-4 text-sm">
             <div className="flex justify-between"><span className="text-ink-600">Subtotal</span><span>{formatCurrency(sale.subtotal)}</span></div>
-            {sale.descuentoPct > 0 && <div className="flex justify-between"><span className="text-ink-600">Descuento ({sale.descuentoPct}%)</span><span>-{formatCurrency(sale.descuento)}</span></div>}
+            {/*
+              * El descuento, con sus dos caras.
+              *
+              * Se guardan las dos porque en el mostrador se regatea de las dos
+              * maneras: quien cerró "te lo dejo en 45.000" necesita ver el
+              * importe, y quien revisa la venta después necesita el porcentaje
+              * para comparar con las demás. Mostrar una sola obligaba a sacar
+              * la cuenta para entender la otra.
+              *
+              * El porcentaje puede tener decimales cuando se cargó por plata:
+              * es el número real, no uno redondeado para que quede lindo.
+              */}
+            {Number(sale.descuento) > 0 && (
+              <div className="flex justify-between">
+                <span className="text-ink-600">
+                  Descuento{Number(sale.descuentoPct) > 0 && ` (${Number(sale.descuentoPct)}%)`}
+                </span>
+                <span>-{formatCurrency(sale.descuento)}</span>
+              </div>
+            )}
             <div className="flex justify-between font-display text-base font-semibold text-ink-950"><span>Total</span><span>{formatCurrency(sale.total)}</span></div>
             {Number(sale.saldoPendiente) > 0 && (
               <div className="flex justify-between text-brick-500">

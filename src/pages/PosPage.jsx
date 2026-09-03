@@ -13,7 +13,7 @@ import { useBarcodeScanner } from "../hooks/useBarcodeScanner";
 import { camaraDisponible } from "../components/scanner/CameraScanner";
 import ScannerVentaCamara from "../components/scanner/ScannerVentaCamara";
 import { formatCurrency } from "../utils/formatters";
-import { esMayorista as evaluarMayorista, describir as describirRegla } from "../utils/reglaMayorista";
+import { esMayorista as evaluarMayorista, describir as describirRegla, reglaDelLocal } from "../utils/reglaMayorista";
 import { PageHeader, Card } from "../components/ui/Layout";
 import { useAuth } from "../context/AuthContext";
 import { esAdministradorTotal } from "../utils/permissions";
@@ -102,6 +102,17 @@ export default function PosPage() {
    * servidor: sin eso, apuntar tres segundos a la misma etiqueta encola varios
    * pedidos y las unidades entran desordenadas.
    */
+  /*
+   * El descuento del mostrador, en plata o en porcentaje.
+   *
+   * Se regatea de las dos maneras: "te hago el 10%" y "te lo dejo en 45.000"
+   * son la misma conversación. Antes sólo entraba la primera —y en el POS ni
+   * siquiera esa—, así que para la segunda había que sacar la cuenta a mano,
+   * redondear, y cargar un porcentaje que casi nunca daba el número prometido.
+   */
+  const [descuentoModo, setDescuentoModo] = useState("pct");
+  const [descuentoValor, setDescuentoValor] = useState("");
+
   const [camaraAbierta, setCamaraAbierta] = useState(false);
   const [escaneando, setEscaneando] = useState(false);
   const hayCamara = camaraDisponible();
@@ -291,11 +302,32 @@ export default function PosPage() {
    * El umbral por monto se mide EN LISTA —el precio depende del total y el
    * total del precio— así que primero se suma todo a minorista.
    */
-  const localRegla = locations.find((l) => String(l.id) === String(localEfectivo)) || null;
+  const localRegla = reglaDelLocal(locations, localEfectivo, user);
   const totalEnLista = items.reduce((s, i) => s + (Number(i.precioMinorista) || 0) * i.cantidad, 0);
   const esMayorista = evaluarMayorista(localRegla, totalUnidades, totalEnLista);
   const precioDe = (i) => (esMayorista ? i.precioMayorista : i.precioMinorista);
-  const total = items.reduce((s, i) => s + precioDe(i) * i.cantidad, 0);
+  const subtotal = items.reduce((s, i) => s + precioDe(i) * i.cantidad, 0);
+
+  /*
+   * El descuento se calcula acá y se manda como lo cargó la persona.
+   *
+   * El servidor recalcula lo mismo y guarda las dos formas —el importe porque
+   * es lo que se descontó de verdad, el porcentaje porque es como se lee de un
+   * vistazo—, así que lo de acá es sólo para mostrar el total antes de cobrar.
+   *
+   * Se recorta al subtotal: más allá de ahí el total se iría a negativo, y una
+   * venta en negativo es una devolución que nadie pidió. El servidor lo rechaza
+   * igual; acá se frena antes para que el número grande nunca muestre un
+   * imposible.
+   */
+  const descuentoPedido = Math.max(0, Number(descuentoValor) || 0);
+  const descuento = descuentoModo === "pct"
+    ? Math.round(subtotal * Math.min(descuentoPedido, 100) / 100 * 100) / 100
+    : Math.min(Math.round(descuentoPedido * 100) / 100, subtotal);
+  const descuentoPctEquivale = subtotal > 0
+    ? Math.round(descuento / subtotal * 100 * 100) / 100
+    : 0;
+  const total = subtotal - descuento;
 
   const esFiado = condicionPago === "cuenta_corriente";
   const clienteElegido = clienteSel;
@@ -424,6 +456,14 @@ export default function PosPage() {
           ? { descontarStock: seLoLleva }
           : { estado: "pagado", pagos: lineasParaApi(pagos, metodos, total) }),
         items: items.map((i) => ({ productVariantId: i.id, cantidad: i.cantidad })),
+        // Una sola de las dos: el servidor rechaza que lleguen juntas, porque
+        // decidir cuál gana en silencio es lo que hace que el ticket diga una
+        // cosa y la caja otra.
+        ...(descuento > 0
+          ? (descuentoModo === "pct"
+            ? { descuentoPct: Math.min(descuentoPedido, 100) }
+            : { descuentoMonto: descuento })
+          : {}),
       });
       setUltimaVenta(venta);
       // Lo que hubo que dar de alta. Se muestra en la pantalla de venta
@@ -738,6 +778,78 @@ export default function PosPage() {
                 )}
             </div>
             <p className="mt-2 font-display text-4xl font-semibold text-ink-950">{formatCurrency(total)}</p>
+
+            {/*
+              * El descuento del mostrador.
+              *
+              * Va pegado al número grande y no en otra tarjeta: se carga
+              * mirando el total, y lo único que importa es ver cómo baja.
+              *
+              * Los dos modos comparten el mismo campo. Con dos campos, uno
+              * queda siempre en cero y en el apuro se carga el que no es.
+              */}
+            {items.length > 0 && (
+              <div className="mt-3 border-t border-line pt-3">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-ink-500">Descuento</span>
+                  <div className="flex rounded-md bg-paper-100 p-0.5">
+                    {[
+                      { valor: "pct", texto: "%" },
+                      { valor: "monto", texto: "$" },
+                    ].map((op) => (
+                      <button
+                        key={op.valor}
+                        type="button"
+                        onClick={() => setDescuentoModo(op.valor)}
+                        aria-pressed={descuentoModo === op.valor}
+                        className={`rounded px-2.5 py-1 text-xs font-semibold transition-colors ${
+                          descuentoModo === op.valor
+                            ? "bg-paper-50 text-ink-950 shadow-sm"
+                            : "text-ink-500"
+                        }`}
+                      >
+                        {op.texto}
+                      </button>
+                    ))}
+                  </div>
+                  <input
+                    type="number"
+                    min="0"
+                    max={descuentoModo === "pct" ? 100 : undefined}
+                    inputMode="decimal"
+                    value={descuentoValor}
+                    onChange={(e) => setDescuentoValor(e.target.value)}
+                    placeholder="0"
+                    aria-label={descuentoModo === "pct" ? "Descuento en porcentaje" : "Descuento en pesos"}
+                    className="input h-8 w-24 text-right text-sm"
+                  />
+                </div>
+
+                {descuento > 0 && (
+                  <div className="mt-2 flex items-baseline justify-between text-xs">
+                    <span className="text-ink-500">
+                      {formatCurrency(subtotal)} − {formatCurrency(descuento)}
+                    </span>
+                    {/*
+                      * La equivalencia, siempre en la unidad que NO se cargó.
+                      * Quien puso pesos quiere saber qué porcentaje regaló, y
+                      * quien puso porcentaje quiere saber cuánta plata es.
+                      */}
+                    <span className="font-medium text-brass-700">
+                      {descuentoModo === "monto"
+                        ? `equivale al ${descuentoPctEquivale}%`
+                        : `son ${formatCurrency(descuento)}`}
+                    </span>
+                  </div>
+                )}
+
+                {descuentoModo === "monto" && descuentoPedido > subtotal && (
+                  <p className="mt-1 text-xs text-brick-500">
+                    El descuento no puede ser mayor que la venta: se aplicó {formatCurrency(subtotal)}.
+                  </p>
+                )}
+              </div>
+            )}
           </Card>
 
           <Card>

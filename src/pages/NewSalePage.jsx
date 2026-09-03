@@ -8,7 +8,7 @@ import ModalStockFaltante from "../components/sales/ModalStockFaltante";
 import { fetchPaymentMethods } from "../services/paymentMethodService";
 import PaymentSplit, { lineasParaApi, calcularTotales } from "../components/sales/PaymentSplit";
 import { formatCurrency } from "../utils/formatters";
-import { esMayorista as evaluarMayorista, describir as describirRegla } from "../utils/reglaMayorista";
+import { esMayorista as evaluarMayorista, describir as describirRegla, reglaDelLocal } from "../utils/reglaMayorista";
 import { PageHeader, Card } from "../components/ui/Layout";
 import AvisoError from "../components/ui/AvisoError";
 import { analizarError } from "../utils/errores";
@@ -39,7 +39,7 @@ export default function NewSalePage() {
   const [error, setError] = useState(null);
   // Lo que el servidor dijo que falta. Misma pregunta que en el POS.
   const [faltantesServidor, setFaltantesServidor] = useState(null);
-    const { user } = useAuth();
+  const { user } = useAuth();
   const puedeElegirVendedor = esAdministradorTotal(user);
 
   useEffect(() => {
@@ -112,7 +112,7 @@ export default function NewSalePage() {
 
   // La misma regla que aplica el servidor, tomada del local elegido. Ver
   // utils/reglaMayorista: antes este `>= 3` estaba escrito tres veces.
-  const localRegla = locations.find((l) => String(l.id) === String(locationId)) || null;
+  const localRegla = reglaDelLocal(locations, locationId, user);
   const totalEnLista = items.reduce((s, i) => s + (Number(i.precioUnitario) || 0) * i.cantidad, 0);
   const esMayorista   = evaluarMayorista(localRegla, totalUnidades, totalEnLista);
   const subtotal = items.reduce((s, i) => s + i.cantidad * (esMayorista ? i.precioMayorista : i.precioUnitario), 0);
