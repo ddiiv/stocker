@@ -24,6 +24,28 @@ const COLOR = {
 
 async function ensureDir() { await fs.ensureDir(PDF_DIR); }
 
+/*
+ * A qué CUIT del negocio entró cada cobro.
+ *
+ * Una transferencia o un débito no pasan por el cajón: caen en la cuenta de
+ * alguno de los CUIT del negocio. Con más de un CUIT, quién cobró es parte del
+ * comprobante: es lo que el cliente necesita para hacer la transferencia al
+ * lugar correcto, y lo que después permite conciliar el extracto del banco.
+ *
+ * Devuelve una línea por destinatario distinto y no una por pago: si dos
+ * medios entran al mismo CUIT, repetirlo dos veces es ruido.
+ */
+function destinatariosDe(pagos) {
+  const vistos = new Map();
+  for (const p of Array.isArray(pagos) ? pagos : []) {
+    if (!p?.destinoCuit) continue;
+    if (!vistos.has(p.destinoCuit)) {
+      vistos.set(p.destinoCuit, { cuit: p.destinoCuit, nombre: p.destinoNombre || '' });
+    }
+  }
+  return [...vistos.values()];
+}
+
 function money(v) {
   return new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS', maximumFractionDigits: 0 }).format(Number(v) || 0);
 }
@@ -204,6 +226,21 @@ async function generateInvoicePdf(invoice, items, business) {
       esMayorista: invoice.esMayorista,
     });
 
+    /*
+     * A qué CUIT del negocio entró el cobro.
+     *
+     * Debajo de los totales y no arriba: no es un dato fiscal del comprobante
+     * —el emisor ya está en la cabecera— sino de a qué cuenta cayó la plata.
+     * Importa cuando el negocio factura con más de un CUIT: sin esto, la
+     * factura sale a nombre de uno y la transferencia pudo entrar en el otro,
+     * y el que concilia no tiene cómo saberlo.
+     */
+    if (invoice.cobroDestino) {
+      doc.font('Helvetica').fontSize(8).fillColor('#666')
+         .text(`Cobro acreditado en: ${invoice.cobroDestino}`, 50, doc.y + 14, { width: 500 });
+      doc.fillColor('#000');
+    }
+
     drawFooter(doc, business);
     doc.end();
     stream.on('finish', () => resolve(path.relative(process.cwd(), filepath)));
@@ -262,6 +299,14 @@ async function generateInvoicePdfBuffer(invoice, items, business) {
       esMayorista: invoice.esMayorista,
     });
 
+    // Igual que en la versión a disco: éste es el PDF que se descarga desde la
+    // app, así que si el dato falta acá, en la práctica no está en ningún lado.
+    if (invoice.cobroDestino) {
+      doc.font('Helvetica').fontSize(8).fillColor('#666')
+         .text(`Cobro acreditado en: ${invoice.cobroDestino}`, 50, doc.y + 14, { width: 500 });
+      doc.fillColor('#000');
+    }
+
     drawFooter(doc, business);
     doc.end();
   });
@@ -301,6 +346,24 @@ async function generateSalePdf(sale, items, business, { cliente, emisor } = {}) 
     drawKeyValue(doc, col2x, y,     'Medio pago', sale.medioPago || '—');
     drawKeyValue(doc, col2x, y+14,  'Precio',    sale.esMayorista ? 'MAYORISTA' : 'MINORISTA');
     y += 60;
+
+    /*
+     * El destinatario del cobro, cuando lo hay.
+     *
+     * Va antes que el cliente y no en el pie: en una cotización es el dato que
+     * el cliente usa para transferir, y buscarlo abajo de todo entre los
+     * totales es la diferencia entre que pague hoy o pregunte mañana.
+     */
+    const destinos = destinatariosDe(sale.pagos);
+    if (destinos.length) {
+      y = drawSectionTitle(doc, destinos.length === 1 ? 'El cobro entra a' : 'Los cobros entran a', y);
+      for (const d of destinos) {
+        drawKeyValue(doc, col1x, y, 'Razón social', d.nombre || '—');
+        drawKeyValue(doc, col2x, y, 'CUIT', d.cuit);
+        y += 18;
+      }
+      y += 8;
+    }
 
     y = drawSectionTitle(doc, 'Cliente', y);
     if (cliente) {
@@ -488,6 +551,24 @@ async function generateSaleTicketPdf(sale, items, business, { cliente, emisor } 
            .text('TOTAL COBRADO', 8, doc.y, { width: innerW * 0.55, continued: true })
            .text(money(totalCobrado), { width: innerW * 0.45, align: 'right' });
       }
+
+      /*
+       * A qué CUIT entró la plata que no fue al cajón.
+       *
+       * En el ticket importa por dos motivos: el cliente que transfirió se
+       * lleva por escrito a quién le pagó, y quien cuadra la caja ve de un
+       * vistazo qué parte del total NO tiene que estar en el cajón.
+       */
+      const destinosTicket = destinatariosDe(pagos);
+      if (destinosTicket.length) {
+        doc.moveDown(0.25);
+        doc.font('Helvetica-Bold').fontSize(7.5)
+           .text(destinosTicket.length === 1 ? 'El cobro entra a' : 'Los cobros entran a', 8, doc.y, { width: innerW });
+        for (const d of destinosTicket) {
+          doc.font('Helvetica').fontSize(7.5)
+             .text(`${d.nombre ? `${d.nombre} · ` : ''}CUIT ${d.cuit}`, 8, doc.y, { width: innerW });
+        }
+      }
     } else if (sale.condicionPago === 'cuenta_corriente' && Number(sale.saldoPendiente) > 0) {
       /*
        * Venta fiada todavía sin cobrar: no hay medio de pago que imprimir
@@ -607,4 +688,4 @@ async function generateSubscriptionReceiptPdf(pago, negocio, plan) {
   return ruta;
 }
 
-module.exports = { generateInvoicePdf, generateInvoicePdfBuffer, generateSalePdf, generateSaleTicketPdf, generateSubscriptionReceiptPdf, PDF_DIR, COLOR };
+module.exports = { destinatariosDe, generateInvoicePdf, generateInvoicePdfBuffer, generateSalePdf, generateSaleTicketPdf, generateSubscriptionReceiptPdf, PDF_DIR, COLOR };

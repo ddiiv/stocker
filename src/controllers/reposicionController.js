@@ -212,14 +212,24 @@ const rechazar = async (req, res, next) => {
 const despachar = async (req, res, next) => {
   const t = await sequelize.transaction();
   try {
-    const pedido = await reposicion.despachar({
+    const { pedido, altaStock } = await reposicion.despachar({
       pedidoId: req.params.id, businessId: req.auth.businessId,
-      employeeId: req.auth.employeeId || null, envios: req.body?.envios, transaction: t,
+      employeeId: req.auth.employeeId || null, envios: req.body?.envios,
+      // Lo confirma quien está en el depósito con la mercadería a la vista.
+      // Cuánto se da de alta lo calcula el servicio, no el navegador.
+      confirmarAltaStock: req.body?.confirmarAltaStock === true,
+      transaction: t,
     });
     await t.commit();
     res.json({
       ok: true, pedido,
-      mensaje: `Pedido ${pedido.numero} despachado. La mercadería queda en tránsito hasta que el local confirme.`,
+      // Sólo si hubo: una lista vacía en la respuesta hace que la pantalla
+      // muestre un cartel de "se dio de alta" cuando no se dio de alta nada.
+      ...(altaStock.length ? { altaStock } : {}),
+      mensaje: `Pedido ${pedido.numero} despachado. La mercadería queda en tránsito hasta que el local confirme.`
+        + (altaStock.length
+          ? ` Se declararon ${altaStock.reduce((n, a) => n + a.agregadas, 0)} unidad(es) que no estaban cargadas.`
+          : ''),
     });
   } catch (e) { await t.rollback().catch(() => {}); next(e); }
 };

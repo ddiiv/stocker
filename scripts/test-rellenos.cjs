@@ -140,8 +140,21 @@ tit('CLAVES REPETIDAS EN COLUMNAS_ESPERADAS');
   const desde = fuente.indexOf('COLUMNAS_ESPERADAS');
   const hasta = fuente.indexOf('const RELLENOS', desde);
   const claves = [...fuente.slice(desde, hasta).matchAll(/^  (\w+): \{/gm)].map((m) => m[1]);
-  const repetidas = claves.filter((k, i) => claves.indexOf(k) !== i);
-  chk('ninguna tabla declarada dos veces', [], [...new Set(repetidas)]);
+  const repetidas = [...new Set(claves.filter((k, i) => claves.indexOf(k) !== i))];
+  /*
+   * `chk` de este archivo toma una CONDICIÓN, no un valor esperado.
+   *
+   * Acá decía `chk('...', [], [...])`, copiando la firma de las otras suites
+   * —donde el segundo argumento es lo esperado y se compara—. Un array vacío es
+   * truthy, así que la condición era siempre verdadera: esta prueba pasaba
+   * pasara lo que pasara, y nunca detectó un duplicado.
+   *
+   * No es una prueba cualquiera: es la única guardia contra una clave repetida
+   * en COLUMNAS_ESPERADAS, que se sobreescribe en silencio y deja una columna
+   * sin crear en las bases nuevas. Ya pasó cinco veces.
+   */
+  chk('ninguna tabla declarada dos veces', repetidas.length === 0,
+    repetidas.length ? `repetidas: ${repetidas.join(', ')}` : '');
 }
 
   console.log(`  \x1b[32mPasaron: ${ok}\x1b[0m   \x1b[31mFallaron: ${ko}\x1b[0m`);

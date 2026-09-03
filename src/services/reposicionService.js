@@ -274,7 +274,10 @@ async function rechazar({ pedidoId, businessId, employeeId = null, motivo, trans
  * y frenar dejaría un despacho a medias, con stock ya descontado y un documento
  * que dice que no salió.
  */
-async function despachar({ pedidoId, businessId, employeeId = null, envios = [], transaction: t }) {
+async function despachar({
+  pedidoId, businessId, employeeId = null, envios = [],
+  confirmarAltaStock = false, transaction: t,
+}) {
   const { pedido, items } = await traer(pedidoId, businessId, t);
   if (pedido.estado !== 'aprobado') {
     throw error(
@@ -310,19 +313,90 @@ async function despachar({ pedidoId, businessId, employeeId = null, envios = [],
 
   if (!aEnviar.length) throw error('No hay ninguna línea con cantidad para enviar.', 400);
 
-  // Comprobación completa antes de tocar nada.
+  /*
+   * ── Lo que falta declarado en el depósito ────────────────────────
+   *
+   * El caso real: la mercadería está en el estante, pero el ingreso nunca se
+   * cargó. Antes eso frenaba el despacho y obligaba a salir de la pantalla,
+   * ir a Depósito, cargar el ingreso, volver y empezar de nuevo — con el
+   * pedido a medio armar y el remito esperando.
+   *
+   * Ahora se pregunta, igual que en una venta: se muestra qué falta y quien
+   * está en el depósito confirma que lo tiene a la vista. Confirmado, entra
+   * primero al depósito como ingreso declarado y de ahí sale al local, que es
+   * el recorrido que la mercadería hizo de verdad. Queda el rastro de las dos
+   * patas: el alta con su motivo y el egreso con el número de pedido.
+   *
+   * Se pregunta ANTES de mover nada. Frenar en la mitad dejaría medio pedido
+   * despachado y el resto no, con el depósito descontado por partida doble.
+   */
   const sinStock = [];
   for (const { item, cantidad } of aEnviar) {
     const hay = await stockService.stockEn(item.productVariantId, pedido.depositoId, t);
-    if (hay < cantidad) sinStock.push({ sku: item.sku, descripcion: item.descripcion, hay, pide: cantidad });
+    if (hay < cantidad) {
+      sinStock.push({
+        productVariantId: item.productVariantId,
+        itemId: item.id,
+        sku: item.sku,
+        descripcion: item.descripcion,
+        hay,
+        pide: cantidad,
+        falta: cantidad - hay,
+      });
+    }
   }
-  if (sinStock.length) {
-    const detalle = sinStock.map((s) => `${s.descripcion || s.sku}: hay ${s.hay} y estás enviando ${s.pide}`).join('; ');
+
+  if (sinStock.length && !confirmarAltaStock) {
+    const detalle = sinStock
+      .map((x) => `${x.descripcion || x.sku}: hay ${x.hay} y estás enviando ${x.pide}`)
+      .join('; ');
     throw error(
-      `No alcanza el stock del depósito. ${detalle}. Si la mercadería está físicamente pero sin cargar, ingresala primero desde Depósito.`,
+      `No alcanza el stock declarado del depósito. ${detalle}. `
+      + 'Si la mercadería está físicamente pero sin cargar, confirmá y se da de alta antes de despachar.',
       409,
-      { faltantes: sinStock },
+      /*
+       * Va plano y también adentro de `detalles`.
+       *
+       * El manejador de errores arma el cuerpo de la respuesta desde
+       * `detalles` —es lo que llega a la pantalla—, pero varios lugares del
+       * servidor leen `error.codigo` directo. Mandar los dos evita que la
+       * pantalla reciba un 409 sin saber cuál es y muestre el cartel genérico.
+       */
+      {
+        codigo: 'SIN_STOCK_DEPOSITO',
+        puedeConfirmar: true,
+        faltantes: sinStock,
+        detalles: { codigo: 'SIN_STOCK_DEPOSITO', puedeConfirmar: true, faltantes: sinStock },
+      },
     );
+  }
+
+  /*
+   * El alta, antes del egreso.
+   *
+   * Se da de alta la DIFERENCIA calculada acá adentro, con la fila ya leída en
+   * esta transacción. Nunca un número que haya mandado el navegador: si viniera
+   * de afuera, cualquiera con la sesión abierta podría inventarse inventario
+   * mandando un `falta` grande en el cuerpo del pedido.
+   */
+  const altaStock = [];
+  for (const f of sinStock) {
+    await stockService.mover({
+      variantId:  f.productVariantId,
+      businessId,
+      locationId: pedido.depositoId,
+      delta:      f.falta,
+      tipo:       'ingreso',
+      /*
+       * El motivo dice que esto lo declaró una persona, no un remito. Es lo que
+       * después permite preguntarse por qué un producto se declara a mano todas
+       * las semanas en vez de entrar por su ingreso.
+       */
+      motivo: `Alta declarada en depósito al despachar ${pedido.numero}: había ${f.hay} y se envían ${f.pide}`.slice(0, 255),
+      employeeId,
+      transaction: t,
+    });
+    altaStock.push({ sku: f.sku, descripcion: f.descripcion, agregadas: f.falta, habia: f.hay });
   }
 
   for (const { item, cantidad } of aEnviar) {
@@ -350,7 +424,11 @@ async function despachar({ pedidoId, businessId, employeeId = null, envios = [],
     enviadoPorEmployeeId: employeeId,
     enviadoEn: new Date(),
   }, { transaction: t });
-  return pedido;
+  /*
+   * Se devuelve qué se dio de alta para que la pantalla lo pueda mostrar. Un
+   * alta silenciosa es inventario que apareció sin que nadie lo cuente.
+   */
+  return { pedido, altaStock };
 }
 
 /*

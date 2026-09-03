@@ -1,4 +1,4 @@
-const { PaymentMethod } = require('../models');
+const { PaymentMethod, BusinessCuit } = require('../models');
 
 /*
  * Cálculo de los pagos de una venta.
@@ -66,6 +66,22 @@ async function calcularPagos(pagos, totalVenta, businessId) {
   const metodos = await PaymentMethod.findAll({ where: { businessId } });
   const porId = new Map(metodos.map((m) => [m.id, m]));
 
+  /*
+   * Los CUIT del negocio, para los medios que caen en una cuenta bancaria.
+   *
+   * Se traen todos de una vez y SIEMPRE filtrados por el negocio de la sesión.
+   * Ese filtro es la defensa: el id del CUIT viene del cliente, y sin él
+   * cualquiera podría anotar su cobro contra el CUIT de otro negocio —que es
+   * un dato que después sale impreso en el ticket y en la factura—.
+   */
+  const necesitaCuit = [...porId.values()].some((m) => m.destinoCuit);
+  const cuits = necesitaCuit
+    ? await BusinessCuit.findAll({
+      where: { businessId }, attributes: ['id', 'cuit', 'nombre'],
+    })
+    : [];
+  const cuitPorId = new Map(cuits.map((c) => [c.id, c]));
+
   const lineas = [];
   let sumaMontos = 0;
   let recargoPagos = 0;
@@ -111,6 +127,32 @@ async function calcularPagos(pagos, totalVenta, businessId) {
     sumaMontos   = redondear(sumaMontos + monto);
     recargoPagos = redondear(recargoPagos + ajusteMonto);
 
+    /*
+     * ── A qué CUIT entra este cobro ──────────────────────────────
+     *
+     * Sólo para los medios marcados como que caen en una cuenta bancaria. Se
+     * exige y no se adivina: con más de un CUIT, elegir el primero en silencio
+     * pone plata en la cuenta equivocada y el error aparece recién cuando no
+     * cierra el extracto del banco, meses después.
+     *
+     * El id se busca entre los CUIT DEL NEGOCIO de la sesión. Uno de otro
+     * negocio no se encuentra y el cobro se rechaza: si no, el ticket y la
+     * factura saldrían con un destinatario ajeno.
+     */
+    let destino = null;
+    if (metodo?.destinoCuit) {
+      const idPedido = Number(pago?.businessCuitId);
+      if (!idPedido) {
+        throw new ErrorPagos(
+          `"${nombre}" entra a una cuenta del negocio: elegí a qué CUIT va el cobro ${i + 1}.`,
+        );
+      }
+      destino = cuitPorId.get(idPedido);
+      if (!destino) {
+        throw new ErrorPagos(`El CUIT elegido para el cobro ${i + 1} no es de este negocio.`);
+      }
+    }
+
     lineas.push({
       paymentMethodId: metodo?.id || null,
       nombre,
@@ -121,6 +163,15 @@ async function calcularPagos(pagos, totalVenta, businessId) {
       // Se congela al cobrar: si mañana desmarcan el medio como efectivo, un
       // arqueo ya cerrado no puede cambiar de resultado.
       esEfectivo: Boolean(metodo?.esEfectivo),
+      /*
+       * Lo mismo con el destino: id para conciliar, copia para el comprobante.
+       * Un medio que no pide CUIT no guarda ninguno aunque el cliente lo mande;
+       * anotar un destinatario que el medio no tiene sería inventar un dato que
+       * después sale impreso.
+       */
+      businessCuitId: destino?.id || null,
+      destinoCuit:    destino?.cuit || null,
+      destinoNombre:  destino?.nombre || null,
     });
   }
 

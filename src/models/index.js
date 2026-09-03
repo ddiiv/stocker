@@ -1086,6 +1086,21 @@ const PaymentMethod = db.define('PaymentMethod', {
   // arqueo, porque el resto no pasa por el cajón. Con un "Efectivo USD" o un
   // "Contado" la deducción por texto fallaba en silencio y la caja cerraba mal.
   esEfectivo: { type: DataTypes.BOOLEAN, defaultValue: false },
+  /*
+   * Este medio entra a una cuenta bancaria del negocio, y hay que decir a cuál.
+   *
+   * Una transferencia, un débito o un QR no pasan por el cajón: caen en la
+   * cuenta de alguno de los CUIT del negocio. Con más de un CUIT —que es el
+   * caso que esto viene a resolver— saber cuál cobró no es un detalle
+   * administrativo: es lo que después permite conciliar el extracto del banco
+   * contra las ventas, y lo que decide con qué CUIT se factura.
+   *
+   * Va como marca propia y no deducida de `esEfectivo`. Son dos preguntas
+   * distintas: "¿entra al arqueo?" y "¿a qué cuenta cae?". Hay medios que no
+   * son ninguna de las dos —una tarjeta que liquida un agregador, un vale— y
+   * obligarlos a elegir CUIT sería pedir un dato inventado en cada venta.
+   */
+  destinoCuit: { type: DataTypes.BOOLEAN, defaultValue: false },
   // Fiar no es un medio de pago: es una condición de la venta (`Sale.condicionPago`).
   // Cualquiera de estos medios sirve después para cobrar lo fiado.
 }, { tableName: 'payment_methods' });
@@ -1152,6 +1167,18 @@ const SalePayment = db.define('SalePayment', {
   // Copia del flag al momento del cobro. Si después se edita el medio de pago,
   // un arqueo ya cerrado no puede cambiar de resultado.
   esEfectivo:      { type: DataTypes.BOOLEAN, defaultValue: false },
+  /*
+   * A qué CUIT del negocio entró esta plata.
+   *
+   * Se guarda el id Y una copia del CUIT y del nombre, por la misma razón por
+   * la que `nombre` convive con `paymentMethodId`: el id sirve para agrupar y
+   * conciliar, y la copia para que un comprobante emitido hace ocho meses siga
+   * diciendo la verdad si mañana se corrige la razón social o se borra el CUIT.
+   * Un ticket que cambia de destinatario después de impreso no es un ticket.
+   */
+  businessCuitId:  { type: DataTypes.INTEGER, allowNull: true },
+  destinoCuit:     { type: DataTypes.STRING(20), allowNull: true },
+  destinoNombre:   { type: DataTypes.STRING(150), allowNull: true },
 }, { tableName: 'sale_payments' });
 
 // ─── SaleItem ────────────────────────────────────────────────────
@@ -1206,6 +1233,18 @@ const Invoice = db.define('Invoice', {
     set(val) { this.setDataValue('arcaRespuesta', val ? JSON.stringify(val) : null); },
   },
   businessCuitId: { type: DataTypes.INTEGER, allowNull: true },
+  /*
+   * A qué CUIT del negocio entró el cobro de esta venta, como texto.
+   *
+   * Es una foto para imprimir, igual que `emisorNombre`: el comprobante ya
+   * emitido no puede cambiar de destinatario si mañana se corrige una razón
+   * social. Para conciliar contra el banco está `SalePayment.businessCuitId`,
+   * que sí es relacional.
+   *
+   * Texto y no una relación porque una venta se puede cobrar con dos medios que
+   * entran a dos cuentas distintas, y la factura tiene que decir las dos.
+   */
+  cobroDestino: { type: DataTypes.STRING(300), allowNull: true },
   emisorCuit:     { type: DataTypes.STRING(20) },
   emisorNombre:   { type: DataTypes.STRING(150) },
   pdfPath:      { type: DataTypes.STRING(255) },

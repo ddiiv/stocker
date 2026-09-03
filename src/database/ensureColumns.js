@@ -98,11 +98,27 @@ const COLUMNAS_ESPERADAS = {
     sincronizadoCon: { type: DataTypes.STRING(120), allowNull: true },
     sincronizadoEn:  { type: DataTypes.DATE, allowNull: true },
   },
+  invoices: {
+    // A qué CUIT del negocio entró el cobro, como texto para imprimir. Ver el
+    // modelo: es una foto, igual que emisorNombre.
+    cobroDestino: { type: DataTypes.STRING(300), allowNull: true },
+  },
   payment_methods: {
     esEfectivo: { type: DataTypes.BOOLEAN, allowNull: true, defaultValue: false },
+    // Si este medio cae en una cuenta bancaria de un CUIT del negocio. Es otra
+    // pregunta que "entra al arqueo": ver el modelo.
+    destinoCuit: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
   },
   sale_payments: {
     esEfectivo: { type: DataTypes.BOOLEAN, allowNull: true, defaultValue: false },
+    /*
+     * A qué CUIT del negocio entró este cobro. El id para conciliar contra el
+     * banco, y la copia del CUIT y el nombre para que un comprobante ya emitido
+     * no cambie de destinatario si mañana se corrige la razón social.
+     */
+    businessCuitId: { type: DataTypes.INTEGER, allowNull: true },
+    destinoCuit:    { type: DataTypes.STRING(20), allowNull: true },
+    destinoNombre:  { type: DataTypes.STRING(150), allowNull: true },
   },
   clients: {
     // Cuenta corriente. Arrancan todos deshabilitados: habilitar el crédito es

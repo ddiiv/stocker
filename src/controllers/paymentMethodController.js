@@ -53,6 +53,12 @@ const create = async (req, res, next) => {
       ajustePct,
       activo: req.body?.activo !== false,
       esEfectivo: Boolean(req.body?.esEfectivo),
+      /*
+       * Un medio que entra al cajón no cae además en una cuenta bancaria. Son
+       * excluyentes por definición, y dejar los dos marcados haría que el POS
+       * pida elegir CUIT para el efectivo.
+       */
+      destinoCuit: Boolean(req.body?.destinoCuit) && !req.body?.esEfectivo,
       orden: Number(req.body?.orden) || 0,
       notas: req.body?.notas || null,
     });
@@ -87,6 +93,13 @@ const update = async (req, res, next) => {
     }
     if (req.body?.activo !== undefined) patch.activo = Boolean(req.body.activo);
     if (req.body?.esEfectivo !== undefined) patch.esEfectivo = Boolean(req.body.esEfectivo);
+    if (req.body?.destinoCuit !== undefined) patch.destinoCuit = Boolean(req.body.destinoCuit);
+    /*
+     * Marcar un medio como efectivo le saca el destino bancario, aunque no
+     * venga en el mismo pedido. Si no, un medio que estaba en "transferencia" y
+     * pasa a efectivo queda pidiendo CUIT en cada venta sin que se vea por qué.
+     */
+    if (patch.esEfectivo === true) patch.destinoCuit = false;
     if (req.body?.orden !== undefined)  patch.orden = Number(req.body.orden) || 0;
     if (req.body?.notas !== undefined)  patch.notas = req.body.notas || null;
 

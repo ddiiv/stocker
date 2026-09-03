@@ -247,12 +247,33 @@ const buscarVariantes = async (req, res, next) => {
       };
     });
 
+    /*
+     * Depósito y reposición no quieren ver los productos de evento.
+     *
+     * Un producto de evento no lleva stock por diseño: no se puede ingresar al
+     * depósito ni pedir para reponer. Que aparezca en esos buscadores es una
+     * invitación a cargar algo que después no se va a poder mover, y el error
+     * se descubre recién al confirmar.
+     *
+     * Va como parámetro y no como filtro fijo porque el mismo endpoint lo usa
+     * el punto de venta, que SÍ necesita encontrarlos: en un local de evento se
+     * venden justamente esos.
+     *
+     * El filtro se mete bajo `Op.and` y no suelto. `NO_ES_FERIA` es un `Op.or`,
+     * y el `where` del producto podría tener el suyo: volcarlo con spread haría
+     * que uno pise al otro en silencio. Ya pasó en el listado de productos.
+     */
+    const sinEvento = req.query.sinEvento === '1' || req.query.sinEvento === 'true';
+    const dondeProducto = sinEvento
+      ? { activo: true, [Op.and]: [NO_ES_FERIA] }
+      : { activo: true };
+
     const variantes = await ProductVariant.findAll({
       where: { businessId: req.auth.businessId, activo: true, [Op.and]: condicionesPorPalabra },
       include: [{
         model: Product, as: 'producto', required: true,
-        where: { activo: true },
-        attributes: ['id', 'titulo', 'skuAgrupador', 'categoria', 'precioMinorista', 'precioMayorista', 'costo'],
+        where: dondeProducto,
+        attributes: ['id', 'titulo', 'skuAgrupador', 'categoria', 'precioMinorista', 'precioMayorista', 'costo', 'esFeria'],
       }],
       limit,
       subQuery: false,

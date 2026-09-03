@@ -1,11 +1,25 @@
 const path = require('path');
 const fse = require('fs-extra');
 const sequelize = require('../config/database');
-const { Invoice, InvoiceItem, Sale, SaleItem, Business, Client, BusinessCuit, BusinessArcaConfig } = require('../models');
+const { Invoice, InvoiceItem, Sale, SaleItem, Business, Client, BusinessCuit, BusinessArcaConfig, SalePayment } = require('../models');
 const { nextInvoiceNumber, crearConNumero } = require('../services/invoiceNumberService');
 const { tipoComprobante, solicitarCAE, determineInvoiceType, calcularIVA } = require('../services/arcaService');
 const { lookupCuit } = require('../services/arcaLookupService');
-const { generateInvoicePdf, generateInvoicePdfBuffer } = require('../services/pdfService');
+const { generateInvoicePdf, generateInvoicePdfBuffer, destinatariosDe } = require('../services/pdfService');
+
+/*
+ * Los destinatarios del cobro, en una línea para guardar en la factura.
+ *
+ * Sale del mismo `destinatariosDe` que arma el ticket y el PDF de la venta: si
+ * cada uno agrupara por su cuenta, el día que se cambie el criterio —juntar dos
+ * cobros al mismo CUIT, por ejemplo— la factura diría una cosa y el ticket
+ * otra, y los dos serían el comprobante de la misma venta.
+ */
+function textoDeDestinatarios(pagos) {
+  const destinos = destinatariosDe(pagos)
+    .map((d) => `${d.nombre ? `${d.nombre} · ` : ''}CUIT ${d.cuit}`);
+  return destinos.length ? destinos.join(' / ').slice(0, 300) : null;
+}
 const { sendInvoiceEmail } = require('../services/emailService');
 const { sendInvoiceWhatsapp } = require('../services/whatsappService');
 const { exigirCupo } = require('../services/planService');
@@ -116,6 +130,19 @@ const createInvoice = async (req, res, next) => {
     if (existingInvoice)   throw Object.assign(new Error('Esta venta ya tiene una factura generada.'), { status: 409 });
 
     sale.items = await SaleItem.findAll({ where: { saleId: sale.id }, transaction: t });
+
+    /*
+     * A qué CUIT del negocio entró el cobro de esta venta.
+     *
+     * Se arma acá y se guarda en la factura como texto: el comprobante es una
+     * foto y no puede cambiar de destinatario si mañana se corrige una razón
+     * social. Uno por destinatario distinto — dos medios que caen en la misma
+     * cuenta se nombran una sola vez.
+     */
+    const pagosDeLaVenta = await SalePayment.findAll({
+      where: { saleId: sale.id }, transaction: t,
+    });
+    const cobroDestino = textoDeDestinatarios(pagosDeLaVenta);
     sale.cliente = sale.clientId
       ? await Client.findOne({ where: { id: sale.clientId, businessId: req.auth.businessId }, transaction: t })
       : null;
@@ -247,6 +274,7 @@ const createInvoice = async (req, res, next) => {
         cae, caeVencimiento,
         arcaRespuesta,
         businessCuitId: emisor?.id || null,
+        cobroDestino,
         emisorCuit, emisorNombre,
         fechaEmision:  new Date(),
         estado:        'emitida',

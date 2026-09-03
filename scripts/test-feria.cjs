@@ -527,6 +527,64 @@ function sesion() {
   chk('con tipo PDF', true, /application\/pdf/.test(porHttp.headers.get('content-type') || ''));
   chk('y dice cuántas filas trae', String(filas.length), porHttp.headers.get('x-filas'));
 
+  tit('21. EL BUSCADOR DE DEPÓSITO NO OFRECE PRODUCTOS DE EVENTO');
+  /*
+   * Un producto de evento no lleva stock por diseño: no se puede ingresar al
+   * depósito ni pedir para reponer. Que apareciera en esos buscadores era una
+   * invitación a cargar algo que después no se iba a poder mover, y el error se
+   * descubría recién al confirmar el ingreso.
+   *
+   * El mismo endpoint lo usa el punto de venta, que SÍ los necesita: en un
+   * local de evento se venden justamente esos. Por eso el filtro es un
+   * parámetro y no una regla fija, y por eso hay que probar los dos lados.
+   */
+  const skuEvento = creado.sku;
+  const buscarVar = async (extra = '') =>
+    (await api('GET', `/api/products/buscar-variantes?q=${encodeURIComponent(skuEvento)}${extra}`)).json?.data || [];
+
+  const sinFiltro = await buscarVar();
+  chk('sin el filtro, el de evento aparece', true, sinFiltro.some((x) => x.sku === skuEvento));
+  chk('y viene marcado como de evento', true, sinFiltro.find((x) => x.sku === skuEvento)?.esFeria);
+
+  const conFiltro = await buscarVar('&sinEvento=1');
+  chk('con sinEvento=1, desaparece', false, conFiltro.some((x) => x.sku === skuEvento));
+
+  /*
+   * Y lo que NO tiene que pasar: que el filtro se lleve puesto el catálogo
+   * normal. `esFeria` se agregó a una tabla que ya tenía filas, así que las
+   * viejas quedaron en NULL, y `NOT (esFeria = 1)` en SQL deja afuera todo lo
+   * que sea NULL. Un filtro mal escrito acá vaciaba el buscador del depósito.
+   */
+  /*
+   * Se usa una variante creada acá y no la del bloque 15: aquélla se limpia
+   * antes de llegar hasta acá, y un buscador que no encuentra nada da el mismo
+   * resultado que un filtro roto. La prueba tiene que poder distinguirlos.
+   */
+  const prodNormal = await Product.create({
+    businessId: negocio.id, sku: 'QA-FILTRO-N', skuAgrupador: 'QA-FILTRO-N',
+    titulo: 'QA Filtro normal', precioMinorista: 100, precioMayorista: 100, costo: 40, activo: true,
+  });
+  const varNormalFiltro = await ProductVariant.create({
+    productId: prodNormal.id, businessId: negocio.id, sku: 'QA-FILTRO-N-1',
+    variante1Nombre: 'Color', variante1Valor: 'Único', stock: 0, stockMinimo: 0,
+  });
+  const normalesEnBuscador = (await api('GET', '/api/products/buscar-variantes?q=QA-FILTRO-N-1&sinEvento=1')).json?.data || [];
+  chk('el catálogo normal sigue apareciendo', true,
+    normalesEnBuscador.some((x) => x.sku === 'QA-FILTRO-N-1'));
+
+  /*
+   * Y con `esFeria` en NULL, que es como quedaron las filas anteriores a que
+   * existiera la columna. `NOT (esFeria = 1)` en SQL es NULL para esas filas, y
+   * una condición que da NULL no incluye la fila: un filtro escrito así vaciaba
+   * el buscador del depósito para todo el catálogo viejo, en silencio.
+   */
+  await Product.update({ esFeria: null }, { where: { id: prodNormal.id } });
+  const conNull = (await api('GET', '/api/products/buscar-variantes?q=QA-FILTRO-N-1&sinEvento=1')).json?.data || [];
+  chk('y con esFeria en NULL también', true, conNull.some((x) => x.sku === 'QA-FILTRO-N-1'));
+
+  await ProductVariant.destroy({ where: { id: varNormalFiltro.id } });
+  await Product.destroy({ where: { id: prodNormal.id } });
+
   tit('Limpieza');
   for (const id of aBorrar.ventas) {
     await SaleItem.destroy({ where: { saleId: id } });

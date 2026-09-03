@@ -29,6 +29,9 @@ async function notifySaleAsync(saleId, businessId) {
         { association: 'empleado', attributes: ['id', 'nombre', 'apellido'] },
         // El aviso al negocio nombra el local, así que hace falta acá.
         { association: 'local', attributes: ['id', 'nombre'] },
+        // Y los pagos, porque el PDF imprime a qué CUIT entró cada cobro que no
+        // fue al cajón. Sin esto el que recibe el mail no ve el destinatario.
+        { association: 'pagos' },
       ],
     });
     if (!sale || sale.tipo === 'cotizacion') return;

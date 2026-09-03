@@ -286,6 +286,95 @@ const fallo = async (fn) => { try { await fn(); return null; } catch (e) { retur
     const filas = await require('../src/models').VariantStock.findAll({ where: { productVariantId: v.id } });
     chk('el total es la suma de los locales', v.stock, filas.reduce((s, f) => s + f.stock, 0));
     chk('y ningún local quedó en negativo', false, filas.some((f) => f.stock < 0));
+    tit('14. DESPACHAR LO QUE ESTÁ EN EL ESTANTE PERO NO CARGADO');
+    /*
+     * El caso real del depósito: la mercadería está, el ingreso nunca se cargó.
+     * Antes frenaba el despacho y obligaba a salir de la pantalla, ir a
+     * Depósito, cargar el ingreso, volver y empezar de nuevo. Ahora se pregunta
+     * y, confirmado, entra al depósito y de ahí sale al local — que es el
+     * recorrido que la mercadería hizo de verdad.
+     */
+    const pedidoAlta = await reposicion.crearPedido({
+      businessId: negocio.id, locationId: loc.id, depositoId: dep.id,
+      items: [{ productVariantId: v2.id, cantidad: 6 }],
+    });
+    const itemAlta = (await PedidoReposicionItem.findAll({ where: { pedidoId: pedidoAlta.id } }))[0];
+    await pedidoAlta.update({ estado: 'aprobado' });
+
+    // El depósito no tiene nada declarado de v2.
+    const enDep2 = () => stock.stockEn(v2.id, dep.id);
+    const enLoc2 = () => stock.stockEn(v2.id, loc.id);
+    chk('el depósito arranca sin stock declarado', 0, await enDep2());
+
+    // Sin confirmar: se frena y se dice qué falta.
+    let elError = null;
+    {
+      const t = await sequelize.transaction();
+      try {
+        await reposicion.despachar({
+          pedidoId: pedidoAlta.id, businessId: negocio.id,
+          envios: [{ itemId: itemAlta.id, cantidad: 6 }], transaction: t,
+        });
+      } catch (e) { elError = e; } finally { await t.rollback().catch(() => {}); }
+    }
+    chk('sin confirmar, no despacha', true, Boolean(elError));
+    chk('con su código', 'SIN_STOCK_DEPOSITO', elError?.detalles?.codigo);
+    chk('y ofrece confirmar', true, elError?.detalles?.puedeConfirmar);
+    chk('diciendo cuánto falta', [6, 0], [
+      elError?.detalles?.faltantes?.[0]?.falta,
+      elError?.detalles?.faltantes?.[0]?.hay,
+    ]);
+    chk('sin haber movido nada', [0, 0], [await enDep2(), await enLoc2()]);
+
+    // Confirmando: entra al depósito y sale al local en la misma operación.
+    const tAlta = await sequelize.transaction();
+    const despacho = await reposicion.despachar({
+      pedidoId: pedidoAlta.id, businessId: negocio.id,
+      envios: [{ itemId: itemAlta.id, cantidad: 6 }],
+      confirmarAltaStock: true, transaction: tAlta,
+    });
+    await tAlta.commit();
+
+    chk('confirmando, despacha', 'enviado', despacho.pedido.estado);
+    chk('y avisa cuánto se dio de alta', 6, despacho.altaStock?.[0]?.agregadas);
+    /*
+     * El depósito vuelve a cero: entró lo que faltaba y salió lo despachado.
+     * Que quede en cero y no en 6 es lo que prueba que las dos patas ocurrieron
+     * —el alta y el egreso— y no sólo una.
+     */
+    chk('el depósito queda en cero: entró y salió', 0, await enDep2());
+    chk('el local todavía no sumó: está en tránsito', 0, await enLoc2());
+
+    const movs = await require('../src/models').StockMovement.findAll({
+      where: { productVariantId: v2.id, locationId: dep.id },
+      order: [['id', 'ASC']],
+    });
+    const ultimos = movs.slice(-2);
+    chk('quedan las dos patas registradas', ['ingreso', 'egreso'], ultimos.map((m) => m.tipo));
+    chk('el alta dice que la declaró una persona', true,
+      /Alta declarada en depósito/.test(ultimos[0]?.motivo || ''));
+
+    /*
+     * Lo que NO se puede: inventar inventario desde afuera. La cantidad a dar
+     * de alta la calcula el servicio con lo que hay, no la manda el navegador.
+     */
+    const pedidoTruco = await reposicion.crearPedido({
+      businessId: negocio.id, locationId: loc.id, depositoId: dep.id,
+      items: [{ productVariantId: v2.id, cantidad: 2 }],
+    });
+    const itemTruco = (await PedidoReposicionItem.findAll({ where: { pedidoId: pedidoTruco.id } }))[0];
+    await pedidoTruco.update({ estado: 'aprobado' });
+    const tTruco = await sequelize.transaction();
+    await reposicion.despachar({
+      pedidoId: pedidoTruco.id, businessId: negocio.id,
+      // Se manda un faltante inflado a propósito: tiene que ignorarse.
+      envios: [{ itemId: itemTruco.id, cantidad: 2, falta: 9999 }],
+      faltantes: [{ productVariantId: v2.id, falta: 9999 }],
+      confirmarAltaStock: true, transaction: tTruco,
+    });
+    await tTruco.commit();
+    chk('un faltante inflado desde afuera no da de alta de más', 0, await enDep2());
+
   } finally {
     // Limpieza: todo lo de QA se va, pase lo que pase con los tests.
     const ingresos = await StockIngreso.findAll({ where: { locationId: dep.id } });
