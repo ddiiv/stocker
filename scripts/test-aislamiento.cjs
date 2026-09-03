@@ -66,7 +66,7 @@ function sesion() {
   if (login.status !== 200) { console.log('No se pudo entrar:', login.status); process.exit(1); }
 
   const creados = [];
-  const linea = { productVariantId: variante.id, cantidad: 1, precioUnitario: 100 };
+  const linea = { productVariantId: variante.id, cantidad: 1};
   /* Se cotiza en vez de vender: una cotización no dispara el mail ni el
      WhatsApp al cliente, y para lo que se mide da igual. */
   const cotizar = async (extra) => {

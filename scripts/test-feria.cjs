@@ -186,7 +186,7 @@ function sesion() {
 
   const venta = await api('POST', '/api/sales', {
     locationId: puesto.json.id, estado: 'pagado', medioPago: 'efectivo',
-    items: [{ productVariantId: variantes[0].id, cantidad: 7, precioUnitario: creado.precio }],
+    items: [{ productVariantId: variantes[0].id, cantidad: 7}],
   });
   chk('la venta entra', 201, venta.status);
   if (venta.json?.id) aBorrar.ventas.push(venta.json.id);
@@ -210,7 +210,7 @@ function sesion() {
   for (let i = 0; i < 3; i++) {
     const v = await api('POST', '/api/sales', {
       locationId: puesto.json.id, estado: 'pagado', medioPago: 'efectivo',
-      items: [{ productVariantId: variantes[0].id, cantidad: 50, precioUnitario: creado.precio }],
+      items: [{ productVariantId: variantes[0].id, cantidad: 50}],
     });
     if (v.json?.id) aBorrar.ventas.push(v.json.id);
   }
@@ -230,7 +230,7 @@ function sesion() {
   tit('6. FERIA Y CATÁLOGO NORMAL NO SE MEZCLAN');
   const enLocalNormal = await api('POST', '/api/sales', {
     locationId: localNormal.id, estado: 'pagado', medioPago: 'efectivo',
-    items: [{ productVariantId: variantes[0].id, cantidad: 1, precioUnitario: creado.precio }],
+    items: [{ productVariantId: variantes[0].id, cantidad: 1}],
   });
   if (enLocalNormal.json?.id) aBorrar.ventas.push(enLocalNormal.json.id);
   chk('un artículo de feria en un local normal se rechaza', 400, enLocalNormal.status);
@@ -241,7 +241,7 @@ function sesion() {
   });
   const enFeria = await api('POST', '/api/sales', {
     locationId: puesto.json.id, estado: 'pagado', medioPago: 'efectivo',
-    items: [{ productVariantId: normalVariante.id, cantidad: 1, precioUnitario: 100 }],
+    items: [{ productVariantId: normalVariante.id, cantidad: 1}],
   });
   if (enFeria.json?.id) aBorrar.ventas.push(enFeria.json.id);
   chk('un artículo normal en la feria también', 400, enFeria.status);

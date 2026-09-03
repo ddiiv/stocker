@@ -24,10 +24,39 @@ function precioMinorista(variante, producto) {
   return Number(tieneValor(propio) ? propio : producto?.precioMinorista) || 0;
 }
 
-/** El precio mayorista que corresponde cobrar. */
+/**
+ * El precio mayorista que corresponde cobrar.
+ *
+ * Sin precio mayorista en ningún lado se cobra el de lista, no cero.
+ *
+ * Antes esto terminaba en `|| 0`: un producto al que nadie le cargó precio
+ * mayorista se vendía GRATIS en cuanto la venta cruzaba el umbral del local.
+ * Con la regla de fábrica —tres prendas— alcanzaba con que un cliente llevara
+ * tres remeras de un producto recién cargado. La venta quedaba registrada, el
+ * stock descontado, la caja cuadrada en cero y nadie se enteraba hasta contar
+ * la plata.
+ *
+ * Cobrar el precio de lista es lo peor que puede pasar ahora: se cobra de más
+ * respecto de lo que el negocio quizás quería, el cliente lo ve en el ticket y
+ * se corrige. Cobrar cero no se corrige, porque la mercadería ya salió.
+ */
 function precioMayorista(variante, producto) {
+  // Un cero propio de la VARIANTE se respeta: ahí sí es una decisión, la misma
+  // que documenta `tieneValor` —una muestra, un regalo, un artículo de canje.
   const propio = variante?.precioMayorista;
-  return Number(tieneValor(propio) ? propio : producto?.precioMayorista) || 0;
+  if (tieneValor(propio)) return Number(propio) || 0;
+
+  /*
+   * En el PRODUCTO, en cambio, un cero es un campo vacío.
+   *
+   * La columna no acepta null, así que "sin precio mayorista" y "vale cero" se
+   * escriben igual. Y un producto entero regalado no es una decisión que alguien
+   * tome: si el número es cero, es que nadie lo cargó.
+   */
+  const delPadre = Number(producto?.precioMayorista);
+  if (tieneValor(producto?.precioMayorista) && delPadre > 0) return delPadre;
+
+  return precioMinorista(variante, producto);
 }
 
 /** El costo que corresponde imputar. */

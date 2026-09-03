@@ -84,7 +84,10 @@ function sesion() {
   // Producto normal y producto de evento: el segundo no lleva stock nunca.
   const prod = await Product.create({
     businessId: negocio.id, sku: 'QA-ALT', skuAgrupador: 'QA-ALT', titulo: 'QA Alta de stock',
-    precioMinorista: 100, precioMayorista: 80, costo: 40, activo: true,
+    // Iguales a propósito: acá se prueba el alta de stock al vender, no el
+    // precio. Distintos, cada total esperado dependería del umbral mayorista
+    // del local demo.
+    precioMinorista: 100, precioMayorista: 100, costo: 40, activo: true,
   });
   const v1 = await ProductVariant.create({
     productId: prod.id, businessId: negocio.id, sku: 'QA-ALT-1',
@@ -96,7 +99,7 @@ function sesion() {
   });
   const prodEvento = await Product.create({
     businessId: negocio.id, sku: 'QA-ALT-EV', skuAgrupador: 'QA-ALT-EV', titulo: 'QA Evento',
-    precioMinorista: 200, precioMayorista: 150, costo: 0, activo: true, esFeria: true,
+    precioMinorista: 200, precioMayorista: 200, costo: 0, activo: true, esFeria: true,
   });
   const vEvento = await ProductVariant.create({
     productId: prodEvento.id, businessId: negocio.id, sku: 'EVEQA-ALT-EV', stock: 0, stockMinimo: 0,
@@ -117,8 +120,18 @@ function sesion() {
   const enB = (v = v1) => stock.stockEn(v.id, B.id);
 
   const vender = async (extra = {}, lineas = null) => {
-    const items = lineas || [{ productVariantId: v1.id, cantidad: 5, precioUnitario: 100 }];
-    const total = items.reduce((s, i) => s + i.precioUnitario * i.cantidad, 0);
+    const items = lineas || [{ productVariantId: v1.id, cantidad: 5 }];
+    /*
+     * El total se calcula con los mismos precios que va a usar el servidor.
+     *
+     * El precio ya no se manda en la línea —lo pone el servidor, para que nadie
+     * pueda cobrarse una venta a cero desde afuera—, así que acá hay que
+     * saberlo para poder mandar el pago que corresponde. Los productos de este
+     * archivo tienen minorista y mayorista iguales justamente para que este
+     * número no dependa de si la venta cruza el umbral del local.
+     */
+    const PRECIO = { [v1.id]: 100, [v2.id]: 100, [vEvento.id]: 200 };
+    const total = items.reduce((s, i) => s + (PRECIO[i.productVariantId] || 0) * i.cantidad, 0);
     const r = await api('POST', '/api/sales', {
       tipo: 'venta', estado: 'pagado', locationId: A.id, employeeId: empleado.id,
       items, pagos: [{ paymentMethodId: metodo.id, monto: total }],
@@ -230,8 +243,8 @@ function sesion() {
     await fijar(v1, A, 10);
     await fijar(v2, A, 1);
     const mixta = await vender({ confirmarAltaStock: true }, [
-      { productVariantId: v1.id, cantidad: 2, precioUnitario: 100 },
-      { productVariantId: v2.id, cantidad: 4, precioUnitario: 100 },
+      { productVariantId: v1.id, cantidad: 2},
+      { productVariantId: v2.id, cantidad: 4},
     ]);
     chk('la venta entra', 201, mixta.status);
     chk('una sola alta', 1, mixta.json?.altaStock?.altas?.length);
@@ -262,7 +275,7 @@ function sesion() {
     });
     const ventaEvento = await api('POST', '/api/sales', {
       tipo: 'venta', estado: 'pagado', locationId: localEvento.id, employeeId: empleado.id,
-      items: [{ productVariantId: vEvento.id, cantidad: 9, precioUnitario: 200 }],
+      items: [{ productVariantId: vEvento.id, cantidad: 9}],
       pagos: [{ paymentMethodId: metodo.id, monto: 1800 }],
     });
     if (ventaEvento.json?.id) creadas.push(ventaEvento.json.id);
@@ -279,7 +292,7 @@ function sesion() {
      */
     await fijar(v1, A, 1);
     const paraAnular = await vender({ confirmarAltaStock: true },
-      [{ productVariantId: v1.id, cantidad: 3, precioUnitario: 100 }]);
+      [{ productVariantId: v1.id, cantidad: 3}]);
     chk('la venta entra', 201, paraAnular.status);
     chk('queda en cero', 0, await enA());
     const anulacion = await api('POST',
@@ -318,8 +331,8 @@ function sesion() {
      */
     await fijar(v1, A, 1);
     const [c1, c2] = await Promise.all([
-      vender({}, [{ productVariantId: v1.id, cantidad: 1, precioUnitario: 100 }]),
-      vender({}, [{ productVariantId: v1.id, cantidad: 1, precioUnitario: 100 }]),
+      vender({}, [{ productVariantId: v1.id, cantidad: 1}]),
+      vender({}, [{ productVariantId: v1.id, cantidad: 1}]),
     ]);
     const estados = [c1.status, c2.status].sort();
     chk('una entra y la otra pregunta', [201, 409], estados);
@@ -329,7 +342,7 @@ function sesion() {
     tit('Cotizaciones: presupuesto y nada más');
     const cot = await api('POST', '/api/sales', {
       tipo: 'cotizacion', estado: 'pendiente', locationId: A.id, employeeId: empleado.id,
-      items: [{ productVariantId: v1.id, cantidad: 50, precioUnitario: 100 }],
+      items: [{ productVariantId: v1.id, cantidad: 50}],
     });
     if (cot.json?.id) creadas.push(cot.json.id);
     chk('se puede cotizar sin stock, sin preguntar nada', 201, cot.status);
@@ -357,7 +370,7 @@ function sesion() {
     await rol.update({ permisos: { ...(permisosOriginales || {}), ventas: 'editar', cotizaciones: 'ninguno' } });
     const negada = await sinCotizar('POST', '/api/sales', {
       tipo: 'cotizacion', estado: 'pendiente', locationId: A.id,
-      items: [{ productVariantId: v1.id, cantidad: 1, precioUnitario: 100 }],
+      items: [{ productVariantId: v1.id, cantidad: 1}],
     });
     if (negada.json?.id) creadas.push(negada.json.id);
     chk('sin el permiso no puede cotizar', 403, negada.status);

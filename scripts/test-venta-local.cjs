@@ -56,7 +56,11 @@ function sesion() {
 
   const prod = await Product.create({
     businessId: negocio.id, sku: 'QA-VL', skuAgrupador: 'QA-VL', titulo: 'QA Venta por local',
-    precioMinorista: 100, precioMayorista: 80, costo: 40, activo: true,
+    // Los dos precios iguales a propósito: este archivo prueba DE QUÉ LOCAL
+    // sale la mercadería, no a qué precio. Con precios distintos, el total
+    // esperado dependería de si la venta cruza el umbral mayorista del local
+    // demo, que este test no controla.
+    precioMinorista: 100, precioMayorista: 100, costo: 40, activo: true,
   });
   const v = await ProductVariant.create({
     productId: prod.id, businessId: negocio.id, sku: 'QA-VL-1',
@@ -78,7 +82,7 @@ function sesion() {
 
   const enA = () => stock.stockEn(v.id, A.id);
   const enB = () => stock.stockEn(v.id, B.id);
-  const item = { productVariantId: v.id, cantidad: 2, precioUnitario: 100 };
+  const item = { productVariantId: v.id, cantidad: 2};
   const pago = (t) => [{ paymentMethodId: metodo.id, monto: t }];
 
   const creadas = [];
@@ -219,7 +223,7 @@ function sesion() {
     const antesDeVender = await ingresos();
     const ventaDia = await dueno('POST', '/api/sales', {
       tipo: 'venta', estado: 'pagado', locationId: A.id,
-      items: [{ productVariantId: v.id, cantidad: 1, precioUnitario: 100 }], pagos: pago(100),
+      items: [{ productVariantId: v.id, cantidad: 1}], pagos: pago(100),
     });
     if (ventaDia.json?.id) creadas.push(ventaDia.json.id);
     chk('una venta NO resta',         antesDeVender, await ingresos());

@@ -64,7 +64,7 @@ const { nextSaleNumber } = require('../src/services/invoiceNumberService');
   const creados = [];
   const base = {
     locationId: local.id,
-    items: [{ productVariantId: variante.id, cantidad: 1, precioUnitario: 1000 }],
+    items: [{ productVariantId: variante.id, cantidad: 1}],
     estado: 'pagado', medioPago: 'efectivo',
   };
   const vender = async () => {

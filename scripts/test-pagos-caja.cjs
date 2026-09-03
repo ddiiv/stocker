@@ -183,7 +183,7 @@ function sesion() {
 
     const venta = await api('POST', '/api/sales', {
       tipo: 'venta', estado: 'pagado', locationId: local.id,
-      items: [{ productVariantId: v.id, cantidad: 1, precioUnitario: 1000 }],
+      items: [{ productVariantId: v.id, cantidad: 1}],
       pagos: [
         { paymentMethodId: efectivo.id, monto: 700 },
         { paymentMethodId: transfer.id, monto: 300 },

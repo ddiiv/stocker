@@ -325,7 +325,7 @@ const createSale = async (req, res, next) => {
   try {
     const {
       tipo = 'venta', fecha, clientId, locationId: locationIdPedido, items = [],
-      descuentoPct = 0, estado, medioPago, notas, cotizacionId,
+      descuentoPct = 0, descuentoMonto, estado, medioPago, notas, cotizacionId,
       // Detalle de cobro: una línea por medio de pago usado.
       pagos,
       // 'contado' (se cobra ahora) o 'cuenta_corriente' (se fía).
@@ -602,23 +602,61 @@ const createSale = async (req, res, next) => {
           { status: 400 },
         );
       }
+      /*
+       * Un precio en la línea se ignora y se avisa.
+       *
+       * Se responde con un error en vez de descartarlo en silencio: quien lo
+       * manda cree que está fijando el precio, y dejarlo pasar sin decir nada
+       * haría que se entere recién al leer el total cobrado.
+       */
       if (item.precioUnitario !== undefined && item.precioUnitario !== null) {
-        const precio = Number(item.precioUnitario);
-        if (!Number.isFinite(precio) || precio < 0) {
-          throw Object.assign(new Error('El precio de un artículo no puede ser negativo.'), { status: 400 });
-        }
+        throw Object.assign(
+          new Error('El precio de cada artículo lo calcula el servidor según la lista y la regla del local. '
+            + 'Para vender por menos, usá el descuento de la venta.'),
+          { status: 400 },
+        );
       }
     }
 
     /*
-     * El descuento va entre 0 y 100.
+     * ── El descuento: en porcentaje o en plata ───────────────────
      *
+     * En el mostrador se regatea de las dos maneras. "Te hago el 10%" y "te lo
+     * dejo en 45.000" son la misma conversación, y hasta ahora sólo entraba la
+     * primera: para la segunda había que sacar la cuenta a mano, redondear, y
+     * cargar un porcentaje que casi nunca daba el número prometido.
+     *
+     * Se manda uno de los dos, nunca los dos. Aceptar ambos obligaría a decidir
+     * cuál gana, y esa decisión —tomada en silencio— es la que después hace que
+     * el ticket diga una cosa y la caja otra.
+     *
+     * Los dos se guardan igual: el importe porque es lo que se descontó de
+     * verdad, y el porcentaje porque es como se lee un descuento de un vistazo.
+     * Cuando se pide por plata, el porcentaje se deriva; cuando se pide por
+     * porcentaje, el importe. El que manda a la hora de cobrar es siempre el
+     * importe.
+     */
+    const pidePorMonto = descuentoMonto !== undefined && descuentoMonto !== null && descuentoMonto !== '';
+    const pidePorPct = Number(descuentoPct) > 0;
+    if (pidePorMonto && pidePorPct) {
+      throw Object.assign(
+        new Error('Elegí una sola forma de descuento: por porcentaje o por importe, no las dos.'),
+        { status: 400 },
+      );
+    }
+
+    /*
      * Con 150 el total quedaba negativo; con -50 el descuento sumaba en vez de
      * restar y la venta salía más cara que la suma de sus artículos.
      */
     const pct = Number(descuentoPct) || 0;
     if (!Number.isFinite(pct) || pct < 0 || pct > 100) {
       throw Object.assign(new Error('El descuento tiene que estar entre 0 y 100.'), { status: 400 });
+    }
+
+    const montoDesc = pidePorMonto ? Number(descuentoMonto) : 0;
+    if (pidePorMonto && (!Number.isFinite(montoDesc) || montoDesc < 0)) {
+      throw Object.assign(new Error('El descuento en pesos no puede ser negativo.'), { status: 400 });
     }
 
     // Las unidades hacen falta para la regla del local, que se evalúa más abajo
@@ -730,7 +768,22 @@ const createSale = async (req, res, next) => {
        * sólo se arman las líneas.
        */
 
-      const precioUnitario = item.precioUnitario ?? calcPrecio(variant, esMayorista);
+      /*
+       * El precio lo pone el servidor. Siempre.
+       *
+       * Antes esto era `item.precioUnitario ?? calcPrecio(...)`: si el cliente
+       * mandaba un precio, se cobraba ese. Ninguna de nuestras dos pantallas lo
+       * manda —las dos mandan sólo variante y cantidad— así que la rama existía
+       * únicamente para quien armara el pedido a mano. Con un token válido y un
+       * `precioUnitario: 0` se llevaba la mercadería, con la venta registrada y
+       * el stock descontado como si todo estuviera bien. La caja cerraba y el
+       * inventario también; el agujero sólo se veía en la plata.
+       *
+       * El descuento legítimo tiene su lugar: `descuentoPct` y `descuentoMonto`
+       * se aplican sobre la venta, quedan escritos y se ven en el detalle. Un
+       * precio de línea inventado no dejaba ningún rastro de que hubo descuento.
+       */
+      const precioUnitario = calcPrecio(variant, esMayorista);
       const subtotal = precioUnitario * item.cantidad;
 
       enrichedItems.push({
@@ -758,8 +811,33 @@ const createSale = async (req, res, next) => {
     }
 
     const subtotal  = enrichedItems.reduce((s, i) => s + i.subtotal, 0);
-    const descuento = Math.round(subtotal * pct / 100 * 100) / 100;
-    const total     = subtotal - descuento;
+
+    /*
+     * El descuento no puede pasarse del subtotal: más allá de ahí el total se
+     * va a negativo y la venta pasa a ser una devolución que nadie pidió.
+     */
+    if (pidePorMonto && montoDesc > subtotal) {
+      throw Object.assign(
+        new Error(`El descuento ($ ${montoDesc.toLocaleString('es-AR')}) es mayor que la venta `
+          + `($ ${subtotal.toLocaleString('es-AR')}).`),
+        { status: 400 },
+      );
+    }
+
+    const descuento = pidePorMonto
+      ? Math.round(montoDesc * 100) / 100
+      : Math.round(subtotal * pct / 100 * 100) / 100;
+
+    /*
+     * El porcentaje que ese importe representa, para que el detalle pueda
+     * decirlo. Con subtotal cero no hay porcentaje que calcular —dividir daría
+     * infinito— y el descuento tampoco tiene sobre qué aplicarse.
+     */
+    const pctFinal = pidePorMonto
+      ? (subtotal > 0 ? Math.round(descuento / subtotal * 100 * 100) / 100 : 0)
+      : pct;
+
+    const total = subtotal - descuento;
 
 
     // Los recargos y descuentos por medio de pago se calculan sobre el total
@@ -800,7 +878,7 @@ const createSale = async (req, res, next) => {
       estado:      finalEstado,
       condicionPago,
       esMayorista,
-      subtotal, descuentoPct: pct, descuento, total,
+      subtotal, descuentoPct: pctFinal, descuento, total,
       medioPago:   finalEstado === 'pagado' ? (resumen || medioPago || null) : null,
       recargoPagos: finalEstado === 'pagado' ? recargoPagos : 0,
       // Lo cobrado sólo tiene sentido cuando efectivamente se cobró. Una venta

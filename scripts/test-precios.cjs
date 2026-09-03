@@ -196,6 +196,85 @@ function sesion() {
     chk('se rechaza', 400, repetido.status);
     chk('sin nombrar el índice', false, /uq_|must be unique/i.test(repetido.json?.message || ''));
 
+    tit('10. DESCUENTO POR IMPORTE, ADEMÁS DEL PORCENTAJE');
+    /*
+     * En el mostrador se regatea de las dos maneras: "te hago el 10%" y "te lo
+     * dejo en 45.000" son la misma conversación. Antes sólo entraba la primera,
+     * y para la segunda había que sacar la cuenta a mano y cargar un porcentaje
+     * que casi nunca daba el número prometido.
+     *
+     * Se guardan las dos caras: el importe porque es lo que se descontó de
+     * verdad, y el porcentaje porque es como se lee un descuento de un vistazo.
+     */
+    const conMonto = await api('POST', '/api/sales', {
+      tipo: 'venta', estado: 'pagado', locationId: local.id,
+      items: [{ productVariantId: chico.id, cantidad: 1 }],   // 10000
+      descuentoMonto: 2500,
+      pagos: [{ paymentMethodId: metodo.id, monto: 7500 }],
+    });
+    if (conMonto.json?.id) creadas.push(conMonto.json.id);
+    chk('la venta con descuento en pesos entra', 201, conMonto.status);
+    chk('descuenta exactamente lo pedido', 2500, Number(conMonto.json?.descuento));
+    chk('y deja escrito qué porcentaje representa', 25, Number(conMonto.json?.descuentoPct));
+    chk('el total baja', 7500, Number(conMonto.json?.total));
+
+    // Un importe que no da un porcentaje redondo: el porcentaje se guarda con
+    // decimales, que es el número real y no uno acomodado para que quede lindo.
+    const raro = await api('POST', '/api/sales', {
+      tipo: 'venta', estado: 'pagado', locationId: local.id,
+      items: [{ productVariantId: chico.id, cantidad: 1 }],
+      descuentoMonto: 3333,
+      pagos: [{ paymentMethodId: metodo.id, monto: 6667 }],
+    });
+    if (raro.json?.id) creadas.push(raro.json.id);
+    chk('un importe cualquiera da su porcentaje con decimales', 33.33, Number(raro.json?.descuentoPct));
+    chk('pero lo que se descuenta es el importe, no el redondeo', 3333, Number(raro.json?.descuento));
+
+    // El porcentaje sigue andando como siempre.
+    const conPct = await api('POST', '/api/sales', {
+      tipo: 'venta', estado: 'pagado', locationId: local.id,
+      items: [{ productVariantId: chico.id, cantidad: 1 }],
+      descuentoPct: 10,
+      pagos: [{ paymentMethodId: metodo.id, monto: 9000 }],
+    });
+    if (conPct.json?.id) creadas.push(conPct.json.id);
+    chk('el descuento por porcentaje sigue igual', [10, 1000, 9000],
+      [Number(conPct.json?.descuentoPct), Number(conPct.json?.descuento), Number(conPct.json?.total)]);
+
+    /*
+     * Las dos juntas se rechazan. Decidir cuál gana en silencio es lo que hace
+     * que el ticket diga una cosa y la caja otra.
+     */
+    const ambas = await api('POST', '/api/sales', {
+      tipo: 'venta', estado: 'pagado', locationId: local.id,
+      items: [{ productVariantId: chico.id, cantidad: 1 }],
+      descuentoPct: 10, descuentoMonto: 2500,
+      pagos: [{ paymentMethodId: metodo.id, monto: 7500 }],
+    });
+    if (ambas.json?.id) creadas.push(ambas.json.id);
+    chk('mandar las dos formas se rechaza', 400, ambas.status);
+    chk('y dice que hay que elegir una', true, /una sola forma/i.test(ambas.json?.message || ''));
+
+    // Más descuento que venta dejaría el total en negativo: una devolución que
+    // nadie pidió.
+    const pasado = await api('POST', '/api/sales', {
+      tipo: 'venta', estado: 'pagado', locationId: local.id,
+      items: [{ productVariantId: chico.id, cantidad: 1 }],
+      descuentoMonto: 99999,
+      pagos: [{ paymentMethodId: metodo.id, monto: 0 }],
+    });
+    if (pasado.json?.id) creadas.push(pasado.json.id);
+    chk('un descuento mayor que la venta se rechaza', 400, pasado.status);
+
+    const descNegativo = await api('POST', '/api/sales', {
+      tipo: 'venta', estado: 'pagado', locationId: local.id,
+      items: [{ productVariantId: chico.id, cantidad: 1 }],
+      descuentoMonto: -500,
+      pagos: [{ paymentMethodId: metodo.id, monto: 10500 }],
+    });
+    if (descNegativo.json?.id) creadas.push(descNegativo.json.id);
+    chk('un descuento negativo se rechaza', 400, descNegativo.status);
+
   } finally {
     for (const id of creadas) {
       await SalePayment.destroy({ where: { saleId: id } });

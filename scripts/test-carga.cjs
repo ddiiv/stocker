@@ -74,7 +74,7 @@ function sesion() {
   const cotizar = async () => {
     const r = await api('POST', '/api/sales', {
       tipo: 'cotizacion', estado: 'pendiente', locationId: local.id,
-      items: [{ productVariantId: variante.id, cantidad: 1, precioUnitario: 100 }],
+      items: [{ productVariantId: variante.id, cantidad: 1}],
     }).catch((e) => ({ status: 'red', json: { message: String(e.cause?.code || e.message) } }));
     if (r.json?.id) creados.push(r.json.id);
     return r;

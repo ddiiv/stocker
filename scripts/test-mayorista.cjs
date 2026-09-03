@@ -174,6 +174,112 @@ function sesion() {
       chk('un vendedor de otro negocio se rechaza', 400, conAjeno.status);
     }
     await api('DELETE', `/api/employees/${alta.json.id}`);
+
+    tit('10. LA REGLA DEL LOCAL VALE IGUAL PARA UN EMPLEADO');
+    /*
+     * El bug: la regla se aplicaba entrando como dueño y no entrando como
+     * empleado. En la pantalla figuraba configurada —porque sin regla se
+     * describe la de fábrica, "desde 3 prendas"— así que parecía andar. Con el
+     * local en "siempre mayorista", el empleado cobraba todo a minorista.
+     *
+     * La causa estaba en la pantalla: la lista de locales sólo se pedía si el
+     * usuario podía elegir local, o sea el dueño. Para el empleado nunca había
+     * coincidencia y la regla quedaba en null.
+     *
+     * Se prueban las dos mitades: que el servidor cobre bien con una sesión de
+     * empleado, y que la sesión le mande el local con la regla adentro, que es
+     * de donde la pantalla la saca ahora.
+     */
+    const rolAdmin = await Role.findOne({ where: { businessId: negocio.id, nombre: 'Administrador' } })
+      || await Role.findOne({ where: { businessId: negocio.id } });
+    const bcrypt = require('bcryptjs');
+    await Employee.destroy({ where: { email: 'mayo.empleado@test.local' } });
+    const empleado = await Employee.create({
+      businessId: negocio.id, roleId: rolAdmin.id, locationId: local.id, dni: '39888112',
+      nombre: 'Mayo', apellido: 'Empleado', email: 'mayo.empleado@test.local',
+      passwordHash: await bcrypt.hash('MayoEmp2026!', 10), activo: true,
+    });
+
+    const emp = sesion();
+    const entro = await emp('POST', '/api/auth/employee-login',
+      { email: 'mayo.empleado@test.local', password: 'MayoEmp2026!' });
+    chk('el empleado entra', 200, entro.status);
+
+    await ponerRegla({ mayoristaModo: 'siempre' });
+    const cotizarEmp = async (cantidad) => {
+      const r = await emp('POST', '/api/sales', {
+        tipo: 'cotizacion', estado: 'pendiente',
+        items: [{ productVariantId: variante.id, cantidad }],
+      });
+      if (r.json?.id) creadas.push(r.json.id);
+      return r;
+    };
+    const unaDelEmpleado = await cotizarEmp(1);
+    chk('con "siempre mayorista", una prenda del empleado va por mayor',
+      pMay, Number(unaDelEmpleado.json?.items?.[0]?.precioUnitario));
+    chk('y la cotización queda marcada como mayorista', true, unaDelEmpleado.json?.esMayorista);
+
+    await ponerRegla({ mayoristaModo: 'nunca' });
+    chk('con "siempre minorista", cincuenta prendas del empleado van a detalle',
+      pMin, Number((await cotizarEmp(50)).json?.items?.[0]?.precioUnitario));
+
+    // La otra mitad: la sesión del empleado trae su local CON la regla.
+    await ponerRegla({ mayoristaModo: 'cantidad', mayoristaCantidad: 7 });
+    const yo = await emp('GET', '/api/auth/me');
+    chk('la sesión del empleado trae su local', local.id, yo.json?.data?.local?.id);
+    chk('y la regla adentro, que es la que usa la pantalla',
+      ['cantidad', 7], [yo.json?.data?.local?.mayoristaModo, yo.json?.data?.local?.mayoristaCantidad]);
+
+    tit('11. EL PRECIO NO SE MANDA DESDE AFUERA');
+    /*
+     * `item.precioUnitario ?? calcPrecio(...)`: si el cliente mandaba precio,
+     * se cobraba ese. Ninguna pantalla lo manda, así que la rama existía sólo
+     * para quien armara el pedido a mano. Con un token válido y un cero, la
+     * mercadería salía con la venta registrada y la caja cuadrada.
+     */
+    const conPrecio = await api('POST', '/api/sales', {
+      tipo: 'cotizacion', estado: 'pendiente', locationId: local.id,
+      items: [{ productVariantId: variante.id, cantidad: 1, precioUnitario: 0 }],
+    });
+    if (conPrecio.json?.id) creadas.push(conPrecio.json.id);
+    chk('mandar el precio en la línea se rechaza', 400, conPrecio.status);
+    chk('y explica dónde va el descuento', true, /descuento/i.test(conPrecio.json?.message || ''));
+
+    tit('12. SIN PRECIO MAYORISTA NO SE REGALA LA MERCADERÍA');
+    /*
+     * `precioMayorista` terminaba en `|| 0`. Un producto al que nadie le cargó
+     * mayorista se vendía GRATIS en cuanto la venta cruzaba el umbral: con la
+     * regla de fábrica alcanzaba con tres prendas.
+     */
+    const prodSinMay = await Product.create({
+      businessId: negocio.id, sku: 'QA-SINMAY', skuAgrupador: 'QA-SINMAY',
+      // Cero y no null: la columna del producto no acepta null, así que "sin
+      // precio mayorista" se escribe exactamente así en la base.
+      titulo: 'QA sin mayorista', precioMinorista: 4500, precioMayorista: 0,
+      costo: 1000, activo: true,
+    });
+    const varSinMay = await ProductVariant.create({
+      productId: prodSinMay.id, businessId: negocio.id, sku: 'QA-SINMAY-1',
+      variante1Nombre: 'Color', variante1Valor: 'Único', stock: 0, stockMinimo: 0,
+    });
+    await ponerRegla({ mayoristaModo: 'siempre' });
+    const regalada = await api('POST', '/api/sales', {
+      tipo: 'cotizacion', estado: 'pendiente', locationId: local.id,
+      items: [{ productVariantId: varSinMay.id, cantidad: 3 }],
+    });
+    if (regalada.json?.id) creadas.push(regalada.json.id);
+    chk('se cobra el precio de lista, no cero', 4500, Number(regalada.json?.items?.[0]?.precioUnitario));
+    chk('y el total tampoco es cero', 13500, Number(regalada.json?.total));
+    const precios = require('../src/services/precioService');
+    chk('la función lo dice sola', [4500, 4500, 0],
+      [precios.precioMayorista({}, { precioMinorista: 4500, precioMayorista: 0 }),
+       precios.precioMayorista({}, { precioMinorista: 4500 }),
+       // Un cero propio de la variante sigue siendo una decisión y se respeta.
+       precios.precioMayorista({ precioMayorista: 0 }, { precioMinorista: 4500 })]);
+
+    // El empleado y el producto de prueba se borran en la limpieza y no acá:
+    // las cotizaciones que acaban de generarse los apuntan a los dos, y la base
+    // rebota por clave foránea si se van antes que las ventas.
   } finally {
     tit('Limpieza');
     await BusinessLocation.update(original, { where: { id: local.id } });
@@ -182,7 +288,9 @@ function sesion() {
       await SaleItem.destroy({ where: { saleId: id } });
       const v = await Sale.findByPk(id); if (v) await v.destroy();
     }
-    await Employee.destroy({ where: { email: 'mayorista.qa@test.local' } });
+    await Employee.destroy({ where: { email: ['mayorista.qa@test.local', 'mayo.empleado@test.local'] } });
+    await ProductVariant.destroy({ where: { sku: 'QA-SINMAY-1' } });
+    await Product.destroy({ where: { sku: 'QA-SINMAY' } });
     const vuelto = await BusinessLocation.findByPk(local.id);
     chk('la regla del local quedó como estaba', original.mayoristaModo, vuelto.mayoristaModo);
     chk('no quedan cotizaciones de prueba', 0, (await Sale.findAll({ where: { id: creadas } })).length);
