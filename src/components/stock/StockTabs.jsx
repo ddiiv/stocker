@@ -24,6 +24,13 @@ const TABS = [
   // Va acá y no escondida: un negativo sin regularizar hace que el inventario
   // de ese artículo no sirva para decidir reposición.
   { to: "/stock/a-regularizar", label: "A regularizar" },
+  /*
+   * Los packs son artículos con SKU propio pero sin stock propio: se arman con
+   * lo que hay de otros. Van en Stock y no en una sección aparte porque quien
+   * los arma está mirando el inventario, y lo que decide es de qué prendas se
+   * va a descontar.
+   */
+  { to: "/stock/packs", label: "Packs" },
   { to: "/stock/etiquetas", label: "Etiquetas" },
 ];
 

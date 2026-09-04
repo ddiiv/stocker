@@ -15,7 +15,7 @@ import { http } from "../../lib/http";
  * suma una unidad si ya estaba en la lista. Contando bultos eso es lo único
  * que hace usable la pantalla.
  */
-export default function SelectorArticulos({ items, onChange, etiquetaCantidad = "Cantidad", locationId = null }) {
+export default function SelectorArticulos({ items, onChange, etiquetaCantidad = "Cantidad", locationId = null, params = null }) {
   const [term, setTerm] = useState("");
   const [resultados, setResultados] = useState([]);
   const [abierto, setAbierto] = useState(false);
@@ -33,7 +33,10 @@ export default function SelectorArticulos({ items, onChange, etiquetaCantidad = 
           // Sin productos de evento: no llevan stock, así que no se pueden
           // ingresar al depósito. Verlos acá es invitar a cargar algo que
           // después no se va a poder mover.
-          params: { q, limit: 20, sinEvento: 1, ...(locationId ? { locationId } : {}) },
+          // `params` deja que quien lo usa acote más el buscador —el armado de
+          // packs saca los packs ya hechos, para no ofrecer algo que el
+          // servidor va a rebotar—. Va al final para poder pisar lo de arriba.
+          params: { q, limit: 20, sinEvento: 1, ...(locationId ? { locationId } : {}), ...params },
         });
         setResultados(data.data || []);
         setActivo(0);
@@ -41,7 +44,9 @@ export default function SelectorArticulos({ items, onChange, etiquetaCantidad = 
       setBuscando(false);
     }, 250);
     return () => clearTimeout(t);
-  }, [term, locationId]);
+  // `params` se serializa para que un objeto nuevo en cada render no relance
+  // la búsqueda en bucle.
+  }, [term, locationId, JSON.stringify(params)]);
 
   function agregar(v) {
     const yaEsta = items.find((i) => i.productVariantId === v.id);

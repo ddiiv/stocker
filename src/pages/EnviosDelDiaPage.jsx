@@ -216,7 +216,7 @@ export default function EnviosDelDiaPage() {
             <button className="btn-ghost gap-1.5 text-sm" onClick={cargar} disabled={cargando}>
               <RefreshCw size={15} className={cargando ? "animate-spin" : ""} /> Actualizar
             </button>
-            <button className="btn-accent gap-1.5 text-sm" onClick={imprimir} disabled={imprimiendo || !jornada?.pedidos?.length}>
+            <button className="btn-accent gap-1.5 text-sm" onClick={imprimir} disabled={imprimiendo || !jornada?.paquetes?.length}>
               {imprimiendo
                 ? <><Loader2 size={15} className="animate-spin" /> Generando…</>
                 : <><Printer size={15} /> Imprimir A4</>}
@@ -316,7 +316,7 @@ export default function EnviosDelDiaPage() {
       {resumen && resumen.paquetes > 0 && (
         <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
           {[
-            { n: resumen.pendientes, t: "por despachar" },
+            { n: resumen.pendientes, t: resumen.ventas > resumen.paquetes ? `cajas (${resumen.ventas} ventas)` : "por despachar" },
             { n: resumen.unidades, t: "unidades a bajar" },
             { n: resumen.referencias, t: "referencias" },
             { n: resumen.flex, t: "con corte (Flex)", destacar: resumen.flex > 0 },
@@ -331,7 +331,7 @@ export default function EnviosDelDiaPage() {
 
       {cargando && !jornada ? (
         <Card><p className="py-10 text-center text-sm text-ink-500">Cargando la jornada…</p></Card>
-      ) : !jornada?.pedidos?.length ? (
+      ) : !jornada?.paquetes?.length ? (
         <Card>
           <div className="py-14 text-center">
             <Truck size={32} className="mx-auto text-ink-300" />
@@ -373,6 +373,10 @@ export default function EnviosDelDiaPage() {
                         {/* En cuántos paquetes se reparte: dice si conviene
                             contar de una y repartir, o buscarlo de a uno. */}
                         {l.enPaquetes > 1 && <span>en {l.enPaquetes} paquetes</span>}
+                        {/* Por qué son nueve cuando ningún pedido pidió nueve. */}
+                        {l.deLosPacks?.length > 0 && (
+                          <span className="text-brass-700">de {l.deLosPacks.join(", ")}</span>
+                        )}
                       </p>
                       {l.sinResolver && (
                         <p className="mt-1 flex items-start gap-1 text-[11px] text-brick-500">
@@ -396,17 +400,37 @@ export default function EnviosDelDiaPage() {
               </p>
             </div>
 
-            {jornada.pedidos.map((p) => (
+            {jornada.paquetes.map((p) => (
               <Card key={p.id} className={p.estadoEnvio === "con_faltante" ? "border-brick-500/40" : ""}>
                 <div className="flex flex-wrap items-start justify-between gap-2">
                   <div className="min-w-0">
+                    {/*
+                      * El título es el ENVÍO y no la venta: es lo que dice la
+                      * etiqueta que se pega en la caja, y Mercado Libre junta
+                      * varias compras del mismo comprador en un solo envío.
+                      */}
                     <p className="font-display text-sm font-semibold text-ink-950">
-                      {p.plataforma} · {p.pedidoExterno}
+                      {p.envioId ? `Envío ${p.envioId}` : `${p.plataforma} · ${p.ventas?.[0]?.pedidoExterno || ""}`}
                     </p>
                     <p className="mt-0.5 text-xs text-ink-500">
                       {p.comprador || "Sin nombre de comprador"}
-                      {p.envioId && <span> · envío {p.envioId}</span>}
                     </p>
+                    {/*
+                      * Las ventas que van adentro. Con una sola se nombra al
+                      * pasar; con varias hay que verlas, porque es lo que
+                      * explica por qué la caja lleva de todo y lo que se
+                      * chequea contra las etiquetas antes de cerrarla.
+                      */}
+                    {p.ventas?.length > 1 ? (
+                      <p className="mt-1 text-xs text-brass-700">
+                        {p.ventas.length} ventas en esta caja:{" "}
+                        {p.ventas.map((v) => v.pedidoExterno).join(" · ")}
+                      </p>
+                    ) : (
+                      <p className="mt-0.5 text-[11px] text-ink-400">
+                        venta {p.ventas?.[0]?.pedidoExterno}
+                      </p>
+                    )}
                   </div>
                   <div className="flex flex-wrap items-center gap-1.5">
                     {p.envioTipo === "flex" && (
@@ -421,20 +445,46 @@ export default function EnviosDelDiaPage() {
 
                 <ul className="mt-3 space-y-1">
                   {p.items.map((i, idx) => (
-                    <li key={`${p.id}-${i.sku}-${idx}`} className="flex items-start gap-2 text-sm">
-                      <span className="w-8 shrink-0 text-right font-display font-semibold text-ink-900">
-                        {i.cantidad}×
-                      </span>
-                      <span className="min-w-0 flex-1">
-                        <span className="text-ink-900">{i.titulo || i.sku}</span>
-                        {i.variante && <span className="text-ink-600"> · {i.variante}</span>}
-                        <span className="ml-1.5 text-[11px] text-ink-500">
-                          {i.sku}{i.local ? ` · ${i.local}` : ""}
+                    <li key={`${p.id}-${i.sku}-${idx}`} className="text-sm">
+                      <div className="flex items-start gap-2">
+                        <span className="w-8 shrink-0 text-right font-display font-semibold text-ink-900">
+                          {i.cantidad}×
                         </span>
-                        {i.sinResolver && (
-                          <span className="ml-1.5 text-[11px] text-brick-500">sin cargar en Stocker</span>
-                        )}
-                      </span>
+                        <span className="min-w-0 flex-1">
+                          <span className="text-ink-900">{i.titulo || i.sku}</span>
+                          {i.variante && <span className="text-ink-600"> · {i.variante}</span>}
+                          {i.esPack && (
+                            <span className="ml-1.5 rounded bg-brass-50 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-brass-700">
+                              Pack
+                            </span>
+                          )}
+                          <span className="ml-1.5 text-[11px] text-ink-500">
+                            {i.sku}{i.local ? ` · ${i.local}` : ""}
+                          </span>
+                          {i.sinResolver && (
+                            <span className="ml-1.5 text-[11px] text-brick-500">sin cargar en Stocker</span>
+                          )}
+                        </span>
+                      </div>
+
+                      {/*
+                        * Un pack se pide como uno y se arma con tres. La línea
+                        * sola deja al que arma sin saber qué poner en la caja.
+                        */}
+                      {i.esPack && i.componentes?.length > 0 && (
+                        <ul className="ml-10 mt-0.5 space-y-0.5">
+                          {i.componentes.map((c) => (
+                            <li key={c.sku} className="flex items-start gap-2 text-xs text-ink-600">
+                              <span className="w-6 shrink-0 text-right font-medium">{c.cantidad}×</span>
+                              <span className="min-w-0 flex-1">
+                                {c.titulo || c.sku}
+                                {c.variante && <span> · {c.variante}</span>}
+                                <span className="ml-1.5 text-[11px] text-ink-400">{c.sku}</span>
+                              </span>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
                     </li>
                   ))}
                 </ul>

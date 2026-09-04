@@ -55,6 +55,7 @@ const AnalisisPage = lazy(() => import("./pages/AnalisisPage"));
 const SoportePage = lazy(() => import("./pages/SoportePage"));
 const EventoPage = lazy(() => import("./pages/EventoPage"));
 const StockARegularizarPage = lazy(() => import("./pages/StockARegularizarPage"));
+const PacksPage = lazy(() => import("./pages/PacksPage"));
 const ReposicionPage = lazy(() => import("./pages/ReposicionPage"));
 const ScanStockPage = lazy(() => import("./pages/ScanStockPage"));
 const PosPage = lazy(() => import("./pages/PosPage"));
@@ -95,6 +96,7 @@ export default function App() {
             <Route path="/stock/etiquetas"              element={<PermissionRoute permission="stock"><LabelsPage /></PermissionRoute>} />
             <Route path="/stock/por-local"              element={<PermissionRoute permission="stock"><StockByLocationPage /></PermissionRoute>} />
             <Route path="/stock/a-regularizar"          element={<PermissionRoute permission="stock"><StockARegularizarPage /></PermissionRoute>} />
+            <Route path="/stock/packs"                  element={<PermissionRoute permission="stock"><PacksPage /></PermissionRoute>} />
             {/* El circuito depósito → local. Van fuera de /stock a propósito:
                 son el trabajo de otra gente, con su propio permiso. */}
             <Route path="/evento"                       element={<PermissionRoute permission="stock"><EventoPage /></PermissionRoute>} />

@@ -30,6 +30,7 @@ const TITLES = {
   "/stock/escanear": "Escanear stock",
   "/stock/movimientos": "Movimientos de stock",
   "/stock/a-regularizar": "Stock a regularizar",
+  "/stock/packs": "Packs",
   "/stock/etiquetas": "Etiquetas",
   "/deposito": "Depósito",
   "/evento": "Evento",
