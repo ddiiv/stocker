@@ -18,7 +18,9 @@ const packs = require('../services/packService');
 const precioService = require('../services/precioService');
 const skuService = require('../services/skuService');
 const { exigirCupo } = require('../services/planService');
-const { ProductVariant, Product, PackComponente, BusinessLocation } = require('../models');
+const {
+  ProductVariant, Product, PackComponente, BusinessLocation, VariantStock,
+} = require('../models');
 
 /*
  * Cuántos packs se pueden armar HOY.
@@ -64,15 +66,49 @@ async function conNombres(mapa, businessId) {
     include: [{ model: Product, as: 'producto', attributes: ['titulo'] }],
   });
   const porId = new Map(variantes.map((v) => [v.id, v]));
+
+  /*
+   * Cuánto hay de cada componente, por local.
+   *
+   * Va con la composición porque sin esto la pantalla pide un acto de fe: dice
+   * "se arman 5" y no hay forma de comprobarlo sin ir a Stock a contar. Con el
+   * stock al lado, la cuenta se ve —15 disponibles, 3 por pack, 5 packs— y si
+   * alguna vez el número estuviera mal, se nota en el momento.
+   *
+   * Se mira lo DISPONIBLE, no lo que hay en el estante: una unidad apartada
+   * para otro pedido no se puede usar para armar un pack.
+   */
+  const filasStock = await VariantStock.findAll({
+    where: { businessId, productVariantId: ids },
+    attributes: ['productVariantId', 'locationId', 'stock', 'reservado'],
+  });
+  const disponiblePorComponente = new Map();
+  for (const f of filasStock) {
+    const libre = Math.max(0, (Number(f.stock) || 0) - (Number(f.reservado) || 0));
+    if (libre <= 0) continue;
+    if (!disponiblePorComponente.has(f.productVariantId)) {
+      disponiblePorComponente.set(f.productVariantId, { total: 0, porLocal: new Map() });
+    }
+    const acc = disponiblePorComponente.get(f.productVariantId);
+    acc.total += libre;
+    acc.porLocal.set(f.locationId, (acc.porLocal.get(f.locationId) || 0) + libre);
+  }
+
   const salida = new Map();
   for (const [packId, lista] of mapa) {
     salida.set(packId, lista.map((c) => {
       const v = porId.get(c.componenteVariantId);
+      const hay = disponiblePorComponente.get(c.componenteVariantId);
       return {
         ...c,
         sku: v?.sku || null,
         titulo: v?.producto?.titulo || '',
         etiqueta: [v?.variante1Valor, v?.variante2Valor].filter(Boolean).join(' / '),
+        // Lo disponible del componente, para que la división se pueda ver.
+        disponible: hay?.total || 0,
+        disponiblePorLocal: hay
+          ? [...hay.porLocal.entries()].map(([locationId, unidades]) => ({ locationId, unidades }))
+          : [],
         /*
          * Si el componente está desactivado el pack no se puede armar y no hay
          * ningún otro lugar donde se vea: la publicación queda en cero y desde

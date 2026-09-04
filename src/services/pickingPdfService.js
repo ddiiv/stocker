@@ -269,11 +269,21 @@ async function generarPickingPdf(jornada, { nombreNegocio = 'Stocker', local = n
 
     // El número de envío ya es el título del bloque: repetirlo acá es ruido en
     // una hoja donde el espacio decide cuántos paquetes entran.
+    /*
+     * Que va tarde se dice en la hoja, no sólo en la pantalla.
+     *
+     * La hoja se imprime a la mañana y se trabaja durante el día: a las 19 hay
+     * que poder mirar el papel y ver cuáles ya se pasaron de la hora sin
+     * comparar cada corte contra el reloj. Va en rojo y con la palabra, porque
+     * el papel puede salir en blanco y negro.
+     */
     const etiquetas = [
       p.envioTipo === 'flex' ? 'FLEX' : (p.envioTipo || null),
-      p.despacharAntesDe ? `antes de ${hora(p.despacharAntesDe)}` : null,
+      p.despacharAntesDe
+        ? (p.atrasado ? `PASADO DE HORA (${hora(p.despacharAntesDe)})` : `antes de ${hora(p.despacharAntesDe)}`)
+        : null,
     ].filter(Boolean).join('  ·  ');
-    doc.font('Helvetica-Bold').fontSize(9).fillColor(COLOR.texto)
+    doc.font('Helvetica-Bold').fontSize(9).fillColor(p.atrasado ? '#a33' : COLOR.texto)
       .text(etiquetas, MARGEN, yy, { width: UTIL - 8, align: 'right' });
 
     yy += 13;

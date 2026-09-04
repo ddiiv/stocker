@@ -371,6 +371,68 @@ function sesion() {
     const exagerado = await api('GET', '/api/envios/del-dia?filtro=todos&diasAdelante=9999');
     chk('un alcance disparatado se acota a 30 días', 30, exagerado.json?.dias);
 
+    tit('12b. LOS QUE SE PASARON DE LA HORA');
+    /*
+     * Flex tiene hora de corte. Pasada esa hora el envío se cae del día y hay
+     * que reprogramarlo con el comprador, así que hay que verlo.
+     *
+     * Antes la pantalla mostraba la hora y nada más: a las 21:00 un corte de
+     * las 18:00 se veía igual que uno de las 23:00, y sólo se notaba comparando
+     * cada envío contra el reloj, de a uno, en la hoja impresa.
+     */
+    const hacePocasHoras = new Date(Date.now() - 3 * 3600 * 1000);
+    /*
+     * Se lo pone explícitamente en "pendiente": bloques anteriores lo
+     * despacharon, y un paquete que ya salió no se marca atrasado a propósito.
+     */
+    await PedidoPlataforma.update(
+      { despacharAntesDe: hacePocasHoras, envioTipo: 'flex',
+        estadoEnvio: 'pendiente', estadoEnvioMl: null },
+      { where: { pedidoExterno: 'QA-ENV-1' } },
+    );
+    const conAtraso = await api('GET', '/api/envios/del-dia?filtro=todos&diasAdelante=7');
+    const tarde = paqueteDe(conAtraso, 'QA-ENV-1');
+    chk('el que se pasó de hora viene marcado', true, tarde?.atrasado);
+    chk('y dice cuánto hace, en minutos negativos', true,
+      tarde?.minutosParaElCorte < -170 && tarde?.minutosParaElCorte > -190);
+    chk('el resumen lo cuenta', 1, conAtraso.json?.resumen?.atrasados);
+
+    // Uno con el corte más tarde no está atrasado.
+    const enUnRato = new Date(Date.now() + 3 * 3600 * 1000);
+    await PedidoPlataforma.update(
+      { despacharAntesDe: enUnRato },
+      { where: { pedidoExterno: 'QA-ENV-2' } },
+    );
+    const otro = paqueteDe(
+      await api('GET', '/api/envios/del-dia?filtro=todos&diasAdelante=7'), 'QA-ENV-2',
+    );
+    chk('el que todavía tiene tiempo, no', false, otro?.atrasado);
+    chk('y le faltan minutos, en positivo', true, otro?.minutosParaElCorte > 170);
+
+    /*
+     * Un paquete ya despachado no se marca atrasado. Salió tarde, sí, pero hoy
+     * ya no hay nada que hacer con eso, y pintarlo tapa los que sí se salvan.
+     */
+    await PedidoPlataforma.update(
+      { estadoEnvio: 'despachado' },
+      { where: { pedidoExterno: 'QA-ENV-1' } },
+    );
+    const yaSalio = paqueteDe(
+      await api('GET', '/api/envios/del-dia?filtro=todos&diasAdelante=7'), 'QA-ENV-1',
+    );
+    chk('el despachado no se marca atrasado', false, yaSalio?.atrasado);
+    chk('y el resumen deja de contarlo', 0,
+      (await api('GET', '/api/envios/del-dia?filtro=todos&diasAdelante=7'))
+        .json?.resumen?.atrasados);
+    await PedidoPlataforma.update(
+      { estadoEnvio: 'pendiente', despacharAntesDe: null, envioTipo: null },
+      { where: { pedidoExterno: 'QA-ENV-1' } },
+    );
+    await PedidoPlataforma.update(
+      { despacharAntesDe: null },
+      { where: { pedidoExterno: 'QA-ENV-2' } },
+    );
+
     tit('13. UN ENVÍO QUE JUNTA VARIAS VENTAS ES UNA SOLA CAJA');
     /*
      * Mercado Libre agrupa varias compras del mismo comprador en un solo envío.

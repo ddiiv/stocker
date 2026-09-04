@@ -605,6 +605,56 @@ function sesion() {
 
     await ProductVariant.update({ sku: 'QA-PK-PACK3' }, { where: { id: pack.id } });
 
+    tit('12d. SÓLO CUENTAN LOS PACKS ENTEROS');
+    /*
+     * La regla, dicha con números: con 3 unidades por pack, 2 unidades dan 0
+     * packs y 8 dan 2. Lo que sobra no es medio pack, es nada.
+     *
+     * Se comprueba contra el ENDPOINT y no sólo contra el servicio: el número
+     * que se cuestionó es el que se ve en pantalla, y entre el servicio y la
+     * pantalla hay un controlador que suma por local.
+     */
+    await packs.definirComponentes(pack.id, negocio.id, [
+      { componenteVariantId: remera.id, cantidad: 3 },
+    ]);
+    const armablesDe = async (unidades) => {
+      await fijar(remera, unidades);
+      const r = await api('GET', '/api/packs');
+      const grupo = (r.json || []).find((g) => g.productId === pack.productId);
+      return grupo?.variantes?.find((v) => v.sku === 'QA-PK-PACK3');
+    };
+
+    chk('con 0 unidades no se arma ninguno', 0, (await armablesDe(0))?.armables);
+    chk('con 2 unidades tampoco: sobra, no alcanza', 0, (await armablesDe(2))?.armables);
+    chk('con 3 unidades, uno justo', 1, (await armablesDe(3))?.armables);
+    chk('con 5 unidades, uno y sobran 2', 1, (await armablesDe(5))?.armables);
+    chk('con 8 unidades, dos y sobran 2', 2, (await armablesDe(8))?.armables);
+    chk('con 9 unidades, tres justos', 3, (await armablesDe(9))?.armables);
+
+    /*
+     * Y el stock del componente viaja al lado del número, para que la cuenta se
+     * pueda comprobar sin ir a Stock a contar: es lo que hacía que "se arman 5"
+     * fuera indistinguible de un error.
+     */
+    const con10 = await armablesDe(10);
+    chk('con 10 unidades, tres', 3, con10?.armables);
+    chk('y dice cuántas unidades hay detrás de ese número', 10,
+      con10?.componentes?.[0]?.disponible);
+    chk('con el desglose por local', 10,
+      con10?.componentes?.[0]?.disponiblePorLocal?.[0]?.unidades);
+
+    /*
+     * Lo apartado no cuenta: una unidad comprometida para otro pedido no se
+     * puede usar para armar un pack. Con 10 y 2 apartadas quedan 8 → 2 packs.
+     */
+    await stock.reservar(remera.id, local.id, negocio.id, 2);
+    const conReserva = await api('GET', '/api/packs');
+    const grupoReserva = (conReserva.json || []).find((g) => g.productId === pack.productId);
+    const filaReserva = grupoReserva?.variantes?.find((v) => v.sku === 'QA-PK-PACK3');
+    chk('lo apartado no cuenta para armar', 2, filaReserva?.armables);
+    chk('y el disponible lo refleja', 8, filaReserva?.componentes?.[0]?.disponible);
+    await stock.liberarReserva(remera.id, local.id, negocio.id, 2);
+
     tit('13. ARMAR EL PACK DESDE EL PRODUCTO PADRE');
     /*
      * Un pack no es un artículo suelto: es el mismo producto vendido de a N.

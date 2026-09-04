@@ -490,6 +490,40 @@ async function delDia(businessId, {
         estadoEnvio: p.estadoEnvio,
         estadoEnvioMl: p.estadoEnvioMl,
         situacion: p.situacion,
+        /*
+         * ── ¿Va tarde? ─────────────────────────────────────────
+         *
+         * Flex tiene hora de corte: pasada esa hora el envío se cae del día y
+         * hay que reprogramarlo con el comprador. Hasta ahora la pantalla
+         * mostraba la hora —"hasta 20:34"— y nada más, así que a las 21:00
+         * seguía viéndose igual que a las 15:00 y sólo se notaba haciendo la
+         * cuenta mentalmente, envío por envío, en la hoja impresa.
+         *
+         * Se calcula al leer y no se guarda: es una comparación contra el reloj
+         * y un campo guardado quedaría viejo al minuto siguiente.
+         *
+         * Sólo cuenta para lo que todavía no salió. Un paquete despachado a las
+         * 21 salió tarde, sí, pero ya no hay nada que hacer con eso hoy y
+         * pintarlo de rojo tapa los que sí se pueden salvar.
+         */
+        atrasado: Boolean(
+          p.despacharAntesDe
+          /*
+           * También el que está marcado como faltante: tampoco salió, y el
+           * reloj le corre igual. Dejarlo afuera escondería justo el que más
+           * urge, porque además hay que conseguir la mercadería.
+           */
+          && ['para_enviar', 'con_faltante'].includes(p.situacion)
+          && new Date(p.despacharAntesDe).getTime() < Date.now(),
+        ),
+        /*
+         * Cuántos minutos faltan (o sobran, en negativo). La pantalla decide
+         * cómo decirlo —"en 40 min", "vencido hace 2 h"— sin volver a parsear
+         * la fecha ni discrepar con este cálculo.
+         */
+        minutosParaElCorte: p.despacharAntesDe
+          ? Math.round((new Date(p.despacharAntesDe).getTime() - Date.now()) / 60000)
+          : null,
         comprador: p.comprador,
         recibidoEn: p.recibidoEn,
         // Las ventas que van en esta caja. Casi siempre una; cuando son varias,
@@ -622,6 +656,14 @@ async function delDia(businessId, {
       unidades: consolidado.reduce((s, l) => s + l.unidades, 0),
       referencias: consolidado.length,
       flex: paquetes.filter((p) => p.envioTipo === 'flex').length,
+      /*
+       * Cuántos ya se pasaron de la hora de corte y siguen sin salir.
+       *
+       * Va en el resumen y no sólo en cada tarjeta porque es el número que
+       * decide cómo se trabaja la jornada: con tres atrasados se empieza por
+       * ésos, y eso hay que verlo al abrir la pantalla, no scrolleando.
+       */
+      atrasados: paquetes.filter((p) => p.atrasado).length,
     },
   };
 }
