@@ -79,13 +79,23 @@ function Corte({ cuando }) {
   );
 }
 
-function Estado({ valor }) {
+/*
+ * En qué anda el paquete, en una palabra.
+ *
+ * Junta los dos estados que el sistema guarda por separado: el del depósito
+ * —si se armó y salió— y el que informa Mercado Libre —si llegó, si se
+ * canceló—. Quien mira la pantalla no piensa en dos campos, y traducir
+ * `not_delivered` mentalmente cada vez es trabajo que puede hacer el sistema.
+ */
+function Estado({ situacion }) {
   const mapa = {
-    pendiente:    { texto: "Pendiente", clase: "bg-paper-100 text-ink-600" },
-    despachado:   { texto: "Despachado", clase: "bg-teal-50 text-teal-600" },
-    con_faltante: { texto: "Faltante", clase: "bg-brick-50 text-brick-500" },
+    para_enviar:  { texto: "Para enviar", clase: "bg-paper-100 text-ink-600" },
+    en_camino:    { texto: "En camino",   clase: "bg-teal-50 text-teal-600" },
+    entregado:    { texto: "Entregado",   clase: "bg-teal-50 text-teal-600" },
+    con_faltante: { texto: "Faltante",    clase: "bg-brick-50 text-brick-500" },
+    cancelado:    { texto: "Cancelado",   clase: "bg-brick-50 text-brick-500" },
   };
-  const e = mapa[valor] || mapa.pendiente;
+  const e = mapa[situacion] || mapa.para_enviar;
   return <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${e.clase}`}>{e.texto}</span>;
 }
 
@@ -96,7 +106,20 @@ export default function EnviosDelDiaPage() {
   const [fecha, setFecha] = useState(hoyISO());
   const [locationId, setLocationId] = useState("");
   const [soloFlex, setSoloFlex] = useState(false);
-  const [verTodo, setVerTodo] = useState(false);
+
+  /*
+   * Rango y estado, como en el panel de Mercado Libre.
+   *
+   * Antes eran dos casillas —"sólo Flex" e "incluir despachados"— y no
+   * alcanzaban: quien mira esta pantalla no pregunta "¿incluyo los
+   * despachados?", pregunta "¿qué me falta enviar?", "¿qué está en camino?",
+   * "¿qué se canceló?". Son estados de un circuito, no un interruptor.
+   *
+   * El rango va aparte porque es otra pregunta: un pedido con corte mañana no
+   * es de otro estado, es de otro día, y hay que poder ir preparándolo.
+   */
+  const [dias, setDias] = useState(0);
+  const [filtro, setFiltro] = useState("para_enviar");
 
   const [locales, setLocales] = useState([]);
   const [jornada, setJornada] = useState(null);
@@ -110,7 +133,8 @@ export default function EnviosDelDiaPage() {
     fecha,
     locationId: locationId ? Number(locationId) : null,
     envioTipo: soloFlex ? "flex" : null,
-    incluirDespachados: verTodo,
+    diasAdelante: dias,
+    filtro,
   };
 
   const cargar = useCallback(async () => {
@@ -118,7 +142,7 @@ export default function EnviosDelDiaPage() {
     try {
       setJornada(await fetchJornada({
         fecha, locationId: locationId ? Number(locationId) : null,
-        envioTipo: soloFlex ? "flex" : null, incluirDespachados: verTodo,
+        envioTipo: soloFlex ? "flex" : null, diasAdelante: dias, filtro,
       }));
     } catch (e) {
       setError(e);
@@ -126,7 +150,7 @@ export default function EnviosDelDiaPage() {
     } finally {
       setCargando(false);
     }
-  }, [fecha, locationId, soloFlex, verTodo]);
+  }, [fecha, locationId, soloFlex, dias, filtro]);
 
   useEffect(() => { cargar(); }, [cargar]);
   useEffect(() => { fetchLocalesDeVenta().then(setLocales).catch(() => setLocales([])); }, []);
@@ -228,12 +252,65 @@ export default function EnviosDelDiaPage() {
             <input type="checkbox" checked={soloFlex} onChange={(e) => setSoloFlex(e.target.checked)} />
             Sólo los que tienen corte (Flex)
           </label>
-          <label className="flex items-center gap-2 pb-1.5 text-sm text-ink-700">
-            <input type="checkbox" checked={verTodo} onChange={(e) => setVerTodo(e.target.checked)} />
-            Incluir los ya despachados
-          </label>
+          <div>
+            <label className="label">Alcance</label>
+            <select className="input h-9 w-44 text-sm"
+              value={dias} onChange={(e) => setDias(Number(e.target.value))}>
+              <option value={0}>Sólo hoy</option>
+              <option value={2}>Hoy y 2 días</option>
+              <option value={7}>Próximos 7 días</option>
+              <option value={30}>Próximos 30 días</option>
+            </select>
+          </div>
         </div>
       </Card>
+
+      {/*
+        * ── Las pestañas del circuito ─────────────────────────────
+        *
+        * Cada una lleva su número aunque no sea la que se está mirando: una
+        * pestaña "Cancelados" sin cuenta al lado obliga a entrar para descubrir
+        * que está vacía, y eso se hace una vez por día hasta que se deja de
+        * mirar.
+        *
+        * "Para enviar" va primera y es la que se abre: es la única con trabajo
+        * pendiente, y las otras cuatro se miran cuando alguien pregunta algo.
+        */}
+      <div className="mb-4 flex flex-wrap gap-1 border-b border-line">
+        {[
+          { clave: "para_enviar",  texto: "Para enviar" },
+          { clave: "en_camino",    texto: "En camino" },
+          { clave: "entregado",    texto: "Entregados" },
+          { clave: "con_faltante", texto: "Con faltante" },
+          { clave: "cancelado",    texto: "Cancelados" },
+          { clave: "todos",        texto: "Todos" },
+        ].map((t) => {
+          const activa = filtro === t.clave;
+          const cuantos = jornada?.porEstado?.[t.clave];
+          return (
+            <button
+              key={t.clave}
+              type="button"
+              onClick={() => setFiltro(t.clave)}
+              aria-current={activa ? "page" : undefined}
+              className={`-mb-px border-b-2 px-3 py-2 text-sm font-medium transition-colors ${
+                activa
+                  ? "border-brass-500 text-ink-950"
+                  : "border-transparent text-ink-500 hover:text-ink-800"
+              }`}
+            >
+              {t.texto}
+              {cuantos !== undefined && cuantos > 0 && (
+                <span className={`ml-1.5 rounded-full px-1.5 py-0.5 text-[11px] ${
+                  activa ? "bg-brass-50 text-brass-700" : "bg-paper-100 text-ink-500"
+                }`}>
+                  {cuantos}
+                </span>
+              )}
+            </button>
+          );
+        })}
+      </div>
 
       {/* ── Resumen ───────────────────────────────────────────── */}
       {resumen && resumen.paquetes > 0 && (
@@ -338,7 +415,7 @@ export default function EnviosDelDiaPage() {
                       </span>
                     )}
                     <Corte cuando={p.despacharAntesDe} />
-                    <Estado valor={p.estadoEnvio} />
+                    <Estado situacion={p.situacion} />
                   </div>
                 </div>
 
@@ -368,7 +445,11 @@ export default function EnviosDelDiaPage() {
                   </p>
                 )}
 
-                {puedeDespachar && p.estadoEnvio !== "despachado" && (
+                {/*
+                  * Los botones sólo donde tienen sentido: un paquete entregado
+                  * o cancelado no se despacha, y ofrecerlo invita a tocarlo.
+                  */}
+                {puedeDespachar && (p.situacion === "para_enviar" || p.situacion === "con_faltante") && (
                   <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-line pt-3">
                     <button
                       className="btn-accent gap-1.5 px-3 py-1.5 text-xs"

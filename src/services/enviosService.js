@@ -12,14 +12,17 @@ import { http } from "../lib/http";
  * @param {string} [filtros.fecha]              qué día. Por defecto hoy.
  * @param {number} [filtros.locationId]         sólo lo que sale de este local.
  * @param {string} [filtros.envioTipo]          'flex' para ver sólo los que tienen corte.
- * @param {boolean} [filtros.incluirDespachados] la jornada completa, al cierre.
+ * @param {number} [filtros.diasAdelante]      0 = sólo hoy; 7 = la semana que viene.
+ * @param {string} [filtros.filtro]             para_enviar | en_camino | entregado |
+ *                                              cancelado | con_faltante | todos
  */
 export async function fetchJornada(filtros = {}) {
   const params = {};
   if (filtros.fecha) params.fecha = filtros.fecha;
   if (filtros.locationId) params.locationId = filtros.locationId;
   if (filtros.envioTipo) params.envioTipo = filtros.envioTipo;
-  if (filtros.incluirDespachados) params.incluirDespachados = 1;
+  if (filtros.diasAdelante) params.diasAdelante = filtros.diasAdelante;
+  if (filtros.filtro) params.filtro = filtros.filtro;
   const { data } = await http.get("/envios/del-dia", { params });
   return data;
 }
@@ -35,7 +38,8 @@ export async function abrirPdfJornada(filtros = {}) {
   if (filtros.fecha) params.fecha = filtros.fecha;
   if (filtros.locationId) params.locationId = filtros.locationId;
   if (filtros.envioTipo) params.envioTipo = filtros.envioTipo;
-  if (filtros.incluirDespachados) params.incluirDespachados = 1;
+  if (filtros.diasAdelante) params.diasAdelante = filtros.diasAdelante;
+  if (filtros.filtro) params.filtro = filtros.filtro;
 
   const { data } = await http.get("/envios/del-dia/pdf", { params, responseType: "blob" });
   const url = URL.createObjectURL(data);
