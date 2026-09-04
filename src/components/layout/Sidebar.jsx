@@ -9,6 +9,7 @@ import {
   UserCircle2,
   Receipt,
   Truck,
+  PackageCheck,
   Warehouse,
   Tent,
   Users,
@@ -63,6 +64,9 @@ const GRUPOS = [
     items: [
       { to: "/reposicion", label: "Reposición", icon: Truck,     permission: "reposicion" },
       { to: "/deposito",   label: "Depósito",   icon: Warehouse, permission: "deposito" },
+      // Va con Mercadería y no con Ventas: lo mira quien arma paquetes en el
+      // depósito, no quien atiende el mostrador.
+      { to: "/envios",     label: "Envíos del día", icon: PackageCheck, permission: "stock" },
       { to: "/evento",     label: "Evento",     icon: Tent,      permission: "stock" },
     ],
   },

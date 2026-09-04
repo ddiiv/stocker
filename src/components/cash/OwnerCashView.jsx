@@ -15,7 +15,9 @@ import { Card, EmptyState } from "../ui/Layout";
  * endpoint a mano sólo obtiene lo suyo.
  */
 const fechaHora = (v) =>
-  new Date(v).toLocaleString("es-AR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+  new Date(v).toLocaleString("es-AR", {
+    day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false,
+  });
 
 // Fecha y hora completas, para el sello de "última actualización": con sólo la
 // hora no se distingue un dato de hace un rato de uno de ayer.
@@ -25,7 +27,7 @@ const ANTIGUEDAD_MINIMA_MS = 60_000;
 const selloCompleto = (v) =>
   new Date(v).toLocaleString("es-AR", {
     day: "2-digit", month: "2-digit", year: "numeric",
-    hour: "2-digit", minute: "2-digit", second: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
   });
 
 export default function OwnerCashView() {

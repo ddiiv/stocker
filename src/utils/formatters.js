@@ -39,8 +39,11 @@ export function formatDateTime(value) {
     day: "2-digit",
     month: "2-digit",
     year: "numeric",
+    // 24 horas: en un mostrador y en un depósito, "01:14 p. m." obliga a
+    // interpretar, y una lista ordenada por hora se lee desordenada.
     hour: "2-digit",
     minute: "2-digit",
+    hour12: false,
   }).format(d);
 }
 
