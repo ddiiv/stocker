@@ -3,6 +3,7 @@ const { Op } = require('sequelize');
 const { Product, ProductVariant, BusinessLocation } = require('../models');
 const { exigirCupo } = require('./planService');
 const { NO_ES_FERIA } = require('../utils/feria');
+const { productoNoEsPack } = require('../utils/packs');
 const stockService = require('./stockService');
 const precioService = require('./precioService');
 
@@ -75,7 +76,13 @@ async function buildExportWorkbook(businessId) {
        * donde tiene sentido: se genera desde el catálogo normal o se carga a
        * mano, y no se toca por planilla.
        */
-      where: { businessId, ...NO_ES_FERIA },
+      /*
+       * Los packs tampoco. Por el mismo motivo y uno peor: la planilla tiene
+       * columnas de stock por local, y reimportarla cargaría stock propio a un
+       * pack —que no lo lleva— pisando el número que sí vale, el de las prendas
+       * que tiene adentro.
+       */
+      where: { businessId, [Op.and]: [NO_ES_FERIA, productoNoEsPack()] },
       include: [{ model: ProductVariant, as: 'productVariants' }],
       order: [['titulo', 'ASC']],
     }),

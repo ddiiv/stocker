@@ -385,7 +385,13 @@ function sesion() {
      */
     const lista = await api('GET', '/api/packs');
     chk('GET /api/packs responde 200', 200, lista.status);
-    const mio = (lista.json || []).find((x) => x.sku === 'QA-PK-PACK3');
+    /*
+     * El listado viene agrupado por producto de pack, no una fila por variante:
+     * un pack sobre un producto de nueve combinaciones son nueve variantes, y
+     * sueltas la pantalla es una pared de tarjetas casi idénticas.
+     */
+    const grupoMio = (lista.json || []).find((g) => g.productId === pack.productId);
+    const mio = grupoMio?.variantes?.find((v) => v.sku === 'QA-PK-PACK3');
     chk('el pack aparece en la lista', true, !!mio);
     chk('y trae su composición', 1, mio?.componentes?.length);
     chk('con la cantidad que lleva', 3, mio?.componentes?.[0]?.cantidad);
@@ -516,74 +522,178 @@ function sesion() {
       { componenteVariantId: remera.id, cantidad: 3 },
     ]);
 
-    tit('13. ALTA DE UN PACK ENTERO EN UNA SOLA LLAMADA');
+    tit('13. ARMAR EL PACK DESDE EL PRODUCTO PADRE');
     /*
-     * Producto, variante y composición van juntos. Si esto se partiera en tres
-     * llamadas y fallara la última, quedaría un producto vacío colgado en el
-     * listado de stock que nadie sabría de dónde salió.
+     * Un pack no es un artículo suelto: es el mismo producto vendido de a N.
+     * Se elige el producto y salen tantos packs como combinaciones tenga, cada
+     * uno con los atributos de la suya. Todo en una transacción: partido en
+     * pasos, un fallo a mitad dejaría el producto con la mitad de los packs y
+     * desde el listado no habría forma de saber cuáles faltan.
      */
+    const previa = await api('GET',
+      `/api/packs/sugerencia?productId=${prod.id}&unidades=3&sku=QAPACK3`);
+    chk('la previa responde', 200, previa.status);
+    // El producto de la prueba tiene dos variantes: la remera y la otra.
+    chk('proyecta un pack por cada variante del padre', 2, previa.json?.variantes?.length);
+    /*
+     * El precio es una sugerencia: lo que vale el producto por las unidades.
+     * La remera vale 8000, tres son 24000.
+     */
+    chk('sugiere el precio por unidad × unidades', 24000, previa.json?.precioMinorista);
+    chk('y dice de dónde sale', 8000, previa.json?.padre?.precioMinorista);
+    // El SKU sale de la regla del negocio, la misma de los productos normales.
+    chk('los SKU cuelgan del SKU del pack', true,
+      (previa.json?.variantes || []).every((v) => v.sku.startsWith('QAPACK3')));
+    chk('y cada uno dice de qué variante sale', true,
+      (previa.json?.variantes || []).every((v) => v.skuPadre?.startsWith('QA-PK-')));
+
     const alta = await api('POST', '/api/packs', {
-      sku: 'QA-PK-NUEVO', titulo: 'QA Pack alta', precioMinorista: 21000,
-      componentes: [{ componenteVariantId: remera.id, cantidad: 3 }],
+      productId: prod.id, sku: 'QAPACK3', unidades: 3, precioMinorista: 21000,
     });
-    chk('POST /api/packs crea', 201, alta.status);
-    const nuevoId = alta.json?.variantId;
-    const creado = nuevoId ? await ProductVariant.findByPk(nuevoId) : null;
-    chk('la variante nace como pack', true, !!creado?.esPack);
-    chk('sin stock propio', 0, Number(creado?.stock) || 0);
-    // La dimensión dice qué es: es lo que se lee en el POS y en la etiqueta.
-    chk('y con la dimensión que la explica', '3 unidades', creado?.variante1Valor);
-    chk('en su propio producto, no colgada de otro', 1,
-      await ProductVariant.count({ where: { productId: creado?.productId } }));
-    chk('con la composición ya cargada', 1,
-      await PackComponente.count({ where: { packVariantId: nuevoId } }));
+    if (alta.status !== 201) console.log('      →', JSON.stringify(alta.json));
+    chk('POST /api/packs crea el pack entero', 201, alta.status);
+    chk('una variante de pack por cada variante del padre', 2, alta.json?.variantes?.length);
 
-    // Repetir el SKU tiene que dar un choque limpio, no un 500 de la base.
-    const skuChocado = await api('POST', '/api/packs', {
-      sku: 'QA-PK-NUEVO', titulo: 'Otro', precioMinorista: 1000,
-      componentes: [{ componenteVariantId: remera.id, cantidad: 1 }],
-    });
-    chk('un SKU repetido da 409, no un 500', 409, skuChocado.status);
-
+    const packProductId = alta.json?.productId;
+    const nacidas = await ProductVariant.findAll({ where: { productId: packProductId } });
+    chk('todas nacen marcadas como pack', true, nacidas.every((v) => v.esPack));
+    chk('sin stock propio', true, nacidas.every((v) => Number(v.stock) === 0));
     /*
-     * Y si la composición es inválida no puede quedar el producto creado: es
-     * justamente el caso que motivó hacerlo en una transacción.
+     * Los atributos se copian del padre: el pack de la negra M es el pack de la
+     * negra M, no un "pack" sin color ni talle.
      */
+    chk('con los atributos de su variante', true,
+      nacidas.every((v) => v.variante1Nombre === 'Color' && v.variante1Valor));
+    chk('cada una con su composición', 2,
+      await PackComponente.count({ where: { packVariantId: nacidas.map((v) => v.id) } }));
+    chk('y lleva las unidades pedidas', true,
+      (await PackComponente.findAll({ where: { packVariantId: nacidas.map((v) => v.id) } }))
+        .every((c) => Number(c.cantidad) === 3));
+
+    // El producto del pack toma como sku y skuAgrupador el que se escribió.
+    const packProd = await Product.findByPk(packProductId);
+    chk('el sku del producto es el del pack', 'QAPACK3', packProd?.sku);
+    chk('y el agrupador también', 'QAPACK3', packProd?.skuAgrupador);
+    chk('el precio es el que se escribió, no el sugerido', 21000, Number(packProd?.precioMinorista));
+
+    tit('14. EL PACK NO ES UN PRODUCTO DEL CATÁLOGO');
+    /*
+     * Es el punto que más se malentiende: el pack existe para vender de a N, no
+     * para figurar entre las prendas. Si apareciera en el catálogo, cada remera
+     * estaría dos veces —suelta y en pack— con una columna de stock en cero que
+     * no significa nada.
+     */
+    const catalogo = await api('GET', '/api/products?search=QAPACK3&limit=50');
+    chk('no aparece en el catálogo', 0, (catalogo.json?.data || []).length);
+    const porLocal = await api('GET', '/api/stock/por-local/productos');
+    chk('ni en el stock por local', false,
+      (porLocal.json?.data || porLocal.json || []).some?.((p) => p.sku === 'QAPACK3') || false);
+
+    // Y no se le puede cargar stock por ningún camino: `mover` lo corta.
+    const packConStock = await fallo(() => stock.mover({
+      variantId: nacidas[0].id, businessId: negocio.id, locationId: local.id,
+      delta: 5, tipo: 'ingreso', motivo: 'QA packs',
+    }));
+    chk('no se le puede cargar stock propio', 'PACK_SIN_STOCK_PROPIO', packConStock?.codigo);
+    chk('y lo explica', true, /no lleva stock propio/.test(packConStock?.message || ''));
+
+    const ajuste = await api('PATCH', `/api/products/variants/${nacidas[0].id}/stock`, {
+      locationId: local.id, tipo: 'ingreso', cantidad: 5, motivo: 'QA packs',
+    });
+    chk('el ajuste manual también se corta', 409, ajuste.status);
+
+    tit('15. LAS VARIANTES QUE EL PADRE GANA DESPUÉS');
+    /*
+     * Se agrega un color y el pack se queda sin él: no hay ningún error, ese
+     * color simplemente no se puede vender de a tres y nadie se entera.
+     */
+    const nueva = await ProductVariant.create({
+      productId: prod.id, businessId: negocio.id, sku: 'QA-PK-VER-M',
+      variante1Nombre: 'Color', variante1Valor: 'Verde',
+      variante2Nombre: 'Talle', variante2Valor: 'M', stock: 0, stockMinimo: 0,
+    });
+    const listado = await api('GET', '/api/packs');
+    const grupo = (listado.json || []).find((g) => g.sku === 'QAPACK3');
+    chk('el listado agrupa por producto de pack', true, !!grupo);
+    chk('y avisa cuántas variantes quedaron sin pack', 1, grupo?.faltanVariantes);
+    chk('dice de qué producto sale', prod.id, grupo?.padre?.productId);
+    chk('y cuántas unidades lleva', 3, grupo?.unidades);
+
+    const completado = await api('POST', `/api/packs/${packProductId}/completar`);
+    chk('se generan las que faltaban', 200, completado.status);
+    chk('una sola', 1, completado.json?.creadas?.length);
+    chk('ahora no falta ninguna', 0,
+      ((await api('GET', '/api/packs')).json || [])
+        .find((g) => g.sku === 'QAPACK3')?.faltanVariantes);
+    // Repetirlo no duplica nada.
+    const otraVez = await api('POST', `/api/packs/${packProductId}/completar`);
+    chk('repetirlo no crea de más', 0, otraVez.json?.creadas?.length);
+
+    tit('16. DAR DE BAJA EL PACK');
+    /*
+     * Se desactiva, no se borra: las ventas que ya se hicieron lo nombran. Y
+     * sigue marcado como pack, porque sacarle la marca lo convertiría en un
+     * artículo común con stock cero —justo lo que un pack no es—.
+     */
+    const baja = await api('DELETE', `/api/packs/producto/${packProductId}`);
+    chk('DELETE /api/packs/producto/:id da de baja', 200, baja.status);
+    const tras = await ProductVariant.findAll({ where: { productId: packProductId } });
+    chk('quedan inactivas', true, tras.every((v) => !v.activo));
+    chk('pero siguen marcadas como pack', true, tras.every((v) => v.esPack));
+    chk('sin composición', 0,
+      await PackComponente.count({ where: { packVariantId: tras.map((v) => v.id) } }));
+    chk('y desaparecen del listado', undefined,
+      ((await api('GET', '/api/packs')).json || []).find((g) => g.sku === 'QAPACK3'));
+    chk('tampoco entran al catálogo al quedar inactivas', 0,
+      ((await api('GET', '/api/products?search=QAPACK3&limit=50')).json?.data || []).length);
+
+    tit('17. RECHAZOS DEL ALTA');
+    const skuTomado = await api('POST', '/api/packs', {
+      productId: prod.id, sku: 'QAPACK3', unidades: 3,
+    });
+    chk('un SKU repetido da 409, no un 500', 409, skuTomado.status);
+
     const productosAntes = await Product.count({ where: { businessId: negocio.id } });
-    const malArmado = await api('POST', '/api/packs', {
-      sku: 'QA-PK-HUERFANO', titulo: 'QA huérfano', precioMinorista: 1000,
-      componentes: [{ componenteVariantId: nuevoId, cantidad: 1 }],   // un pack adentro
+    const sinUnidades = await api('POST', '/api/packs', {
+      productId: prod.id, sku: 'QAPACK-X', unidades: 0,
     });
-    chk('un pack adentro de otro se rechaza en el alta', 400, malArmado.status);
-    chk('y no quedó ningún producto huérfano', productosAntes,
+    chk('sin unidades se rechaza', 400, sinUnidades.status);
+    chk('y no queda ningún producto huérfano', productosAntes,
       await Product.count({ where: { businessId: negocio.id } }));
-    chk('ni la variante', 0,
-      await ProductVariant.count({ where: { sku: 'QA-PK-HUERFANO' } }));
 
-    // Un precio en cero se rechaza: sería regalar el pack.
-    const gratis = await api('POST', '/api/packs', {
-      sku: 'QA-PK-GRATIS', titulo: 'QA gratis', precioMinorista: 0,
-      componentes: [{ componenteVariantId: remera.id, cantidad: 1 }],
+    const ajenoProd = await Product.findOne({
+      where: { businessId: { [Op.ne]: negocio.id } }, attributes: ['id'],
     });
-    chk('un pack a precio cero se rechaza', 400, gratis.status);
-
-    // El buscador no ofrece packs cuando se le pide que no.
-    const busca = await api('GET', '/api/products/buscar-variantes?q=QA-PK&limit=40&sinPacks=1');
-    chk('el buscador con sinPacks no devuelve packs', true,
-      (busca.json?.data || []).every((v) => !v.esPack));
-    const buscaTodo = await api('GET', '/api/products/buscar-variantes?q=QA-PK-NUEVO&limit=40');
-    chk('y sin el filtro sí lo trae, marcado', true,
-      (buscaTodo.json?.data || []).some((v) => v.sku === 'QA-PK-NUEVO' && v.esPack === true));
-
-    if (creado) {
-      await PackComponente.destroy({ where: { packVariantId: creado.id } });
-      await ProductVariant.destroy({ where: { id: creado.id } });
-      await Product.destroy({ where: { id: creado.productId } });
+    if (ajenoProd) {
+      const deOtro = await api('POST', '/api/packs', {
+        productId: ajenoProd.id, sku: 'QAPACK-AJENO', unidades: 2,
+      });
+      chk('un producto de otro negocio da 404', 404, deOtro.status);
     }
 
+    // El buscador no ofrece packs cuando se le pide que no.
+    await ProductVariant.update({ activo: true }, { where: { productId: packProductId } });
+    await Product.update({ activo: true }, { where: { id: packProductId } });
+    const busca = await api('GET', '/api/products/buscar-variantes?q=QAPACK3&limit=40&sinPacks=1');
+    chk('el buscador con sinPacks no devuelve packs', true,
+      (busca.json?.data || []).every((v) => !v.esPack));
+    const buscaTodo = await api('GET', '/api/products/buscar-variantes?q=QAPACK3&limit=40');
+    chk('y sin el filtro sí los trae, marcados', true,
+      (buscaTodo.json?.data || []).some((v) => v.esPack === true));
+
+    await ProductVariant.destroy({ where: { productId: packProductId } });
+    await Product.destroy({ where: { id: packProductId } });
+    await ProductVariant.destroy({ where: { id: nueva.id } });
+
     const desarmado = await api('DELETE', `/api/packs/${pack.id}`);
-    chk('DELETE /api/packs/:id desarma', 200, desarmado.status);
-    chk('ya no es pack', false, !!(await ProductVariant.findByPk(pack.id))?.esPack);
+    chk('DELETE /api/packs/:id da de baja esa combinación', 200, desarmado.status);
+    chk('queda inactiva', false, !!(await ProductVariant.findByPk(pack.id))?.activo);
+    /*
+     * Sigue marcada como pack a propósito. Sacarle la marca la convertiría en
+     * un artículo común con stock cero —que es justo lo que un pack no es— y
+     * reaparecería en el catálogo y en las cuentas de inventario.
+     */
+    chk('pero sigue marcada como pack', true, !!(await ProductVariant.findByPk(pack.id))?.esPack);
     chk('y no le quedan componentes', 0,
       await PackComponente.count({ where: { packVariantId: pack.id } }));
 

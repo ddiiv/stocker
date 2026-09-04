@@ -427,9 +427,12 @@ r.get   ('/products/variants/:variantId/movements',       requireAuth, requirePe
  */
 r.get   ('/packs',                                        requireAuth, requirePermission('stock','ver'),    packCtrl.listar);
 r.post  ('/packs',                                        requireAuth, requirePermission('stock','editar'), packCtrl.crear);
+r.get   ('/packs/sugerencia',                             requireAuth, requirePermission('stock','ver'),    packCtrl.sugerencia);
 r.get   ('/packs/usan/:variantId',                        requireAuth, requirePermission('stock','ver'),    packCtrl.usan);
+r.post  ('/packs/:productId/completar',                    requireAuth, requirePermission('stock','editar'), packCtrl.completar);
 r.get   ('/packs/:variantId',                             requireAuth, requirePermission('stock','ver'),    packCtrl.detalle);
 r.put   ('/packs/:variantId',                             requireAuth, requirePermission('stock','editar'), packCtrl.definir);
+r.delete('/packs/producto/:productId',                     requireAuth, requirePermission('stock','editar'), packCtrl.eliminar);
 r.delete('/packs/:variantId',                             requireAuth, requirePermission('stock','editar'), packCtrl.desarmar);
 
 // ── Sales & Quotes ───────────────────────────────────────────────

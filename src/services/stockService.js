@@ -73,6 +73,20 @@ async function resolverLocal({ locationId, businessId, employeeId = null, transa
  * Una sola lectura por id de producto. Se usa en el punto más caliente del
  * sistema, así que se piden sólo las dos columnas que hacen falta.
  */
+/**
+ * Si la variante es un pack.
+ *
+ * Se lee de la variante y no de la tabla de composición: un pack recién creado
+ * o uno al que le borraron los componentes sigue siendo un pack, y darle stock
+ * propio en ese hueco sería justamente el error.
+ */
+async function esVariantePack(variantId, transaction = null) {
+  const v = await ProductVariant.findByPk(variantId, {
+    attributes: ['id', 'esPack'], transaction,
+  });
+  return Boolean(v?.esPack);
+}
+
 async function esVarianteDeFeria(variantId, transaction = null) {
   const v = await ProductVariant.findByPk(variantId, {
     attributes: ['id', 'productId'],
@@ -185,6 +199,29 @@ async function mover({
     const err = new Error('Los productos de evento no llevan stock: no se les puede registrar un movimiento.');
     err.status = 409;
     err.codigo = 'FERIA_SIN_STOCK';
+    throw err;
+  }
+
+  /*
+   * Un pack tampoco lleva stock propio. Nunca.
+   *
+   * Un pack no es un artículo más del catálogo: es la forma de vender de a N
+   * unidades de otra cosa. Lo que hay de un pack no se carga, se calcula —lo
+   * que alcance de sus componentes— así que darle stock propio crea un número
+   * que ninguna cuenta usa y que contradice al que sí se usa.
+   *
+   * Va acá por el mismo motivo que la feria: `mover` es el único lugar que
+   * escribe inventario. Un ajuste masivo, un escaneo, una importación o una
+   * transferencia que incluyan un pack se cortan solas, sin que cada una tenga
+   * que acordarse. La venta ya no llega hasta acá con un pack: lo expande en
+   * sus componentes antes.
+   */
+  const esPack = await esVariantePack(variantId, t);
+  if (esPack) {
+    const err = new Error('Un pack no lleva stock propio: lo que hay se calcula con lo que '
+      + 'haya de las prendas que lleva adentro. Cargá o ajustá el stock de esas prendas.');
+    err.status = 409;
+    err.codigo = 'PACK_SIN_STOCK_PROPIO';
     throw err;
   }
 
@@ -628,6 +665,6 @@ module.exports = {
   // Reservas: apartar al vender, consumir al despachar. Ver el bloque de arriba.
   disponibleEn, reservar, liberarReserva, consumirReserva,
   mover, stockEn, desglosePorVariante, transferir, localPorDefecto, resolverLocal,
-  recalcularTotal, esVarianteDeFeria,
+  recalcularTotal, esVarianteDeFeria, esVariantePack,
   localesQueAbastecenOnline, stockOnline, repartirDescuentoOnline,
 };

@@ -2,6 +2,7 @@ const { Op, fn, col } = require('sequelize');
 const sequelize = require('../config/database');
 const { Product, ProductVariant, StockMovement, Employee, BusinessLocation, VariantStock } = require('../models');
 const { NO_ES_FERIA } = require('../utils/feria');
+const { NO_ES_PACK, productoNoEsPack } = require('../utils/packs');
 const { ilikeOperator } = require('../utils/sqlHelpers');
 const { exportProductsXlsx, importProductsXlsx } = require('../services/productExcelService');
 const { exigirCupo } = require('../services/planService');
@@ -146,6 +147,17 @@ const getProducts = async (req, res, next) => {
 
     if (feria === '1' || feria === 'true') where.esFeria = true;
     else condiciones.push(NO_ES_FERIA);
+
+    /*
+     * Los packs tampoco están en el catálogo.
+     *
+     * Un pack no es un artículo más: es la forma de vender de a N unidades de
+     * otro. Mostrarlo acá duplicaría cada prenda —la remera y el pack de tres
+     * remeras— con una columna de stock en cero que no significa nada, porque
+     * un pack no tiene stock: se arma con lo que haya de lo que lleva adentro.
+     * Tienen su pantalla en Stock › Packs, igual que los de evento.
+     */
+    condiciones.push(productoNoEsPack());
     if (categoria) where.categoria = categoria;
     if (genero)    where.genero    = genero;
     if (search) {
@@ -1365,7 +1377,13 @@ const getStockPorLocal = async (req, res, next) => {
     const limit = Math.min(200, Math.max(1, Number(req.query.limit) || 50));
 
     const like = ilikeOperator();
-    const whereVariante = { businessId: req.auth.businessId };
+    /*
+     * Sin packs: esta pantalla cuenta mercadería en estantes, y un pack no está
+     * en ningún estante. Lo que hay de un pack sale de sus componentes, que ya
+     * están contados en su propia fila; mostrarlo sería contar dos veces la
+     * misma prenda.
+     */
+    const whereVariante = { businessId: req.auth.businessId, ...NO_ES_PACK };
     if (q) {
       const texto = `%${String(q).trim()}%`;
       whereVariante[Op.or] = [
@@ -1482,7 +1500,11 @@ const getProductosPorLocal = async (req, res, next) => {
     }
 
     const like = ilikeOperator();
-    const whereProducto = { businessId: req.auth.businessId, activo: true };
+    const whereProducto = {
+      businessId: req.auth.businessId, activo: true,
+      // Un pack no ocupa lugar en ningún local: ver getStockPorLocal.
+      [Op.and]: [productoNoEsPack()],
+    };
     if (q) {
       const texto = `%${String(q).trim()}%`;
       // Mismo criterio que el listado de productos: el SKU que se tiene en la
