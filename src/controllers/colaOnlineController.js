@@ -95,4 +95,40 @@ const postProcesar = async (req, res, next) => {
   } catch (error) { next(error); }
 };
 
-module.exports = { postPedido, getPedidos, postProcesar };
+/*
+ * POST /api/online/pedidos/:id/reprocesar
+ *
+ * Vuelve a intentar las líneas que quedaron sin resolver porque su SKU no
+ * existía cuando el pedido entró —el caso típico es un pack armado después—.
+ *
+ * El negocio sale de la sesión y se comprueba contra el pedido: sin eso,
+ * cualquiera con una cuenta podría reprocesar —y apartar mercadería de— los
+ * pedidos de otro negocio mandando un id cualquiera.
+ */
+const postReprocesar = async (req, res, next) => {
+  try {
+    const pedido = await PedidoPlataforma.findOne({
+      where: { id: Number(req.params.id), businessId: req.auth.businessId },
+      attributes: ['id', 'estado'],
+    });
+    if (!pedido) return res.status(404).json({ message: 'Ese pedido no existe en este negocio.' });
+
+    const antes = pedido.estado;
+    const r = await cola.reprocesar(pedido.id);
+    const items = await PedidoPlataformaItem.findAll({
+      where: { pedidoId: pedido.id }, attributes: ['productVariantId'],
+    });
+    const sinResolver = items.filter((i) => !i.productVariantId).length;
+
+    return res.json({
+      ok: true,
+      estado: r?.estado || antes,
+      sinResolver,
+      mensaje: sinResolver === 0
+        ? 'Listo: se apartó la mercadería de todas las líneas. Ya se puede despachar.'
+        : `Quedan ${sinResolver} línea(s) sin resolver: ${r?.motivo || 'ese SKU no está en Stocker.'}`,
+    });
+  } catch (error) { return next(error); }
+};
+
+module.exports = { postPedido, getPedidos, postProcesar, postReprocesar };

@@ -163,6 +163,145 @@ function sinStock(mensaje) {
 }
 
 /*
+ * Resuelve los SKU de unas líneas y aparta su mercadería.
+ *
+ * Está afuera de `procesarUno` porque hay DOS caminos que tienen que decidir
+ * exactamente igual: el pedido que entra por primera vez, y el que se
+ * reprocesa porque su SKU no existía todavía cuando entró. Con la lógica
+ * escrita dos veces, el segundo camino se iba a quedar viejo la primera vez
+ * que cambiara una regla —lo de los packs, sin ir más lejos— y nadie lo iba a
+ * notar hasta que un despacho no descontara nada.
+ *
+ * Sólo toca las líneas que se le pasan. Quien llama decide cuáles: todas, o
+ * las que quedaron sin resolver.
+ *
+ * @returns {Promise<{desconocidos: string[], deEvento: string[]}>}
+ */
+async function resolverYApartar(pedido, items, t) {
+  /*
+   * ── Resolver los SKU ─────────────────────────────────────────
+   *
+   * Un SKU que no existe en Stocker no se puede descontar. La línea se marca
+   * y el pedido queda `parcial`: la venta ocurrió igual, y no descontar lo
+   * que sí conocemos haría la diferencia todavía más grande.
+   */
+  const skus = [...new Set(items.map((i) => i.sku))];
+  const variantes = await ProductVariant.findAll({
+    where: { businessId: pedido.businessId, sku: skus },
+    include: [{ model: Product, as: 'producto', attributes: ['id', 'esFeria'], required: true }],
+    transaction: t,
+  });
+  const porSku = new Map(variantes.map((v) => [v.sku, v]));
+
+  const desconocidos = [];
+  const deEvento = [];
+  const aDescontar = [];
+
+  for (const item of items) {
+    const v = porSku.get(item.sku);
+    if (!v) { desconocidos.push(item.sku); continue; }
+    /*
+     * Un producto de evento no lleva stock y no se vende por internet.
+     * Que llegue uno significa que alguien publicó online un SKU de feria:
+     * se avisa en vez de intentar descontarle algo que no tiene.
+     */
+    if (v.producto?.esFeria) { deEvento.push(item.sku); continue; }
+    aDescontar.push({ item, variante: v });
+  }
+
+  /*
+   * ── ¿Alcanza el stock? Se pregunta por TODO antes de mover nada ──
+   *
+   * Frenar en la mitad dejaría medio pedido descontado, y el vendedor sin
+   * forma de saber qué salió y qué no.
+   *
+   * Ojo con qué garantiza esta consulta: es un atajo, no el candado. Dos
+   * pedidos que entran juntos por el mismo artículo leen los dos "queda 1" y
+   * los dos pasan por acá. Lo que los ordena es `mover`, más abajo, que traba
+   * la fila de stock y hace que el segundo lea el cero que dejó el primero.
+   * Este chequeo existe para rechazar temprano y barato el caso normal —el
+   * pedido que ya nace sin stock—, y para no descontar medio pedido cuando
+   * falta una línea de varias.
+   */
+  const faltantes = [];
+  const repartos = [];
+  for (const { item, variante } of aDescontar) {
+    /*
+     * Un pack se reparte por packs enteros, no por unidades.
+     *
+     * Preguntarle a `repartirDescuentoOnline` por un pack daría cero siempre:
+     * un pack no tiene fila en `variant_stocks` porque no lleva stock propio.
+     * Lo que hay de un pack es lo que alcance para armarlo con lo que tiene
+     * adentro, y eso lo sabe packService.
+     */
+    const r = variante.esPack
+      ? await packService.repartirPackOnline(variante.id, pedido.businessId, item.cantidad, t)
+      : await stockService.repartirDescuentoOnline(
+        variante.id, pedido.businessId, item.cantidad, t,
+      );
+    if (!r.alcanza) {
+      faltantes.push({ sku: item.sku, pide: item.cantidad, falta: r.falta });
+    }
+    repartos.push({ item, variante, reparto: r.reparto });
+  }
+
+  if (faltantes.length) {
+    const detalle = faltantes
+      .map((f) => `${f.sku}: pide ${f.pide} y faltan ${f.falta}`)
+      .join('; ');
+    throw sinStock(`Sin stock para despachar. ${detalle}.`);
+  }
+
+  /*
+   * ── Apartar, no descontar ────────────────────────────────────
+   *
+   * La prenda sigue en el estante hasta que alguien la pickee y la despache.
+   * Lo que cambia ahora es que nadie más la puede vender: ni el mostrador, ni
+   * la otra plataforma, ni un segundo pedido de ésta.
+   *
+   * Antes acá se hacía el egreso. El inventario decía que la prenda no estaba
+   * mientras seguía colgada esperando el picking, y el que iba a buscarla no
+   * tenía forma de saber si la habían despachado o si nunca estuvo. Ahora el
+   * egreso ocurre en Envíos del Día, cuando sale de verdad.
+   *
+   * `reservar` puede devolver false aunque el reparto haya dicho que alcanza:
+   * entre que se calculó y se aparta, otro pedido pudo llevarse la unidad. Es
+   * la misma carrera de siempre y se resuelve igual —el que llega segundo se
+   * rechaza—, sólo que ahora se detecta acá en vez de adentro de `mover`.
+   */
+  const apartadas = [];
+  for (const { item, variante, reparto } of repartos) {
+    for (const parte of reparto) {
+      /*
+       * Apartar un pack es apartar lo que lleva adentro: tres remeras, no un
+       * pack. Todo o nada — media reserva deja mercadería comprometida para
+       * un pack que nunca se va a poder armar.
+       */
+      const pudo = variante.esPack
+        ? await packService.reservarPack(
+          variante.id, parte.locationId, pedido.businessId, parte.unidades, t,
+        )
+        : await stockService.reservar(
+          variante.id, parte.locationId, pedido.businessId, parte.unidades, t,
+        );
+      if (!pudo) {
+        throw sinStock(
+          `Sin stock para despachar. ${item.sku}: se apartó para otro pedido mientras se procesaba éste.`,
+        );
+      }
+      apartadas.push({ variante, parte });
+    }
+    // De qué local sale, para poder pickearlo sin recalcular nada.
+    await item.update({
+      productVariantId: variante.id,
+      locationId: reparto[0]?.locationId || null,
+    }, { transaction: t });
+  }
+
+  return { desconocidos, deEvento };
+}
+
+/*
  * Procesa UN pedido: resuelve los SKU, descuenta y lo cierra.
  *
  * Todo pasa dentro de una transacción. O el pedido queda aceptado con su stock
@@ -186,125 +325,7 @@ async function procesarUno(pedidoId) {
       where: { pedidoId: pedido.id }, transaction: t,
     });
 
-    /*
-     * ── Resolver los SKU ─────────────────────────────────────────
-     *
-     * Un SKU que no existe en Stocker no se puede descontar. La línea se marca
-     * y el pedido queda `parcial`: la venta ocurrió igual, y no descontar lo
-     * que sí conocemos haría la diferencia todavía más grande.
-     */
-    const skus = [...new Set(items.map((i) => i.sku))];
-    const variantes = await ProductVariant.findAll({
-      where: { businessId: pedido.businessId, sku: skus },
-      include: [{ model: Product, as: 'producto', attributes: ['id', 'esFeria'], required: true }],
-      transaction: t,
-    });
-    const porSku = new Map(variantes.map((v) => [v.sku, v]));
-
-    const desconocidos = [];
-    const deEvento = [];
-    const aDescontar = [];
-
-    for (const item of items) {
-      const v = porSku.get(item.sku);
-      if (!v) { desconocidos.push(item.sku); continue; }
-      /*
-       * Un producto de evento no lleva stock y no se vende por internet.
-       * Que llegue uno significa que alguien publicó online un SKU de feria:
-       * se avisa en vez de intentar descontarle algo que no tiene.
-       */
-      if (v.producto?.esFeria) { deEvento.push(item.sku); continue; }
-      aDescontar.push({ item, variante: v });
-    }
-
-    /*
-     * ── ¿Alcanza el stock? Se pregunta por TODO antes de mover nada ──
-     *
-     * Frenar en la mitad dejaría medio pedido descontado, y el vendedor sin
-     * forma de saber qué salió y qué no.
-     *
-     * Ojo con qué garantiza esta consulta: es un atajo, no el candado. Dos
-     * pedidos que entran juntos por el mismo artículo leen los dos "queda 1" y
-     * los dos pasan por acá. Lo que los ordena es `mover`, más abajo, que traba
-     * la fila de stock y hace que el segundo lea el cero que dejó el primero.
-     * Este chequeo existe para rechazar temprano y barato el caso normal —el
-     * pedido que ya nace sin stock—, y para no descontar medio pedido cuando
-     * falta una línea de varias.
-     */
-    const faltantes = [];
-    const repartos = [];
-    for (const { item, variante } of aDescontar) {
-      /*
-       * Un pack se reparte por packs enteros, no por unidades.
-       *
-       * Preguntarle a `repartirDescuentoOnline` por un pack daría cero siempre:
-       * un pack no tiene fila en `variant_stocks` porque no lleva stock propio.
-       * Lo que hay de un pack es lo que alcance para armarlo con lo que tiene
-       * adentro, y eso lo sabe packService.
-       */
-      const r = variante.esPack
-        ? await packService.repartirPackOnline(variante.id, pedido.businessId, item.cantidad, t)
-        : await stockService.repartirDescuentoOnline(
-          variante.id, pedido.businessId, item.cantidad, t,
-        );
-      if (!r.alcanza) {
-        faltantes.push({ sku: item.sku, pide: item.cantidad, falta: r.falta });
-      }
-      repartos.push({ item, variante, reparto: r.reparto });
-    }
-
-    if (faltantes.length) {
-      const detalle = faltantes
-        .map((f) => `${f.sku}: pide ${f.pide} y faltan ${f.falta}`)
-        .join('; ');
-      throw sinStock(`Sin stock para despachar. ${detalle}.`);
-    }
-
-    /*
-     * ── Apartar, no descontar ────────────────────────────────────
-     *
-     * La prenda sigue en el estante hasta que alguien la pickee y la despache.
-     * Lo que cambia ahora es que nadie más la puede vender: ni el mostrador, ni
-     * la otra plataforma, ni un segundo pedido de ésta.
-     *
-     * Antes acá se hacía el egreso. El inventario decía que la prenda no estaba
-     * mientras seguía colgada esperando el picking, y el que iba a buscarla no
-     * tenía forma de saber si la habían despachado o si nunca estuvo. Ahora el
-     * egreso ocurre en Envíos del Día, cuando sale de verdad.
-     *
-     * `reservar` puede devolver false aunque el reparto haya dicho que alcanza:
-     * entre que se calculó y se aparta, otro pedido pudo llevarse la unidad. Es
-     * la misma carrera de siempre y se resuelve igual —el que llega segundo se
-     * rechaza—, sólo que ahora se detecta acá en vez de adentro de `mover`.
-     */
-    const apartadas = [];
-    for (const { item, variante, reparto } of repartos) {
-      for (const parte of reparto) {
-        /*
-         * Apartar un pack es apartar lo que lleva adentro: tres remeras, no un
-         * pack. Todo o nada — media reserva deja mercadería comprometida para
-         * un pack que nunca se va a poder armar.
-         */
-        const pudo = variante.esPack
-          ? await packService.reservarPack(
-            variante.id, parte.locationId, pedido.businessId, parte.unidades, t,
-          )
-          : await stockService.reservar(
-            variante.id, parte.locationId, pedido.businessId, parte.unidades, t,
-          );
-        if (!pudo) {
-          throw sinStock(
-            `Sin stock para despachar. ${item.sku}: se apartó para otro pedido mientras se procesaba éste.`,
-          );
-        }
-        apartadas.push({ variante, parte });
-      }
-      // De qué local sale, para poder pickearlo sin recalcular nada.
-      await item.update({
-        productVariantId: variante.id,
-        locationId: reparto[0]?.locationId || null,
-      }, { transaction: t });
-    }
+    const { desconocidos, deEvento } = await resolverYApartar(pedido, items, t);
 
     const avisos = [];
     if (desconocidos.length) {
@@ -348,6 +369,89 @@ async function procesarUno(pedidoId) {
      */
     if (e.sinStock || e.status === 409) {
       return rechazar(pedidoId, e.message);
+    }
+    throw e;
+  }
+}
+
+/*
+ * Vuelve a intentar las líneas que quedaron sin resolver.
+ *
+ * El caso que lo motiva: un pedido de Mercado Libre entra con el SKU de un
+ * pack que todavía no existía en Stocker —porque el pack se armó después, o
+ * porque la venta se trajo con el backfill de pedidos viejos—. La línea queda
+ * marcada "no está en Stocker", el pedido en `parcial`, y NADA se aparta.
+ *
+ * Hasta acá eso era definitivo: `procesarUno` sólo trabaja sobre pedidos
+ * `pendiente`, así que crear el pack después no cambiaba nada. El pedido se
+ * quedaba para siempre diciendo que un SKU que sí existe no existe, y —lo
+ * peor— al despacharlo no se descontaba ninguna prenda, porque despachar
+ * saltea las líneas sin variante. El paquete salía y el inventario no se
+ * enteraba.
+ *
+ * Sólo se tocan las líneas SIN resolver. Las que ya apartaron mercadería se
+ * dejan como están: volver a apartarlas comprometería el doble de stock para
+ * la misma venta.
+ */
+async function reprocesar(pedidoId) {
+  const t = await db.transaction();
+  try {
+    const pedido = await PedidoPlataforma.findOne({
+      where: { id: pedidoId }, transaction: t, lock: t.LOCK.UPDATE,
+    });
+    if (!pedido) { await t.rollback(); return null; }
+
+    /*
+     * Un pedido cancelado no se reprocesa: apartaría mercadería para una venta
+     * que ya no existe. Uno `pendiente` tampoco: ése lo toma `procesarUno`, y
+     * hacerlo acá duplicaría el apartado si los dos corren a la vez.
+     */
+    if (!['parcial', 'rechazado'].includes(pedido.estado)) {
+      await t.rollback();
+      return pedido;
+    }
+
+    const todos = await PedidoPlataformaItem.findAll({
+      where: { pedidoId: pedido.id }, transaction: t,
+    });
+    const pendientes = todos.filter((i) => !i.productVariantId);
+    if (!pendientes.length) {
+      await t.rollback();
+      return pedido;
+    }
+
+    const { desconocidos, deEvento } = await resolverYApartar(pedido, pendientes, t);
+
+    const avisos = [];
+    if (desconocidos.length) {
+      avisos.push(`No están en Stocker y no se descontaron: ${desconocidos.join(', ')}.`);
+    }
+    if (deEvento.length) {
+      avisos.push(`Son productos de evento y no llevan stock: ${deEvento.join(', ')}.`);
+    }
+
+    await pedido.update({
+      estado: avisos.length ? 'parcial' : 'aceptado',
+      motivo: avisos.join(' ') || null,
+      procesadoEn: new Date(),
+    }, { transaction: t });
+
+    await t.commit();
+    return await PedidoPlataforma.findByPk(pedido.id, {
+      include: [{ model: PedidoPlataformaItem, as: 'items' }],
+    });
+  } catch (e) {
+    await t.rollback().catch(() => {});
+    /*
+     * Faltó stock al reintentar. No se marca el pedido como rechazado —ya
+     * existía y puede tener líneas apartadas— pero sí se avisa: el SKU ahora
+     * se reconoce, lo que falta es mercadería.
+     */
+    if (e.sinStock || e.status === 409) {
+      const err = new Error(e.message);
+      err.status = 409;
+      err.codigo = 'SIN_STOCK';
+      throw err;
     }
     throw e;
   }
@@ -422,5 +526,5 @@ async function encolarYProcesar(datos) {
 }
 
 module.exports = {
-  encolar, procesarUno, procesarCola, encolarYProcesar, PLATAFORMAS,
+  encolar, procesarUno, procesarCola, encolarYProcesar, reprocesar, PLATAFORMAS,
 };

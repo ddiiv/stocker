@@ -202,7 +202,44 @@ async function delDia(businessId, {
     order: [['id', 'ASC']],
   });
 
-  const idsVariante = [...new Set(items.map((i) => i.productVariantId).filter(Boolean))];
+  /*
+   * ── Las líneas que quedaron sin resolver ────────────────────────
+   *
+   * `productVariantId` se escribe UNA vez, cuando el pedido entra a la cola. Si
+   * en ese momento el SKU no existía —el pack se armó después, o la venta vino
+   * del backfill de pedidos viejos— la línea queda apuntando a nada para
+   * siempre, aunque el SKU exista hoy.
+   *
+   * Se vio en producción: dos líneas de un pack marcadas "sin cargar en
+   * Stocker" mientras el pack estaba ahí, con sus nueve combinaciones. Y no era
+   * sólo un cartel equivocado: al despachar, esas líneas se saltean, así que el
+   * paquete salía sin descontar una sola prenda.
+   *
+   * Así que se vuelve a buscar por SKU al leer. El SKU es la clave durable; el
+   * id guardado es una foto del momento en que entró. Lo que se muestra
+   * distingue los dos casos, porque se arreglan distinto: el que no existe hay
+   * que darlo de alta, y el que existe hay que reprocesarlo para que aparte.
+   */
+  const skusSinResolver = [...new Set(
+    items.filter((i) => !i.productVariantId).map((i) => i.sku).filter(Boolean),
+  )];
+  const rescatadas = skusSinResolver.length
+    ? await ProductVariant.findAll({
+      where: { businessId, sku: skusSinResolver },
+      attributes: ['id', 'sku', 'codigoBarras', 'esPack', 'variante1Nombre', 'variante1Valor',
+        'variante2Nombre', 'variante2Valor'],
+      include: [{
+        model: Product, as: 'producto',
+        attributes: ['id', 'titulo', 'skuAgrupador', 'modelo'],
+      }],
+    })
+    : [];
+  const porSkuRescatado = new Map(rescatadas.map((v) => [v.sku, v]));
+
+  const idsVariante = [...new Set([
+    ...items.map((i) => i.productVariantId).filter(Boolean),
+    ...rescatadas.map((v) => v.id),
+  ])];
   const variantes = idsVariante.length
     ? await ProductVariant.findAll({
       where: { id: idsVariante },
@@ -256,6 +293,32 @@ async function delDia(businessId, {
   }
 
   const describir = (v) => [v?.variante1Valor, v?.variante2Valor].filter(Boolean).join(' · ');
+
+  /*
+   * El motivo del pedido, releído contra lo que existe hoy.
+   *
+   * Si el motivo guardado sólo hablaba de SKU que ya se pueden resolver, deja
+   * de tener sentido y se reemplaza por lo que sí pasa: que la venta no apartó
+   * mercadería. Si todavía hay SKU que no existen, se los nombra a ellos.
+   */
+  const motivoVigente = (pedido, lineas) => {
+    const rescatados = lineas.filter((i) => !i.productVariantId && porSkuRescatado.has(i.sku));
+    if (!rescatados.length) return pedido.motivo;
+
+    const siguenSinExistir = lineas
+      .filter((i) => !i.productVariantId && !porSkuRescatado.has(i.sku))
+      .map((i) => i.sku);
+
+    const partes = [
+      `Ya están en Stocker pero esta venta no apartó su stock: ${
+        [...new Set(rescatados.map((i) => i.sku))].join(', ')}.`,
+    ];
+    if (siguenSinExistir.length) {
+      partes.push(`No están en Stocker y no se descontaron: ${
+        [...new Set(siguenSinExistir)].join(', ')}.`);
+    }
+    return partes.join(' ');
+  };
 
   /*
    * Los atributos con su nombre: "Color: Negro · Talle: M".
@@ -330,11 +393,24 @@ async function delDia(businessId, {
           : p.estadoEnvio === 'despachado' ? 'en_camino'
             : p.estadoEnvio === 'con_faltante' ? 'con_faltante' : 'para_enviar',
       estado: p.estado,
-      motivo: p.motivo,
+      /*
+       * El motivo guardado puede haber quedado viejo.
+       *
+       * Se escribió cuando el pedido entró: "no están en Stocker" era cierto
+       * ese día y dejó de serlo cuando alguien cargó el artículo. Mostrarlo tal
+       * cual deja la pantalla diciendo dos cosas opuestas a la vez —el cartel
+       * rojo dice que el SKU no existe, y arriba está el artículo con su nombre
+       * y su composición—.
+       *
+       * Se recalcula sobre lo que resolvió AHORA: sólo se nombran los SKU que
+       * de verdad siguen sin existir.
+       */
+      motivo: motivoVigente(p, suyos),
       comprador: p.compradorNombre,
       recibidoEn: p.recibidoEn,
       items: suyos.map((i) => {
-        const v = porVariante.get(i.productVariantId);
+        const rescatada = i.productVariantId ? null : porSkuRescatado.get(i.sku);
+        const v = porVariante.get(i.productVariantId) || rescatada || null;
         /*
          * Lo que hay que juntar por esta línea. Para una variante suelta es
          * ella misma; para un pack, lo que lleva adentro con las cantidades ya
@@ -376,12 +452,18 @@ async function delDia(businessId, {
           locationId: i.locationId,
           local: nombreLocal.get(i.locationId) || null,
           /*
-           * Una línea sin variante resuelta es un SKU que no existe en Stocker.
-           * Se muestra igual y marcada: el pickeador tiene que saber que ese
-           * renglón no lo va a encontrar en el sistema, y alguien tiene que
-           * darlo de alta o cancelarlo.
+           * El SKU no existe en Stocker. Se muestra igual y marcado: quien
+           * pickea tiene que saber que ese renglón no lo va a encontrar en el
+           * sistema, y alguien tiene que darlo de alta o cancelar la venta.
            */
-          sinResolver: !i.productVariantId,
+          sinResolver: !i.productVariantId && !rescatada,
+          /*
+           * El SKU SÍ existe, pero esta línea nunca apartó mercadería: entró
+           * antes de que el artículo estuviera cargado. Es otro problema y se
+           * arregla distinto —reprocesando el pedido— así que se dice aparte.
+           * Despachar así saltearía la línea y el stock nunca bajaría.
+           */
+          sinApartar: Boolean(rescatada),
         };
       }),
     });
@@ -473,6 +555,9 @@ async function delDia(businessId, {
         // una y repartir, o buscarlo de a uno.
         enPaquetes: 0,
         sinResolver: linea.sinResolver,
+        // El SKU existe pero la línea no apartó nada: hay que reprocesar el
+        // pedido antes de despachar, o el stock no va a bajar.
+        sinApartar: linea.sinApartar || false,
         // De qué packs viene, para que el que baja 9 remeras entienda por qué
         // son nueve cuando ningún pedido pidió nueve.
         deLosPacks: linea.deLosPacks || null,
@@ -498,7 +583,7 @@ async function delDia(businessId, {
             variante1Nombre: c.variante1Nombre, variante1Valor: c.variante1Valor,
             variante2Nombre: c.variante2Nombre, variante2Valor: c.variante2Valor,
             codigoBarras: c.codigoBarras, locationId: i.locationId, local: i.local,
-            sinResolver: false, deLosPacks: [i.sku],
+            sinResolver: false, sinApartar: i.sinApartar, deLosPacks: [i.sku],
           }, c.cantidad);
         }
         continue;
@@ -617,10 +702,43 @@ async function despachar({ pedidoId, businessId, employeeId = null }) {
       ? await packService.componentesDe([...paquetesQueSonPack], t)
       : new Map();
 
+    /*
+     * ── Antes de mover nada: ¿alguna línea existe pero no apartó? ────
+     *
+     * Una línea sin variante se saltea más abajo, y eso está bien cuando el SKU
+     * de verdad no existe: no hay nada que descontar. Pero cuando el SKU SÍ
+     * está en Stocker —el pack se armó después de que entrara el pedido— ese
+     * salteo es el peor resultado posible: el paquete se marca despachado, sale
+     * por la puerta, y el inventario no baja una sola prenda.
+     *
+     * Pasó en producción con un pack de Mercado Libre. Así que se corta acá y
+     * se dice qué hacer, en vez de dejar que salga en silencio.
+     */
+    const sinVariante = items.filter((i) => !i.productVariantId && i.sku);
+    if (sinVariante.length) {
+      const existen = await ProductVariant.findAll({
+        where: { businessId, sku: [...new Set(sinVariante.map((i) => i.sku))] },
+        attributes: ['sku'],
+        transaction: t,
+      });
+      if (existen.length) {
+        await t.rollback();
+        throw error(
+          `${existen.map((v) => v.sku).join(', ')} ya está en Stocker, pero esta venta entró `
+          + 'antes de que estuviera cargado, así que no apartó mercadería. '
+          + 'Reprocesá el pedido para que aparte el stock y volvé a despachar: '
+          + 'si lo despachás así, el paquete sale y el inventario no baja.',
+          409,
+          { codigo: 'SIN_APARTAR', skus: existen.map((v) => v.sku) },
+        );
+      }
+    }
+
     let movidas = 0;
     for (const i of items) {
-      // Las líneas sin variante nunca apartaron nada: no hay reserva que
-      // consumir ni stock que mover.
+      // Las líneas sin variante nunca apartaron nada, y acabamos de comprobar
+      // que su SKU tampoco existe: no hay reserva que consumir ni stock que
+      // mover.
       if (!i.productVariantId || !i.locationId) continue;
 
       /*

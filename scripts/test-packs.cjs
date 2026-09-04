@@ -522,6 +522,89 @@ function sesion() {
       { componenteVariantId: remera.id, cantidad: 3 },
     ]);
 
+    tit('12c. UNA VENTA QUE ENTRÓ ANTES DE QUE EL PACK EXISTIERA');
+    /*
+     * El caso de producción.
+     *
+     * Un pedido de Mercado Libre entra con el SKU de un pack que todavía no
+     * está cargado —el pack se armó después, o la venta se trajo con el
+     * backfill de pedidos viejos—. `productVariantId` se escribe UNA vez, al
+     * entrar, así que la línea queda apuntando a nada PARA SIEMPRE, aunque el
+     * SKU exista al día siguiente.
+     *
+     * Y no era sólo un cartel equivocado: al despachar, las líneas sin variante
+     * se saltean. El paquete salía por la puerta y el inventario no bajaba una
+     * sola prenda.
+     */
+    await packs.definirComponentes(pack.id, negocio.id, [
+      { componenteVariantId: remera.id, cantidad: 3 },
+    ]);
+    await fijar(remera, 20);
+
+    // Entra con un SKU que todavía no existe.
+    const entradaTarde = await api('POST', '/api/online/pedidos', {
+      plataforma: 'mercadolibre', pedidoExterno: 'QA-PACK-TARDE', total: 1000,
+      items: [{ sku: 'QA-PK-INEXISTENTE', cantidad: 2 }],
+    });
+    const pedidoTarde = await PedidoPlataforma.findOne({
+      where: { pedidoExterno: 'QA-PACK-TARDE' },
+    });
+    chk('el pedido entra parcial', 'parcial', pedidoTarde?.estado);
+    chk('y la línea queda sin resolver', true,
+      !(await PedidoPlataformaItem.findOne({ where: { pedidoId: pedidoTarde.id } }))
+        .productVariantId);
+
+    // Ahora sí existe: se le pone ese SKU a una variante real.
+    const antesDelRescate = await apartado(remera);
+    await ProductVariant.update({ sku: 'QA-PK-INEXISTENTE' }, { where: { id: pack.id } });
+
+    /*
+     * Envíos del Día tiene que dejar de mentir: el SKU existe. Y tiene que
+     * distinguirlo del que de verdad no existe, porque se arreglan distinto.
+     */
+    await PedidoPlataforma.update(
+      { envioId: 'QA-ENV-TARDE', estadoEnvio: 'pendiente' },
+      { where: { id: pedidoTarde.id } },
+    );
+    const j1 = await envios.delDia(negocio.id, { filtro: 'todos', diasAdelante: 2 });
+    const paqTarde = j1.paquetes.find(
+      (q) => q.ventas.some((vt) => vt.pedidoExterno === 'QA-PACK-TARDE'),
+    );
+    const lineaTarde = paqTarde?.items?.[0];
+    chk('ya no dice que el SKU no está en Stocker', false, lineaTarde?.sinResolver);
+    chk('dice que existe pero no apartó nada', true, lineaTarde?.sinApartar);
+    chk('y lo muestra como el pack que es', true, lineaTarde?.esPack);
+    chk('con lo que hay que poner en la caja', 6, lineaTarde?.componentes?.[0]?.cantidad);
+
+    // Despachar así sería sacar el paquete sin descontar nada: se corta.
+    const despachoCiego = await fallo(() => envios.despachar({
+      pedidoId: pedidoTarde.id, businessId: negocio.id, employeeId: null,
+    }));
+    chk('despachar sin apartar se rechaza', 'SIN_APARTAR', despachoCiego?.codigo);
+    chk('y dice qué hacer', true, /[Rr]eprocesá/.test(despachoCiego?.message || ''));
+    chk('el estante sigue intacto', 20, await enEstante(remera));
+
+    // Reprocesar resuelve la línea y aparta de verdad.
+    const rep = await api('POST', `/api/online/pedidos/${pedidoTarde.id}/reprocesar`);
+    chk('reprocesar responde', 200, rep.status);
+    chk('no queda ninguna línea sin resolver', 0, rep.json?.sinResolver);
+    chk('el pedido pasa a aceptado', 'aceptado', rep.json?.estado);
+    // 2 packs × 3 remeras = 6 apartadas.
+    chk('ahora sí apartó la mercadería', antesDelRescate + 6, await apartado(remera));
+
+    // Reprocesar dos veces no aparta el doble.
+    await api('POST', `/api/online/pedidos/${pedidoTarde.id}/reprocesar`);
+    chk('reprocesar de nuevo no aparta el doble', antesDelRescate + 6, await apartado(remera));
+
+    // Y ahora el despacho sí mueve las prendas.
+    const despTarde = await envios.despachar({
+      pedidoId: pedidoTarde.id, businessId: negocio.id, employeeId: null,
+    });
+    chk('el despacho mueve 6 prendas', 6, despTarde.movidas);
+    chk('y el estante baja', 14, await enEstante(remera));
+
+    await ProductVariant.update({ sku: 'QA-PK-PACK3' }, { where: { id: pack.id } });
+
     tit('13. ARMAR EL PACK DESDE EL PRODUCTO PADRE');
     /*
      * Un pack no es un artículo suelto: es el mismo producto vendido de a N.

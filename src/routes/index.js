@@ -232,6 +232,13 @@ r.post('/envios/:id/despachar', requireAuth, requirePermission('stock', 'editar'
 r.post('/envios/:id/faltante',  requireAuth, requirePermission('stock', 'editar'), enviosCtrl.postFaltante);
 
 r.post('/online/procesar',  requireAuth, requirePermission('ventas', 'editar'), colaCtrl.postProcesar);
+/*
+ * Reintenta las líneas de un pedido cuyo SKU no existía cuando entró.
+ *
+ * Aparta mercadería, así que pide permiso de editar ventas como el resto de la
+ * cola: no es una consulta.
+ */
+r.post('/online/pedidos/:id/reprocesar', requireAuth, requirePermission('ventas', 'editar'), colaCtrl.postReprocesar);
 
 r.get ('/feria/candidatos', requireAuth, requirePermission('stock', 'ver'),    feriaCtrl.getCandidatos);
 r.get ('/feria/productos',  requireAuth, requireAnyPermission(['stock', 'ventas'], 'ver'), feriaCtrl.getProductos);
