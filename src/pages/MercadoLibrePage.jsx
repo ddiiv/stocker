@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import {
-  RefreshCw, Link2, Unlink, AlertCircle, CheckCircle2, ExternalLink,
+  RefreshCw, Link2, Unlink, AlertCircle, CheckCircle2, ExternalLink, Check,
   ArrowUpDown, PackageSearch, Trash2, Plus, Store,
 } from "lucide-react";
 import {
   getMlStatus, getMlAuthUrl, disconnectMl, previewMlSync, runMlSync,
+  getMlLocales, setMlLocales,
   getMlLinks, saveMlLink, deleteMlLink,
 } from "../services/mercadolibreService";
 import { PageHeader, Card } from "../components/ui/Layout";
@@ -18,6 +19,25 @@ export default function MercadoLibrePage() {
   const [error, setError] = useState("");
   const [aviso, setAviso] = useState("");
   const [preview, setPreview] = useState(null);
+
+  /*
+   * Qué publicaciones sincronizar.
+   *
+   * Un catálogo de doscientas publicaciones no se sincroniza entero cada vez:
+   * casi siempre lo que cambió son diez. Barrer las doscientas es un minuto de
+   * espera y doscientas peticiones contra el límite de la API para escribir el
+   * mismo número que ya estaba.
+   *
+   * `null` es "todas": es lo que se quiere la primera vez y después de un
+   * ingreso grande, y evita que quien no toca nada tenga que tildar doscientas
+   * casillas para hacer lo de siempre.
+   */
+  const [elegidos, setElegidos] = useState(null);
+
+  // Los locales que abastecen online. Se editan acá además de en Empleados →
+  // Locales: es donde se los mira cuando el número publicado no cierra.
+  const [locales, setLocales] = useState([]);
+  const [guardandoLocales, setGuardandoLocales] = useState(false);
   const [trabajando, setTrabajando] = useState(false);
   const [links, setLinks] = useState([]);
   const [linkModal, setLinkModal] = useState(false);
@@ -26,9 +46,14 @@ export default function MercadoLibrePage() {
     setLoading(true);
     setError("");
     try {
-      const [s, l] = await Promise.all([getMlStatus(), getMlLinks().catch(() => [])]);
+      const [s, l, loc] = await Promise.all([
+        getMlStatus(),
+        getMlLinks().catch(() => []),
+        getMlLocales().catch(() => []),
+      ]);
       setStatus(s);
       setLinks(l);
+      setLocales(loc);
     } catch (e) {
       setError(e.response?.data?.message || "No se pudo consultar el estado de MercadoLibre");
     } finally {
@@ -71,17 +96,58 @@ export default function MercadoLibrePage() {
     setTrabajando(true); setError(""); setAviso("");
     try {
       setPreview(await previewMlSync());
+      // La lista de pendientes es otra: una selección vieja apuntaría a SKU que
+      // ya no tienen nada que cambiar.
+      setElegidos(null);
     } catch (e) {
       setError(e.response?.data?.message || "Error al consultar las publicaciones");
     } finally { setTrabajando(false); }
   }
 
+  /*
+   * Los que se van a mandar: los tildados, o todos los que tienen algo que
+   * cambiar si no se tildó ninguno.
+   */
+  const pendientesDeCambio = (preview?.resultados || [])
+    .filter((r) => r.estado === "pendiente" || r.estado === "error");
+  const aSincronizar = elegidos === null
+    ? pendientesDeCambio.map((r) => r.sku)
+    : pendientesDeCambio.filter((r) => elegidos.has(r.sku)).map((r) => r.sku);
+
+  function alternar(sku) {
+    setElegidos((prev) => {
+      // Del "todos" implícito se pasa a una selección explícita con todos
+      // menos el que se acaba de destildar: es lo que la persona espera.
+      const base = prev === null
+        ? new Set(pendientesDeCambio.map((r) => r.sku))
+        : new Set(prev);
+      if (base.has(sku)) base.delete(sku); else base.add(sku);
+      return base;
+    });
+  }
+
+  async function guardarLocales(ids) {
+    setGuardandoLocales(true); setError(""); setAviso("");
+    try {
+      const r = await setMlLocales(ids);
+      setLocales(r.locales);
+      // La cuenta cambia: lo que se publica es la suma de los elegidos.
+      setPreview(null);
+      setAviso("Locales actualizados. Volvé a previsualizar para ver los números nuevos.");
+    } catch (e) {
+      setError(e.response?.data?.message || "No se pudieron guardar los locales.");
+    } finally { setGuardandoLocales(false); }
+  }
+
   async function sincronizar() {
-    const pendientes = preview?.resumen?.pendientes ?? 0;
-    if (pendientes && !confirm(`Se va a actualizar el stock de ${pendientes} publicación(es) en MercadoLibre. ¿Continuar?`)) return;
+    if (!aSincronizar.length) {
+      setError("No hay ninguna publicación seleccionada con cambios para mandar.");
+      return;
+    }
+    if (!confirm(`Se va a actualizar el stock de ${aSincronizar.length} publicación(es) en MercadoLibre. ¿Continuar?`)) return;
     setTrabajando(true); setError(""); setAviso("");
     try {
-      const r = await runMlSync();
+      const r = await runMlSync(aSincronizar);
       setPreview(r);
       setAviso(`Sincronización lista: ${r.resumen.actualizados} actualizadas, ${r.resumen.sinCambios} sin cambios${r.resumen.errores ? `, ${r.resumen.errores} con error` : ""}.`);
       cargar();
@@ -172,8 +238,17 @@ export default function MercadoLibrePage() {
               <button className="btn-ghost" onClick={verCambios} disabled={trabajando}>
                 <PackageSearch size={15} /> {trabajando ? "Consultando…" : "Ver qué cambiaría"}
               </button>
-              <button className="btn-accent" onClick={sincronizar} disabled={trabajando}>
-                <ArrowUpDown size={15} /> Sincronizar stock ahora
+              <button className="btn-accent" onClick={sincronizar}
+                disabled={trabajando || (preview !== null && aSincronizar.length === 0)}>
+                <ArrowUpDown size={15} />
+                {/*
+                  * El botón dice cuántas va a mandar. "Sincronizar ahora" sobre
+                  * un catálogo de doscientas no dice si son doscientas o tres,
+                  * y esa diferencia es un minuto de espera o dos segundos.
+                  */}
+                {preview
+                  ? `Sincronizar ${aSincronizar.length} publicación(es)`
+                  : "Sincronizar stock ahora"}
               </button>
               <button className="btn-ghost ml-auto" onClick={cargar}><RefreshCw size={15} /> Actualizar</button>
             </div>
@@ -188,6 +263,52 @@ export default function MercadoLibrePage() {
               {/* De dónde sale lo que se publica. Sin esto, un número que no
                   coincide con el catálogo parece un error de la integración
                   cuando en realidad es stock que está en otro lado. */}
+              {/*
+                * Qué locales abastecen lo que se publica.
+                *
+                * Va acá y no sólo en Empleados → Locales porque es donde se lo
+                * mira: quien está viendo un número que no entiende está en esta
+                * pantalla, y mandarlo a otra sección a buscar un tilde es donde
+                * se pierde la mitad de la gente.
+                */}
+              {locales.length > 0 && (
+                <Card className="mb-4">
+                  <p className="font-display text-sm font-semibold text-ink-950">
+                    De qué locales sale el stock que se publica
+                  </p>
+                  <p className="mt-0.5 text-xs text-ink-500">
+                    Se publica la suma de los tildados, y de ahí se descuentan las ventas online.
+                    El depósito no aparece: lo que está ahí hay que moverlo antes de poder despachar.
+                  </p>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {locales.map((l) => {
+                      const activo = Boolean(l.abasteceOnline);
+                      return (
+                        <button
+                          key={l.id}
+                          type="button"
+                          disabled={guardandoLocales}
+                          onClick={() => {
+                            const ids = locales
+                              .filter((x) => (x.id === l.id ? !activo : x.abasteceOnline))
+                              .map((x) => x.id);
+                            guardarLocales(ids);
+                          }}
+                          className={`flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm transition-colors ${
+                            activo
+                              ? "border-teal-400 bg-teal-50 text-teal-600"
+                              : "border-line bg-paper-50 text-ink-600 hover:border-ink-300"
+                          }`}
+                        >
+                          {activo ? <Check size={14} /> : <span className="h-3.5 w-3.5 rounded border border-line" />}
+                          {l.nombre}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </Card>
+              )}
+
               {preview.lugares?.length > 0 && (
                 <p className="mb-4 rounded-md bg-paper-100 px-3 py-2 text-xs text-ink-600">
                   <Store size={13} className="mr-1 inline" />
@@ -214,6 +335,19 @@ export default function MercadoLibrePage() {
                     <table className="w-full min-w-[720px] text-sm">
                       <thead>
                         <tr className="border-b border-line bg-paper-100 text-left text-xs uppercase tracking-wide text-ink-600">
+                          {/*
+                            * La casilla de "todos" sólo alcanza a lo que tiene
+                            * algo que cambiar. Tildar lo que ya coincide no
+                            * haría nada y daría a entender que sí.
+                            */}
+                          <th className="w-10 px-4 py-2">
+                            <input
+                              type="checkbox"
+                              aria-label="Seleccionar todas las que tienen cambios"
+                              checked={elegidos === null || (pendientesDeCambio.length > 0 && aSincronizar.length === pendientesDeCambio.length)}
+                              onChange={(e) => setElegidos(e.target.checked ? null : new Set())}
+                            />
+                          </th>
                           <th className="px-4 py-2 font-medium">SKU</th>
                           <th className="px-4 py-2 font-medium">Producto</th>
                           <th className="px-4 py-2 font-medium">Publicación</th>
@@ -225,6 +359,23 @@ export default function MercadoLibrePage() {
                       <tbody>
                         {preview.resultados.map((r) => (
                           <tr key={r.sku} className="border-b border-line last:border-0">
+                            <td className="px-4 py-2">
+                              {/*
+                                * Sin casilla en lo que ya coincide: no hay nada
+                                * que mandar, y una casilla que no hace nada es
+                                * peor que ninguna.
+                                */}
+                              {(r.estado === "pendiente" || r.estado === "error") ? (
+                                <input
+                                  type="checkbox"
+                                  aria-label={`Sincronizar ${r.sku}`}
+                                  checked={elegidos === null || elegidos.has(r.sku)}
+                                  onChange={() => alternar(r.sku)}
+                                />
+                              ) : (
+                                <span className="block h-3.5 w-3.5" />
+                              )}
+                            </td>
                             <td className="px-4 py-2"><span className="tag-chip">{r.sku}</span></td>
                             <td className="px-4 py-2 text-ink-900">{r.titulo}</td>
                             <td className="px-4 py-2">

@@ -26,6 +26,23 @@ export async function runMlSync(skus) {
   return data;
 }
 
+/*
+ * Qué locales abastecen las ventas online.
+ *
+ * Es la misma marca que se ve en Empleados → Locales, no una copia: se
+ * configura desde acá porque es donde se la mira cuando el número que ML
+ * publica no cierra.
+ */
+export async function getMlLocales() {
+  const { data } = await http.get("/mercadolibre/locales");
+  return data;
+}
+
+export async function setMlLocales(locationIds) {
+  const { data } = await http.put("/mercadolibre/locales", { locationIds });
+  return data;
+}
+
 export async function getMlLinks() {
   const { data } = await http.get("/mercadolibre/links");
   return data;
