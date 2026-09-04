@@ -66,6 +66,56 @@ function limitesDelDia(fecha) {
   return { desde, hasta };
 }
 
+/*
+ * ── Los estados que se ven, y de dónde salen ──────────────────────
+ *
+ * Son dos preguntas distintas y hacen falta las dos:
+ *
+ *   · `estadoEnvio` es lo que hizo el DEPÓSITO: si el paquete se armó y salió.
+ *     Lo escribimos nosotros y es lo único que mueve stock.
+ *   · `estadoEnvioMl` es lo que pasó DESPUÉS: si el transportista lo levantó,
+ *     si llegó, si el comprador lo canceló. Lo informa Mercado Libre.
+ *
+ * Con uno solo no se puede contestar "¿qué me falta despachar?" y "¿qué está en
+ * camino?" al mismo tiempo, que son las dos preguntas de la jornada.
+ *
+ * Los filtros de esta lista mezclan los dos a propósito, porque quien mira la
+ * pantalla no piensa en dos campos: piensa en "para enviar", "en camino",
+ * "entregado", "cancelado".
+ */
+const FILTROS = {
+  // Lo que todavía hay que armar y sacar. Es la vista por defecto.
+  para_enviar: (p) => p.estadoEnvio !== 'despachado' && !esCancelado(p) && p.estadoEnvio !== 'con_faltante',
+  // Salió de acá y todavía no llegó.
+  en_camino:   (p) => p.estadoEnvio === 'despachado' && !esEntregado(p) && !esCancelado(p),
+  entregado:   (p) => esEntregado(p),
+  cancelado:   (p) => esCancelado(p),
+  // Lo que el depósito no encontró: no mueve stock y hay que resolverlo.
+  con_faltante: (p) => p.estadoEnvio === 'con_faltante',
+  todos: () => true,
+};
+
+/*
+ * Los estados de ML se agrupan en los tres que le importan a quien mira.
+ *
+ * ML tiene una decena —`pending`, `handling`, `ready_to_ship`, `shipped`,
+ * `delivered`, `not_delivered`, `cancelled`…— y mostrarlos crudos obliga a
+ * traducir mentalmente cada vez. Acá se contesta lo único que se pregunta:
+ * ¿llegó?, ¿se canceló?
+ */
+const esEntregado = (p) => p.estadoEnvioMl === 'delivered';
+const esCancelado = (p) => ['cancelled', 'not_delivered'].includes(p.estadoEnvioMl);
+
+/** Cuántos días hacia adelante mira la vista. 0 = sólo hoy. */
+function limitesDelRango(fecha, diasAdelante) {
+  const { desde } = limitesDelDia(fecha);
+  const dias = Math.max(0, Math.min(Number(diasAdelante) || 0, 30));
+  const hasta = new Date(desde);
+  hasta.setDate(hasta.getDate() + dias);
+  hasta.setHours(23, 59, 59, 999);
+  return { desde, hasta, dias };
+}
+
 /**
  * Los envíos de la jornada, con su consolidado de picking.
  *
@@ -77,9 +127,10 @@ function limitesDelDia(fecha) {
  * @param {boolean} [opts.incluirDespachados] para ver la jornada completa al cierre.
  */
 async function delDia(businessId, {
-  fecha = null, locationId = null, envioTipo = null, incluirDespachados = false,
+  fecha = null, locationId = null, envioTipo = null,
+  incluirDespachados = false, diasAdelante = 0, filtro = null,
 } = {}) {
-  const { desde, hasta } = limitesDelDia(fecha);
+  const { desde, hasta, dias } = limitesDelRango(fecha, diasAdelante);
 
   /*
    * El corte es por `despacharAntesDe` cuando la plataforma lo dijo, y por
@@ -108,11 +159,20 @@ async function delDia(businessId, {
     [Op.and]: [delDiaOEntradoHoy],
   };
   if (envioTipo) where.envioTipo = String(envioTipo);
-  if (!incluirDespachados) {
-    // `estadoEnvio` en null es "pendiente": no se le escribe un estado a cada
-    // pedido que entra sólo para decir que todavía no pasó nada.
-    where[Op.and].push({ estadoEnvio: { [Op.or]: [null, 'pendiente', 'con_faltante'] } });
-  }
+
+  /*
+   * El filtro por estado se aplica en memoria y no en el `where`.
+   *
+   * Mezcla dos campos —el nuestro y el de ML— con reglas que no son un simple
+   * igual: "en camino" es despachado por nosotros Y todavía no entregado por
+   * ML. Escribirlo en SQL serían condiciones anidadas repetidas en cada
+   * consulta, y el conjunto ya viene acotado a un rango de días y a un negocio:
+   * son decenas de filas, no miles.
+   *
+   * `incluirDespachados` se mantiene por compatibilidad: es el mismo pedido que
+   * `filtro: 'todos'` y así una pantalla vieja sigue andando.
+   */
+  const cual = filtro && FILTROS[filtro] ? filtro : (incluirDespachados ? 'todos' : 'para_enviar');
 
   const pedidos = await PedidoPlataforma.findAll({
     where,
@@ -128,7 +188,7 @@ async function delDia(businessId, {
   });
 
   if (!pedidos.length) {
-    return { fecha: desde, pedidos: [], consolidado: [], resumen: vacio() };
+    return { fecha: desde, hasta, dias, filtro: cual, pedidos: [], consolidado: [], resumen: vacio() };
   }
 
   /*
@@ -172,8 +232,24 @@ async function delDia(businessId, {
    * muestra el pedido entero y se marca qué línea sale de dónde — mandar medio
    * paquete porque la otra mitad está en la otra sucursal es peor que verlo.
    */
+  /*
+   * Se cuentan TODOS antes de filtrar.
+   *
+   * Las pestañas tienen que decir cuántos hay en cada estado aunque se esté
+   * mirando otro: una pestaña "Cancelados" sin número al lado obliga a entrar
+   * para descubrir que está vacía.
+   */
+  const porEstado = { para_enviar: 0, en_camino: 0, entregado: 0, cancelado: 0, con_faltante: 0, todos: 0 };
+  for (const p of pedidos) {
+    porEstado.todos += 1;
+    for (const clave of ['para_enviar', 'en_camino', 'entregado', 'cancelado', 'con_faltante']) {
+      if (FILTROS[clave](p)) porEstado[clave] += 1;
+    }
+  }
+
   const armados = [];
   for (const p of pedidos) {
+    if (!FILTROS[cual](p)) continue;
     const suyos = itemsPorPedido.get(p.id) || [];
     if (locationId && !suyos.some((i) => i.locationId === Number(locationId))) continue;
 
@@ -185,6 +261,13 @@ async function delDia(businessId, {
       envioTipo: p.envioTipo,
       despacharAntesDe: p.despacharAntesDe,
       estadoEnvio: p.estadoEnvio || 'pendiente',
+      // El estado que informa ML, y la lectura en una palabra: la pantalla no
+      // tiene por qué saber que `not_delivered` también es una cancelación.
+      estadoEnvioMl: p.estadoEnvioMl || null,
+      situacion: esCancelado(p) ? 'cancelado'
+        : esEntregado(p) ? 'entregado'
+          : p.estadoEnvio === 'despachado' ? 'en_camino'
+            : p.estadoEnvio === 'con_faltante' ? 'con_faltante' : 'para_enviar',
       estado: p.estado,
       motivo: p.motivo,
       comprador: p.compradorNombre,
@@ -253,6 +336,11 @@ async function delDia(businessId, {
 
   return {
     fecha: desde,
+    hasta,
+    dias,
+    filtro: cual,
+    // Cuántos hay en cada estado, para poder numerar las pestañas.
+    porEstado,
     pedidos: armados,
     consolidado,
     resumen: {

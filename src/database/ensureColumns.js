@@ -108,6 +108,9 @@ const COLUMNAS_ESPERADAS = {
     envioTipo:        { type: DataTypes.STRING(30), allowNull: true },
     despacharAntesDe: { type: DataTypes.DATE, allowNull: true },
     estadoEnvio:      { type: DataTypes.STRING(20), allowNull: true },
+    // El estado que informa ML: en camino, entregado, cancelado. Ver el modelo:
+    // es otra pregunta que la del depósito.
+    estadoEnvioMl:    { type: DataTypes.STRING(30), allowNull: true },
     despachadoEn:     { type: DataTypes.DATE, allowNull: true },
     despachadoPorEmployeeId: { type: DataTypes.INTEGER, allowNull: true },
   },

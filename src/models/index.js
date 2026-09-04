@@ -411,6 +411,17 @@ const PedidoPlataforma = db.define('PedidoPlataforma', {
    * recuento, no desde la pantalla de picking.
    */
   estadoEnvio:    { type: DataTypes.STRING(20), allowNull: true },
+  /*
+   * En qué anda el envío según Mercado Libre.
+   *
+   * Es distinto de `estadoEnvio`, y los dos hacen falta. El nuestro dice qué
+   * hizo el depósito —si el paquete se armó y salió—; éste dice qué pasó
+   * después: si el transportista lo levantó, si llegó, si el comprador lo
+   * canceló. Con uno solo no se puede contestar "¿qué me falta despachar?" y
+   * "¿qué está en camino?" al mismo tiempo, que son las dos preguntas de la
+   * jornada.
+   */
+  estadoEnvioMl:  { type: DataTypes.STRING(30), allowNull: true },
   despachadoEn:   { type: DataTypes.DATE, allowNull: true },
   despachadoPorEmployeeId: { type: DataTypes.INTEGER, allowNull: true },
   compradorNombre:    { type: DataTypes.STRING(150), allowNull: true },

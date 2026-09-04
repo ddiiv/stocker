@@ -223,9 +223,19 @@ function sesion() {
     const pdf = await api('GET', '/api/envios/del-dia/pdf');
     chk('responde 200', 200, pdf.status);
     chk('y es un PDF', '%PDF', pdf.buffer?.slice(0, 4).toString());
+    /*
+     * La hoja imprime lo que hay que preparar, no la jornada entera: es la
+     * herramienta con la que se camina el depósito, y un entregado de ayer en
+     * el medio es ruido que se lee parado y con las manos ocupadas.
+     */
     chk('con la cuenta de paquetes en la cabecera', true,
-      Number(pdf.headers.get('x-paquetes')) >= 2);
+      Number(pdf.headers.get('x-paquetes')) >= 1);
     chk('y de unidades', true, Number(pdf.headers.get('x-unidades')) >= 1);
+
+    // Y respeta el filtro: pidiendo todo, trae más que pidiendo lo pendiente.
+    const pdfTodo = await api('GET', '/api/envios/del-dia/pdf?filtro=todos');
+    chk('el PDF respeta el filtro', true,
+      Number(pdfTodo.headers.get('x-paquetes')) >= Number(pdf.headers.get('x-paquetes')));
 
     tit('9. LOS ENVÍOS DE OTRO NEGOCIO NO SE TOCAN');
     const otroNegocio = await Business.findOne({ where: { id: { [Op.ne]: negocio.id } } });
@@ -277,6 +287,71 @@ function sesion() {
     chk('el despacho se frena', 409, err.status);
     chk('con su código', 'RESERVA_PERDIDA', err.json?.codigo);
     chk('y sin haber movido el estante', estanteB, await estante(vB));
+
+    tit('11. LOS FILTROS DEL CIRCUITO');
+    /*
+     * Quien mira esta pantalla no pregunta "¿incluyo los despachados?":
+     * pregunta qué le falta enviar, qué está en camino, qué se canceló. Son
+     * estados de un circuito y mezclan dos campos —el del depósito y el que
+     * informa ML—, y por eso se resuelven acá y no en la pantalla.
+     */
+    const jFiltros = await api('GET', '/api/envios/del-dia?filtro=todos');
+    chk('el filtro "todos" trae la jornada entera', true,
+      (jFiltros.json?.pedidos || []).length >= 3);
+    chk('y viene la cuenta por estado', true,
+      typeof jFiltros.json?.porEstado?.para_enviar === 'number');
+
+    const paraEnviar = await api('GET', '/api/envios/del-dia?filtro=para_enviar');
+    chk('"para enviar" no trae los despachados', false,
+      (paraEnviar.json?.pedidos || []).some((p) => p.situacion !== 'para_enviar'));
+
+    const enCamino = await api('GET', '/api/envios/del-dia?filtro=en_camino');
+    chk('"en camino" trae el que despachamos', true,
+      (enCamino.json?.pedidos || []).some((p) => p.id === idP1));
+
+    const conFaltante = await api('GET', '/api/envios/del-dia?filtro=con_faltante');
+    chk('"con faltante" trae el que no se encontró', true,
+      (conFaltante.json?.pedidos || []).some((p) => p.id === idP2));
+
+    /*
+     * Lo que informa ML manda sobre lo nuestro: un paquete que despachamos y
+     * que ML dice entregado ya no está "en camino".
+     */
+    await PedidoPlataforma.update({ estadoEnvioMl: 'delivered' }, { where: { id: idP1 } });
+    const entregados = await api('GET', '/api/envios/del-dia?filtro=entregado');
+    chk('un despachado que ML da por entregado pasa a "entregado"', true,
+      (entregados.json?.pedidos || []).some((p) => p.id === idP1));
+    const enCamino2 = await api('GET', '/api/envios/del-dia?filtro=en_camino');
+    chk('y sale de "en camino"', false,
+      (enCamino2.json?.pedidos || []).some((p) => p.id === idP1));
+
+    await PedidoPlataforma.update({ estadoEnvioMl: 'cancelled' }, { where: { id: idP2 } });
+    const cancelados = await api('GET', '/api/envios/del-dia?filtro=cancelado');
+    chk('un cancelado en ML aparece como cancelado', true,
+      (cancelados.json?.pedidos || []).some((p) => p.id === idP2));
+
+    tit('12. EL ALCANCE: HOY Y LOS PRÓXIMOS DÍAS');
+    /*
+     * Un pedido con corte mañana no es de otro estado, es de otro día. Sin
+     * alcance, prepararlo con tiempo es imposible: no se ve hasta que ya apura.
+     */
+    const manana = new Date(Date.now() + 26 * 3600 * 1000);
+    await PedidoPlataforma.update(
+      { despacharAntesDe: manana },
+      { where: { pedidoExterno: 'QA-ENV-3' } },
+    );
+    const soloHoy = await api('GET', '/api/envios/del-dia?filtro=todos');
+    chk('con alcance de hoy, el de mañana no aparece', false,
+      (soloHoy.json?.pedidos || []).some((p) => p.pedidoExterno === 'QA-ENV-3'));
+
+    const conManana = await api('GET', '/api/envios/del-dia?filtro=todos&diasAdelante=7');
+    chk('mirando la semana, sí', true,
+      (conManana.json?.pedidos || []).some((p) => p.pedidoExterno === 'QA-ENV-3'));
+    chk('y el alcance viene en la respuesta', 7, conManana.json?.dias);
+
+    // El tope existe para que nadie pida el año entero y barra la tabla.
+    const exagerado = await api('GET', '/api/envios/del-dia?filtro=todos&diasAdelante=9999');
+    chk('un alcance disparatado se acota a 30 días', 30, exagerado.json?.dias);
 
   } finally {
     tit('Limpieza');

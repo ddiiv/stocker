@@ -170,7 +170,22 @@ async function traerEnvio(cuenta, envioId) {
  */
 async function procesarNotificacion({ topic, resource, userId }) {
   const tema = String(topic || '');
-  if (!TOPICOS.includes(tema)) return { ignorado: 'tópico que no usamos', tema };
+  if (!TOPICOS.includes(tema)) {
+    /*
+     * El mensaje dice qué falta, no sólo que sobra.
+     *
+     * Recibir `items` o `stock-locations` y ninguna de pedidos significa una
+     * cosa muy concreta: la URL de notificaciones está bien —ML nos está
+     * llegando— pero en el panel se tildaron los tópicos equivocados. Un log
+     * que sólo dice "tópico que no usamos" deja a quien lo lee sin saber que
+     * el problema es de dos casillas, y buscándolo en el código.
+     */
+    return {
+      ignorado: `tópico que no usamos. Para que entren los pedidos hay que tildar `
+        + `"orders_v2" y "shipments" en el panel de la aplicación de Mercado Libre`,
+      tema,
+    };
+  }
 
   const id = idDeRecurso(resource);
   if (!id) return { ignorado: 'el recurso no trae id', tema };
@@ -220,6 +235,7 @@ async function ingresarOrden(cuenta, ordenId) {
         envioId: envio.envioId,
         envioTipo: envio.envioTipo,
         despacharAntesDe: envio.despacharAntesDe,
+        estadoEnvioMl: envio.estadoMl,
       });
     } catch (e) {
       // Que no se pueda leer el envío no invalida la venta: el pedido ya está
@@ -264,6 +280,7 @@ async function actualizarEnvio(cuenta, envioId) {
     envioId: envio.envioId,
     envioTipo: envio.envioTipo,
     despacharAntesDe: envio.despacharAntesDe,
+    estadoEnvioMl: envio.estadoMl,
   });
 
   log.info('ml-pedidos', 'envío actualizado', {

@@ -22,6 +22,9 @@ const getDelDia = async (req, res, next) => {
       locationId: req.query.locationId ? Number(req.query.locationId) : null,
       envioTipo: req.query.envioTipo || null,
       incluirDespachados: req.query.incluirDespachados === '1',
+      // Cuántos días hacia adelante: 0 es sólo hoy. El servicio lo acota a 30.
+      diasAdelante: req.query.diasAdelante ? Number(req.query.diasAdelante) : 0,
+      filtro: req.query.filtro || null,
     });
     res.json(jornada);
   } catch (e) { next(e); }
@@ -41,6 +44,9 @@ const getPdf = async (req, res, next) => {
       locationId: req.query.locationId ? Number(req.query.locationId) : null,
       envioTipo: req.query.envioTipo || null,
       incluirDespachados: req.query.incluirDespachados === '1',
+      // Cuántos días hacia adelante: 0 es sólo hoy. El servicio lo acota a 30.
+      diasAdelante: req.query.diasAdelante ? Number(req.query.diasAdelante) : 0,
+      filtro: req.query.filtro || null,
     });
 
     const negocio = await Business.findByPk(req.auth.businessId, {
