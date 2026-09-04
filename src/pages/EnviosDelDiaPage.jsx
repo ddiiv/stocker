@@ -99,6 +99,37 @@ function Estado({ situacion }) {
   return <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${e.clase}`}>{e.texto}</span>;
 }
 
+/*
+ * El artículo, dicho entero: modelo y los dos atributos CON su nombre.
+ *
+ * Sólo los valores —"Negro · M"— alcanzan cuando quien arma conoce el producto
+ * de memoria, y no alcanzan cuando no. "38" puede ser un talle o un color de
+ * una carta numerada, y con dos ejes parecidos —"S / M" sobre Talle y Largo—
+ * no hay forma de saber cuál es cuál. Con la caja abierta en la mesa eso es la
+ * diferencia entre agarrar la prenda correcta y volver al estante.
+ */
+function Articulo({ item }) {
+  const ejes = [
+    [item.variante1Nombre, item.variante1Valor],
+    [item.variante2Nombre, item.variante2Valor],
+  ].filter(([, valor]) => valor);
+
+  return (
+    <>
+      <span className="text-ink-900">{item.titulo || item.sku}</span>
+      {item.modelo && <span className="text-ink-600"> · modelo {item.modelo}</span>}
+      {ejes.length > 0 ? (
+        <span className="text-ink-600">
+          {" · "}
+          {ejes.map(([nombre, valor]) => (nombre ? `${nombre}: ${valor}` : valor)).join(" · ")}
+        </span>
+      ) : (
+        item.variante && <span className="text-ink-600"> · {item.variante}</span>
+      )}
+    </>
+  );
+}
+
 export default function EnviosDelDiaPage() {
   const { user } = useAuth();
   const puedeDespachar = canEdit(user, "stock");
@@ -359,9 +390,8 @@ export default function EnviosDelDiaPage() {
                       {l.unidades}
                     </span>
                     <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm text-ink-900">
-                        {l.titulo || l.sku}
-                        {l.variante && <span className="text-ink-600"> · {l.variante}</span>}
+                      <p className="text-sm text-ink-900">
+                        <Articulo item={l} />
                       </p>
                       <p className="mt-0.5 flex flex-wrap items-center gap-x-2 text-[11px] text-ink-500">
                         <span className="tag-chip">{l.sku}</span>
@@ -451,11 +481,15 @@ export default function EnviosDelDiaPage() {
                           {i.cantidad}×
                         </span>
                         <span className="min-w-0 flex-1">
-                          <span className="text-ink-900">{i.titulo || i.sku}</span>
-                          {i.variante && <span className="text-ink-600"> · {i.variante}</span>}
+                          <Articulo item={i} />
+                          {/*
+                            * Se dice que es un pack Y de cuántas unidades. "Pack"
+                            * a secas no le dice a quien arma cuántas prendas van
+                            * en la caja, que es justo lo que necesita saber.
+                            */}
                           {i.esPack && (
                             <span className="ml-1.5 rounded bg-brass-50 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-brass-700">
-                              Pack
+                              Pack{i.unidadesPorPack ? ` de ${i.unidadesPorPack}` : ""}
                             </span>
                           )}
                           <span className="ml-1.5 text-[11px] text-ink-500">
@@ -477,8 +511,7 @@ export default function EnviosDelDiaPage() {
                             <li key={c.sku} className="flex items-start gap-2 text-xs text-ink-600">
                               <span className="w-6 shrink-0 text-right font-medium">{c.cantidad}×</span>
                               <span className="min-w-0 flex-1">
-                                {c.titulo || c.sku}
-                                {c.variante && <span> · {c.variante}</span>}
+                                <Articulo item={c} />
                                 <span className="ml-1.5 text-[11px] text-ink-400">{c.sku}</span>
                               </span>
                             </li>
