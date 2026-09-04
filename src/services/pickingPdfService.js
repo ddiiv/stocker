@@ -39,8 +39,17 @@ const fechaLarga = (d) => new Intl.DateTimeFormat('es-AR', {
   weekday: 'long', day: '2-digit', month: 'long', year: 'numeric',
 }).format(new Date(d));
 
+/*
+ * La hora en 24, siempre.
+ *
+ * En 12 horas la lista se lee desordenada aunque esté bien ordenada: "12:14
+ * p. m." arriba de "01:14 p. m." parece un error de orden, y quien mira la hoja
+ * para saber qué apura no tiene por qué resolver esa ambigüedad. Con 12:14 y
+ * 13:14 no hay nada que interpretar.
+ */
 const hora = (d) => (d
-  ? new Intl.DateTimeFormat('es-AR', { hour: '2-digit', minute: '2-digit' }).format(new Date(d))
+  ? new Intl.DateTimeFormat('es-AR', { hour: '2-digit', minute: '2-digit', hour12: false })
+    .format(new Date(d))
   : null);
 
 /*
@@ -146,13 +155,22 @@ async function generarPickingPdf(jornada, { nombreNegocio = 'Stocker', local = n
       y += 14;
     }
 
-    const ancho = casilla(doc, MARGEN + 6, y);
-    doc.font('Helvetica-Bold').fontSize(10).fillColor(COLOR.texto)
-      .text(`${linea.unidades}`, MARGEN + ancho, y - 1, { width: 26, lineBreak: false });
+    /*
+     * Posiciones fijas y no calculadas a partir del ancho de la casilla.
+     *
+     * Con el número pegado al recuadro no se distingue cuál es la casilla que
+     * hay que tildar y cuál el número que hay que contar, que son las dos cosas
+     * que se miran en este renglón.
+     */
+    const X_CANT = MARGEN + 26;
+    const X_NOMBRE = MARGEN + 52;
+    casilla(doc, MARGEN + 6, y);
+    doc.font('Helvetica-Bold').fontSize(11).fillColor(COLOR.texto)
+      .text(`${linea.unidades}`, X_CANT, y - 2, { width: 20, align: 'right', lineBreak: false });
 
     const nombre = `${linea.titulo || linea.sku}${linea.variante ? ` · ${linea.variante}` : ''}`;
-    doc.font('Helvetica').fontSize(9).fillColor(COLOR.texto)
-      .text(nombre, MARGEN + ancho + 30, y - 1, { width: UTIL - ancho - 150, lineBreak: false });
+    doc.font('Helvetica').fontSize(9.5).fillColor(COLOR.texto)
+      .text(nombre, X_NOMBRE, y - 1, { width: UTIL - 200, lineBreak: false });
 
     doc.font('Courier').fontSize(8).fillColor(COLOR.suave)
       .text(linea.sku, MARGEN, y - 1, { width: UTIL - 40, align: 'right' });
@@ -164,11 +182,11 @@ async function generarPickingPdf(jornada, { nombreNegocio = 'Stocker', local = n
       y += 11;
       doc.font('Helvetica-Bold').fontSize(7).fillColor('#a33')
         .text('Este SKU no está en Stocker: no figura el stock ni se descuenta.',
-          MARGEN + ancho + 30, y, { width: UTIL - ancho - 60, lineBreak: false });
+          X_NOMBRE, y, { width: UTIL - 120, lineBreak: false });
     }
 
-    y += 16;
-    doc.moveTo(MARGEN, y - 4).lineTo(ANCHO - MARGEN, y - 4)
+    y += 19;
+    doc.moveTo(MARGEN, y - 5).lineTo(ANCHO - MARGEN, y - 5)
       .lineWidth(0.3).strokeColor(COLOR.linea).stroke();
   }
 

@@ -570,7 +570,12 @@ async function sendReporteProblema({ negocio, quien, email, tipo, asunto, detall
     ['Tipo', tipo || 'problema'],
     ['Pantalla', contexto.pantalla || '—'],
     ['Navegador', contexto.navegador || '—'],
-    ['Cuándo', new Intl.DateTimeFormat('es-AR', { dateStyle: 'short', timeStyle: 'short' }).format(new Date())],
+    ['Cuándo', new Intl.DateTimeFormat('es-AR', {
+      // `timeStyle: 'short'` cae en 12 horas para es-AR: se piden los campos
+      // sueltos para poder forzar el formato de 24.
+      day: '2-digit', month: '2-digit', year: '2-digit',
+      hour: '2-digit', minute: '2-digit', hour12: false,
+    }).format(new Date())],
   ];
 
   const body = `
@@ -626,7 +631,12 @@ async function sendDelegacionArcaPendiente({ negocio, cuit, nombre, ambiente, mo
     ['CUIT a habilitar', `${cuit}${nombre ? ` — ${nombre}` : ''}`],
     ['Ambiente', ambiente],
     ['Qué contestó AFIP', motivo || '—'],
-    ['Cuándo', new Intl.DateTimeFormat('es-AR', { dateStyle: 'short', timeStyle: 'short' }).format(new Date())],
+    ['Cuándo', new Intl.DateTimeFormat('es-AR', {
+      // `timeStyle: 'short'` cae en 12 horas para es-AR: se piden los campos
+      // sueltos para poder forzar el formato de 24.
+      day: '2-digit', month: '2-digit', year: '2-digit',
+      hour: '2-digit', minute: '2-digit', hour12: false,
+    }).format(new Date())],
   ];
 
   /*
