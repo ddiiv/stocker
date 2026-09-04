@@ -36,6 +36,7 @@ const {
   PedidoPlataforma, PedidoPlataformaItem, ProductVariant, Product, BusinessLocation,
 } = require('../models');
 const stockService = require('./stockService');
+const packService = require('./packService');
 const { log } = require('../utils/logger');
 
 const PLATAFORMAS = ['mercadolibre', 'jumpseller'];
@@ -233,9 +234,19 @@ async function procesarUno(pedidoId) {
     const faltantes = [];
     const repartos = [];
     for (const { item, variante } of aDescontar) {
-      const r = await stockService.repartirDescuentoOnline(
-        variante.id, pedido.businessId, item.cantidad, t,
-      );
+      /*
+       * Un pack se reparte por packs enteros, no por unidades.
+       *
+       * Preguntarle a `repartirDescuentoOnline` por un pack daría cero siempre:
+       * un pack no tiene fila en `variant_stocks` porque no lleva stock propio.
+       * Lo que hay de un pack es lo que alcance para armarlo con lo que tiene
+       * adentro, y eso lo sabe packService.
+       */
+      const r = variante.esPack
+        ? await packService.repartirPackOnline(variante.id, pedido.businessId, item.cantidad, t)
+        : await stockService.repartirDescuentoOnline(
+          variante.id, pedido.businessId, item.cantidad, t,
+        );
       if (!r.alcanza) {
         faltantes.push({ sku: item.sku, pide: item.cantidad, falta: r.falta });
       }
@@ -269,9 +280,18 @@ async function procesarUno(pedidoId) {
     const apartadas = [];
     for (const { item, variante, reparto } of repartos) {
       for (const parte of reparto) {
-        const pudo = await stockService.reservar(
-          variante.id, parte.locationId, pedido.businessId, parte.unidades, t,
-        );
+        /*
+         * Apartar un pack es apartar lo que lleva adentro: tres remeras, no un
+         * pack. Todo o nada — media reserva deja mercadería comprometida para
+         * un pack que nunca se va a poder armar.
+         */
+        const pudo = variante.esPack
+          ? await packService.reservarPack(
+            variante.id, parte.locationId, pedido.businessId, parte.unidades, t,
+          )
+          : await stockService.reservar(
+            variante.id, parte.locationId, pedido.businessId, parte.unidades, t,
+          );
         if (!pudo) {
           throw sinStock(
             `Sin stock para despachar. ${item.sku}: se apartó para otro pedido mientras se procesaba éste.`,

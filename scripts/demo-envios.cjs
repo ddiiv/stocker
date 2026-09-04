@@ -54,6 +54,10 @@ const enHoras = (h) => new Date(Date.now() + h * 3600 * 1000);
     }
     await PedidoPlataformaItem.destroy({ where: { pedidoId: pedidos.map((p) => p.id) } });
     await PedidoPlataforma.destroy({ where: { id: pedidos.map((p) => p.id) } });
+    const { ProductVariant: PV2, PackComponente: PC2 } = require('../src/models');
+    const packs = await PV2.findAll({ where: { sku: `${MARCA}PACK3` } });
+    await PC2.destroy({ where: { packVariantId: packs.map((v) => v.id) } });
+    await PV2.destroy({ where: { id: packs.map((v) => v.id) } });
     console.log(`Se borraron ${pedidos.length} pedido(s) de muestra y se soltaron sus reservas.`);
     if (process.argv.includes('--limpiar')) process.exit(0);
   }
@@ -113,6 +117,40 @@ const enHoras = (h) => new Date(Date.now() + h * 3600 * 1000);
       despacharAntesDe: enHoras(m.corte),
     });
     console.log(`  ${m.externo}  ${m.tipo.padEnd(8)} corte en ${m.corte}h  ${pedido.estado}`);
+  }
+
+  /*
+   * Dos cosas que sólo se entienden viéndolas: un pack, que se pide como uno y
+   * se busca como tres, y un envío que junta dos ventas en la misma caja.
+   */
+  const conStockPack = conStock[0];
+  const varPack = variantes.find((v) => v.id === conStockPack.productVariantId);
+  const { ProductVariant: PV, PackComponente } = require('../src/models');
+  await PackComponente.destroy({ where: { packVariantId: (await PV.findAll({ where: { sku: `${MARCA}PACK3` } })).map((v) => v.id) } });
+  await PV.destroy({ where: { sku: `${MARCA}PACK3` } });
+  const pack = await PV.create({
+    productId: varPack.productId, businessId: negocio.id, sku: `${MARCA}PACK3`,
+    variante1Nombre: 'Pack', variante1Valor: '3 unidades', stock: 0, stockMinimo: 0,
+  });
+  await require('../src/services/packService').definirComponentes(pack.id, negocio.id, [
+    { componenteVariantId: varPack.id, cantidad: 3 },
+  ]);
+
+  const conPack = await cola.encolarYProcesar({
+    businessId: negocio.id, plataforma: 'mercadolibre', pedidoExterno: `${MARCA}5`,
+    comprador: { nombre: 'Valeria Sosa' }, items: [{ sku: pack.sku, cantidad: 1 }],
+  });
+  await conPack.pedido.update({ envioId: '4300900', envioTipo: 'flex', despacharAntesDe: enHoras(2) });
+  console.log(`  ${MARCA}5  pack     corte en 2h  ${conPack.pedido.estado}  (1 pack de 3)`);
+
+  // Dos ventas en la MISMA caja, como las junta Mercado Libre.
+  for (const [n, quien] of [['6', 'Nicolás Vera'], ['7', 'Nicolás Vera']]) {
+    const r = await cola.encolarYProcesar({
+      businessId: negocio.id, plataforma: 'mercadolibre', pedidoExterno: `${MARCA}${n}`,
+      comprador: { nombre: quien }, items: [{ sku: sku(1), cantidad: 1 }],
+    });
+    await r.pedido.update({ envioId: '4300950', envioTipo: 'flex', despacharAntesDe: enHoras(3) });
+    console.log(`  ${MARCA}${n}  flex     corte en 3h  ${r.pedido.estado}  (misma caja 4300950)`);
   }
 
   console.log(`\nListo. Entrá a Envíos del día. Para borrarlos:`);

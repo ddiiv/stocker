@@ -97,6 +97,11 @@ const COLUMNAS_ESPERADAS = {
     // Ver el modelo: vacío significa que ninguna la encontró por SKU.
     sincronizadoCon: { type: DataTypes.STRING(120), allowNull: true },
     sincronizadoEn:  { type: DataTypes.DATE, allowNull: true },
+    /*
+     * Si esta variante es un pack. Un pack no lleva stock propio: lo lleva lo
+     * que tiene adentro. Ver el modelo y packService.
+     */
+    esPack: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
   },
   plataforma_pedidos: {
     /*

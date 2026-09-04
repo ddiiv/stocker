@@ -800,6 +800,24 @@ const ProductVariant = db.define('ProductVariant', {
   stock:           { type: DataTypes.INTEGER, defaultValue: 0 },
   stockMinimo:     { type: DataTypes.INTEGER, defaultValue: 5 },
   /*
+   * Un pack no lleva stock propio: lo lleva lo que tiene adentro.
+   *
+   * Un "pack de 3 remeras" es una forma de vender, no mercadería aparte. Las
+   * tres remeras están en el estante una sola vez, y cuando se vende el pack
+   * salen esas tres — no una cuarta cosa llamada pack.
+   *
+   * Por eso el pack ES una variante y no una tabla nueva: la sincronización con
+   * Mercado Libre busca por SKU sobre variantes, la cola de pedidos resuelve
+   * SKU sobre variantes y el picking arma sobre variantes. Con una entidad
+   * aparte habría que enseñarle a los tres caminos que existe otra clase de
+   * cosa vendible, y el día que alguien agregue un cuarto camino se va a
+   * olvidar. Con esta marca, un pack entra por donde ya entra todo.
+   *
+   * Lo que cambia es de dónde sale su stock: no de `variant_stocks` sino de la
+   * cuenta sobre sus componentes. Ver packService.
+   */
+  esPack:          { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
+  /*
    * Con qué plataformas online está sincronizada esta variante.
    *
    * Lista separada por comas: 'mercadolibre', 'mercadolibre,jumpseller', o
@@ -907,6 +925,38 @@ const VariantStock = db.define('VariantStock', {
   indexes: [
     { name: 'uq_variant_stock', unique: true, fields: ['productVariantId', 'locationId'] },
     { name: 'idx_variant_stock_local', fields: ['businessId', 'locationId'] },
+  ],
+});
+
+/* ═══════════════════════════════════════════════════════════════════
+ * Qué lleva un pack
+ *
+ * Una fila por componente: "el pack X lleva 3 de la variante Y". Varias filas
+ * permiten un pack mixto —una remera y un short— que es el caso siguiente
+ * apenas alguien arma el primero.
+ *
+ * Un componente NO puede ser otro pack. Se valida al crearlo: packs anidados
+ * obligan a resolver la cuenta de stock en profundidad, y con un ciclo —A lleva
+ * B, B lleva A— la cuenta no termina nunca. No vale la complejidad para un caso
+ * que nadie pidió.
+ * ═══════════════════════════════════════════════════════════════════ */
+const PackComponente = db.define('PackComponente', {
+  id:               { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
+  businessId:       { type: DataTypes.INTEGER, allowNull: false },
+  // La variante que ES el pack.
+  packVariantId:    { type: DataTypes.INTEGER, allowNull: false },
+  // Lo que el pack lleva adentro.
+  componenteVariantId: { type: DataTypes.INTEGER, allowNull: false },
+  // Cuántas unidades de ese componente entran en UN pack.
+  cantidad:         { type: DataTypes.INTEGER, allowNull: false, defaultValue: 1 },
+}, {
+  tableName: 'pack_componentes',
+  indexes: [
+    // Un componente aparece una sola vez por pack: dos filas del mismo
+    // componente son la misma cantidad escrita en dos lugares, y el día que se
+    // corrija una queda la otra.
+    { name: 'uq_pack_componente', unique: true, fields: ['packVariantId', 'componenteVariantId'] },
+    { name: 'idx_pack_componente_comp', fields: ['componenteVariantId'] },
   ],
 });
 
@@ -1385,6 +1435,10 @@ ClientAccountEntry.belongsTo(Employee, { foreignKey: 'employeeId', as: 'empleado
 Business.hasMany(Product, { foreignKey: 'businessId', as: 'productos', onDelete: 'CASCADE' });
 Product.belongsTo(Business, { foreignKey: 'businessId' });
 
+ProductVariant.hasMany(PackComponente, { foreignKey: 'packVariantId', as: 'componentes', onDelete: 'CASCADE' });
+PackComponente.belongsTo(ProductVariant, { foreignKey: 'packVariantId', as: 'pack' });
+PackComponente.belongsTo(ProductVariant, { foreignKey: 'componenteVariantId', as: 'componente' });
+
 Product.hasMany(ProductVariant, { foreignKey: 'productId', as: 'productVariants', onDelete: 'CASCADE' });
 ProductVariant.belongsTo(Product, { foreignKey: 'productId', as: 'producto' });
 
@@ -1518,6 +1572,8 @@ SubscriptionPayment.belongsTo(Business, { foreignKey: 'businessId' });
 SubscriptionPayment.belongsTo(Plan, { foreignKey: 'planId', as: 'plan', onDelete: 'NO ACTION' });
 
 module.exports = {
+  // Packs: una variante que se vende sola pero descuenta lo que lleva adentro.
+  PackComponente,
   StockIngreso, StockIngresoItem, PedidoReposicion, PedidoReposicionItem,
   db,
   Plan, Subscription, SubscriptionPayment, PlatformAdmin, PlatformSetting, AuthAttempt,

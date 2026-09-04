@@ -34,6 +34,7 @@ const {
   PedidoPlataforma, PedidoPlataformaItem, ProductVariant, Product, BusinessLocation,
 } = require('../models');
 const stockService = require('./stockService');
+const packService = require('./packService');
 const { log } = require('../utils/logger');
 
 const error = (mensaje, status = 400, extra = {}) =>
@@ -188,7 +189,7 @@ async function delDia(businessId, {
   });
 
   if (!pedidos.length) {
-    return { fecha: desde, hasta, dias, filtro: cual, pedidos: [], consolidado: [], resumen: vacio() };
+    return { fecha: desde, hasta, dias, filtro: cual, pedidos: [], paquetes: [], consolidado: [], resumen: vacio() };
   }
 
   /*
@@ -205,12 +206,38 @@ async function delDia(businessId, {
   const variantes = idsVariante.length
     ? await ProductVariant.findAll({
       where: { id: idsVariante },
-      attributes: ['id', 'sku', 'codigoBarras', 'variante1Nombre', 'variante1Valor',
+      attributes: ['id', 'sku', 'codigoBarras', 'esPack', 'variante1Nombre', 'variante1Valor',
         'variante2Nombre', 'variante2Valor'],
       include: [{ model: Product, as: 'producto', attributes: ['id', 'titulo', 'skuAgrupador'] }],
     })
     : [];
   const porVariante = new Map(variantes.map((v) => [v.id, v]));
+
+  /*
+   * ── Un pack se pide como uno y se busca como tres ───────────────
+   *
+   * El comprador pidió "1 pack de 3 remeras". Quien va al estante no busca un
+   * pack: busca tres remeras negras talle M. Mostrar la línea del pack y nada
+   * más deja al pickeador dando vueltas por un artículo que no existe en
+   * ninguna percha.
+   *
+   * Por eso cada línea de pack viene con lo que lleva adentro, y las cantidades
+   * ya multiplicadas: 2 packs de 3 remeras son 6 remeras, no "2 × 3".
+   *
+   * Las dos consultas se hacen para todos los packs de la jornada a la vez.
+   */
+  const idsPacks = variantes.filter((v) => v.esPack).map((v) => v.id);
+  const composiciones = idsPacks.length ? await packService.componentesDe(idsPacks) : new Map();
+  const idsComponentes = [...new Set([...composiciones.values()].flat()
+    .map((c) => c.componenteVariantId))];
+  const variantesComponente = idsComponentes.length
+    ? await ProductVariant.findAll({
+      where: { id: idsComponentes },
+      attributes: ['id', 'sku', 'codigoBarras', 'variante1Valor', 'variante2Valor'],
+      include: [{ model: Product, as: 'producto', attributes: ['titulo'] }],
+    })
+    : [];
+  const porComponente = new Map(variantesComponente.map((v) => [v.id, v]));
 
   const idsLocal = [...new Set(items.map((i) => i.locationId).filter(Boolean))];
   const locales = idsLocal.length
@@ -254,6 +281,20 @@ async function delDia(businessId, {
     if (locationId && !suyos.some((i) => i.locationId === Number(locationId))) continue;
 
     armados.push({
+      /*
+       * La clave con la que se agrupa: el número de ENVÍO.
+       *
+       * Mercado Libre junta varias ventas del mismo comprador en un solo
+       * paquete. Agrupando por venta, el depósito prepararía tres bultos donde
+       * en realidad va uno: tres etiquetas, tres cajas y un comprador que
+       * recibe su compra partida en pedazos.
+       *
+       * Sin número de envío —una plataforma que no lo manda, o una venta cuyo
+       * envío todavía no llegó— cada venta es su propio paquete. Es lo correcto
+       * mientras no se sepa lo contrario, y se corrige solo cuando llega la
+       * notificación del envío.
+       */
+      claveEnvio: p.envioId ? `envio:${p.envioId}` : `pedido:${p.id}`,
       id: p.id,
       plataforma: p.plataforma,
       pedidoExterno: p.pedidoExterno,
@@ -274,12 +315,33 @@ async function delDia(businessId, {
       recibidoEn: p.recibidoEn,
       items: suyos.map((i) => {
         const v = porVariante.get(i.productVariantId);
+        /*
+         * Lo que hay que juntar por esta línea. Para una variante suelta es
+         * ella misma; para un pack, lo que lleva adentro con las cantidades ya
+         * multiplicadas.
+         */
+        const componentes = v?.esPack
+          ? (composiciones.get(v.id) || []).map((c) => {
+            const cv = porComponente.get(c.componenteVariantId);
+            return {
+              sku: cv?.sku || `#${c.componenteVariantId}`,
+              titulo: cv?.producto?.titulo || null,
+              variante: [cv?.variante1Valor, cv?.variante2Valor].filter(Boolean).join(' · '),
+              codigoBarras: cv?.codigoBarras || null,
+              cantidad: c.cantidad * i.cantidad,
+              porPack: c.cantidad,
+            };
+          })
+          : null;
+
         return {
           sku: i.sku,
           cantidad: i.cantidad,
           titulo: v?.producto?.titulo || null,
           variante: describir(v),
           codigoBarras: v?.codigoBarras || null,
+          esPack: Boolean(v?.esPack),
+          componentes,
           locationId: i.locationId,
           local: nombreLocal.get(i.locationId) || null,
           /*
@@ -295,36 +357,115 @@ async function delDia(businessId, {
   }
 
   /*
+   * ── Un paquete por envío, no por venta ──────────────────────────
+   *
+   * Lo que el depósito arma es una caja, y en esa caja puede ir más de una
+   * venta. La lista tiene que mostrar lo que va adentro de cada caja, todo
+   * junto: si sale partido por venta, quien arma no tiene forma de saber que
+   * esas tres líneas van al mismo bulto.
+   */
+  const paquetes = [];
+  const porClave = new Map();
+  for (const p of armados) {
+    if (!porClave.has(p.claveEnvio)) {
+      const nuevo = {
+        claveEnvio: p.claveEnvio,
+        envioId: p.envioId,
+        envioTipo: p.envioTipo,
+        despacharAntesDe: p.despacharAntesDe,
+        plataforma: p.plataforma,
+        estadoEnvio: p.estadoEnvio,
+        estadoEnvioMl: p.estadoEnvioMl,
+        situacion: p.situacion,
+        comprador: p.comprador,
+        recibidoEn: p.recibidoEn,
+        // Las ventas que van en esta caja. Casi siempre una; cuando son varias,
+        // hay que verlo: es lo que explica por qué el bulto lleva de todo.
+        ventas: [],
+        // Sobre cuál se acciona. Despachar una despacha la caja entera: ver
+        // `despachar`.
+        id: p.id,
+        items: [],
+        motivo: null,
+      };
+      porClave.set(p.claveEnvio, nuevo);
+      paquetes.push(nuevo);
+    }
+    const caja = porClave.get(p.claveEnvio);
+    caja.ventas.push({ id: p.id, pedidoExterno: p.pedidoExterno, estado: p.estado });
+    caja.items.push(...p.items);
+    if (p.motivo) caja.motivo = [caja.motivo, p.motivo].filter(Boolean).join(' ');
+    /*
+     * El estado de la caja es el del peor de sus ventas: si una tiene faltante,
+     * la caja no se puede despachar entera y eso es lo que hay que ver.
+     */
+    if (p.situacion === 'con_faltante') caja.situacion = 'con_faltante';
+  }
+
+  /*
    * ── El consolidado ───────────────────────────────────────────
    *
    * La misma mercadería agrupada por SKU y local: un recorrido, no uno por
    * pedido. Es la lista con la que se camina el depósito.
    */
-  const clave = (i) => `${i.locationId || 0}::${i.sku}`;
+  const clave = (locId, sku) => `${locId || 0}::${sku}`;
   const acumulado = new Map();
-  for (const p of armados) {
+
+  /*
+   * El recorrido se hace sobre MERCADERÍA, no sobre líneas de pedido.
+   *
+   * Un pack se pide como uno y se busca como tres: si el consolidado dijera
+   * "1 pack", el pickeador saldría a buscar un artículo que no está en ninguna
+   * percha. Por eso cada pack se abre en lo que lleva adentro, y sus unidades
+   * se suman con las de las remeras sueltas del mismo SKU que pidieron otros
+   * pedidos — que es justamente el punto de consolidar: se baja todo junto una
+   * sola vez.
+   */
+  const sumar = (linea, unidades) => {
+    const k = clave(linea.locationId, linea.sku);
+    if (!acumulado.has(k)) {
+      acumulado.set(k, {
+        sku: linea.sku,
+        titulo: linea.titulo,
+        variante: linea.variante,
+        codigoBarras: linea.codigoBarras,
+        locationId: linea.locationId,
+        local: linea.local,
+        unidades: 0,
+        // En cuántos paquetes distintos aparece: dice si conviene contar de
+        // una y repartir, o buscarlo de a uno.
+        enPaquetes: 0,
+        sinResolver: linea.sinResolver,
+        // De qué packs viene, para que el que baja 9 remeras entienda por qué
+        // son nueve cuando ningún pedido pidió nueve.
+        deLosPacks: linea.deLosPacks || null,
+      });
+    }
+    const acc = acumulado.get(k);
+    acc.unidades += unidades;
+    acc.enPaquetes += 1;
+    if (linea.deLosPacks) {
+      acc.deLosPacks = [...new Set([...(acc.deLosPacks || []), ...linea.deLosPacks])];
+    }
+  };
+
+  for (const p of paquetes) {
     if (p.estadoEnvio === 'despachado') continue;   // ya salió: no hay que buscarlo
     for (const i of p.items) {
       if (locationId && i.locationId !== Number(locationId)) continue;
-      const k = clave(i);
-      if (!acumulado.has(k)) {
-        acumulado.set(k, {
-          sku: i.sku,
-          titulo: i.titulo,
-          variante: i.variante,
-          codigoBarras: i.codigoBarras,
-          locationId: i.locationId,
-          local: i.local,
-          unidades: 0,
-          // En cuántos paquetes distintos aparece: dice si conviene contar de
-          // una y repartir, o buscarlo de a uno.
-          enPaquetes: 0,
-          sinResolver: i.sinResolver,
-        });
+
+      if (i.esPack && i.componentes?.length) {
+        for (const c of i.componentes) {
+          sumar({
+            sku: c.sku, titulo: c.titulo, variante: c.variante,
+            codigoBarras: c.codigoBarras, locationId: i.locationId, local: i.local,
+            sinResolver: false, deLosPacks: [i.sku],
+          }, c.cantidad);
+        }
+        continue;
       }
-      const linea = acumulado.get(k);
-      linea.unidades += i.cantidad;
-      linea.enPaquetes += 1;
+
+      sumar(i, i.cantidad);
     }
   }
 
@@ -341,22 +482,28 @@ async function delDia(businessId, {
     filtro: cual,
     // Cuántos hay en cada estado, para poder numerar las pestañas.
     porEstado,
-    pedidos: armados,
+    // `pedidos` sigue nombrando la lista principal por compatibilidad, pero cada
+    // entrada es un PAQUETE: puede llevar más de una venta adentro.
+    pedidos: paquetes,
+    paquetes,
     consolidado,
     resumen: {
-      paquetes: armados.length,
-      pendientes: armados.filter((p) => p.estadoEnvio === 'pendiente').length,
-      despachados: armados.filter((p) => p.estadoEnvio === 'despachado').length,
-      conFaltante: armados.filter((p) => p.estadoEnvio === 'con_faltante').length,
+      paquetes: paquetes.length,
+      // Cuántas ventas hay en total: con envíos que juntan varias, no es lo
+      // mismo que la cantidad de cajas, y las dos cosas se miran.
+      ventas: paquetes.reduce((n, p) => n + p.ventas.length, 0),
+      pendientes: paquetes.filter((p) => p.estadoEnvio === 'pendiente').length,
+      despachados: paquetes.filter((p) => p.estadoEnvio === 'despachado').length,
+      conFaltante: paquetes.filter((p) => p.situacion === 'con_faltante').length,
       unidades: consolidado.reduce((s, l) => s + l.unidades, 0),
       referencias: consolidado.length,
-      flex: armados.filter((p) => p.envioTipo === 'flex').length,
+      flex: paquetes.filter((p) => p.envioTipo === 'flex').length,
     },
   };
 }
 
 const vacio = () => ({
-  paquetes: 0, pendientes: 0, despachados: 0, conFaltante: 0,
+  paquetes: 0, ventas: 0, pendientes: 0, despachados: 0, conFaltante: 0,
   unidades: 0, referencias: 0, flex: 0,
 });
 
@@ -389,9 +536,47 @@ async function despachar({ pedidoId, businessId, employeeId = null }) {
       return { pedido, repetido: true, movidas: 0 };
     }
 
+    /*
+     * ── Se despacha la CAJA, no la venta ────────────────────────
+     *
+     * Mercado Libre junta varias ventas del mismo comprador en un solo envío.
+     * La caja sale una vez: despachar sólo una de sus ventas dejaría a las
+     * otras con la mercadería apartada para siempre, esperando un despacho que
+     * ya ocurrió y que nadie va a repetir.
+     *
+     * Por eso se buscan todas las ventas del mismo número de envío y salen
+     * juntas, en la misma transacción. Sin número de envío, la venta es su
+     * propia caja y esto se reduce al caso de siempre.
+     */
+    const delMismoEnvio = pedido.envioId
+      ? await PedidoPlataforma.findAll({
+        where: {
+          businessId,
+          plataforma: pedido.plataforma,
+          envioId: pedido.envioId,
+          estado: { [Op.in]: DESPACHABLES },
+        },
+        transaction: t, lock: t.LOCK.UPDATE,
+      })
+      : [pedido];
+
+    const aDespachar = delMismoEnvio.filter((p) => p.estadoEnvio !== 'despachado');
+
     const items = await PedidoPlataformaItem.findAll({
-      where: { pedidoId: pedido.id }, transaction: t,
+      where: { pedidoId: aDespachar.map((p) => p.id) }, transaction: t,
     });
+
+    // Cuáles de estas líneas son packs, en una consulta y no una por línea.
+    const variantes = await ProductVariant.findAll({
+      where: { id: items.map((i) => i.productVariantId).filter(Boolean) },
+      attributes: ['id', 'esPack'],
+      transaction: t,
+    });
+    const paquetesQueSonPack = new Set(variantes.filter((v) => v.esPack).map((v) => v.id));
+    // La composición de todos los packs de esta caja, para poder contar prendas.
+    const componentesPorPack = paquetesQueSonPack.size
+      ? await packService.componentesDe([...paquetesQueSonPack], t)
+      : new Map();
 
     let movidas = 0;
     for (const i of items) {
@@ -404,13 +589,26 @@ async function despachar({ pedidoId, businessId, employeeId = null }) {
        * el libro. Separarlo en dos —descontar acá y registrar allá— es lo que
        * permite que un `return` temprano mueva mercadería sin rastro.
        */
-      const pudo = await stockService.consumirReserva(
-        i.productVariantId, i.locationId, businessId, i.cantidad, t,
-        {
-          motivo: `Despacho ${pedido.plataforma} ${pedido.pedidoExterno}`,
-          employeeId,
-        },
-      );
+      /*
+       * Un pack no baja del estante: bajan las prendas que lleva adentro. El
+       * movimiento queda por componente y no por pack, porque el libro tiene
+       * que hablar de mercadería que se puede contar: "salieron 3 remeras
+       * negras M" se cuenta en el estante, "salió 1 pack" no se cuenta en
+       * ningún lado.
+       */
+      const esPack = paquetesQueSonPack.has(i.productVariantId);
+      const motivo = `Despacho ${pedido.plataforma} ${pedido.pedidoExterno}`
+        + (esPack ? ` (pack ${i.sku})` : '');
+
+      const pudo = esPack
+        ? await packService.consumirPack(
+          i.productVariantId, i.locationId, businessId, i.cantidad, t,
+          { motivo, employeeId },
+        )
+        : await stockService.consumirReserva(
+          i.productVariantId, i.locationId, businessId, i.cantidad, t,
+          { motivo, employeeId },
+        );
       if (!pudo) {
         await t.rollback();
         throw error(
@@ -432,20 +630,31 @@ async function despachar({ pedidoId, businessId, employeeId = null }) {
         );
       }
 
-      movidas += i.cantidad;
+      /*
+       * Se cuenta lo que salió del estante, no las líneas del pedido. Dos packs
+       * de tres remeras son seis prendas: decir "salieron 2 unidades" al que
+       * acaba de bajar seis es contarle otra cosa de la que hizo.
+       */
+      movidas += esPack
+        ? (componentesPorPack.get(i.productVariantId) || [])
+          .reduce((n, c) => n + c.cantidad * i.cantidad, 0)
+        : i.cantidad;
     }
 
-    await pedido.update({
-      estadoEnvio: 'despachado',
-      despachadoEn: new Date(),
-      despachadoPorEmployeeId: employeeId,
-    }, { transaction: t });
+    for (const p of aDespachar) {
+      await p.update({
+        estadoEnvio: 'despachado',
+        despachadoEn: new Date(),
+        despachadoPorEmployeeId: employeeId,
+      }, { transaction: t });
+    }
 
     await t.commit();
     log.info('envios', 'paquete despachado', {
-      pedido: pedido.id, plataforma: pedido.plataforma, unidades: movidas,
+      pedido: pedido.id, plataforma: pedido.plataforma,
+      ventas: aDespachar.length, unidades: movidas,
     });
-    return { pedido, repetido: false, movidas };
+    return { pedido, repetido: false, movidas, ventas: aDespachar.length };
   } catch (e) {
     await t.rollback().catch(() => {});
     throw e;

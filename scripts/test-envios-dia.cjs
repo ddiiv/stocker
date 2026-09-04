@@ -100,6 +100,25 @@ function sesion() {
     return Number(f?.reservado) || 0;
   };
 
+  const fijarStock = async (v, n) => {
+    const f = await VariantStock.findOne({ where: { productVariantId: v.id, locationId: local.id } });
+    const ap = Number(f?.reservado) || 0;
+    if (ap > 0) await stock.liberarReserva(v.id, local.id, negocio.id, ap);
+    await stock.mover({ variantId: v.id, businessId: negocio.id, locationId: local.id,
+      fijar: n, tipo: 'ajuste', motivo: 'QA envíos' });
+  };
+
+  /*
+   * Un paquete ya no ES una venta: puede llevar varias, porque Mercado Libre
+   * junta compras del mismo comprador en un solo envío. Buscarlo por el número
+   * de una de sus ventas es lo que se hace en la pantalla también.
+   */
+  const paqueteDe = (j, externo) =>
+    (j?.json?.paquetes || j?.paquetes || []).find(
+      (p) => (p.ventas || []).some((v) => v.pedidoExterno === externo),
+    );
+  const esDeQA = (p) => (p.ventas || []).some((v) => v.pedidoExterno?.startsWith('QA-ENV-'));
+
   const pedir = async (externo, items, extra = {}) => {
     const r = await api('POST', '/api/online/pedidos', {
       plataforma: 'mercadolibre', pedidoExterno: externo,
@@ -120,10 +139,9 @@ function sesion() {
 
     const jornada = await api('GET', '/api/envios/del-dia');
     chk('la jornada responde', 200, jornada.status);
-    const mios = (jornada.json?.pedidos || []).filter((p) => p.pedidoExterno.startsWith('QA-ENV-'));
+    const mios = (jornada.json?.paquetes || []).filter(esDeQA);
     chk('y trae los dos paquetes', 2, mios.length);
-    chk('con el comprador', 'Comprador QA-ENV-1',
-      mios.find((p) => p.pedidoExterno === 'QA-ENV-1')?.comprador);
+    chk('con el comprador', 'Comprador QA-ENV-1', paqueteDe(jornada, 'QA-ENV-1')?.comprador);
     chk('y en estado pendiente', ['pendiente', 'pendiente'], mios.map((p) => p.estadoEnvio));
 
     tit('2. EL CONSOLIDADO AGRUPA: UN RECORRIDO, NO UNO POR PEDIDO');
@@ -140,7 +158,7 @@ function sesion() {
     chk('cada renglón dice de qué local sale', local.nombre, eme?.local);
 
     tit('3. DESPACHAR: LA RESERVA SE CONVIERTE EN SALIDA');
-    const idP1 = mios.find((p) => p.pedidoExterno === 'QA-ENV-1').id;
+    const idP1 = paqueteDe(jornada, 'QA-ENV-1').id;
     const estanteAntes = await estante(vA);
     const apartadoAntes = await apartado(vA);
 
@@ -176,10 +194,10 @@ function sesion() {
     const sigue = (jornada2.json?.consolidado || []).find((l) => l.sku === 'QA-ENV-M');
     chk('el consolidado baja a lo que falta buscar', 3, sigue?.unidades);
     chk('y el paquete despachado ya no está en la lista', false,
-      (jornada2.json?.pedidos || []).some((p) => p.id === idP1));
+      (jornada2.json?.paquetes || []).some((p) => p.id === idP1));
 
     const conTodo = await api('GET', '/api/envios/del-dia?incluirDespachados=1');
-    const elDespachado = (conTodo.json?.pedidos || []).find((p) => p.id === idP1);
+    const elDespachado = (conTodo.json?.paquetes || []).find((p) => p.id === idP1);
     chk('pero se puede ver la jornada completa', 'despachado', elDespachado?.estadoEnvio);
 
     tit('6. EL FALTANTE NO TOCA EL STOCK');
@@ -188,7 +206,7 @@ function sesion() {
      * diferencia entre lo que el sistema cree y lo que se encontró se resuelve
      * con un recuento, no desde la pantalla de picking.
      */
-    const idP2 = mios.find((p) => p.pedidoExterno === 'QA-ENV-2').id;
+    const idP2 = paqueteDe(jornada, 'QA-ENV-2').id;
     const antesFalta = [await estante(vA), await apartado(vA)];
     const falt = await api('POST', `/api/envios/${idP2}/faltante`, { nota: 'No está en la percha' });
     chk('se marca el faltante', 200, falt.status);
@@ -214,7 +232,7 @@ function sesion() {
     ]);
     chk('el pedido entra como parcial', 200, conRaro.status);
     const j3 = await api('GET', '/api/envios/del-dia');
-    const elRaro = (j3.json?.pedidos || []).find((p) => p.pedidoExterno === 'QA-ENV-3');
+    const elRaro = paqueteDe(j3, 'QA-ENV-3');
     chk('el paquete aparece en la jornada', true, Boolean(elRaro));
     const lineaRara = (elRaro?.items || []).find((i) => i.sku === 'NO-EXISTE-EN-STOCKER');
     chk('y la línea desconocida viene marcada', true, lineaRara?.sinResolver);
@@ -246,7 +264,7 @@ function sesion() {
       });
       const j = await api('GET', '/api/envios/del-dia?incluirDespachados=1');
       chk('no aparece en la jornada', false,
-        (j.json?.pedidos || []).some((p) => p.id === ajeno.id));
+        (j.json?.paquetes || []).some((p) => p.id === ajeno.id));
       chk('no se puede despachar', 404,
         (await api('POST', `/api/envios/${ajeno.id}/despachar`)).status);
       chk('ni marcar como faltante', 404,
@@ -264,7 +282,7 @@ function sesion() {
      */
     const p4 = await pedir('QA-ENV-4', [{ sku: 'QA-ENV-L', cantidad: 1 }]);
     const j4 = await api('GET', '/api/envios/del-dia');
-    const idP4 = (j4.json?.pedidos || []).find((p) => p.pedidoExterno === 'QA-ENV-4')?.id;
+    const idP4 = paqueteDe(j4, 'QA-ENV-4')?.id;
     chk('el pedido entra', 201, p4.status);
 
     /*
@@ -297,21 +315,21 @@ function sesion() {
      */
     const jFiltros = await api('GET', '/api/envios/del-dia?filtro=todos');
     chk('el filtro "todos" trae la jornada entera', true,
-      (jFiltros.json?.pedidos || []).length >= 3);
+      (jFiltros.json?.paquetes || []).length >= 3);
     chk('y viene la cuenta por estado', true,
       typeof jFiltros.json?.porEstado?.para_enviar === 'number');
 
     const paraEnviar = await api('GET', '/api/envios/del-dia?filtro=para_enviar');
     chk('"para enviar" no trae los despachados', false,
-      (paraEnviar.json?.pedidos || []).some((p) => p.situacion !== 'para_enviar'));
+      (paraEnviar.json?.paquetes || []).some((p) => p.situacion !== 'para_enviar'));
 
     const enCamino = await api('GET', '/api/envios/del-dia?filtro=en_camino');
     chk('"en camino" trae el que despachamos', true,
-      (enCamino.json?.pedidos || []).some((p) => p.id === idP1));
+      (enCamino.json?.paquetes || []).some((p) => p.id === idP1));
 
     const conFaltante = await api('GET', '/api/envios/del-dia?filtro=con_faltante');
     chk('"con faltante" trae el que no se encontró', true,
-      (conFaltante.json?.pedidos || []).some((p) => p.id === idP2));
+      (conFaltante.json?.paquetes || []).some((p) => p.id === idP2));
 
     /*
      * Lo que informa ML manda sobre lo nuestro: un paquete que despachamos y
@@ -320,15 +338,15 @@ function sesion() {
     await PedidoPlataforma.update({ estadoEnvioMl: 'delivered' }, { where: { id: idP1 } });
     const entregados = await api('GET', '/api/envios/del-dia?filtro=entregado');
     chk('un despachado que ML da por entregado pasa a "entregado"', true,
-      (entregados.json?.pedidos || []).some((p) => p.id === idP1));
+      (entregados.json?.paquetes || []).some((p) => p.id === idP1));
     const enCamino2 = await api('GET', '/api/envios/del-dia?filtro=en_camino');
     chk('y sale de "en camino"', false,
-      (enCamino2.json?.pedidos || []).some((p) => p.id === idP1));
+      (enCamino2.json?.paquetes || []).some((p) => p.id === idP1));
 
     await PedidoPlataforma.update({ estadoEnvioMl: 'cancelled' }, { where: { id: idP2 } });
     const cancelados = await api('GET', '/api/envios/del-dia?filtro=cancelado');
     chk('un cancelado en ML aparece como cancelado', true,
-      (cancelados.json?.pedidos || []).some((p) => p.id === idP2));
+      (cancelados.json?.paquetes || []).some((p) => p.id === idP2));
 
     tit('12. EL ALCANCE: HOY Y LOS PRÓXIMOS DÍAS');
     /*
@@ -342,16 +360,60 @@ function sesion() {
     );
     const soloHoy = await api('GET', '/api/envios/del-dia?filtro=todos');
     chk('con alcance de hoy, el de mañana no aparece', false,
-      (soloHoy.json?.pedidos || []).some((p) => p.pedidoExterno === 'QA-ENV-3'));
+      Boolean(paqueteDe(soloHoy, 'QA-ENV-3')));
 
     const conManana = await api('GET', '/api/envios/del-dia?filtro=todos&diasAdelante=7');
     chk('mirando la semana, sí', true,
-      (conManana.json?.pedidos || []).some((p) => p.pedidoExterno === 'QA-ENV-3'));
+      Boolean(paqueteDe(conManana, 'QA-ENV-3')));
     chk('y el alcance viene en la respuesta', 7, conManana.json?.dias);
 
     // El tope existe para que nadie pida el año entero y barra la tabla.
     const exagerado = await api('GET', '/api/envios/del-dia?filtro=todos&diasAdelante=9999');
     chk('un alcance disparatado se acota a 30 días', 30, exagerado.json?.dias);
+
+    tit('13. UN ENVÍO QUE JUNTA VARIAS VENTAS ES UNA SOLA CAJA');
+    /*
+     * Mercado Libre agrupa varias compras del mismo comprador en un solo envío.
+     * Si la lista mostrara una caja por venta, el depósito prepararía tres
+     * bultos donde va uno: tres etiquetas y un comprador que recibe su compra
+     * partida en pedazos.
+     *
+     * Y despachar tiene que sacarlas a todas: la caja sale una sola vez, y
+     * marcar una dejaría a las otras con la mercadería apartada para siempre,
+     * esperando un despacho que ya ocurrió.
+     */
+    await fijarStock(vA, 20);
+    const a1 = await pedir('QA-ENV-J1', [{ sku: 'QA-ENV-M', cantidad: 1 }]);
+    const a2 = await pedir('QA-ENV-J2', [{ sku: 'QA-ENV-M', cantidad: 2 }]);
+    chk('las dos ventas entran', [201, 201], [a1.status, a2.status]);
+
+    // Las dos comparten envío, como las manda ML.
+    await PedidoPlataforma.update(
+      { envioId: '9001', envioTipo: 'flex' },
+      { where: { pedidoExterno: ['QA-ENV-J1', 'QA-ENV-J2'] } },
+    );
+
+    const jJunta = await api('GET', '/api/envios/del-dia?filtro=todos');
+    const caja = (jJunta.json?.paquetes || []).find((p) => p.envioId === '9001');
+    chk('las dos ventas salen en UNA caja', true, Boolean(caja));
+    chk('con las dos adentro', 2, caja?.ventas?.length);
+    chk('y todo lo que hay que juntar junto', 3,
+      (caja?.items || []).reduce((n, i) => n + i.cantidad, 0));
+    chk('sin aparecer también por separado', 1,
+      (jJunta.json?.paquetes || []).filter((p) => p.envioId === '9001').length);
+
+    const antesJunta = await estante(vA);
+    const despJunta = await api('POST', `/api/envios/${caja.id}/despachar`);
+    chk('despachar la caja entra', 200, despJunta.status);
+    chk('y avisa que salieron dos ventas', 2, despJunta.json?.ventas);
+    chk('el estante baja las 3 de una', antesJunta - 3, await estante(vA));
+
+    const lasDos = await PedidoPlataforma.findAll({
+      where: { pedidoExterno: ['QA-ENV-J1', 'QA-ENV-J2'] },
+    });
+    chk('las dos ventas quedan despachadas', ['despachado', 'despachado'],
+      lasDos.map((p) => p.estadoEnvio).sort());
+    chk('sin dejar reservas colgadas', 0, await apartado(vA));
 
   } finally {
     tit('Limpieza');

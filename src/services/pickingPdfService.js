@@ -194,16 +194,24 @@ async function generarPickingPdf(jornada, { nombreNegocio = 'Stocker', local = n
   y += 14;
   ({ y, pagina } = espacio(doc, y, 60, cab, pagina));
   y = tituloSeccion(doc, y, '2 · Armado de paquetes',
-    'Un bloque por pedido. Se tilda a medida que se arma, se etiqueta y se despacha.');
+    'Un bloque por envío: una caja. Se tilda a medida que se arma, se etiqueta y se despacha.');
 
-  for (const p of jornada.pedidos) {
+  for (const p of (jornada.paquetes || jornada.pedidos)) {
     /*
      * Un paquete no se parte entre dos hojas.
      *
      * Con la checklist en una hoja y los ítems en la otra, se tilda "armado"
      * sin ver qué llevaba. Se estima el alto y si no entra, se salta.
      */
-    const alto = 46 + p.items.length * 13 + (p.motivo ? 12 : 0);
+    /*
+     * Se estima el alto contando también los renglones que abre cada pack: un
+     * pack ocupa su línea más una por componente, y sin sumarlas el bloque se
+     * corta a la mitad de la hoja.
+     */
+    const renglones = p.items.reduce(
+      (n, i) => n + 1 + (i.esPack && i.componentes ? i.componentes.length : 0), 0,
+    );
+    const alto = 46 + renglones * 13 + (p.ventas?.length > 1 ? 12 : 0) + (p.motivo ? 12 : 0);
     ({ y, pagina } = espacio(doc, y, Math.min(alto, ALTO - MARGEN * 2), cab, pagina));
 
     doc.rect(MARGEN, y, UTIL, alto - 6).lineWidth(0.6).strokeColor(COLOR.linea).stroke();
@@ -212,13 +220,22 @@ async function generarPickingPdf(jornada, { nombreNegocio = 'Stocker', local = n
     let yy = y + 7;
 
     // Cabecera del paquete: plataforma, número y comprador.
+    /*
+     * El título es el ENVÍO, no la venta: es lo que va escrito en la etiqueta
+     * que se pega en la caja, y es por donde se busca cuando algo no cierra.
+     */
+    const ventas = p.ventas || [];
+    const rotulo = p.envioId
+      ? `ENVÍO ${p.envioId}`
+      : `${(p.plataforma || '').toUpperCase()} · ${ventas[0]?.pedidoExterno || ''}`;
     doc.font('Helvetica-Bold').fontSize(10).fillColor(COLOR.texto)
-      .text(`${p.plataforma.toUpperCase()} · ${p.pedidoExterno}`, dentro, yy, { lineBreak: false });
+      .text(rotulo, dentro, yy, { lineBreak: false });
 
+    // El número de envío ya es el título del bloque: repetirlo acá es ruido en
+    // una hoja donde el espacio decide cuántos paquetes entran.
     const etiquetas = [
       p.envioTipo === 'flex' ? 'FLEX' : (p.envioTipo || null),
       p.despacharAntesDe ? `antes de ${hora(p.despacharAntesDe)}` : null,
-      p.envioId ? `envío ${p.envioId}` : null,
     ].filter(Boolean).join('  ·  ');
     doc.font('Helvetica-Bold').fontSize(9).fillColor(COLOR.texto)
       .text(etiquetas, MARGEN, yy, { width: UTIL - 8, align: 'right' });
@@ -236,6 +253,18 @@ async function generarPickingPdf(jornada, { nombreNegocio = 'Stocker', local = n
 
     yy += 14;
 
+    /*
+     * Cuando la caja lleva más de una venta hay que decirlo, y con los números.
+     * Es lo que explica por qué el bulto tiene de todo, y lo que permite
+     * chequear contra las etiquetas antes de cerrarlo.
+     */
+    if (ventas.length > 1) {
+      doc.font('Helvetica-Bold').fontSize(7.5).fillColor(COLOR.texto)
+        .text(`Van ${ventas.length} ventas en esta caja: ${ventas.map((v) => v.pedidoExterno).join(' · ')}`,
+          dentro, yy, { width: UTIL - 16, lineBreak: false });
+      yy += 12;
+    }
+
     for (const i of p.items) {
       doc.font('Helvetica-Bold').fontSize(9).fillColor(COLOR.texto)
         .text(`${i.cantidad} ×`, dentro, yy, { width: 24, lineBreak: false });
@@ -246,6 +275,26 @@ async function generarPickingPdf(jornada, { nombreNegocio = 'Stocker', local = n
         .text(`${i.sku}${i.local ? `  ${i.local}` : ''}`, MARGEN, yy + 1,
           { width: UTIL - 8, align: 'right' });
       yy += 13;
+
+      /*
+       * Un pack se pide como uno y se arma con tres. La línea del pack sola
+       * deja al que arma sin saber qué poner adentro de la caja.
+       */
+      if (i.esPack && i.componentes?.length) {
+        for (const c of i.componentes) {
+          doc.font('Helvetica').fontSize(8).fillColor(COLOR.suave)
+            /*
+             * Guion y no una flecha: Helvetica en PDF usa WinAnsi, donde "↳" no
+             * existe y sale impreso como un "¹" suelto. Se vio en la primera
+             * hoja generada.
+             */
+            .text(`- ${c.cantidad} × ${c.titulo || c.sku}${c.variante ? ` · ${c.variante}` : ''}`,
+              dentro + 26, yy, { width: UTIL - 200, lineBreak: false });
+          doc.font('Courier').fontSize(7).fillColor(COLOR.suave)
+            .text(c.sku, MARGEN, yy + 1, { width: UTIL - 8, align: 'right' });
+          yy += 13;
+        }
+      }
     }
 
     if (p.motivo) {

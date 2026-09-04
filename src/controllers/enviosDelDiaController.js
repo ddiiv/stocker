@@ -90,9 +90,11 @@ const postDespachar = async (req, res, next) => {
       ok: true,
       repetido: r.repetido,
       unidades: r.movidas,
+      ventas: r.ventas,
       mensaje: r.repetido
         ? 'Este paquete ya estaba despachado.'
-        : `Paquete despachado: salieron ${r.movidas} unidad(es) del stock.`,
+        : `Paquete despachado: salieron ${r.movidas} unidad(es) del stock`
+          + (r.ventas > 1 ? `, de ${r.ventas} ventas que van en el mismo envío.` : '.'),
     });
   } catch (e) { next(e); }
 };

@@ -26,6 +26,7 @@ const https = require('https');
 const axios = require('axios');
 const { MercadoLibreAccount, MercadoLibreLink, ProductVariant, Product, VariantStock } = require('../models');
 const stockService = require('./stockService');
+const packService = require('./packService');
 const { signToken, verifyToken } = require('../utils/jwt');
 const { log } = require('../utils/logger');
 
@@ -466,6 +467,25 @@ async function sincronizarStock(businessId, { simular = false, skus = null } = {
       f.productVariantId,
       (stockPorVariante.get(f.productVariantId) || 0) + libre,
     );
+  }
+
+  /*
+   * Los packs no tienen fila en `variant_stocks`: lo que hay de un pack es lo
+   * que alcance para armarlo con lo que lleva adentro.
+   *
+   * Sin esto, cada pack publicado en Mercado Libre saldría con stock cero —
+   * dejaría de venderse de un día para el otro y sin explicación visible—.
+   *
+   * La cuenta se hace en bloque para todos los packs a la vez: de a uno serían
+   * dos consultas por pack, y en un catálogo con cincuenta packs eso es cien
+   * idas a la base por sincronización.
+   */
+  const idsPacks = variantes.filter((v) => v.esPack).map((v) => v.id);
+  if (idsPacks.length) {
+    const armables = await packService.disponibleDePacksEnLocales(
+      idsPacks, locales.map((l) => l.id), businessId,
+    );
+    for (const [packId, cuantos] of armables) stockPorVariante.set(packId, cuantos);
   }
 
   const sincronizados = [];
