@@ -24,6 +24,7 @@ const { lookupCuit } = require('../controllers/arcaController');
 const arcaConfigCtrl = require('../controllers/arcaConfigController');
 const variantTypeCtrl = require('../controllers/variantTypeController');
 const skuCtrl = require('../controllers/skuController');
+const packCtrl = require('../controllers/packController');
 const businessCuitCtrl = require('../controllers/businessCuitController');
 const { testSend: whatsappTestSend } = require('../controllers/whatsappTestController');
 const mlCtrl = require('../controllers/mercadolibreController');
@@ -412,6 +413,24 @@ r.post  ('/stock/transferir',                             requireAuth, requirePe
 r.get   ('/stock/a-regularizar',                          requireAuth, requirePermission('stock','ver'),    productCtrl.stockARegularizar);
 r.get   ('/stock/movimientos',                            requireAuth, requirePermission('stock','ver'),    productCtrl.getStockMovements);
 r.get   ('/products/variants/:variantId/movements',       requireAuth, requirePermission('stock','ver'),    productCtrl.getVariantMovements);
+
+/*
+ * Packs (combos).
+ *
+ * Van bajo el permiso de stock y no bajo uno propio: armar un pack es decidir
+ * de qué prendas se descuenta stock al vender, así que quien puede tocar el
+ * stock puede armarlo y quien sólo mira, sólo mira.
+ *
+ * `usan` cuelga de /packs/usan/... y no de /products/variants/:id/packs para
+ * que la ruta no compita con :variantId de acá arriba: Express toma la primera
+ * que matchea y "usan" caería adentro de :variantId.
+ */
+r.get   ('/packs',                                        requireAuth, requirePermission('stock','ver'),    packCtrl.listar);
+r.post  ('/packs',                                        requireAuth, requirePermission('stock','editar'), packCtrl.crear);
+r.get   ('/packs/usan/:variantId',                        requireAuth, requirePermission('stock','ver'),    packCtrl.usan);
+r.get   ('/packs/:variantId',                             requireAuth, requirePermission('stock','ver'),    packCtrl.detalle);
+r.put   ('/packs/:variantId',                             requireAuth, requirePermission('stock','editar'), packCtrl.definir);
+r.delete('/packs/:variantId',                             requireAuth, requirePermission('stock','editar'), packCtrl.desarmar);
 
 // ── Sales & Quotes ───────────────────────────────────────────────
 r.get   ('/sales',                      requireAuth, requirePermission('ventas','ver'),    saleCtrl.getSales);

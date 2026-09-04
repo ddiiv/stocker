@@ -1,5 +1,6 @@
 const { SaleItem, ProductVariant, Product } = require('../models');
 const stockService = require('./stockService');
+const packService = require('./packService');
 
 /*
  * Salida de mercadería de una venta.
@@ -39,6 +40,108 @@ const stockService = require('./stockService');
  */
 
 const MINIMO = 1;
+
+/*
+ * Qué mercadería mueve de verdad cada línea de la venta.
+ *
+ * Un pack no tiene stock propio: vender "Pack x3 Baby Tee" saca tres remeras
+ * del estante, no un pack. Si esto no estuviera, vender un pack en el mostrador
+ * intentaría descontar de la variante del pack —que siempre está en cero— y
+ * terminaría dando de alta un pack fantasma y dejando las tres remeras en el
+ * sistema. El inventario quedaría mal de las dos puntas.
+ *
+ * Se expande ACÁ y no en cada pantalla por el mismo motivo por el que el
+ * faltante y el alta se deciden en este archivo: es el único lugar por el que
+ * pasan todos los caminos que sacan mercadería —POS, ventas, una cotización que
+ * se factura, una fiada que se cobra—. Puesto en el controlador, el primer
+ * camino que alguien agregue mañana se lo saltea.
+ *
+ * Y agrupa por variante, cosa que antes no hacía. Dos líneas de la misma remera
+ * —una suelta y otra adentro de un pack— piden seis unidades entre las dos;
+ * comparadas por separado contra el mismo stock, las dos parecían alcanzar y el
+ * faltante recién aparecía al escribir.
+ *
+ * @returns {Promise<Map<number, {variant, pide, origenes: Array}>>}
+ */
+async function requerimientos(items, t, { trabar = false } = {}) {
+  /*
+   * Primera pasada sin trabar: sólo para saber QUÉ variantes entran en juego.
+   *
+   * Trabar en el orden en que vienen las líneas es pedir un abrazo mortal: dos
+   * ventas simultáneas con los mismos artículos en distinto orden se quedan
+   * cada una esperando la fila que tiene la otra. Con packs deja de ser
+   * hipotético —un pack y una prenda suelta comparten variante— así que primero
+   * se junta el conjunto y después se traba en orden de id, siempre igual.
+   */
+  const pedidos = [];
+  for (const item of items) {
+    if (!item.productVariantId) continue;
+
+    /*
+     * Las líneas de evento no mueven inventario.
+     *
+     * Un producto de evento se vende sin llevar stock: lo único que importa es
+     * que quede registrado qué salió. Saltear acá es lo que hace que una venta
+     * mixta no rompa y, sobre todo, que la venta nunca llegue a
+     * `stockService.mover`, que rechaza estas variantes como último resguardo.
+     */
+    if (await stockService.esVarianteDeFeria(item.productVariantId, t)) continue;
+
+    const variant = await ProductVariant.findByPk(item.productVariantId, { transaction: t });
+    if (!variant) continue;
+
+    if (!variant.esPack) {
+      pedidos.push({ variantId: variant.id, cantidad: item.cantidad, item, pack: null });
+      continue;
+    }
+
+    const componentes = (await packService.componentesDe([variant.id], t)).get(variant.id) || [];
+    /*
+     * Un pack sin composición no se puede vender.
+     *
+     * Podría dejarse pasar como "no descuenta nada", pero eso es exactamente lo
+     * que no se quiere: la venta saldría, el cliente se llevaría tres remeras y
+     * el inventario no se enteraría. Que reviente acá, con el nombre del pack,
+     * es la única forma de que alguien lo arregle.
+     */
+    if (!componentes.length) {
+      throw Object.assign(
+        new Error(`El pack ${variant.sku} no tiene componentes cargados, así que no se sabe `
+          + 'qué mercadería sacar. Cargá su composición en Stock › Packs antes de venderlo.'),
+        { status: 409, codigo: 'PACK_SIN_COMPONENTES' },
+      );
+    }
+    for (const c of componentes) {
+      pedidos.push({
+        variantId: c.componenteVariantId,
+        cantidad: item.cantidad * c.cantidad,
+        item,
+        pack: variant,
+      });
+    }
+  }
+
+  // Ahora sí: trabadas en orden de id, el mismo para todas las ventas.
+  const ids = [...new Set(pedidos.map((p) => p.variantId))].sort((a, b) => a - b);
+  const porId = new Map();
+  for (const id of ids) {
+    const v = await ProductVariant.findByPk(id, {
+      transaction: t, ...(trabar ? { lock: t.LOCK.UPDATE } : {}),
+    });
+    if (v) porId.set(id, v);
+  }
+
+  const mapa = new Map();
+  for (const p of pedidos) {
+    const variant = porId.get(p.variantId);
+    if (!variant) continue;
+    if (!mapa.has(p.variantId)) mapa.set(p.variantId, { variant, pide: 0, origenes: [] });
+    const fila = mapa.get(p.variantId);
+    fila.pide += p.cantidad;
+    fila.origenes.push({ item: p.item, cantidad: p.cantidad, pack: p.pack });
+  }
+  return mapa;
+}
 
 /**
  * Descuenta el stock de la venta si todavía no salió.
@@ -89,26 +192,10 @@ async function descontarStockVenta(sale, t, { employeeId = null, motivo = null, 
    * en esta vuelta sigue valiendo en la segunda: dos cajas vendiendo la última
    * unidad a la vez no pueden leer las dos el mismo stock.
    */
+  const requerido = await requerimientos(items, t, { trabar: true });
+
   const lineas = [];
-  for (const item of items) {
-    if (!item.productVariantId) continue;
-
-    /*
-     * Las líneas de evento no mueven inventario.
-     *
-     * Un producto de evento se vende sin llevar stock: lo único que importa es
-     * que quede registrado qué salió. Saltear acá es lo que hace que una venta
-     * mixta no rompa —aunque hoy no puedan mezclarse— y, sobre todo, que la
-     * venta nunca llegue a `stockService.mover`, que rechaza estas variantes
-     * como último resguardo.
-     */
-    if (await stockService.esVarianteDeFeria(item.productVariantId, t)) continue;
-
-    const variant = await ProductVariant.findByPk(item.productVariantId, {
-      transaction: t, lock: t.LOCK.UPDATE,
-    });
-    if (!variant) continue;
-
+  for (const fila of requerido.values()) {
     /*
      * Se compara contra el stock DEL LOCAL, no contra el total.
      *
@@ -116,8 +203,8 @@ async function descontarStockVenta(sale, t, { employeeId = null, motivo = null, 
      * Vender lo que está en la otra sucursal deja el stock de acá mal y a un
      * cliente esperando algo que no está.
      */
-    const disponible = await stockService.stockEn(variant.id, local, t);
-    lineas.push({ item, variant, disponible, falta: item.cantidad - disponible });
+    const disponible = await stockService.stockEn(fila.variant.id, local, t);
+    lineas.push({ ...fila, disponible, falta: fila.pide - disponible });
   }
 
   const faltantes = lineas.filter((l) => l.falta > 0);
@@ -127,11 +214,19 @@ async function descontarStockVenta(sale, t, { employeeId = null, motivo = null, 
     const detalle = await Promise.all(faltantes.map(async (l) => ({
       productVariantId: l.variant.id,
       sku:      l.variant.sku,
-      nombre:   await nombreDeVariante(l.variant, l.item, t),
-      pide:     l.item.cantidad,
+      nombre:   await nombreDeVariante(l.variant, l.origenes[0].item, t),
+      pide:     l.pide,
       hay:      l.disponible,
       falta:    l.falta,
       enOtrosLocales: Math.max(0, (Number(l.variant.stock) || 0) - l.disponible),
+      /*
+       * De qué pack viene, si viene de uno.
+       *
+       * Sin esto el cartel dice que falta una remera que la cajera no ve en la
+       * pantalla: en el carrito dice "Pack x3", no "Baby Tee negra M". Nombrar
+       * el pack es lo que conecta las dos cosas.
+       */
+      dentroDePack: [...new Set(l.origenes.map((o) => o.pack?.sku).filter(Boolean))].join(', ') || null,
     })));
 
     if (!puedeConfirmar || !confirmarAltaStock) {
@@ -175,9 +270,9 @@ async function descontarStockVenta(sale, t, { employeeId = null, motivo = null, 
          * permite, más adelante, preguntarse por qué un producto se declara
          * a mano todas las semanas.
          */
-        motivo: `Alta confirmada al vender ${sale.numero}: había ${l.disponible} y se vendieron ${l.item.cantidad}`.slice(0, 255),
+        motivo: `Alta confirmada al vender ${sale.numero}: había ${l.disponible} y se vendieron ${l.pide}`.slice(0, 255),
         employeeId,
-        saleItemId: l.item.id,
+        saleItemId: l.origenes[0].item.id,
         transaction: t,
       });
       /*
@@ -200,18 +295,29 @@ async function descontarStockVenta(sale, t, { employeeId = null, motivo = null, 
    * `permitirNegativo` no se pasa: si algo quedara en negativo acá sería un
    * error de este archivo, y prefiero que reviente a que lo tape.
    */
+  /*
+   * Un movimiento por línea de venta, no uno por variante.
+   *
+   * Se agrupó para MIRAR —ahí importaba el total contra el estante— pero el
+   * libro tiene que poder decir de qué línea salió cada unidad. Con un solo
+   * movimiento por variante, una venta con un pack y la misma remera suelta
+   * dejaría un renglón de 6 sin forma de saber que 3 eran del pack.
+   */
   for (const l of lineas) {
-    await stockService.mover({
-      variantId:  l.variant.id,
-      businessId: sale.businessId,
-      locationId: local,
-      delta:      -l.item.cantidad,
-      tipo:       'egreso',
-      motivo:     motivo || `Venta ${sale.numero}`,
-      employeeId,
-      saleItemId: l.item.id,
-      transaction: t,
-    });
+    for (const o of l.origenes) {
+      await stockService.mover({
+        variantId:  l.variant.id,
+        businessId: sale.businessId,
+        locationId: local,
+        delta:      -o.cantidad,
+        tipo:       'egreso',
+        motivo: (motivo || `Venta ${sale.numero}`)
+          + (o.pack ? ` · pack ${o.pack.sku}` : ''),
+        employeeId,
+        saleItemId: o.item.id,
+        transaction: t,
+      });
+    }
   }
 
   await sale.update({ stockDescontado: true }, { transaction: t });
@@ -245,28 +351,31 @@ async function devolverStockVenta(sale, t, { employeeId = null, motivo = null } 
   // Vuelve al mismo local del que salió: es donde el cliente devuelve la prenda.
   const local = sale.locationId || await stockService.localPorDefecto(sale.businessId, t);
 
-  for (const item of items) {
-    if (!item.productVariantId) continue;
+  /*
+   * Se devuelve lo mismo que salió, expandido igual.
+   *
+   * Anular la venta de un pack tiene que devolver las tres remeras al estante,
+   * no un pack: es la mercadería que el cliente trae de vuelta. Usar la misma
+   * función que el egreso es lo que garantiza que entre exactamente lo que
+   * salió, aunque después alguien cambie cómo se expande.
+   */
+  const requerido = await requerimientos(items, t, { trabar: false });
 
-    // Si al vender no se descontó —porque es de evento— al anular no hay nada
-    // que devolver. Sin esto, anular una venta de evento le inventaría stock a
-    // un producto que no lleva.
-    if (await stockService.esVarianteDeFeria(item.productVariantId, t)) continue;
-
-    const variant = await ProductVariant.findByPk(item.productVariantId, { transaction: t });
-    if (!variant) continue;
-
-    await stockService.mover({
-      variantId: variant.id,
-      businessId: sale.businessId,
-      locationId: local,
-      delta: item.cantidad,
-      tipo: 'ingreso',
-      motivo: motivo || `Anulación venta ${sale.numero}`,
-      employeeId,
-      saleItemId: item.id,
-      transaction: t,
-    });
+  for (const fila of requerido.values()) {
+    for (const o of fila.origenes) {
+      await stockService.mover({
+        variantId: fila.variant.id,
+        businessId: sale.businessId,
+        locationId: local,
+        delta: o.cantidad,
+        tipo: 'ingreso',
+        motivo: (motivo || `Anulación venta ${sale.numero}`)
+          + (o.pack ? ` · pack ${o.pack.sku}` : ''),
+        employeeId,
+        saleItemId: o.item.id,
+        transaction: t,
+      });
+    }
   }
 
   await sale.update({ stockDescontado: false }, { transaction: t });
@@ -283,7 +392,9 @@ async function devolverStockVenta(sale, t, { employeeId = null, motivo = null } 
  */
 function mensajeFaltantes(detalle, nombreLocal, puedeConfirmar) {
   const lista = detalle
-    .map((f) => `${f.nombre || f.sku} (${f.sku}): ${f.hay === 0 ? 'no hay ninguna' : `hay ${f.hay}`} y se venden ${f.pide}`)
+    .map((f) => `${f.nombre || f.sku} (${f.sku})`
+      + (f.dentroDePack ? `, que va dentro del pack ${f.dentroDePack},` : '')
+      + `: ${f.hay === 0 ? 'no hay ninguna' : `hay ${f.hay}`} y se venden ${f.pide}`)
     .join('; ');
   const enOtros = detalle.some((f) => f.enOtrosLocales > 0);
 

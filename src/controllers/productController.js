@@ -268,8 +268,23 @@ const buscarVariantes = async (req, res, next) => {
       ? { activo: true, [Op.and]: [NO_ES_FERIA] }
       : { activo: true };
 
+    /*
+     * `sinPacks` los saca del buscador.
+     *
+     * Lo pide el armado de combos: un pack adentro de otro se rechaza igual en
+     * el servicio, pero ofrecerlo en la lista y rebotarlo después es hacerle
+     * perder el viaje a quien está cargando. También sirve donde el pack no
+     * tiene sentido como línea suelta.
+     */
+    const sinPacks = req.query.sinPacks === '1' || req.query.sinPacks === 'true';
+
     const variantes = await ProductVariant.findAll({
-      where: { businessId: req.auth.businessId, activo: true, [Op.and]: condicionesPorPalabra },
+      where: {
+        businessId: req.auth.businessId,
+        activo: true,
+        ...(sinPacks ? { esPack: false } : {}),
+        [Op.and]: condicionesPorPalabra,
+      },
       include: [{
         model: Product, as: 'producto', required: true,
         where: dondeProducto,
@@ -299,6 +314,12 @@ const buscarVariantes = async (req, res, next) => {
         // El punto de venta lo necesita para avisar antes de intentar la venta:
         // un artículo de feria sólo se vende en un puesto de feria.
         esFeria: Boolean(v.producto.esFeria),
+        /*
+         * Un pack no tiene stock propio: lo que dice `stock` es lo que se
+         * puede armar con sus componentes. Quien muestra la fila necesita
+         * saberlo para no ofrecer "ajustar stock" sobre algo que no se ajusta.
+         */
+        esPack: Boolean(v.esPack),
         variante1Nombre: v.variante1Nombre, variante1Valor: v.variante1Valor,
         variante2Nombre: v.variante2Nombre, variante2Valor: v.variante2Valor,
         stock: Number(v.stock) || 0,

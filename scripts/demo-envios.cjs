@@ -58,6 +58,7 @@ const enHoras = (h) => new Date(Date.now() + h * 3600 * 1000);
     const packs = await PV2.findAll({ where: { sku: `${MARCA}PACK3` } });
     await PC2.destroy({ where: { packVariantId: packs.map((v) => v.id) } });
     await PV2.destroy({ where: { id: packs.map((v) => v.id) } });
+    await require('../src/models').Product.destroy({ where: { sku: `${MARCA}PACK` } });
     console.log(`Se borraron ${pedidos.length} pedido(s) de muestra y se soltaron sus reservas.`);
     if (process.argv.includes('--limpiar')) process.exit(0);
   }
@@ -125,11 +126,27 @@ const enHoras = (h) => new Date(Date.now() + h * 3600 * 1000);
    */
   const conStockPack = conStock[0];
   const varPack = variantes.find((v) => v.id === conStockPack.productVariantId);
-  const { ProductVariant: PV, PackComponente } = require('../src/models');
-  await PackComponente.destroy({ where: { packVariantId: (await PV.findAll({ where: { sku: `${MARCA}PACK3` } })).map((v) => v.id) } });
-  await PV.destroy({ where: { sku: `${MARCA}PACK3` } });
+  /*
+   * El pack va en SU PROPIO producto.
+   *
+   * Colgarlo de un producto existente rompe las dimensiones de ese producto:
+   * sus variantes son Color y Talle, y una que dice "Pack / 3 unidades" hace
+   * que la carga por curvas deje de encontrar el eje. Pasó: seis
+   * comprobaciones de curvas en rojo, y el síntoma no señalaba al pack.
+   */
+  const { ProductVariant: PV, PackComponente, Product: Prod } = require('../src/models');
+  const packsViejos = await PV.findAll({ where: { sku: `${MARCA}PACK3` } });
+  await PackComponente.destroy({ where: { packVariantId: packsViejos.map((v) => v.id) } });
+  await PV.destroy({ where: { id: packsViejos.map((v) => v.id) } });
+  await Prod.destroy({ where: { sku: `${MARCA}PACK` } });
+
+  const prodPack = await Prod.create({
+    businessId: negocio.id, sku: `${MARCA}PACK`, skuAgrupador: `${MARCA}PACK`,
+    titulo: 'Pack x3 (muestra)', precioMinorista: 21000, precioMayorista: 21000,
+    costo: 9000, activo: true,
+  });
   const pack = await PV.create({
-    productId: varPack.productId, businessId: negocio.id, sku: `${MARCA}PACK3`,
+    productId: prodPack.id, businessId: negocio.id, sku: `${MARCA}PACK3`,
     variante1Nombre: 'Pack', variante1Valor: '3 unidades', stock: 0, stockMinimo: 0,
   });
   await require('../src/services/packService').definirComponentes(pack.id, negocio.id, [

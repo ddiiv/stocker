@@ -281,6 +281,7 @@ async function repartirPackOnline(packVariantId, businessId, cantidadPacks, t = 
 async function definirComponentes(packVariantId, businessId, componentes, t = null) {
   const pack = await ProductVariant.findOne({
     where: { id: packVariantId, businessId },
+    attributes: ['id', 'productId', 'sku', 'esPack'],
     include: [{ model: Product, as: 'producto', attributes: ['id', 'esFeria'] }],
     transaction: t,
   });
@@ -348,6 +349,34 @@ async function definirComponentes(packVariantId, businessId, componentes, t = nu
     throw error(
       `"${deEvento.sku}" es un producto de evento y no lleva stock: no puede ser parte de un pack.`,
       400, { codigo: 'PACK_CON_EVENTO' },
+    );
+  }
+
+  /*
+   * Un pack va en SU PROPIO producto, no mezclado con las prendas sueltas.
+   *
+   * Las variantes de un producto comparten dimensiones: si el producto es
+   * "Baby Tee" con Color y Talle, todas sus variantes son un color y un talle.
+   * Un pack no tiene color ni talle —tiene "3 unidades"— y meterlo ahí rompe
+   * todo lo que lee esas dimensiones: la carga por curvas deja de encontrar el
+   * eje, los listados agrupan mal, el selector de talles muestra "3 unidades"
+   * como si fuera uno.
+   *
+   * No es hipotético: pasó armando la demo de esta misma función. Un pack
+   * colgado de un producto existente puso en rojo seis comprobaciones de
+   * curvas, y el síntoma —"con el color fijo: null"— no señalaba al pack por
+   * ningún lado.
+   */
+  const hermanas = await ProductVariant.count({
+    where: { productId: pack.productId, id: { [Op.ne]: packVariantId }, esPack: false },
+    transaction: t,
+  });
+  if (hermanas > 0) {
+    throw error(
+      'Un pack tiene que estar en su propio producto. Las variantes de un producto comparten '
+      + 'dimensiones —color, talle— y un pack no las tiene: mezclarlo rompe la carga por curvas '
+      + 'y los listados de ese producto. Creá un producto para el pack y volvé a intentar.',
+      400, { codigo: 'PACK_MEZCLADO' },
     );
   }
 
