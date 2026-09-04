@@ -21,6 +21,7 @@ const Module = require('module');
  * ARCA: así se prueba la función que corre en producción y no una gemela.
  */
 const RESPUESTAS = new Map();
+let BUSCADOR = [];
 const PEDIDOS_HECHOS = [];
 const originalLoad = Module._load;
 Module._load = function (pedido) {
@@ -31,8 +32,13 @@ Module._load = function (pedido) {
      * —con la suite entera cayéndose sin llegar a correr una sola prueba.
      */
     const cliente = {
-      get: async (url) => {
+      get: async (url, cfg) => {
         PEDIDOS_HECHOS.push(url);
+        // El buscador de órdenes: lo usa la importación de ventas anteriores.
+        if (url.includes('/orders/search')) {
+          const off = Number(cfg?.params?.offset) || 0;
+          return { data: { results: BUSCADOR.slice(off, off + 50), paging: { total: BUSCADOR.length } } };
+        }
         for (const [patron, data] of RESPUESTAS) {
           if (url.includes(patron)) return { data };
         }
@@ -287,6 +293,62 @@ const ML_USER = '999000111';
       const p9 = await PedidoPlataforma.findByPk(r9.pedidoId);
       chk('el negocio sale de la cuenta, no del cuerpo', negocio.id, p9.businessId);
     }
+
+    tit('10. TRAER LAS VENTAS ANTERIORES A CONFIGURAR EL WEBHOOK');
+    /*
+     * El webhook sólo avisa de lo que pasa DESDE que se tildaron los tópicos.
+     * Las ventas de la semana pasada nunca generaron una notificación para
+     * nosotros, así que por ese camino no llegan nunca.
+     */
+    const vieja = (id, estadoEnvio) => {
+      // La clave del mock tiene que ser el id del ENVÍO, que es lo que se pide,
+      // y no el de la orden: con el de la orden la consulta cae en el 404
+      // simulado, `yaSalio` queda en falso y la prueba mide otra cosa.
+      const envioId = 44 + id;
+      RESPUESTAS.set(`/shipments/${envioId}`, envio({ id: envioId, order_id: id, status: estadoEnvio }));
+      return orden(id, { shipping: { id: envioId }, date_created: '2026-08-28T10:00:00.000Z',
+        order_items: [{ quantity: 1, unit_price: 5000, item: { id: 'MLA1', seller_sku: 'QA-ML-1' } }] });
+    };
+
+    BUSCADOR = [
+      vieja(77000010, 'ready_to_ship'),   // todavía hay que despacharla
+      vieja(77000011, 'delivered'),       // ya llegó: no se toca
+      vieja(77000012, 'shipped'),         // ya salió: no se toca
+      { ...vieja(77000013, 'ready_to_ship'), status: 'cancelled' },
+    ];
+
+    const apartadoAntesImport = await apartado();
+    const imp = await mlPedidos.importarPedidos(negocio.id, { dias: 14 });
+
+    chk('encuentra las cuatro', 4, imp.encontrados);
+    chk('importa sólo la que falta despachar', 1, imp.importados);
+    chk('saltea las dos que ya salieron', 2, imp.yaDespachados);
+    chk('y la cancelada', 1, imp.cancelados);
+
+    /*
+     * Lo que importa de verdad: apartar stock para una venta cuya mercadería ya
+     * salió restaría del inventario algo que físicamente no está, y ese
+     * faltante inventado después aparece como un pedido que no se puede
+     * despachar.
+     */
+    chk('aparta sólo por la que falta despachar', apartadoAntesImport + 1, await apartado());
+
+    const importada = await PedidoPlataforma.findOne({
+      where: { pedidoExterno: '77000010' },
+    });
+    chk('la importada queda lista para despachar', 'aceptado', importada.estado);
+    chk('con su envío', 'flex', importada.envioTipo);
+    chk('las que ya salieron no se cargaron', 0,
+      await PedidoPlataforma.count({ where: { pedidoExterno: ['77000011', '77000012', '77000013'] } }));
+
+    tit('11. IMPORTAR DOS VECES NO APARTA DOS VECES');
+    // Se corre de nuevo porque uno la corre de nuevo: no está claro si anduvo,
+    // o se cambia el rango de días y se vuelve a apretar.
+    const trasPrimera = await apartado();
+    const imp2 = await mlPedidos.importarPedidos(negocio.id, { dias: 14 });
+    chk('la segunda vez las reconoce', 1, imp2.repetidos);
+    chk('sin importar ninguna nueva', 0, imp2.importados);
+    chk('y sin apartar de nuevo', trasPrimera, await apartado());
 
   } finally {
     tit('Limpieza');

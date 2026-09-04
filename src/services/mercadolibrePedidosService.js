@@ -289,7 +289,169 @@ async function actualizarEnvio(cuenta, envioId) {
   return { accion: 'envio_actualizado', tipo: envio.envioTipo, pedidoId: pedido.id };
 }
 
+/*
+ * ── Traer las ventas que ya pasaron ──────────────────────────────
+ *
+ * El webhook sólo avisa de lo que ocurre DESDE que se tildaron los tópicos.
+ * Las ventas anteriores nunca generaron una notificación para nosotros, así que
+ * por ese camino no van a llegar nunca: hay que ir a buscarlas.
+ *
+ * Es la misma puerta que el webhook —`encolarYProcesar`, idempotente por
+ * (negocio, plataforma, id de orden)—, así que se puede correr las veces que
+ * haga falta sin apartar stock dos veces, y sin pisar lo que ya entró.
+ *
+ * ── Lo que NO se importa, y por qué ──────────────────────────────
+ *
+ * Los pedidos que ya se despacharon o se cancelaron se saltean. No es por
+ * prolijidad: apartar stock para una venta cuya mercadería ya salió del local
+ * restaría del inventario algo que físicamente no está, y ese faltante
+ * inventado después aparece como un pedido que no se puede despachar.
+ *
+ * Se cuentan y se informan igual. Un salteo silencioso deja a quien importa
+ * creyendo que trajo todo.
+ */
+async function importarPedidos(businessId, { desde = null, dias = 7, tope = 200 } = {}) {
+  const cuenta = await MercadoLibreAccount.findOne({ where: { businessId } });
+  if (!cuenta) {
+    const e = new Error('No hay una cuenta de Mercado Libre conectada.');
+    e.status = 400;
+    throw e;
+  }
+
+  const cuantosDias = Math.max(1, Math.min(Number(dias) || 7, 60));
+  const desdeFecha = desde ? new Date(desde) : new Date(Date.now() - cuantosDias * 86400000);
+  if (Number.isNaN(desdeFecha.getTime())) {
+    const e = new Error('La fecha desde la que importar no es válida.');
+    e.status = 400;
+    throw e;
+  }
+
+  const token = await ml.tokenValido(cuenta);
+  const limite = Math.max(1, Math.min(Number(tope) || 200, 500));
+
+  /*
+   * Se pide de a 50, que es el máximo del buscador de ML, y se corta al llegar
+   * al tope. Sin tope, un vendedor con miles de ventas del último mes tendría
+   * una importación de minutos adentro de una sola request.
+   */
+  const ordenes = [];
+  for (let offset = 0; offset < limite; offset += 50) {
+    const { data } = await axios.get(`${ML_API}/orders/search`, {
+      headers: { Authorization: `Bearer ${token}` },
+      params: {
+        seller: cuenta.mlUserId,
+        'order.date_created.from': desdeFecha.toISOString(),
+        sort: 'date_desc',
+        offset,
+        limit: Math.min(50, limite - offset),
+      },
+    });
+    const lote = data.results || [];
+    ordenes.push(...lote);
+    if (lote.length < 50 || ordenes.length >= (data.paging?.total || 0)) break;
+  }
+
+  const resumen = {
+    encontrados: ordenes.length,
+    importados: 0,
+    repetidos: 0,
+    yaDespachados: 0,
+    cancelados: 0,
+    sinStock: 0,
+    conAvisos: 0,
+    errores: [],
+    desde: desdeFecha,
+  };
+
+  for (const orden of ordenes) {
+    try {
+      if (['cancelled', 'invalid'].includes(orden.status)) { resumen.cancelados += 1; continue; }
+
+      /*
+       * El estado del envío decide si vale la pena traerlo. Se mira ANTES de
+       * encolar: encolar es lo que aparta el stock, y apartarlo para algo que
+       * ya salió es inventar un faltante.
+       */
+      let yaSalio = false;
+      let envio = null;
+      if (orden.shipping?.id) {
+        try {
+          envio = await traerEnvio(cuenta, String(orden.shipping.id));
+          yaSalio = ['shipped', 'delivered', 'not_delivered', 'cancelled'].includes(envio.estadoMl);
+        } catch {
+          // Sin poder leer el envío se sigue: la venta importa más que saber
+          // cómo se despacha, y el dato lo va a traer su notificación.
+        }
+      }
+      if (yaSalio) { resumen.yaDespachados += 1; continue; }
+
+      const r = await ingresarOrdenImportada(cuenta, orden, envio);
+      if (r.repetido) resumen.repetidos += 1;
+      else if (r.estado === 'rechazado') resumen.sinStock += 1;
+      else {
+        resumen.importados += 1;
+        if (r.estado === 'parcial') resumen.conAvisos += 1;
+      }
+    } catch (e) {
+      // Una orden que falla no voltea la importación: se anota y se sigue.
+      resumen.errores.push({ orden: String(orden.id), motivo: (e.message || '').slice(0, 200) });
+    }
+  }
+
+  log.info('ml-pedidos', 'importación de ventas anteriores', {
+    negocio: businessId,
+    encontrados: resumen.encontrados,
+    importados: resumen.importados,
+    salteados: resumen.yaDespachados + resumen.cancelados,
+  });
+  return resumen;
+}
+
+/*
+ * Encola una orden que ya viene leída, sin volver a pedírsela a ML.
+ *
+ * El buscador de órdenes devuelve el pedido completo, así que pedirlo de nuevo
+ * de a uno serían doscientas peticiones de más contra el límite de la API para
+ * conseguir lo que ya se tiene.
+ */
+async function ingresarOrdenImportada(cuenta, orden, envioYaLeido = null) {
+  const comprador = orden.buyer || {};
+  const payload = {
+    businessId: cuenta.businessId,
+    plataforma: 'mercadolibre',
+    pedidoExterno: String(orden.id),
+    total: Number(orden.total_amount) || null,
+    comprador: {
+      nombre: [comprador.first_name, comprador.last_name].filter(Boolean).join(' ').trim()
+        || comprador.nickname || null,
+      documento: comprador.billing_info?.doc_number || null,
+      email: comprador.email || null,
+    },
+    items: (orden.order_items || []).map((l) => ({
+      sku: skuDeLinea(l) || `SIN-SKU:${l.item?.id || 's/id'}`,
+      cantidad: Number(l.quantity) || 0,
+      precioUnitario: Number(l.unit_price) || null,
+    })).filter((i) => i.cantidad > 0),
+  };
+  if (!payload.items.length) return { repetido: false, estado: 'ignorada' };
+
+  const { pedido, repetido } = await cola.encolarYProcesar(payload);
+
+  const envio = envioYaLeido
+    || (orden.shipping?.id ? await traerEnvio(cuenta, String(orden.shipping.id)).catch(() => null) : null);
+  if (envio && !pedido.envioId) {
+    await pedido.update({
+      envioId: envio.envioId,
+      envioTipo: envio.envioTipo,
+      despacharAntesDe: envio.despacharAntesDe,
+      estadoEnvioMl: envio.estadoMl,
+    });
+  }
+
+  return { repetido, estado: pedido.estado, pedidoId: pedido.id };
+}
+
 module.exports = {
-  procesarNotificacion, traerOrden, traerEnvio,
+  procesarNotificacion, traerOrden, traerEnvio, importarPedidos,
   __skuDeLinea: skuDeLinea, __tipoDeEnvio: tipoDeEnvio, __idDeRecurso: idDeRecurso, TOPICOS,
 };

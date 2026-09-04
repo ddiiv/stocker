@@ -103,6 +103,49 @@ const sync = async (req, res, next) => {
 };
 
 /*
+ * POST /api/mercadolibre/importar-pedidos   { dias?: 7, desde?: ISO }
+ *
+ * Trae las ventas anteriores a que se tildaran los tópicos.
+ *
+ * El webhook sólo avisa de lo que pasa desde que está configurado: las ventas
+ * de la semana pasada nunca generaron una notificación para nosotros y por ese
+ * camino no van a llegar nunca.
+ *
+ * Es idempotente —usa la misma puerta que el webhook— así que se puede correr
+ * las veces que haga falta sin apartar stock dos veces.
+ */
+const importarPedidos = async (req, res, next) => {
+  try {
+    const r = await mlPedidos.importarPedidos(req.auth.businessId, {
+      dias: req.body?.dias,
+      desde: req.body?.desde,
+      tope: req.body?.tope,
+    });
+
+    /*
+     * El mensaje cuenta lo que se salteó y por qué.
+     *
+     * "Se importaron 3" a secas, sobre veinte ventas encontradas, hace pensar
+     * que algo se rompió. Lo normal es que la mayoría ya se haya despachado, y
+     * eso hay que decirlo.
+     */
+    const partes = [`${r.importados} pedido(s) importado(s)`];
+    if (r.repetidos) partes.push(`${r.repetidos} ya estaban`);
+    if (r.yaDespachados) partes.push(`${r.yaDespachados} ya se habían despachado y no se tocaron`);
+    if (r.cancelados) partes.push(`${r.cancelados} cancelado(s) en ML`);
+    if (r.sinStock) partes.push(`${r.sinStock} sin stock para apartar`);
+    if (r.errores.length) partes.push(`${r.errores.length} con error`);
+
+    res.json({
+      ok: true,
+      ...r,
+      mensaje: `Se revisaron ${r.encontrados} venta(s) desde el `
+        + `${new Date(r.desde).toLocaleDateString('es-AR')}: ${partes.join(', ')}.`,
+    });
+  } catch (e) { next(e); }
+};
+
+/*
  * GET  /api/mercadolibre/locales
  * PUT  /api/mercadolibre/locales   { locationIds: [1, 5] }
  *
@@ -272,4 +315,4 @@ const notificacion = async (req, res) => {
   }
 };
 
-module.exports = { status, authUrl, callback, disconnect, preview, sync, getLocales, setLocales, listLinks, upsertLink, deleteLink, notificacion };
+module.exports = { status, authUrl, callback, disconnect, preview, sync, importarPedidos, getLocales, setLocales, listLinks, upsertLink, deleteLink, notificacion };

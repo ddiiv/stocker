@@ -331,6 +331,13 @@ r.delete('/mercadolibre/disconnect',  requireAuth, requirePermission('integracio
 r.get   ('/mercadolibre/preview',     requireAuth, requirePermission('integraciones','ver'),    mlCtrl.preview);
 // Qué locales abastecen las ventas online. Se configura desde acá además de
 // Empleados → Locales: es donde se lo mira cuando el número publicado no cierra.
+/*
+ * Traer las ventas anteriores a que se configuraran las notificaciones.
+ *
+ * Aparta stock, así que pide permiso de editar y la feature de ecommerce, igual
+ * que sincronizar. Ver mercadolibrePedidosService.importarPedidos.
+ */
+r.post  ('/mercadolibre/importar-pedidos', requireAuth, requirePermission('integraciones','editar'), requireFeature(FEATURES.ECOMMERCE), mlCtrl.importarPedidos);
 r.get   ('/mercadolibre/locales',     requireAuth, requirePermission('integraciones','ver'),    mlCtrl.getLocales);
 r.put   ('/mercadolibre/locales',     requireAuth, requirePermission('integraciones','editar'), mlCtrl.setLocales);
 r.post  ('/mercadolibre/sync',        requireAuth, requirePermission('integraciones','editar'), requireFeature(FEATURES.ECOMMERCE), mlCtrl.sync);
