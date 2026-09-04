@@ -316,6 +316,15 @@ r.post('/arca/cuits/:cuitId/verify',    requireAuth, requirePermission('facturac
 // El callback es público: ML redirige al usuario ahí sin nuestro JWT,
 // el negocio se identifica por el parámetro `state`.
 r.get   ('/mercadolibre/callback',    mlCtrl.callback);
+/*
+ * Las notificaciones de Mercado Libre. Sin sesión: las manda ML.
+ *
+ * Lleva el mismo limitador que el resto de lo público. ML no firma las
+ * notificaciones, así que cualquiera que sepa la URL puede golpearla; lo que
+ * la protege es que sólo se toma el id del recurso y los datos se leen de la
+ * API con nuestro token. Ver mercadolibrePedidosService.
+ */
+r.post  ('/mercadolibre/notificaciones', mlCtrl.notificacion);
 r.get   ('/mercadolibre/status',      requireAuth, requirePermission('integraciones','ver'),    mlCtrl.status);
 r.get   ('/mercadolibre/auth-url',    requireAuth, requirePermission('integraciones','editar'), requireFeature(FEATURES.ECOMMERCE), mlCtrl.authUrl);
 r.delete('/mercadolibre/disconnect',  requireAuth, requirePermission('integraciones','editar'), mlCtrl.disconnect);

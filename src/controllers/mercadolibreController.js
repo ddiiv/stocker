@@ -1,4 +1,6 @@
 const ml = require('../services/mercadolibreService');
+const mlPedidos = require('../services/mercadolibrePedidosService');
+const { log, sinDatos } = require('../utils/logger');
 const { MercadoLibreAccount, MercadoLibreLink } = require('../models');
 
 // GET /api/mercadolibre/status
@@ -139,4 +141,52 @@ const deleteLink = async (req, res, next) => {
   } catch (e) { next(e); }
 };
 
-module.exports = { status, authUrl, callback, disconnect, preview, sync, listLinks, upsertLink, deleteLink };
+/*
+ * POST /api/mercadolibre/notificaciones
+ *
+ * Lo llama Mercado Libre, sin sesión. Ver mercadolibrePedidosService: la
+ * defensa no está en creerle a la notificación —ML no las firma— sino en no
+ * creerle: sólo se toma el id del recurso y los datos se leen de la API con
+ * nuestro token.
+ *
+ * Se contesta 200 SIEMPRE, incluso cuando se ignora o cuando algo falla.
+ *
+ * Es deliberado. ML reintenta hasta ocho veces ante un 4xx o un 5xx, y la
+ * mayoría de lo que ignoramos no va a cambiar por reintentar: un tópico que no
+ * usamos, un vendedor que no tiene cuenta acá. Devolver error convierte eso en
+ * ocho notificaciones por cada una, que es como se tapa un webhook.
+ *
+ * Un fallo real —la API de ML caída, el token vencido— sí se pierde. Se
+ * registra con detalle para poder recuperarlo, y es el motivo por el que
+ * conviene tener también la consulta periódica de respaldo.
+ */
+const notificacion = async (req, res) => {
+  const cuerpo = req.body || {};
+  /*
+   * Se responde ANTES de procesar.
+   *
+   * ML corta a los pocos segundos y reintenta lo que no contestó a tiempo.
+   * Leer la orden y apartar stock puede llevar más que eso, y un reintento
+   * mientras el primero todavía corre es la carrera que la cola tiene que
+   * resolver de nuevo. Contestando primero, no ocurre.
+   */
+  res.status(200).json({ ok: true });
+
+  try {
+    const r = await mlPedidos.procesarNotificacion({
+      topic: cuerpo.topic,
+      resource: cuerpo.resource,
+      userId: cuerpo.user_id,
+    });
+    if (r?.ignorado) {
+      log.info('ml-webhook', 'notificación ignorada', { motivo: r.ignorado, tema: r.tema });
+    }
+  } catch (e) {
+    // Sin datos del comprador ni del pedido: esto va al log de producción.
+    log.error('ml-webhook', 'no se pudo procesar la notificación', {
+      tema: cuerpo.topic, motivo: sinDatos(e.message, 200),
+    });
+  }
+};
+
+module.exports = { status, authUrl, callback, disconnect, preview, sync, listLinks, upsertLink, deleteLink, notificacion };
