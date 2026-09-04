@@ -14,6 +14,7 @@ import { camaraDisponible } from "../components/scanner/CameraScanner";
 import ScannerVentaCamara from "../components/scanner/ScannerVentaCamara";
 import { formatCurrency } from "../utils/formatters";
 import { esMayorista as evaluarMayorista, describir as describirRegla, reglaDelLocal } from "../utils/reglaMayorista";
+import { calcularDescuento, descuentoParaApi } from "../utils/descuento";
 import { PageHeader, Card } from "../components/ui/Layout";
 import { useAuth } from "../context/AuthContext";
 import { esAdministradorTotal } from "../utils/permissions";
@@ -319,26 +320,10 @@ export default function PosPage() {
   const precioDe = (i) => (esMayorista ? i.precioMayorista : i.precioMinorista);
   const subtotal = items.reduce((s, i) => s + precioDe(i) * i.cantidad, 0);
 
-  /*
-   * El descuento se calcula acá y se manda como lo cargó la persona.
-   *
-   * El servidor recalcula lo mismo y guarda las dos formas —el importe porque
-   * es lo que se descontó de verdad, el porcentaje porque es como se lee de un
-   * vistazo—, así que lo de acá es sólo para mostrar el total antes de cobrar.
-   *
-   * Se recorta al subtotal: más allá de ahí el total se iría a negativo, y una
-   * venta en negativo es una devolución que nadie pidió. El servidor lo rechaza
-   * igual; acá se frena antes para que el número grande nunca muestre un
-   * imposible.
-   */
-  const descuentoPedido = Math.max(0, Number(descuentoValor) || 0);
-  const descuento = descuentoModo === "pct"
-    ? Math.round(subtotal * Math.min(descuentoPedido, 100) / 100 * 100) / 100
-    : Math.min(Math.round(descuentoPedido * 100) / 100, subtotal);
-  const descuentoPctEquivale = subtotal > 0
-    ? Math.round(descuento / subtotal * 100 * 100) / 100
-    : 0;
-  const total = subtotal - descuento;
+  // El cálculo vive en utils/descuento: lo comparte con Ventas y Cotizaciones,
+  // que muestra el mismo total para la misma venta.
+  const { descuento, total, pctEquivale: descuentoPctEquivale, excede: descuentoExcede } =
+    calcularDescuento(descuentoModo, descuentoValor, subtotal);
 
   const esFiado = condicionPago === "cuenta_corriente";
   const clienteElegido = clienteSel;
@@ -475,14 +460,7 @@ export default function PosPage() {
           ? { descontarStock: seLoLleva }
           : { estado: "pagado", pagos: lineasParaApi(pagos, metodos, total) }),
         items: items.map((i) => ({ productVariantId: i.id, cantidad: i.cantidad })),
-        // Una sola de las dos: el servidor rechaza que lleguen juntas, porque
-        // decidir cuál gana en silencio es lo que hace que el ticket diga una
-        // cosa y la caja otra.
-        ...(descuento > 0
-          ? (descuentoModo === "pct"
-            ? { descuentoPct: Math.min(descuentoPedido, 100) }
-            : { descuentoMonto: descuento })
-          : {}),
+        ...descuentoParaApi(descuentoModo, descuentoValor, subtotal),
       });
       setUltimaVenta(venta);
       // Lo que hubo que dar de alta. Se muestra en la pantalla de venta
@@ -862,7 +840,7 @@ export default function PosPage() {
                   </div>
                 )}
 
-                {descuentoModo === "monto" && descuentoPedido > subtotal && (
+                {descuentoExcede && (
                   <p className="mt-1 text-xs text-brick-500">
                     El descuento no puede ser mayor que la venta: se aplicó {formatCurrency(subtotal)}.
                   </p>

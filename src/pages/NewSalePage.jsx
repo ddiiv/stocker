@@ -11,6 +11,7 @@ import PaymentSplit, { lineasParaApi, calcularTotales, faltaDestinoCuit } from "
 import { fetchBusinessCuits } from "../services/businessCuitService";
 import { formatCurrency } from "../utils/formatters";
 import { esMayorista as evaluarMayorista, describir as describirRegla, reglaDelLocal } from "../utils/reglaMayorista";
+import { calcularDescuento, descuentoParaApi } from "../utils/descuento";
 import { PageHeader, Card } from "../components/ui/Layout";
 import AvisoError from "../components/ui/AvisoError";
 import { analizarError } from "../utils/errores";
@@ -36,7 +37,15 @@ export default function NewSalePage() {
   const [consumidorFinal, setConsumidorFinal] = useState(false);
   const [employeeId, setEmployeeId] = useState("");
   const [locationId, setLocationId] = useState("");
-  const [descuentoPct, setDescuentoPct] = useState(0);
+  /*
+   * El descuento, en plata o en porcentaje.
+   *
+   * Los dos modos comparten un solo campo. Con dos campos, uno queda siempre en
+   * cero y en el apuro se carga el que no es. Es el mismo control que el punto
+   * de venta, y el mismo cálculo: `utils/descuento`.
+   */
+  const [descuentoModo, setDescuentoModo] = useState("pct");
+  const [descuentoValor, setDescuentoValor] = useState("");
   const [metodos, setMetodos] = useState([]);
   const [pagos, setPagos] = useState([]);
   const [marcarPagada, setMarcarPagada] = useState(false);
@@ -126,8 +135,8 @@ export default function NewSalePage() {
   const totalEnLista = items.reduce((s, i) => s + (Number(i.precioUnitario) || 0) * i.cantidad, 0);
   const esMayorista   = evaluarMayorista(localRegla, totalUnidades, totalEnLista);
   const subtotal = items.reduce((s, i) => s + i.cantidad * (esMayorista ? i.precioMayorista : i.precioUnitario), 0);
-  const descuento = Math.round(subtotal * descuentoPct / 100);
-  const total     = subtotal - descuento;
+  const { descuento, total, pctEquivale: descuentoPctEquivale, excede: descuentoExcede } =
+    calcularDescuento(descuentoModo, descuentoValor, subtotal);
   // Con recargo por medio de pago, lo que se le cobra al cliente difiere del
   // neto de mercadería. El resumen tiene que mostrar el importe real.
   const { ajusteTotal, totalCobro } = calcularTotales(pagos, metodos, total);
@@ -146,7 +155,7 @@ export default function NewSalePage() {
         locationId: locationId || null,
         employeeId,
         items: items.map((i) => ({ productVariantId: i.productVariantId, cantidad: i.cantidad })),
-        descuentoPct,
+        ...descuentoParaApi(descuentoModo, descuentoValor, subtotal),
         estado: tipo === "venta" && marcarPagada ? "pagado" : "pendiente",
         pagos: tipo === "venta" && marcarPagada ? lineasParaApi(pagos, metodos, total) : undefined,
         notas,
@@ -392,10 +401,68 @@ export default function NewSalePage() {
                 <span className={`font-medium ${esMayorista ? "text-teal-600" : "text-ink-900"}`}>{totalUnidades} {esMayorista ? "(mayorista)" : "(minorista)"}</span>
               </div>
               <div className="flex items-center justify-between"><span className="text-ink-600">Subtotal</span><span>{formatCurrency(subtotal)}</span></div>
-              <div className="flex items-center justify-between">
-                <span className="text-ink-600">Descuento (%)</span>
-                <input type="number" min="0" max="100" className="input h-8 w-20 text-right text-xs" value={descuentoPct} onChange={(e) => setDescuentoPct(Number(e.target.value))} />
+              {/*
+                * El descuento, en porcentaje o en plata.
+                *
+                * Antes sólo entraba el porcentaje, así que para cerrar en un
+                * número redondo —"te lo dejo en 45.000"— había que sacar la
+                * cuenta a mano, redondear, y cargar un porcentaje que casi
+                * nunca daba el número prometido.
+                */}
+              <div className="flex items-center justify-between gap-2">
+                <span className="shrink-0 text-ink-600">Descuento</span>
+                <div className="flex items-center gap-2">
+                  <div className="flex rounded-md bg-paper-100 p-0.5">
+                    {[
+                      { valor: "pct", texto: "%" },
+                      { valor: "monto", texto: "$" },
+                    ].map((op) => (
+                      <button
+                        key={op.valor}
+                        type="button"
+                        onClick={() => setDescuentoModo(op.valor)}
+                        aria-pressed={descuentoModo === op.valor}
+                        className={`rounded px-2.5 py-1 text-xs font-semibold transition-colors ${
+                          descuentoModo === op.valor
+                            ? "bg-paper-50 text-ink-950 shadow-sm"
+                            : "text-ink-500"
+                        }`}
+                      >
+                        {op.texto}
+                      </button>
+                    ))}
+                  </div>
+                  <input
+                    type="number"
+                    min="0"
+                    max={descuentoModo === "pct" ? 100 : undefined}
+                    inputMode="decimal"
+                    className="input h-8 w-24 text-right text-xs"
+                    value={descuentoValor}
+                    placeholder="0"
+                    aria-label={descuentoModo === "pct" ? "Descuento en porcentaje" : "Descuento en pesos"}
+                    onChange={(e) => setDescuentoValor(e.target.value)}
+                  />
+                </div>
               </div>
+
+              {descuento > 0 && (
+                <div className="flex items-baseline justify-between text-xs">
+                  <span className="text-ink-500">− {formatCurrency(descuento)}</span>
+                  {/* La equivalencia, siempre en la unidad que NO se cargó. */}
+                  <span className="font-medium text-brass-700">
+                    {descuentoModo === "monto"
+                      ? `equivale al ${descuentoPctEquivale}%`
+                      : `son ${formatCurrency(descuento)}`}
+                  </span>
+                </div>
+              )}
+
+              {descuentoExcede && (
+                <p className="text-xs text-brick-500">
+                  El descuento no puede ser mayor que la venta: se aplicó {formatCurrency(subtotal)}.
+                </p>
+              )}
               <div className="flex items-center justify-between border-t border-line pt-3 font-display text-base font-semibold text-ink-950">
                 <span>Total</span><span>{formatCurrency(total)}</span>
               </div>
