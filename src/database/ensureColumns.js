@@ -98,6 +98,19 @@ const COLUMNAS_ESPERADAS = {
     sincronizadoCon: { type: DataTypes.STRING(120), allowNull: true },
     sincronizadoEn:  { type: DataTypes.DATE, allowNull: true },
   },
+  plataforma_pedidos: {
+    /*
+     * Los datos del envío, para armar la jornada del depósito. Ver el modelo:
+     * se guardan al recibir el pedido y no se le vuelven a preguntar a la
+     * plataforma en cada vista.
+     */
+    envioId:          { type: DataTypes.STRING(60), allowNull: true },
+    envioTipo:        { type: DataTypes.STRING(30), allowNull: true },
+    despacharAntesDe: { type: DataTypes.DATE, allowNull: true },
+    estadoEnvio:      { type: DataTypes.STRING(20), allowNull: true },
+    despachadoEn:     { type: DataTypes.DATE, allowNull: true },
+    despachadoPorEmployeeId: { type: DataTypes.INTEGER, allowNull: true },
+  },
   variant_stocks: {
     /*
      * Lo apartado y todavía no despachado. Ver el modelo: separa "cuánto hay"

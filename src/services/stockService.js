@@ -506,7 +506,10 @@ async function liberarReserva(variantId, locationId, businessId, cantidad, t = n
  * El movimiento se registra aparte, con `registrarSalidaReservada`, para que el
  * libro de movimientos siga siendo la única fuente de qué pasó.
  */
-async function consumirReserva(variantId, locationId, businessId, cantidad, t = null) {
+async function consumirReserva(
+  variantId, locationId, businessId, cantidad, t = null,
+  { motivo = null, employeeId = null, registrarMovimiento = true } = {},
+) {
   const n = Number(cantidad);
   if (!Number.isInteger(n) || n <= 0) return false;
   const fila = await filaDe(variantId, locationId, businessId, t);
@@ -524,6 +527,35 @@ async function consumirReserva(variantId, locationId, businessId, cantidad, t = 
     },
   );
   if (!tocadas) return false;
+
+  /*
+   * El movimiento se escribe acá y no lo escribe quien llama.
+   *
+   * Es la misma razón por la que `mover` es el único punto de escritura: si el
+   * cambio de stock y su renglón en el libro se hicieran en dos lugares
+   * distintos, alcanzaría con un `return` temprano para que la mercadería se
+   * mueva sin dejar rastro. Y un egreso sin renglón es inventario que
+   * desapareció.
+   *
+   * Los números salen de la fila releída, no de lo que había antes de la
+   * sentencia: entre una cosa y la otra pudo entrar otro movimiento.
+   */
+  if (registrarMovimiento) {
+    await fila.reload({ transaction: t });
+    const stockNuevo = Number(fila.stock) || 0;
+    await StockMovement.create({
+      productVariantId: variantId,
+      locationId,
+      employeeId,
+      tipo: 'egreso',
+      cantidad: n,
+      stockAnterior: stockNuevo + n,
+      stockNuevo,
+      motivo: (motivo || 'Salida de mercadería apartada').slice(0, 255),
+      fechaMovimiento: new Date(),
+    }, { transaction: t });
+  }
+
   await recalcularTotal(variantId, t);
   return true;
 }

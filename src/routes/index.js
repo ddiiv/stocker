@@ -10,6 +10,7 @@ const { validatePasswordBody } = require('../utils/passwordPolicy');
 const productCtrl  = require('../controllers/productController');
 const feriaCtrl    = require('../controllers/feriaController');
 const colaCtrl     = require('../controllers/colaOnlineController');
+const enviosCtrl   = require('../controllers/enviosDelDiaController');
 const employeeCtrl = require('../controllers/employeeController');
 const saleCtrl     = require('../controllers/saleController');
 const invoiceCtrl  = require('../controllers/invoiceController');
@@ -214,6 +215,21 @@ r.post('/account/password/confirmar', requireAuth, requireOwner, validatePasswor
  */
 r.post('/online/pedidos',   requireAuth, requirePermission('ventas', 'editar'), colaCtrl.postPedido);
 r.get ('/online/pedidos',   requireAuth, requireAnyPermission(['ventas', 'stock'], 'ver'), colaCtrl.getPedidos);
+/*
+ * ── Envíos del Día ────────────────────────────────────────────────
+ *
+ * La jornada del depósito: qué sale hoy, qué hay que bajar del estante y el
+ * despacho, que es donde la reserva se convierte en egreso.
+ *
+ * Ver es permiso de stock o de ventas —quien arma paquetes suele tener uno de
+ * los dos—. Despachar exige EDITAR stock: es lo único acá que mueve
+ * inventario, y mueve el de verdad.
+ */
+r.get ('/envios/del-dia',       requireAuth, requireAnyPermission(['stock', 'ventas'], 'ver'), enviosCtrl.getDelDia);
+r.get ('/envios/del-dia/pdf',   requireAuth, requireAnyPermission(['stock', 'ventas'], 'ver'), enviosCtrl.getPdf);
+r.post('/envios/:id/despachar', requireAuth, requirePermission('stock', 'editar'), enviosCtrl.postDespachar);
+r.post('/envios/:id/faltante',  requireAuth, requirePermission('stock', 'editar'), enviosCtrl.postFaltante);
+
 r.post('/online/procesar',  requireAuth, requirePermission('ventas', 'editar'), colaCtrl.postProcesar);
 
 r.get ('/feria/candidatos', requireAuth, requirePermission('stock', 'ver'),    feriaCtrl.getCandidatos);

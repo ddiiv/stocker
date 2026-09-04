@@ -383,6 +383,36 @@ const PedidoPlataforma = db.define('PedidoPlataforma', {
    * El documento es lo que hace falta para facturar: sin él la venta online
    * queda a consumidor final y después hay que ir a buscarlo a mano.
    */
+  /*
+   * ── El envío ─────────────────────────────────────────────────
+   *
+   * Lo que hace falta para armar la jornada del depósito. Se guarda al recibir
+   * el pedido y no se vuelve a preguntar: la pantalla de Envíos del Día se mira
+   * decenas de veces por día, y consultar la plataforma en cada vista quema el
+   * límite de la API para no enterarse de nada nuevo.
+   */
+  envioId:        { type: DataTypes.STRING(60), allowNull: true },
+  /*
+   * Cómo se despacha. 'flex' es el que tiene reloj —el vendedor entrega el
+   * mismo día y no cumplir golpea la reputación—, pero la jornada del depósito
+   * incluye todo lo que sale hoy, así que los otros también entran y se
+   * distinguen por acá.
+   */
+  envioTipo:      { type: DataTypes.STRING(30), allowNull: true },
+  // Hasta cuándo hay para despacharlo. Es lo que ordena la lista: primero lo
+  // que vence antes, no lo que llegó antes.
+  despacharAntesDe: { type: DataTypes.DATE, allowNull: true },
+  /*
+   * Dónde está el paquete en la jornada: pendiente → despachado.
+   *
+   * `con_faltante` es el estado que aparece cuando el pickeador no encuentra la
+   * prenda. No toca el stock a propósito: el egreso nunca ocurrió, así que el
+   * estante sigue diciendo la verdad y la diferencia se resuelve con un
+   * recuento, no desde la pantalla de picking.
+   */
+  estadoEnvio:    { type: DataTypes.STRING(20), allowNull: true },
+  despachadoEn:   { type: DataTypes.DATE, allowNull: true },
+  despachadoPorEmployeeId: { type: DataTypes.INTEGER, allowNull: true },
   compradorNombre:    { type: DataTypes.STRING(150), allowNull: true },
   compradorDocumento: { type: DataTypes.STRING(20),  allowNull: true },
   compradorEmail:     { type: DataTypes.STRING(150), allowNull: true },
