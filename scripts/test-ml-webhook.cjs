@@ -58,9 +58,10 @@ Module._load = function (pedido) {
 const { Op } = require('sequelize');
 const {
   Business, BusinessLocation, Product, ProductVariant, VariantStock, StockMovement,
-  MercadoLibreAccount, PedidoPlataforma, PedidoPlataformaItem,
+  MercadoLibreAccount, PedidoPlataforma, PedidoPlataformaItem, PackComponente,
 } = require('../src/models');
 const stock = require('../src/services/stockService');
+const packService = require('../src/services/packService');
 const mlPedidos = require('../src/services/mercadolibrePedidosService');
 const ml = require('../src/services/mercadolibreService');
 
@@ -90,8 +91,11 @@ const ML_USER = '999000111';
   };
   await limpiar();
   await MercadoLibreAccount.destroy({ where: { mlUserId: ML_USER } });
+  const packsViejos = await ProductVariant.findAll({ where: { sku: { [Op.like]: 'QA-MLPACK%' } } });
+  await PackComponente.destroy({ where: { packVariantId: packsViejos.map((x) => x.id) } });
+  await ProductVariant.destroy({ where: { id: packsViejos.map((x) => x.id) } });
   await ProductVariant.destroy({ where: { sku: { [Op.like]: 'QA-ML-%' } } });
-  await Product.destroy({ where: { sku: 'QA-ML' } });
+  await Product.destroy({ where: { sku: ['QA-ML', 'QA-MLPACK'] } });
 
   const prod = await Product.create({
     businessId: negocio.id, sku: 'QA-ML', skuAgrupador: 'QA-ML', titulo: 'QA Buzo',
@@ -113,6 +117,27 @@ const ML_USER = '999000111';
     accessToken: 'TOKEN-QA', refreshToken: 'REFRESH-QA',
     tokenExpiraEn: new Date(Date.now() + 5 * 3600 * 1000),
   });
+
+  /*
+   * Un pack sobre el mismo producto.
+   *
+   * Es el caso que se reporta como roto: en Mercado Libre se publica el SKU del
+   * pack, y lo que tiene que bajar del estante son las 3 unidades de la
+   * variante, no un pack —que no tiene stock propio—.
+   */
+  const prodPack = await Product.create({
+    businessId: negocio.id, sku: 'QA-MLPACK', skuAgrupador: 'QA-MLPACK',
+    titulo: 'QA Pack x3 Buzo', precioMinorista: 15000, precioMayorista: 15000,
+    costo: 6000, activo: true,
+  });
+  const pack = await ProductVariant.create({
+    productId: prodPack.id, businessId: negocio.id, sku: 'QA-MLPACK-M',
+    variante1Nombre: 'Talle', variante1Valor: 'M', esPack: true,
+    stock: 0, stockMinimo: 0,
+  });
+  await packService.definirComponentes(pack.id, negocio.id, [
+    { componenteVariantId: v.id, cantidad: 3 },
+  ]);
 
   const estante = () => stock.stockEn(v.id, local.id);
   const apartado = async () => {
@@ -351,9 +376,68 @@ const ML_USER = '999000111';
     chk('y sin apartar de nuevo', trasPrimera, await apartado());
 
   } finally {
+    tit('12. UNA VENTA DE UN PACK POR MERCADO LIBRE');
+    /*
+     * Lo que se publica en ML es el SKU del pack. Lo que tiene que bajar del
+     * estante son las unidades de la variante que lleva adentro: un pack no
+     * tiene stock propio, así que si la cola no lo reconociera, el pedido
+     * entraría "parcial" con el SKU marcado como desconocido y no se apartaría
+     * nada. La venta ocurriría igual y el inventario nunca se enteraría.
+     */
+    const antesPack = await estante();
+    const apartadoAntes = await apartado();
+
+    RESPUESTAS.set('/orders/77000012', orden(77000012, {
+      order_items: [{ quantity: 2, unit_price: 15000,
+        item: { id: 'MLAPACK', seller_sku: 'QA-MLPACK-M' } }],
+      shipping: { id: 4400012 },
+    }));
+    RESPUESTAS.set('/shipments/4400012', envio({ id: 4400012, order_id: 77000012 }));
+
+    const rPack = await mlPedidos.procesarNotificacion({
+      topic: 'orders_v2', resource: '/orders/77000012', userId: ML_USER,
+    });
+    chk('la venta del pack se acepta', 'aceptado', rPack.estado);
+    chk('el SKU del pack no queda como desconocido', 0,
+      (rPack.desconocidos || []).length);
+    // 2 packs × 3 unidades = 6 apartadas de la VARIANTE, no del pack.
+    chk('aparta las unidades de la variante', apartadoAntes + 6, await apartado());
+    chk('sin tocar el estante todavía', antesPack, await estante());
+    chk('y el pack no tiene reserva propia', 0,
+      Number((await VariantStock.findOne({
+        where: { productVariantId: pack.id, locationId: local.id },
+      }))?.reservado) || 0);
+
+    /*
+     * Y en la jornada del depósito tiene que verse que es un pack, con lo que
+     * hay que poner adentro de la caja: quien arma no puede adivinar que
+     * "QA-MLPACK-M" son tres buzos talle M.
+     */
+    const envios = require('../src/services/enviosDelDiaService');
+    const jornada = await envios.delDia(negocio.id, { filtro: 'todos', diasAdelante: 30 });
+    const paquete = jornada.paquetes.find(
+      (pq) => pq.ventas.some((vt) => vt.pedidoExterno === '77000012'),
+    );
+    chk('el paquete aparece en Envíos del Día', true, !!paquete);
+    const linea = paquete?.items?.[0];
+    chk('la línea está marcada como pack', true, linea?.esPack);
+    chk('y dice qué lleva adentro', 'QA-ML-1', linea?.componentes?.[0]?.sku);
+    chk('con las unidades ya multiplicadas', 6, linea?.componentes?.[0]?.cantidad);
+    // Y por SKU de variante: el modelo y los dos atributos con su nombre.
+    chk('la línea trae el modelo', 'QA Pack x3 Buzo', linea?.titulo);
+    chk('y el atributo con su nombre', ['Talle', 'M'],
+      [linea?.variante1Nombre, linea?.variante1Valor]);
+    chk('el componente también', ['Talle', 'M'],
+      [linea?.componentes?.[0]?.variante1Nombre, linea?.componentes?.[0]?.variante1Valor]);
+
     tit('Limpieza');
     await limpiar();
     await MercadoLibreAccount.destroy({ where: { mlUserId: ML_USER } });
+    // El pack primero: sus componentes apuntan a la variante.
+    await PackComponente.destroy({ where: { packVariantId: pack.id } });
+    await VariantStock.destroy({ where: { productVariantId: pack.id } });
+    await ProductVariant.destroy({ where: { id: pack.id } });
+    await Product.destroy({ where: { id: prodPack.id } });
     await StockMovement.destroy({ where: { productVariantId: v.id } });
     await VariantStock.destroy({ where: { productVariantId: v.id } });
     await ProductVariant.destroy({ where: { id: v.id } });

@@ -77,10 +77,11 @@ Module._load = function (pedido) {
 
 const { Op } = require('sequelize');
 const {
-  Business, BusinessLocation, Product, ProductVariant, VariantStock, StockMovement,
+  Business, BusinessLocation, Product, ProductVariant, PackComponente, VariantStock, StockMovement,
   MercadoLibreAccount, MercadoLibreLink,
 } = require('../src/models');
 const stock = require('../src/services/stockService');
+const packService = require('../src/services/packService');
 const ml = require('../src/services/mercadolibreService');
 
 let ok = 0, ko = 0;
@@ -103,8 +104,11 @@ const CUANTAS = 204;   // el número exacto que disparó el aviso
   });
 
   await MercadoLibreAccount.destroy({ where: { mlUserId: ML_USER } });
+  const packsViejos = await ProductVariant.findAll({ where: { sku: { [Op.like]: 'QA-SYNCPACK%' } } });
+  await PackComponente.destroy({ where: { packVariantId: packsViejos.map((x) => x.id) } });
+  await ProductVariant.destroy({ where: { id: packsViejos.map((x) => x.id) } });
   await ProductVariant.destroy({ where: { sku: { [Op.like]: 'QA-SYNC-%' } } });
-  await Product.destroy({ where: { sku: 'QA-SYNC' } });
+  await Product.destroy({ where: { sku: ['QA-SYNC', 'QA-SYNCPACK'] } });
 
   const prod = await Product.create({
     businessId: negocio.id, sku: 'QA-SYNC', skuAgrupador: 'QA-SYNC', titulo: 'QA Sync',
@@ -126,12 +130,35 @@ const CUANTAS = 204;   // el número exacto que disparó el aviso
       delta: 10, tipo: 'ingreso', motivo: 'QA sync' });
     variantes.push(v);
   }
+  /*
+   * Un pack publicado en ML.
+   *
+   * Es el caso reportado: la publicación lleva el SKU del pack, y lo que hay
+   * que publicar no es el stock del pack —que no tiene— sino cuántos se pueden
+   * armar con lo que haya de su componente. Con 10 unidades y 3 por pack, son
+   * 3 packs.
+   */
+  const prodPack = await Product.create({
+    businessId: negocio.id, sku: 'QA-SYNCPACK', skuAgrupador: 'QA-SYNCPACK',
+    titulo: 'QA Sync pack', precioMinorista: 300, precioMayorista: 300, costo: 120,
+    activo: true,
+  });
+  const pack = await ProductVariant.create({
+    productId: prodPack.id, businessId: negocio.id, sku: 'QA-SYNCPACK-1',
+    variante1Nombre: 'Pack', variante1Valor: '3 unidades', esPack: true,
+    stock: 0, stockMinimo: 0,
+  });
+  await packService.definirComponentes(pack.id, negocio.id, [
+    { componenteVariantId: variantes[0].id, cantidad: 3 },
+  ]);
+
   publicaciones = variantes.map((v, i) => ({
     id: `MLA${1000 + i}`, title: `Pub ${i}`, seller_custom_field: v.sku,
     // La mitad ya está en 10; la otra mitad en 0 y hay que actualizarla.
     available_quantity: i % 2 === 0 ? 10 : 0,
     status: 'active', variations: [], attributes: [],
   }));
+
 
   await MercadoLibreAccount.create({
     businessId: negocio.id, mlUserId: ML_USER, nickname: 'QA_SYNC',
@@ -222,9 +249,46 @@ const CUANTAS = 204;   // el número exacto que disparó el aviso
     await stock.liberarReserva(variantes[0].id, local.id, negocio.id, 4);
 
   } finally {
+    tit('8. UN PACK PUBLICADO SE SINCRONIZA CON LO QUE SE PUEDE ARMAR');
+    /*
+     * Un pack no tiene fila en `variant_stocks`. Si la sincronización mirara
+     * sólo esa tabla, cada pack publicado saldría con stock cero: dejaría de
+     * venderse de un día para el otro y sin explicación visible.
+     */
+    reset();
+    /*
+     * La publicación del pack se agrega recién acá: sumarla al lote inicial
+     * corría en uno los conteos exactos de los bloques de arriba, que son los
+     * que miden cuántas peticiones salen.
+     */
+    publicaciones.push({
+      id: 'MLAPACK', title: 'Pub pack', seller_custom_field: pack.sku,
+      // Arranca en 0: la sincronización tiene que subirlo a lo que se puede armar.
+      available_quantity: 0, status: 'active', variations: [], attributes: [],
+    });
+    const conPack = await ml.sincronizarStock(negocio.id, { simular: true, skus: [pack.sku] });
+    const linea = (conPack.resultados || []).find((d) => d.sku === pack.sku);
+    chk('el pack aparece en la sincronización', true, !!linea);
+    // 10 unidades del componente, 3 por pack → 3 packs.
+    chk('publica lo que se puede armar, no cero', 3, linea?.stockStocker);
+    chk('y ML lo tenía en cero, así que hay que mandarlo', 'pendiente', linea?.estado);
+
+    // Y si el componente baja, el pack baja con él sin que nadie lo recalcule.
+    await stock.mover({ variantId: variantes[0].id, businessId: negocio.id,
+      locationId: local.id, fijar: 4, tipo: 'ajuste', motivo: 'QA sync pack' });
+    const conMenos = await ml.sincronizarStock(negocio.id, { simular: true, skus: [pack.sku] });
+    chk('con 4 unidades se arma 1 solo', 1,
+      (conMenos.resultados || []).find((d) => d.sku === pack.sku)?.stockStocker);
+    await stock.mover({ variantId: variantes[0].id, businessId: negocio.id,
+      locationId: local.id, fijar: 10, tipo: 'ajuste', motivo: 'QA sync pack' });
+
     tit('Limpieza');
     const ids = variantes.map((v) => v.id);
-    await MercadoLibreLink.destroy({ where: { businessId: negocio.id, sku: { [Op.like]: 'QA-SYNC-%' } } });
+    // El pack primero: su composición apunta a una de estas variantes.
+    await PackComponente.destroy({ where: { packVariantId: pack.id } });
+    await ProductVariant.destroy({ where: { id: pack.id } });
+    await Product.destroy({ where: { id: prodPack.id } });
+    await MercadoLibreLink.destroy({ where: { businessId: negocio.id, sku: { [Op.like]: 'QA-SYNC%' } } });
     await StockMovement.destroy({ where: { productVariantId: ids } });
     await VariantStock.destroy({ where: { productVariantId: ids } });
     await ProductVariant.destroy({ where: { id: ids } });

@@ -208,7 +208,10 @@ async function delDia(businessId, {
       where: { id: idsVariante },
       attributes: ['id', 'sku', 'codigoBarras', 'esPack', 'variante1Nombre', 'variante1Valor',
         'variante2Nombre', 'variante2Valor'],
-      include: [{ model: Product, as: 'producto', attributes: ['id', 'titulo', 'skuAgrupador'] }],
+      include: [{
+        model: Product, as: 'producto',
+        attributes: ['id', 'titulo', 'skuAgrupador', 'modelo'],
+      }],
     })
     : [];
   const porVariante = new Map(variantes.map((v) => [v.id, v]));
@@ -233,8 +236,9 @@ async function delDia(businessId, {
   const variantesComponente = idsComponentes.length
     ? await ProductVariant.findAll({
       where: { id: idsComponentes },
-      attributes: ['id', 'sku', 'codigoBarras', 'variante1Valor', 'variante2Valor'],
-      include: [{ model: Product, as: 'producto', attributes: ['titulo'] }],
+      attributes: ['id', 'sku', 'codigoBarras', 'variante1Nombre', 'variante1Valor',
+        'variante2Nombre', 'variante2Valor'],
+      include: [{ model: Product, as: 'producto', attributes: ['titulo', 'modelo'] }],
     })
     : [];
   const porComponente = new Map(variantesComponente.map((v) => [v.id, v]));
@@ -252,6 +256,22 @@ async function delDia(businessId, {
   }
 
   const describir = (v) => [v?.variante1Valor, v?.variante2Valor].filter(Boolean).join(' · ');
+
+  /*
+   * Los atributos con su nombre: "Color: Negro · Talle: M".
+   *
+   * Sólo los valores —"Negro · M"— alcanzan cuando quien arma conoce el
+   * producto de memoria, y no alcanzan cuando no. "38" puede ser un talle o un
+   * color de una carta de colores numerada, y con dos ejes iguales —"S / M"
+   * sobre un producto de Talle y Largo— no hay forma de saber cuál es cuál.
+   * Quien está en el depósito con la caja abierta necesita las dos cosas.
+   */
+  const atributos = (v) => ({
+    variante1Nombre: v?.variante1Nombre || null,
+    variante1Valor: v?.variante1Valor || null,
+    variante2Nombre: v?.variante2Nombre || null,
+    variante2Valor: v?.variante2Valor || null,
+  });
 
   /*
    * Filtrar por local se hace acá y no en el `where` de arriba: el local vive
@@ -326,7 +346,9 @@ async function delDia(businessId, {
             return {
               sku: cv?.sku || `#${c.componenteVariantId}`,
               titulo: cv?.producto?.titulo || null,
-              variante: [cv?.variante1Valor, cv?.variante2Valor].filter(Boolean).join(' · '),
+              modelo: cv?.producto?.modelo || null,
+              variante: describir(cv),
+              ...atributos(cv),
               codigoBarras: cv?.codigoBarras || null,
               cantidad: c.cantidad * i.cantidad,
               porPack: c.cantidad,
@@ -338,9 +360,18 @@ async function delDia(businessId, {
           sku: i.sku,
           cantidad: i.cantidad,
           titulo: v?.producto?.titulo || null,
+          modelo: v?.producto?.modelo || null,
           variante: describir(v),
+          ...atributos(v),
           codigoBarras: v?.codigoBarras || null,
           esPack: Boolean(v?.esPack),
+          /*
+           * Cuántas unidades lleva cada pack, para poder decirlo sin que la
+           * pantalla tenga que sumar los componentes: "PACK · 3 unidades".
+           */
+          unidadesPorPack: componentes
+            ? componentes.reduce((n, c) => n + (c.porPack || 0), 0)
+            : null,
           componentes,
           locationId: i.locationId,
           local: nombreLocal.get(i.locationId) || null,
@@ -427,7 +458,13 @@ async function delDia(businessId, {
       acumulado.set(k, {
         sku: linea.sku,
         titulo: linea.titulo,
+        modelo: linea.modelo || null,
         variante: linea.variante,
+        // Los atributos con su nombre: ver `atributos` más arriba.
+        variante1Nombre: linea.variante1Nombre || null,
+        variante1Valor: linea.variante1Valor || null,
+        variante2Nombre: linea.variante2Nombre || null,
+        variante2Valor: linea.variante2Valor || null,
         codigoBarras: linea.codigoBarras,
         locationId: linea.locationId,
         local: linea.local,
@@ -457,7 +494,9 @@ async function delDia(businessId, {
       if (i.esPack && i.componentes?.length) {
         for (const c of i.componentes) {
           sumar({
-            sku: c.sku, titulo: c.titulo, variante: c.variante,
+            sku: c.sku, titulo: c.titulo, modelo: c.modelo, variante: c.variante,
+            variante1Nombre: c.variante1Nombre, variante1Valor: c.variante1Valor,
+            variante2Nombre: c.variante2Nombre, variante2Valor: c.variante2Valor,
             codigoBarras: c.codigoBarras, locationId: i.locationId, local: i.local,
             sinResolver: false, deLosPacks: [i.sku],
           }, c.cantidad);

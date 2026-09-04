@@ -104,6 +104,28 @@ function espacio(doc, y, alto, cab, pagina) {
   return { y: encabezado(doc, cab, nueva), pagina: nueva };
 }
 
+/*
+ * El artículo, dicho entero: modelo y los dos atributos CON su nombre.
+ *
+ * En pantalla se puede pasar el mouse y ver más; en una hoja apoyada en una
+ * mesa, lo que está impreso es todo lo que hay. "Negro · M" alcanza cuando
+ * quien arma conoce el producto de memoria; "38" solo, no —puede ser un talle
+ * o un color de una carta numerada—.
+ */
+function describirArticulo(x) {
+  const ejes = [
+    [x.variante1Nombre, x.variante1Valor],
+    [x.variante2Nombre, x.variante2Valor],
+  ].filter(([, valor]) => valor)
+    .map(([nombre, valor]) => (nombre ? `${nombre}: ${valor}` : valor));
+
+  const partes = [x.titulo || x.sku];
+  if (x.modelo) partes.push(`modelo ${x.modelo}`);
+  if (ejes.length) partes.push(ejes.join(' · '));
+  else if (x.variante) partes.push(x.variante);
+  return partes.join(' · ');
+}
+
 function tituloSeccion(doc, y, texto, bajada) {
   doc.font('Helvetica-Bold').fontSize(11).fillColor(COLOR.texto)
     .text(texto, MARGEN, y, { lineBreak: false });
@@ -168,7 +190,7 @@ async function generarPickingPdf(jornada, { nombreNegocio = 'Stocker', local = n
     doc.font('Helvetica-Bold').fontSize(11).fillColor(COLOR.texto)
       .text(`${linea.unidades}`, X_CANT, y - 2, { width: 20, align: 'right', lineBreak: false });
 
-    const nombre = `${linea.titulo || linea.sku}${linea.variante ? ` · ${linea.variante}` : ''}`;
+    const nombre = describirArticulo(linea);
     doc.font('Helvetica').fontSize(9.5).fillColor(COLOR.texto)
       .text(nombre, X_NOMBRE, y - 1, { width: UTIL - 200, lineBreak: false });
 
@@ -177,6 +199,20 @@ async function generarPickingPdf(jornada, { nombreNegocio = 'Stocker', local = n
     // En cuántos paquetes se reparte: dice si conviene contar de una y repartir.
     doc.font('Helvetica').fontSize(7).fillColor(COLOR.suave)
       .text(`${linea.enPaquetes}p`, MARGEN, y, { width: UTIL, align: 'right' });
+
+    /*
+     * De qué pack salen estas unidades.
+     *
+     * Sin esto, quien baja seis buzos negros M no entiende por qué son seis
+     * cuando ningún pedido pidió seis: en la pantalla de ML el comprador
+     * compró "2 packs". Nombrar el pack cierra esa cuenta.
+     */
+    if (linea.deLosPacks?.length) {
+      y += 10;
+      doc.font('Helvetica').fontSize(7).fillColor(COLOR.suave)
+        .text(`del pack ${linea.deLosPacks.join(', ')}`,
+          X_NOMBRE, y, { width: UTIL - 120, lineBreak: false });
+    }
 
     if (linea.sinResolver) {
       y += 11;
@@ -268,8 +304,17 @@ async function generarPickingPdf(jornada, { nombreNegocio = 'Stocker', local = n
     for (const i of p.items) {
       doc.font('Helvetica-Bold').fontSize(9).fillColor(COLOR.texto)
         .text(`${i.cantidad} ×`, dentro, yy, { width: 24, lineBreak: false });
+      /*
+       * Que sea un pack se dice en la línea, con las unidades que lleva.
+       * Quien arma no puede adivinar que un SKU cualquiera son tres prendas, y
+       * el detalle de abajo se lee como si fueran artículos aparte si arriba no
+       * dice que es un pack.
+       */
+      const etiquetaPack = i.esPack
+        ? ` [PACK${i.unidadesPorPack ? ` DE ${i.unidadesPorPack}` : ''}]`
+        : '';
       doc.font('Helvetica').fontSize(9).fillColor(COLOR.texto)
-        .text(`${i.titulo || i.sku}${i.variante ? ` · ${i.variante}` : ''}`,
+        .text(`${describirArticulo(i)}${etiquetaPack}`,
           dentro + 26, yy, { width: UTIL - 200, lineBreak: false });
       doc.font('Courier').fontSize(7.5).fillColor(COLOR.suave)
         .text(`${i.sku}${i.local ? `  ${i.local}` : ''}`, MARGEN, yy + 1,
@@ -288,7 +333,7 @@ async function generarPickingPdf(jornada, { nombreNegocio = 'Stocker', local = n
              * existe y sale impreso como un "¹" suelto. Se vio en la primera
              * hoja generada.
              */
-            .text(`- ${c.cantidad} × ${c.titulo || c.sku}${c.variante ? ` · ${c.variante}` : ''}`,
+            .text(`- ${c.cantidad} × ${describirArticulo(c)}`,
               dentro + 26, yy, { width: UTIL - 200, lineBreak: false });
           doc.font('Courier').fontSize(7).fillColor(COLOR.suave)
             .text(c.sku, MARGEN, yy + 1, { width: UTIL - 8, align: 'right' });
