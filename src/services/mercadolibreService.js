@@ -33,6 +33,17 @@ export async function runMlSync(skus) {
  * configura desde acá porque es donde se la mira cuando el número que ML
  * publica no cierra.
  */
+/*
+ * Traer las ventas anteriores a que se configuraran las notificaciones.
+ *
+ * El webhook sólo avisa de lo que pasa desde que está tildado: las ventas de
+ * antes no llegan nunca por ahí. Es idempotente, así que se puede repetir.
+ */
+export async function importarPedidosMl(dias) {
+  const { data } = await http.post("/mercadolibre/importar-pedidos", { dias });
+  return data;
+}
+
 export async function getMlLocales() {
   const { data } = await http.get("/mercadolibre/locales");
   return data;

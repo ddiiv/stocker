@@ -6,7 +6,7 @@ import {
 } from "lucide-react";
 import {
   getMlStatus, getMlAuthUrl, disconnectMl, previewMlSync, runMlSync,
-  getMlLocales, setMlLocales,
+  getMlLocales, setMlLocales, importarPedidosMl,
   getMlLinks, saveMlLink, deleteMlLink,
 } from "../services/mercadolibreService";
 import { PageHeader, Card } from "../components/ui/Layout";
@@ -38,6 +38,11 @@ export default function MercadoLibrePage() {
   // Locales: es donde se los mira cuando el número publicado no cierra.
   const [locales, setLocales] = useState([]);
   const [guardandoLocales, setGuardandoLocales] = useState(false);
+
+  // Traer las ventas viejas. El webhook sólo avisa de lo que pasa desde que
+  // está configurado; lo anterior hay que ir a buscarlo.
+  const [importando, setImportando] = useState(false);
+  const [diasImportar, setDiasImportar] = useState(7);
   const [trabajando, setTrabajando] = useState(false);
   const [links, setLinks] = useState([]);
   const [linkModal, setLinkModal] = useState(false);
@@ -137,6 +142,22 @@ export default function MercadoLibrePage() {
     } catch (e) {
       setError(e.response?.data?.message || "No se pudieron guardar los locales.");
     } finally { setGuardandoLocales(false); }
+  }
+
+  async function importarVentas() {
+    if (!confirm(
+      `Se van a traer las ventas de los últimos ${diasImportar} días que todavía no se despacharon.\n\n`
+      + "Las que ya salieron o se cancelaron NO se tocan: apartarles stock restaría del inventario "
+      + "mercadería que físicamente ya no está.",
+    )) return;
+
+    setImportando(true); setError(""); setAviso("");
+    try {
+      const r = await importarPedidosMl(diasImportar);
+      setAviso(r.mensaje);
+    } catch (e) {
+      setError(e.response?.data?.message || "No se pudieron traer las ventas anteriores.");
+    } finally { setImportando(false); }
   }
 
   async function sincronizar() {
@@ -250,9 +271,35 @@ export default function MercadoLibrePage() {
                   ? `Sincronizar ${aSincronizar.length} publicación(es)`
                   : "Sincronizar stock ahora"}
               </button>
+              {/*
+                * Traer lo anterior al webhook.
+                *
+                * Va al lado de sincronizar porque es la otra mitad de la misma
+                * pregunta —"¿por qué no veo mis ventas?"— y porque es lo
+                * primero que hace falta después de configurar los tópicos.
+                */}
+              <div className="flex items-center gap-1.5">
+                <select className="input h-9 w-28 text-sm"
+                  value={diasImportar} onChange={(e) => setDiasImportar(Number(e.target.value))}>
+                  <option value={3}>3 días</option>
+                  <option value={7}>7 días</option>
+                  <option value={15}>15 días</option>
+                  <option value={30}>30 días</option>
+                </select>
+                <button className="btn-ghost gap-1.5" onClick={importarVentas} disabled={importando}>
+                  {importando
+                    ? <><RefreshCw size={15} className="animate-spin" /> Trayendo…</>
+                    : <><ArrowUpDown size={15} /> Traer ventas anteriores</>}
+                </button>
+              </div>
               <button className="btn-ghost ml-auto" onClick={cargar}><RefreshCw size={15} /> Actualizar</button>
             </div>
             <p className="mt-3 text-xs text-ink-500">
+              Las notificaciones de Mercado Libre sólo avisan de lo que pasa <strong>desde</strong> que se
+              configuraron: para ver las ventas anteriores hay que traerlas con el botón de arriba. Las que ya
+              se despacharon o se cancelaron no se tocan.
+            </p>
+            <p className="mt-2 text-xs text-ink-500">
               Stocker manda el stock hacia MercadoLibre. El matcheo es por SKU: el campo que ML muestra como
               «SKU» en tu publicación tiene que coincidir con el SKU de la variante en Stocker.
             </p>
