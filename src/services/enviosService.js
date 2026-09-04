@@ -57,6 +57,18 @@ export async function despacharPaquete(id) {
   return data;
 }
 
+/**
+ * Vuelve a intentar las líneas de un pedido cuyo SKU no existía cuando entró.
+ *
+ * El caso típico: la venta llegó de Mercado Libre con el SKU de un pack que se
+ * armó después. La línea quedó apuntando a nada y no apartó mercadería, así que
+ * despachar el paquete no descontaría una sola prenda.
+ */
+export async function reprocesarPedido(id) {
+  const { data } = await http.post(`/online/pedidos/${id}/reprocesar`);
+  return data;
+}
+
 /** No se encontró la mercadería. No toca el stock: ver el servicio. */
 export async function marcarFaltante(id, nota) {
   const { data } = await http.post(`/envios/${id}/faltante`, { nota });

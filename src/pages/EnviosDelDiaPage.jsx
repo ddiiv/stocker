@@ -6,11 +6,12 @@ import {
 import { PageHeader, Card } from "../components/ui/Layout";
 import AvisoError from "../components/ui/AvisoError";
 import {
-  fetchJornada, abrirPdfJornada, despacharPaquete, marcarFaltante,
+  fetchJornada, abrirPdfJornada, despacharPaquete, marcarFaltante, reprocesarPedido,
 } from "../services/enviosService";
 import { fetchLocalesDeVenta } from "../services/employeeService";
 import { useAuth } from "../context/AuthContext";
 import { canEdit } from "../utils/permissions";
+import { analizarError } from "../utils/errores";
 
 /*
  * La jornada del depósito.
@@ -176,7 +177,13 @@ export default function EnviosDelDiaPage() {
         envioTipo: soloFlex ? "flex" : null, diasAdelante: dias, filtro,
       }));
     } catch (e) {
-      setError(e);
+      /*
+       * Analizado, no crudo. `AvisoError` espera {titulo, detalle, tipo} y con
+       * un error de axios leía `error.titulo` —que no existe— y pintaba un
+       * recuadro rojo VACÍO: la persona veía que algo falló y ni una palabra de
+       * qué. Estaba así en los cinco manejadores de esta pantalla.
+       */
+      setError(analizarError(e, "No se pudo cargar la jornada."));
       setJornada(null);
     } finally {
       setCargando(false);
@@ -193,7 +200,27 @@ export default function EnviosDelDiaPage() {
       setAviso(r.mensaje);
       await cargar();
     } catch (e) {
-      setError(e);
+      setError(analizarError(e, "No se pudo despachar el paquete."));
+    } finally {
+      setTrabajando(null);
+    }
+  }
+
+  /*
+   * Reprocesa las ventas del paquete que no apartaron mercadería.
+   *
+   * Se hace por venta y no por paquete porque el pedido es la unidad que tiene
+   * las líneas: un envío puede juntar dos ventas y sólo una tener el problema.
+   */
+  async function reprocesar(p) {
+    setTrabajando(p.id); setError(null); setAviso("");
+    try {
+      const rs = [];
+      for (const v of p.ventas || []) rs.push(await reprocesarPedido(v.id));
+      setAviso(rs.map((r) => r.mensaje).join(" "));
+      await cargar();
+    } catch (e) {
+      setError(analizarError(e, "No se pudo apartar el stock."));
     } finally {
       setTrabajando(null);
     }
@@ -218,7 +245,7 @@ export default function EnviosDelDiaPage() {
       setAviso(r.mensaje);
       await cargar();
     } catch (e) {
-      setError(e);
+      setError(analizarError(e, "No se pudo marcar el faltante."));
     } finally {
       setTrabajando(null);
     }
@@ -229,7 +256,7 @@ export default function EnviosDelDiaPage() {
     try {
       await abrirPdfJornada(filtros);
     } catch (e) {
-      setError(e);
+      setError(analizarError(e, "No se pudo generar el PDF."));
     } finally {
       setImprimiendo(false);
     }
@@ -414,6 +441,13 @@ export default function EnviosDelDiaPage() {
                           Este SKU no está en Stocker: no se le descuenta stock.
                         </p>
                       )}
+                      {l.sinApartar && (
+                        <p className="mt-1 flex items-start gap-1 text-[11px] text-brick-500">
+                          <AlertTriangle size={11} className="mt-0.5 shrink-0" />
+                          Esta venta entró antes de que el artículo estuviera cargado, así que no
+                          apartó stock. Reprocesala en su paquete antes de despachar.
+                        </p>
+                      )}
                     </div>
                   </li>
                 ))}
@@ -498,6 +532,14 @@ export default function EnviosDelDiaPage() {
                           {i.sinResolver && (
                             <span className="ml-1.5 text-[11px] text-brick-500">sin cargar en Stocker</span>
                           )}
+                          {/*
+                            * Distinto de "sin cargar": el artículo está, lo que
+                            * falta es que esta venta aparte su mercadería. Se
+                            * arregla con un botón, no dando de alta nada.
+                            */}
+                          {i.sinApartar && (
+                            <span className="ml-1.5 text-[11px] text-brick-500">no apartó stock</span>
+                          )}
                         </span>
                       </div>
 
@@ -532,11 +574,33 @@ export default function EnviosDelDiaPage() {
                   * Los botones sólo donde tienen sentido: un paquete entregado
                   * o cancelado no se despacha, y ofrecerlo invita a tocarlo.
                   */}
+                {/*
+                  * El artículo existe pero la venta no apartó nada: entró antes
+                  * de que estuviera cargado. Despachar así saca el paquete sin
+                  * descontar una prenda, así que el arreglo va ANTES del botón
+                  * de despachar y el de despachar queda bloqueado.
+                  */}
+                {puedeDespachar && p.items?.some((i) => i.sinApartar) && (
+                  <div className="mt-3 flex flex-wrap items-center gap-2 rounded-md border border-brick-200 bg-brick-50 px-3 py-2">
+                    <span className="text-xs text-brick-700">
+                      Esta venta entró antes de que el artículo estuviera cargado, así que no
+                      apartó stock. Si la despachás así, el paquete sale y el inventario no baja.
+                    </span>
+                    <button
+                      className="btn-ghost gap-1.5 px-3 py-1.5 text-xs"
+                      disabled={trabajando === p.id}
+                      onClick={() => reprocesar(p)}
+                    >
+                      <RefreshCw size={13} /> Apartar el stock ahora
+                    </button>
+                  </div>
+                )}
+
                 {puedeDespachar && (p.situacion === "para_enviar" || p.situacion === "con_faltante") && (
                   <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-line pt-3">
                     <button
                       className="btn-accent gap-1.5 px-3 py-1.5 text-xs"
-                      disabled={trabajando === p.id}
+                      disabled={trabajando === p.id || p.items?.some((i) => i.sinApartar)}
                       onClick={() => despachar(p)}
                     >
                       {trabajando === p.id
