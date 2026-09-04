@@ -25,7 +25,12 @@ const PEDIDOS_HECHOS = [];
 const originalLoad = Module._load;
 Module._load = function (pedido) {
   if (pedido === 'axios') {
-    return {
+    /*
+     * `create` incluido: el servicio de ML arma su propio cliente con agente y
+     * timeout propios al cargarse, y sin esto el módulo revienta al importarse
+     * —con la suite entera cayéndose sin llegar a correr una sola prueba.
+     */
+    const cliente = {
       get: async (url) => {
         PEDIDOS_HECHOS.push(url);
         for (const [patron, data] of RESPUESTAS) {
@@ -35,8 +40,11 @@ Module._load = function (pedido) {
         e.response = { status: 404 };
         throw e;
       },
+      put: async () => ({ data: {} }),
       post: async () => ({ data: {} }),
+      create: () => cliente,
     };
+    return cliente;
   }
   return originalLoad.apply(this, arguments);
 };

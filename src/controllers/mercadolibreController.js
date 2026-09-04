@@ -1,7 +1,8 @@
 const ml = require('../services/mercadolibreService');
 const mlPedidos = require('../services/mercadolibrePedidosService');
 const { log, sinDatos } = require('../utils/logger');
-const { MercadoLibreAccount, MercadoLibreLink } = require('../models');
+const { Op } = require('sequelize');
+const { MercadoLibreAccount, MercadoLibreLink, BusinessLocation } = require('../models');
 
 // GET /api/mercadolibre/status
 const status = async (req, res, next) => {
@@ -101,6 +102,88 @@ const sync = async (req, res, next) => {
   } catch (e) { next(e); }
 };
 
+/*
+ * GET  /api/mercadolibre/locales
+ * PUT  /api/mercadolibre/locales   { locationIds: [1, 5] }
+ *
+ * Qué locales abastecen las ventas online: lo que se publica en ML es la suma
+ * de su stock, y de ahí sale el descuento cuando entra un pedido.
+ *
+ * Se puede configurar desde acá y no sólo desde Empleados → Locales porque es
+ * donde se lo mira: quien está viendo por qué ML publica un número que no
+ * entiende, está en esta pantalla, y mandarlo a otra sección a buscar un tilde
+ * es donde se pierde la mitad de la gente.
+ *
+ * Es la misma marca, no una copia: se escribe `abasteceOnline`, así que las dos
+ * pantallas dicen siempre lo mismo.
+ */
+const getLocales = async (req, res, next) => {
+  try {
+    const locales = await BusinessLocation.findAll({
+      where: {
+        businessId: req.auth.businessId,
+        activo: true,
+        // El depósito no: lo que está ahí todavía no está en ningún mostrador,
+        // y ofrecerlo online sería prometer algo que hay que mover antes de
+        // despachar. Un local de evento tampoco lleva stock.
+        tipo: { [Op.notIn]: ['deposito', 'feria'] },
+      },
+      attributes: ['id', 'nombre', 'tipo', 'abasteceOnline'],
+      order: [['nombre', 'ASC']],
+    });
+    res.json(locales);
+  } catch (e) { next(e); }
+};
+
+const setLocales = async (req, res, next) => {
+  try {
+    const pedidos = Array.isArray(req.body?.locationIds) ? req.body.locationIds.map(Number) : null;
+    if (!pedidos) return res.status(400).json({ message: 'Mandá la lista de locales.' });
+
+    /*
+     * Los ids se filtran contra los locales DEL NEGOCIO de la sesión. Sin eso,
+     * mandando un id ajeno se podría marcar el local de otro negocio como
+     * abastecedor del propio.
+     */
+    const propios = await BusinessLocation.findAll({
+      where: {
+        businessId: req.auth.businessId,
+        activo: true,
+        tipo: { [Op.notIn]: ['deposito', 'feria'] },
+      },
+      attributes: ['id'],
+    });
+    const validos = new Set(propios.map((l) => l.id));
+    const elegidos = pedidos.filter((id) => validos.has(id));
+
+    /*
+     * Dejar cero locales rompe la sincronización sin decir por qué: ML pasaría
+     * a publicar cero de todo. Se frena acá, que es donde se entiende.
+     */
+    if (!elegidos.length) {
+      return res.status(400).json({
+        message: 'Elegí al menos un local. Sin ninguno, Mercado Libre publicaría cero de todo.',
+      });
+    }
+
+    await BusinessLocation.update(
+      { abasteceOnline: false },
+      { where: { businessId: req.auth.businessId } },
+    );
+    await BusinessLocation.update(
+      { abasteceOnline: true },
+      { where: { businessId: req.auth.businessId, id: elegidos } },
+    );
+
+    const locales = await BusinessLocation.findAll({
+      where: { businessId: req.auth.businessId, id: [...validos] },
+      attributes: ['id', 'nombre', 'tipo', 'abasteceOnline'],
+      order: [['nombre', 'ASC']],
+    });
+    res.json({ ok: true, locales });
+  } catch (e) { next(e); }
+};
+
 // ── Vínculos manuales SKU ↔ publicación ──────────────────────────
 const listLinks = async (req, res, next) => {
   try {
@@ -189,4 +272,4 @@ const notificacion = async (req, res) => {
   }
 };
 
-module.exports = { status, authUrl, callback, disconnect, preview, sync, listLinks, upsertLink, deleteLink, notificacion };
+module.exports = { status, authUrl, callback, disconnect, preview, sync, getLocales, setLocales, listLinks, upsertLink, deleteLink, notificacion };

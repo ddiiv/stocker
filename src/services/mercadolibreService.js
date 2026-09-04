@@ -22,6 +22,7 @@
 
 const { NO_ES_FERIA } = require('../utils/feria');
 const crypto = require('crypto');
+const https = require('https');
 const axios = require('axios');
 const { MercadoLibreAccount, MercadoLibreLink, ProductVariant, Product, VariantStock } = require('../models');
 const stockService = require('./stockService');
@@ -30,6 +31,81 @@ const { log } = require('../utils/logger');
 
 const ML_AUTH = 'https://auth.mercadolibre.com.ar';
 const ML_API  = 'https://api.mercadolibre.com';
+
+/*
+ * ── El cliente HTTP hacia Mercado Libre ───────────────────────────
+ *
+ * Agente propio y no el global, por tres razones que se pagan con un catálogo
+ * de doscientas publicaciones:
+ *
+ *   · TIMEOUT. Sin él, una petición que queda colgada frena la sincronización
+ *     entera hasta que el sistema operativo la corte, que pueden ser minutos.
+ *     Con doscientas publicaciones, una sola alcanza para que el usuario vea un
+ *     spinner eterno y recargue, disparando una segunda sincronización encima.
+ *
+ *   · CONCURRENCIA ACOTADA. Se mandan varias a la vez, pero pocas: ML tiene
+ *     límite de peticiones y pasarse devuelve 429 para todas. `maxSockets` es
+ *     el techo real, no una sugerencia.
+ *
+ *   · LISTENERS. Node avisa cuando un emisor pasa de diez listeners del mismo
+ *     tipo, y un socket keep-alive que atiende cientos de peticiones seguidas
+ *     los acumula de a poco. Ese aviso —"MaxListenersExceededWarning: 11
+ *     timeout listeners"— apareció sincronizando 204 publicaciones. No rompe
+ *     nada: es un aviso, y la sincronización termina igual.
+ *
+ *     Se sube el techo SOBRE NUESTRO AGENTE y no globalmente, que sería tapar
+ *     el aviso para todo el proceso. Acá sabemos cuántos esperamos: como mucho
+ *     unos pocos por socket concurrente. Si algún día se acumulan de verdad,
+ *     el aviso vuelve a aparecer y esa es la señal que se quiere conservar.
+ *
+ * Lo que de verdad achica el problema no es esto: es mandar menos peticiones.
+ * Ver `sincronizarStock`, que sólo escribe lo que cambió, y la selección por
+ * SKU, que deja elegir qué sincronizar en vez de barrer el catálogo entero.
+ */
+const CONCURRENCIA = Number(process.env.ML_CONCURRENCIA) || 4;
+const TIMEOUT_MS = Number(process.env.ML_TIMEOUT_MS) || 20000;
+
+const agenteML = new https.Agent({
+  keepAlive: true,
+  maxSockets: CONCURRENCIA,
+  // Un socket ocioso más de 30s lo cierra ML igual: soltarlo antes evita
+  // reusar uno muerto y comerse un ECONNRESET en la primera petición.
+  keepAliveMsecs: 15000,
+  timeout: TIMEOUT_MS,
+});
+agenteML.setMaxListeners(CONCURRENCIA * 8);
+
+const httpML = axios.create({ timeout: TIMEOUT_MS, httpsAgent: agenteML });
+
+/*
+ * Corre `fn` sobre cada elemento, de a `limite` a la vez.
+ *
+ * Doscientas peticiones de a una son doscientas idas y vueltas en serie: a
+ * 300ms cada una, un minuto entero con el usuario esperando. De a cuatro es el
+ * mismo trabajo en un cuarto del tiempo, y cuatro es un número que ML tolera
+ * sin devolver 429.
+ *
+ * No usa `Promise.all` sobre todo el arreglo: eso largaría doscientas a la vez,
+ * que es exactamente cómo se llega al límite de peticiones y a que ML rechace
+ * la mitad.
+ */
+async function enParalelo(items, limite, fn) {
+  const resultados = new Array(items.length);
+  let siguiente = 0;
+
+  const obrero = async () => {
+    for (;;) {
+      const i = siguiente++;
+      if (i >= items.length) return;
+      resultados[i] = await fn(items[i], i);
+    }
+  };
+
+  await Promise.all(
+    Array.from({ length: Math.min(limite, items.length) }, obrero),
+  );
+  return resultados;
+}
 
 // El callback tiene que caer en el FRONT, que es el único servicio con dominio
 // público: desde ahí el proxy lo reenvía al backend por la red privada. Si no
@@ -153,10 +229,10 @@ async function conectarConCodigo({ businessId, code, verifier = null }) {
   // mandarlo: MercadoLibre lo compara igual y no coincide con nada.
   if (verifier) cuerpo.code_verifier = verifier;
 
-  const { data } = await axios.post(`${ML_API}/oauth/token`, new URLSearchParams(cuerpo),
+  const { data } = await httpML.post(`${ML_API}/oauth/token`, new URLSearchParams(cuerpo),
     { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
 
-  const perfil = await axios.get(`${ML_API}/users/me`, {
+  const perfil = await httpML.get(`${ML_API}/users/me`, {
     headers: { Authorization: `Bearer ${data.access_token}` },
   }).then((r) => r.data).catch(() => ({}));
 
@@ -199,7 +275,7 @@ async function tokenValido(cuenta) {
 
   const c = config();
   try {
-    const { data } = await axios.post(`${ML_API}/oauth/token`, new URLSearchParams({
+    const { data } = await httpML.post(`${ML_API}/oauth/token`, new URLSearchParams({
       grant_type:    'refresh_token',
       client_id:     c.clientId,
       client_secret: c.clientSecret,
@@ -233,7 +309,7 @@ async function listarPublicaciones(cuenta) {
   const ids = [];
   let offset = 0;
   for (;;) {
-    const { data } = await axios.get(`${ML_API}/users/${cuenta.mlUserId}/items/search`, {
+    const { data } = await httpML.get(`${ML_API}/users/${cuenta.mlUserId}/items/search`, {
       headers, params: { status: 'active', limit: 50, offset },
     });
     ids.push(...(data.results || []));
@@ -246,7 +322,7 @@ async function listarPublicaciones(cuenta) {
   const publicaciones = [];
   for (let i = 0; i < ids.length; i += 20) {
     const lote = ids.slice(i, i + 20);
-    const { data } = await axios.get(`${ML_API}/items`, {
+    const { data } = await httpML.get(`${ML_API}/items`, {
       headers,
       params: { ids: lote.join(','), attributes: 'id,title,available_quantity,seller_custom_field,variations,attributes,permalink,status' },
     });
@@ -295,11 +371,11 @@ function mapearPorSku(publicaciones) {
 async function actualizarStock(token, { mlItemId, mlVariationId, cantidad }) {
   const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
   if (mlVariationId) {
-    await axios.put(`${ML_API}/items/${mlItemId}`, {
+    await httpML.put(`${ML_API}/items/${mlItemId}`, {
       variations: [{ id: Number(mlVariationId), available_quantity: cantidad }],
     }, { headers });
   } else {
-    await axios.put(`${ML_API}/items/${mlItemId}`, { available_quantity: cantidad }, { headers });
+    await httpML.put(`${ML_API}/items/${mlItemId}`, { available_quantity: cantidad }, { headers });
   }
 }
 
@@ -372,20 +448,44 @@ async function sincronizarStock(businessId, { simular = false, skus = null } = {
    */
   const filasStock = await VariantStock.findAll({
     where: { businessId, locationId: locales.map((l) => l.id) },
-    attributes: ['productVariantId', 'stock'],
+    attributes: ['productVariantId', 'stock', 'reservado'],
   });
   const stockPorVariante = new Map();
   for (const f of filasStock) {
+    /*
+     * Lo DISPONIBLE, no lo que hay en el estante.
+     *
+     * Una unidad apartada para un pedido online sigue en el estante hasta que
+     * alguien la despacha, pero no se puede volver a vender: publicarla sería
+     * ofrecer dos veces la misma prenda, que es justo lo que la reserva vino a
+     * evitar. Esta consulta arma su propio mapa por rendimiento y por eso hay
+     * que restar acá también: `stockOnline` no pasa por este camino.
+     */
+    const libre = Math.max(0, (Number(f.stock) || 0) - (Number(f.reservado) || 0));
     stockPorVariante.set(
       f.productVariantId,
-      (stockPorVariante.get(f.productVariantId) || 0) + (Number(f.stock) || 0),
+      (stockPorVariante.get(f.productVariantId) || 0) + libre,
     );
   }
 
   const sincronizados = [];
   const sinPublicacion = [];
 
+  /*
+   * ── Primero se decide, después se manda ─────────────────────────
+   *
+   * Antes esto era un solo bucle que calculaba y mandaba en el mismo paso, de a
+   * una publicación por vez. Con doscientas eso son doscientas idas y vueltas
+   * en serie: a 300ms cada una, un minuto largo con el usuario mirando un
+   * spinner, y cualquier corte en el medio deja media sincronización hecha sin
+   * forma de saber cuál.
+   *
+   * Separarlo permite dos cosas. La cuenta se hace entera y rápido, sin red de
+   * por medio; y lo que hay que mandar se manda de a varios a la vez.
+   */
   const resultados = [];
+  const aMandar = [];
+
   for (const v of variantes) {
     if (skus && !skus.includes(v.sku)) continue;
     const destino = porSku.get(v.sku);
@@ -407,6 +507,12 @@ async function sincronizarStock(businessId, { simular = false, skus = null } = {
       manual: Boolean(destino.manual),
     };
 
+    /*
+     * Lo que ya coincide no se toca. Es el ahorro más grande de todos: en una
+     * sincronización de rutina, casi nada cambió, y mandar doscientas
+     * peticiones para escribir el mismo número es gastar el límite de la API
+     * en no hacer nada.
+     */
     if (destino.stockActual === cantidad) {
       sincronizados.push(v.id);
       resultados.push({ ...fila, estado: 'sin-cambios' });
@@ -418,21 +524,31 @@ async function sincronizarStock(businessId, { simular = false, skus = null } = {
       continue;
     }
 
+    aMandar.push({ v, destino, cantidad, fila });
+  }
+
+  // De a cuatro y no de a doscientas: ver `enParalelo`. El orden del resultado
+  // se conserva, así que la pantalla muestra lo mismo que antes.
+  const enviados = await enParalelo(aMandar, CONCURRENCIA, async ({ v, destino, cantidad, fila }) => {
     try {
       await actualizarStock(token, { ...destino, cantidad });
-      sincronizados.push(v.id);
-      resultados.push({ ...fila, estado: 'actualizado' });
       await MercadoLibreLink.update(
         { ultimoStockEnviado: cantidad, ultimaSync: new Date(), ultimoError: null },
         { where: { businessId, sku: v.sku } },
       );
+      return { variantId: v.id, fila: { ...fila, estado: 'actualizado' } };
     } catch (err) {
       const detalle = err.response?.data?.message || err.message;
-      resultados.push({ ...fila, estado: 'error', error: detalle });
       await MercadoLibreLink.update(
         { ultimoError: detalle }, { where: { businessId, sku: v.sku } },
       );
+      return { variantId: null, fila: { ...fila, estado: 'error', error: detalle } };
     }
+  });
+
+  for (const e of enviados) {
+    if (e.variantId) sincronizados.push(e.variantId);
+    resultados.push(e.fila);
   }
 
   // SKUs publicados en ML que no existen en Stocker: los reportamos para que
