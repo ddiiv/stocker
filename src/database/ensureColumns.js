@@ -98,6 +98,16 @@ const COLUMNAS_ESPERADAS = {
     sincronizadoCon: { type: DataTypes.STRING(120), allowNull: true },
     sincronizadoEn:  { type: DataTypes.DATE, allowNull: true },
   },
+  variant_stocks: {
+    /*
+     * Lo apartado y todavía no despachado. Ver el modelo: separa "cuánto hay"
+     * de "cuánto se puede vender".
+     *
+     * Arranca en cero para todas las filas existentes, que es la verdad: antes
+     * de que existiera la reserva, nada estaba apartado.
+     */
+    reservado: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
+  },
   invoices: {
     // A qué CUIT del negocio entró el cobro, como texto para imprimir. Ver el
     // modelo: es una foto, igual que emisorNombre.

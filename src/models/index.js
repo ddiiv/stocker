@@ -831,7 +831,33 @@ const VariantStock = db.define('VariantStock', {
   businessId:       { type: DataTypes.INTEGER, allowNull: false },
   productVariantId: { type: DataTypes.INTEGER, allowNull: false },
   locationId:       { type: DataTypes.INTEGER, allowNull: false },
+  /*
+   * Lo que hay en el estante. No baja hasta que la mercadería sale de verdad.
+   */
   stock:            { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
+  /*
+   * Lo que está apartado y todavía no salió.
+   *
+   * Una venta online reserva en el momento en que entra: nadie más puede
+   * vender esa unidad, pero sigue estando en el estante hasta que alguien la
+   * pickea y la despacha. Ahí la reserva se convierte en egreso.
+   *
+   * Es lo que separa dos preguntas que antes eran la misma:
+   *
+   *   · ¿Cuánto hay?      → `stock`, y es lo que tiene que decir un recuento.
+   *   · ¿Cuánto se puede
+   *     vender?           → `stock - reservado`, que es lo que se publica y lo
+   *                         que el mostrador puede comprometer.
+   *
+   * Con un solo número había que elegir entre no sobrevender y que el libro
+   * coincidiera con el estante. Descontando al vender, el inventario decía que
+   * la prenda no estaba mientras seguía colgada esperando que la pickearan; sin
+   * descontar, la misma unidad se vendía dos veces.
+   *
+   * Invariante: 0 <= reservado <= stock. Lo sostienen las restas condicionadas
+   * de stockService, que es el único lugar que lo escribe.
+   */
+  reservado:        { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
   // Mínimo por local: un depósito central y un local de barrio no reponen con
   // el mismo umbral.
   stockMinimo:      { type: DataTypes.INTEGER, allowNull: true },

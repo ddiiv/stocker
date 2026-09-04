@@ -236,17 +236,42 @@ async function mover({
      * justamente lo que se pidió.
      */
     const pide = -Number(delta);
+    /*
+     * La condición es sobre lo DISPONIBLE, no sobre el stock.
+     *
+     * Si hay 3 en el estante y 2 están apartados para un pedido online, el
+     * mostrador puede vender 1. Preguntando por `stock` vendería las 3 y el
+     * pedido online se quedaría sin la mercadería que ya tenía prometida —que
+     * es exactamente el problema que la reserva vino a resolver, mudado de
+     * lugar.
+     */
     const [filasTocadas] = await VariantStock.update(
       { stock: literal(`stock - ${pide}`) },
-      { where: { id: fila.id, stock: { [Op.gte]: pide } }, transaction: t },
+      {
+        where: { id: fila.id, [Op.and]: [literal(`stock - reservado >= ${pide}`)] },
+        transaction: t,
+      },
     );
 
     if (!filasTocadas) {
       await fila.reload({ transaction: t });
       const hay = Number(fila.stock) || 0;
-      const err = new Error(`Quedaría en ${hay - pide}: no se puede sacar más de lo que hay en el local.`);
+      const apartado = Number(fila.reservado) || 0;
+      const libre = Math.max(0, hay - apartado);
+      /*
+       * El mensaje distingue los dos casos. "No alcanza" cuando hay 1 y se
+       * piden 3 es una cosa; cuando hay 3 pero 2 están apartados para pedidos
+       * online es otra, y mandan a hacer cosas distintas: en el primero hay que
+       * conseguir mercadería, en el segundo hay que mirar los pedidos.
+       */
+      const err = new Error(apartado > 0
+        ? `Quedaría en ${libre - pide}: hay ${hay} en el local pero ${apartado} `
+          + 'están apartadas para pedidos online que todavía no se despacharon.'
+        : `Quedaría en ${libre - pide}: no se puede sacar más de lo que hay en el local.`);
       err.status = 409;
-      err.disponible = hay;
+      err.disponible = libre;
+      err.enElLocal = hay;
+      err.reservado = apartado;
       throw err;
     }
 
@@ -256,6 +281,27 @@ async function mover({
     stockNuevo = Number(fila.stock) || 0;
     stockAnterior = stockNuevo + pide;
   } else {
+    /*
+     * Un recuento no puede dejar el estante con menos de lo que está apartado.
+     *
+     * Si el conteo dice 2 y hay 3 comprometidas para pedidos online, el
+     * problema no es el número: es que uno de esos pedidos no se va a poder
+     * despachar. Ajustar en silencio dejaría la invariante rota y el faltante
+     * apareciendo recién cuando el pickeador no encuentre la prenda.
+     */
+    if (fijar !== null) {
+      await fila.reload({ transaction: t });
+      const apartado = Number(fila.reservado) || 0;
+      if (stockNuevo < apartado) {
+        const err = new Error(
+          `No se puede dejar el stock en ${stockNuevo}: hay ${apartado} unidad(es) apartadas `
+          + 'para pedidos online sin despachar. Resolvé esos pedidos primero.',
+        );
+        err.status = 409;
+        err.reservado = apartado;
+        throw err;
+      }
+    }
     await fila.update({ stock: stockNuevo }, { transaction: t });
   }
   const total = await recalcularTotal(variantId, t);
@@ -372,6 +418,108 @@ async function repartirDescuentoOnline(variantId, businessId, cantidad, t = null
   return { alcanza: restante <= 0, falta: restante, reparto };
 }
 
+/* ═══════════════════════════════════════════════════════════════════
+ * Reservas
+ *
+ * Una venta online aparta la unidad en el momento en que entra. Nadie más la
+ * puede vender, pero sigue en el estante hasta que alguien la pickea: recién
+ * ahí la reserva se convierte en egreso.
+ *
+ * Las tres operaciones se hacen con la MISMA técnica que la resta de `mover`:
+ * una sola sentencia condicionada, sin leer antes. No hay ventana entre mirar
+ * y escribir, así que dos pedidos simultáneos por la última unidad no pueden
+ * reservarla los dos, y no depende del nivel de aislamiento de la conexión.
+ *
+ * Son el único lugar que escribe `reservado`. La invariante
+ * `0 <= reservado <= stock` la sostienen las condiciones de cada UPDATE.
+ * ═══════════════════════════════════════════════════════════════════ */
+
+/** Cuánto se puede comprometer en un local: lo que hay menos lo apartado. */
+async function disponibleEn(variantId, locationId, t = null) {
+  if (!locationId) return 0;
+  const fila = await VariantStock.findOne({
+    where: { productVariantId: variantId, locationId },
+    transaction: t,
+  });
+  if (!fila) return 0;
+  return Math.max(0, (Number(fila.stock) || 0) - (Number(fila.reservado) || 0));
+}
+
+/**
+ * Aparta unidades. Devuelve true si se pudo, false si no alcanzaba.
+ *
+ * La condición es sobre lo DISPONIBLE, no sobre el stock: si hay 3 en el
+ * estante y 2 ya están apartados para otro pedido, sólo queda 1 para reservar.
+ */
+async function reservar(variantId, locationId, businessId, cantidad, t = null) {
+  const n = Number(cantidad);
+  if (!Number.isInteger(n) || n <= 0) {
+    const err = new Error('La cantidad a reservar tiene que ser un entero mayor a cero.');
+    err.status = 400;
+    throw err;
+  }
+  const fila = await filaDe(variantId, locationId, businessId, t);
+  const [tocadas] = await VariantStock.update(
+    { reservado: literal(`reservado + ${n}`) },
+    {
+      where: { id: fila.id, [Op.and]: [literal(`stock - reservado >= ${n}`)] },
+      transaction: t,
+    },
+  );
+  return tocadas > 0;
+}
+
+/**
+ * Suelta una reserva sin mover mercadería. Es lo que corresponde cuando el
+ * pedido se cancela: la prenda nunca salió, así que vuelve a estar vendible.
+ */
+async function liberarReserva(variantId, locationId, businessId, cantidad, t = null) {
+  const n = Number(cantidad);
+  if (!Number.isInteger(n) || n <= 0) return false;
+  const fila = await filaDe(variantId, locationId, businessId, t);
+  const [tocadas] = await VariantStock.update(
+    { reservado: literal(`reservado - ${n}`) },
+    {
+      where: { id: fila.id, reservado: { [Op.gte]: n } },
+      transaction: t,
+    },
+  );
+  return tocadas > 0;
+}
+
+/**
+ * La reserva se convierte en salida: baja el stock y suelta el apartado, en la
+ * misma sentencia.
+ *
+ * En dos pasos —liberar y después `mover`— habría un instante en el que la
+ * unidad vuelve a estar disponible, y en ese instante el mostrador puede
+ * venderla. Es el mismo hueco que la reserva vino a cerrar.
+ *
+ * El movimiento se registra aparte, con `registrarSalidaReservada`, para que el
+ * libro de movimientos siga siendo la única fuente de qué pasó.
+ */
+async function consumirReserva(variantId, locationId, businessId, cantidad, t = null) {
+  const n = Number(cantidad);
+  if (!Number.isInteger(n) || n <= 0) return false;
+  const fila = await filaDe(variantId, locationId, businessId, t);
+  const [tocadas] = await VariantStock.update(
+    {
+      stock:     literal(`stock - ${n}`),
+      reservado: literal(`reservado - ${n}`),
+    },
+    {
+      where: {
+        id: fila.id,
+        [Op.and]: [literal(`reservado >= ${n}`), literal(`stock >= ${n}`)],
+      },
+      transaction: t,
+    },
+  );
+  if (!tocadas) return false;
+  await recalcularTotal(variantId, t);
+  return true;
+}
+
 async function stockEn(variantId, locationId, t = null) {
   if (!locationId) return null;
   const fila = await VariantStock.findOne({
@@ -437,6 +585,8 @@ async function transferir({ variantId, businessId, desde, hacia, cantidad, emplo
 }
 
 module.exports = {
+  // Reservas: apartar al vender, consumir al despachar. Ver el bloque de arriba.
+  disponibleEn, reservar, liberarReserva, consumirReserva,
   mover, stockEn, desglosePorVariante, transferir, localPorDefecto, resolverLocal,
   recalcularTotal, esVarianteDeFeria,
   localesQueAbastecenOnline, stockOnline, repartirDescuentoOnline,
