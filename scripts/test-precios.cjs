@@ -266,6 +266,20 @@ function sesion() {
     if (pasado.json?.id) creadas.push(pasado.json.id);
     chk('un descuento mayor que la venta se rechaza', 400, pasado.status);
 
+    /*
+     * Y en una cotización, que es donde más se usa: se presupuesta con el
+     * descuento ya aplicado, y el cliente se lleva el número final.
+     */
+    const cotizada = await api('POST', '/api/sales', {
+      tipo: 'cotizacion', estado: 'pendiente', locationId: local.id,
+      items: [{ productVariantId: chico.id, cantidad: 2 }],   // 20000
+      descuentoMonto: 5000,
+    });
+    if (cotizada.json?.id) creadas.push(cotizada.json.id);
+    chk('la cotización con descuento en pesos entra', 201, cotizada.status);
+    chk('con su importe y su porcentaje', [5000, 25, 15000],
+      [Number(cotizada.json?.descuento), Number(cotizada.json?.descuentoPct), Number(cotizada.json?.total)]);
+
     const descNegativo = await api('POST', '/api/sales', {
       tipo: 'venta', estado: 'pagado', locationId: local.id,
       items: [{ productVariantId: chico.id, cantidad: 1 }],
