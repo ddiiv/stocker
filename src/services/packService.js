@@ -2,31 +2,63 @@ import { http } from "../lib/http";
 
 /* ── Packs (combos) ─────────────────────────────────────────────
  *
- * Un pack tiene SKU propio y se publica como un artículo más, pero adentro
- * lleva prendas que ya están en el estante. Todo lo que hay acá gira alrededor
- * de eso: el pack no tiene stock propio, tiene una composición, y lo que se
- * puede armar sale de lo que haya de cada componente.
+ * Un pack no es un artículo más del catálogo: es la forma de vender de a N
+ * unidades de otro producto. Tiene SKU propio para que Mercado Libre pueda
+ * publicarlo y el mostrador escanearlo, pero no tiene stock: lo que hay se
+ * calcula con lo que haya de las prendas que lleva adentro.
+ *
+ * Se arma desde el producto padre, y se genera un pack por cada variante del
+ * padre: el pack x3 de la remera negra M es distinto del de la beige L, igual
+ * que lo son las remeras.
  */
 
-/** Los packs del negocio, con su composición y cuántos se arman hoy. */
+/** Los packs del negocio, agrupados por producto de pack. */
 export async function fetchPacks() {
   const { data } = await http.get("/packs");
   return data;
 }
 
 /**
- * Crea el pack entero: producto propio, variante y composición, en una llamada.
+ * Qué SKU va a tener cada pack y qué precio se sugiere, sin crear nada.
  *
- * Va junto y no en pasos porque si fallara el último quedaría un producto vacío
- * colgado en el listado de stock, sin variantes y sin manera de saber que era
- * un pack a medio nacer.
+ * Existe porque un alta que genera veinte SKU de una vez no se puede revisar
+ * después: o se ve antes, o se revisa borrando.
+ */
+export async function fetchSugerencia({ productId, unidades, sku }) {
+  const { data } = await http.get("/packs/sugerencia", {
+    params: { productId, unidades, ...(sku ? { sku } : {}) },
+  });
+  return data;
+}
+
+/**
+ * Crea el pack entero: el producto, una variante por cada variante del padre y
+ * la composición de cada una, en una sola transacción.
  *
- * @param {{sku:string, titulo:string, precioMinorista:number,
- *          precioMayorista?:number, costo?:number,
- *          componentes:Array<{componenteVariantId:number, cantidad:number}>}} datos
+ * @param {{productId:number, sku:string, unidades:number, titulo?:string,
+ *          precioMinorista?:number, precioMayorista?:number, costo?:number,
+ *          variantIds?:number[]}} datos
  */
 export async function crearPack(datos) {
   const { data } = await http.post("/packs", datos);
+  return data;
+}
+
+/** Genera los packs de las variantes que el producto padre ganó después. */
+export async function completarPack(productId) {
+  const { data } = await http.post(`/packs/${productId}/completar`);
+  return data;
+}
+
+/** Da de baja el pack entero. No se borra: las ventas viejas lo referencian. */
+export async function eliminarPack(productId) {
+  const { data } = await http.delete(`/packs/producto/${productId}`);
+  return data;
+}
+
+/** Da de baja una sola combinación del pack. */
+export async function bajaVariantePack(variantId) {
+  const { data } = await http.delete(`/packs/${variantId}`);
   return data;
 }
 
@@ -37,22 +69,12 @@ export async function fetchPack(variantId) {
 }
 
 /**
- * Guarda la composición completa.
- *
- * Reemplaza, no suma: la composición se piensa entera —"tres remeras"—, y
- * mandarla de a un componente dejaría al pack existiendo mal armado entre una
- * llamada y la otra, con Mercado Libre vendiendo contra esa composición.
+ * Cambia la composición de UNA variante de pack. Reemplaza, no suma.
  *
  * @param {Array<{componenteVariantId:number, cantidad:number}>} componentes
  */
 export async function guardarPack(variantId, componentes) {
   const { data } = await http.put(`/packs/${variantId}`, { componentes });
-  return data;
-}
-
-/** Deja de ser pack y vuelve a ser una variante común. */
-export async function desarmarPack(variantId) {
-  const { data } = await http.delete(`/packs/${variantId}`);
   return data;
 }
 

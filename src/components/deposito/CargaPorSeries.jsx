@@ -54,7 +54,8 @@ export default function CargaPorSeries({ onAgregar }) {
     setBuscando(true); setError("");
     try {
       // Sin productos de evento: no llevan stock y no entran al depósito.
-      const { data } = await http.get("/products/buscar-variantes", { params: { q, limit: 40, sinEvento: 1 } });
+      // Sin packs: se cargan series de prendas, y un pack no lleva stock propio.
+      const { data } = await http.get("/products/buscar-variantes", { params: { q, limit: 40, sinEvento: 1, sinPacks: 1 } });
       const r = data.data || data || [];
       /*
        * Se busca por variante pero se elige el PRODUCTO: la serie es del modelo
