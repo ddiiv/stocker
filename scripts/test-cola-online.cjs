@@ -64,12 +64,43 @@ function sesion() {
   const login = await api('POST', '/api/auth/login', { email: negocio.email, password: 'Demo2026!!' });
   if (login.status !== 200) { console.log('No se pudo entrar:', login.status); process.exit(1); }
 
-  const fijar = async (local, n) => stock.mover({
-    variantId: v.id, businessId: negocio.id, locationId: local.id,
-    fijar: n, tipo: 'ajuste', motivo: 'QA cola',
-  });
-  const enA = () => stock.stockEn(v.id, A.id);
-  const enB = () => stock.stockEn(v.id, B.id);
+  /*
+   * Deja el local en un estado conocido para el bloque que viene.
+   *
+   * Suelta primero lo que quedó apartado por el bloque anterior. En producción
+   * eso NO se hace así —una reserva se suelta cancelando el pedido, o se
+   * consume despachándolo— y por eso `mover` rechaza un recuento que deje el
+   * estante por debajo de lo comprometido. Acá se está reseteando el mundo
+   * entre pruebas, que es otra cosa: sin soltarlas, cada bloque arrancaría con
+   * las reservas del anterior encima y probaría un escenario que no es el suyo.
+   */
+  const fijar = async (local, n) => {
+    const fila = await VariantStock.findOne({
+      where: { productVariantId: v.id, locationId: local.id },
+    });
+    const apartado = Number(fila?.reservado) || 0;
+    if (apartado > 0) {
+      await stock.liberarReserva(v.id, local.id, negocio.id, apartado);
+    }
+    return stock.mover({
+      variantId: v.id, businessId: negocio.id, locationId: local.id,
+      fijar: n, tipo: 'ajuste', motivo: 'QA cola',
+    });
+  };
+  /*
+   * Un pedido online APARTA, no descuenta.
+   *
+   * La prenda sigue en el estante hasta que Envíos del Día la despacha. Lo que
+   * cambia al aceptarse un pedido es lo VENDIBLE, no lo que hay.
+   *
+   * Por eso las comprobaciones de esta suite miran `disponibleEn`: es la
+   * pregunta que le importa a la cola —¿queda algo para comprometer?— y la que
+   * decide si el pedido siguiente entra o se rechaza. El estante se mira aparte,
+   * en el bloque que comprueba que efectivamente no se movió.
+   */
+  const enA = () => stock.disponibleEn(v.id, A.id);
+  const enB = () => stock.disponibleEn(v.id, B.id);
+  const enElEstante = async (local) => stock.stockEn(v.id, local.id);
 
   const pedir = (plataforma, externo, cantidad, extra = {}) => api('POST', '/api/online/pedidos', {
     plataforma, pedidoExterno: externo,
@@ -196,6 +227,48 @@ function sesion() {
     chk('el segundo entra', 'aceptado', dos2.json?.estado);
     chk('el tercero se rechaza', 'rechazado', tres3.json?.estado);
     chk('stock en cero', 0, await enA());
+    tit('11. UN PEDIDO APARTA, NO DESCUENTA');
+    /*
+     * El cambio de fondo. Antes acá se hacía el egreso: el inventario decía que
+     * la prenda no estaba mientras seguía colgada esperando el picking, y el
+     * que iba a buscarla no tenía forma de saber si la habían despachado o si
+     * nunca estuvo.
+     *
+     * Ahora la prenda sigue en el estante y lo que baja es lo vendible. El
+     * egreso lo hace Envíos del Día, cuando el paquete sale de verdad.
+     */
+    await fijar(A, 5); await fijar(B, 0);
+    chk('arranca con 5 en el estante y 5 vendibles', [5, 5],
+      [await enElEstante(A), await enA()]);
+
+    const aparta = await pedir('mercadolibre', 'ML-RSV', 2);
+    chk('el pedido entra', 201, aparta.status);
+    chk('el estante NO se movió', 5, await enElEstante(A));
+    chk('pero lo vendible bajó a 3', 3, await enA());
+
+    /*
+     * Y la otra mitad: lo apartado no se lo puede llevar el mostrador. Es lo
+     * que hace que la reserva sirva para algo — si el salón pudiera venderlo
+     * igual, el pedido online se quedaría sin la mercadería ya prometida.
+     */
+    let errMostrador = null;
+    try {
+      await stock.mover({
+        variantId: v.id, businessId: negocio.id, locationId: A.id,
+        delta: -4, tipo: 'egreso', motivo: 'QA mostrador',
+      });
+    } catch (e) { errMostrador = e; }
+    chk('el mostrador no puede vender 4 de las 5 que ve', true, Boolean(errMostrador));
+    chk('y le dicen que están apartadas, no que no hay', true,
+      /apartadas para pedidos online/.test(errMostrador?.message || ''));
+    chk('las 3 libres sí las puede vender', undefined,
+      await stock.mover({
+        variantId: v.id, businessId: negocio.id, locationId: A.id,
+        delta: -3, tipo: 'egreso', motivo: 'QA mostrador',
+      }).then(() => undefined));
+    chk('queda el estante en 2, todas apartadas', [2, 0],
+      [await enElEstante(A), await enA()]);
+
   } finally {
     tit('Limpieza');
     const pedidos = await PedidoPlataforma.findAll({ where: { businessId: negocio.id }, attributes: ['id'] });

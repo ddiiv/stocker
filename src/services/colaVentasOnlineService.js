@@ -249,20 +249,37 @@ async function procesarUno(pedidoId) {
       throw sinStock(`Sin stock para despachar. ${detalle}.`);
     }
 
-    // ── Descontar ───────────────────────────────────────────────
+    /*
+     * ── Apartar, no descontar ────────────────────────────────────
+     *
+     * La prenda sigue en el estante hasta que alguien la pickee y la despache.
+     * Lo que cambia ahora es que nadie más la puede vender: ni el mostrador, ni
+     * la otra plataforma, ni un segundo pedido de ésta.
+     *
+     * Antes acá se hacía el egreso. El inventario decía que la prenda no estaba
+     * mientras seguía colgada esperando el picking, y el que iba a buscarla no
+     * tenía forma de saber si la habían despachado o si nunca estuvo. Ahora el
+     * egreso ocurre en Envíos del Día, cuando sale de verdad.
+     *
+     * `reservar` puede devolver false aunque el reparto haya dicho que alcanza:
+     * entre que se calculó y se aparta, otro pedido pudo llevarse la unidad. Es
+     * la misma carrera de siempre y se resuelve igual —el que llega segundo se
+     * rechaza—, sólo que ahora se detecta acá en vez de adentro de `mover`.
+     */
+    const apartadas = [];
     for (const { item, variante, reparto } of repartos) {
       for (const parte of reparto) {
-        await stockService.mover({
-          variantId: variante.id,
-          businessId: pedido.businessId,
-          locationId: parte.locationId,
-          delta: -parte.unidades,
-          tipo: 'egreso',
-          motivo: `Venta ${pedido.plataforma} ${pedido.pedidoExterno}`.slice(0, 255),
-          transaction: t,
-        });
+        const pudo = await stockService.reservar(
+          variante.id, parte.locationId, pedido.businessId, parte.unidades, t,
+        );
+        if (!pudo) {
+          throw sinStock(
+            `Sin stock para despachar. ${item.sku}: se apartó para otro pedido mientras se procesaba éste.`,
+          );
+        }
+        apartadas.push({ variante, parte });
       }
-      // De qué local salió, para poder rastrearlo sin recalcular nada.
+      // De qué local sale, para poder pickearlo sin recalcular nada.
       await item.update({
         productVariantId: variante.id,
         locationId: reparto[0]?.locationId || null,
@@ -277,6 +294,13 @@ async function procesarUno(pedidoId) {
       avisos.push(`Son productos de evento y no llevan stock: ${deEvento.join(', ')}.`);
     }
 
+    /*
+     * `aceptado` ahora significa "apartado", no "despachado".
+     *
+     * El egreso lo hace Envíos del Día cuando el paquete sale. Hasta entonces
+     * el pedido está comprometido y la mercadería está en el estante, que es
+     * exactamente lo que el pickeador va a encontrar.
+     */
     await pedido.update({
       estado: avisos.length ? 'parcial' : 'aceptado',
       motivo: avisos.join(' ') || null,

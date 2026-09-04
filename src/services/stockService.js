@@ -379,10 +379,18 @@ async function stockOnline(variantId, businessId, t = null) {
   const locales = await localesQueAbastecenOnline(businessId, t);
   if (!locales.length) return { total: 0, porLocal: [], sinLocales: true };
 
+  /*
+   * Lo DISPONIBLE, no lo que hay en el estante.
+   *
+   * Este número es el que se publica en Mercado Libre y el que decide si un
+   * pedido online se acepta. Las unidades ya apartadas para otro pedido siguen
+   * en el estante hasta que alguien las despache, pero no se pueden volver a
+   * vender: publicarlas sería ofrecer dos veces la misma prenda.
+   */
   const porLocal = [];
   let total = 0;
   for (const l of locales) {
-    const n = await stockEn(variantId, l.id, t);
+    const n = await disponibleEn(variantId, l.id, t);
     porLocal.push({ locationId: l.id, nombre: l.nombre, stock: n });
     total += n;
   }
