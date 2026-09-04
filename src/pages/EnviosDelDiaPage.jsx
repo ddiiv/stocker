@@ -55,26 +55,44 @@ const hoyISO = () => {
  * depósito es si quedan tres horas o veinte minutos, y esa cuenta la tiene que
  * hacer la pantalla, no la persona.
  */
-function Corte({ cuando }) {
+/*
+ * Cuánto falta, dicho como lo diría una persona.
+ *
+ * "venció hace 247 min" obliga a dividir por 60 en la cabeza para entender si
+ * es grave. A partir de la hora se dice en horas.
+ */
+function enPalabras(minutos) {
+  const m = Math.abs(minutos);
+  if (m < 60) return `${m} min`;
+  const h = Math.floor(m / 60);
+  const resto = m % 60;
+  return resto ? `${h} h ${resto} min` : `${h} h`;
+}
+
+function Corte({ cuando, minutos, atrasado }) {
   if (!cuando) return null;
-  const faltan = Math.round((new Date(cuando).getTime() - Date.now()) / 60000);
-  const vencido = faltan < 0;
-  const apura = faltan >= 0 && faltan <= 90;
+  /*
+   * Los minutos los calcula el servidor. Recalcularlos acá con el reloj del
+   * navegador hace que una máquina con la hora corrida muestre un corte
+   * distinto del que usa el sistema para decidir si va atrasado.
+   */
+  const faltan = minutos ?? Math.round((new Date(cuando).getTime() - Date.now()) / 60000);
+  const apura = !atrasado && faltan >= 0 && faltan <= 90;
 
   return (
     <span
       className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium ${
-        vencido ? "bg-brick-50 text-brick-500"
+        atrasado ? "bg-brick-500 text-paper-50"
           : apura ? "bg-brass-50 text-brass-700"
             : "bg-paper-100 text-ink-600"
       }`}
       title={`Corte a las ${hora(cuando)}`}
     >
       <Clock size={11} />
-      {vencido
-        ? `venció hace ${Math.abs(faltan)} min`
+      {atrasado
+        ? `atrasado ${enPalabras(faltan)}`
         : faltan < 90
-          ? `faltan ${faltan} min`
+          ? `faltan ${enPalabras(faltan)}`
           : `hasta ${hora(cuando)}`}
     </span>
   );
@@ -376,12 +394,21 @@ export default function EnviosDelDiaPage() {
           {[
             { n: resumen.pendientes, t: resumen.ventas > resumen.paquetes ? `cajas (${resumen.ventas} ventas)` : "por despachar" },
             { n: resumen.unidades, t: "unidades a bajar" },
-            { n: resumen.referencias, t: "referencias" },
+            /*
+             * Los atrasados desplazan a "referencias" cuando hay alguno: es el
+             * número que decide cómo se trabaja la jornada —con tres atrasados
+             * se empieza por ésos— y tiene que verse al abrir, no scrolleando.
+             */
+            resumen.atrasados > 0
+              ? { n: resumen.atrasados, t: "pasados de hora", urgente: true }
+              : { n: resumen.referencias, t: "referencias" },
             { n: resumen.flex, t: "con corte (Flex)", destacar: resumen.flex > 0 },
           ].map((c) => (
             <Card key={c.t} className="py-3">
-              <p className={`font-display text-2xl font-semibold ${c.destacar ? "text-brass-700" : "text-ink-950"}`}>{c.n}</p>
-              <p className="text-xs text-ink-500">{c.t}</p>
+              <p className={`font-display text-2xl font-semibold ${
+                c.urgente ? "text-brick-500" : c.destacar ? "text-brass-700" : "text-ink-950"
+              }`}>{c.n}</p>
+              <p className={`text-xs ${c.urgente ? "text-brick-500" : "text-ink-500"}`}>{c.t}</p>
             </Card>
           ))}
         </div>
@@ -502,7 +529,11 @@ export default function EnviosDelDiaPage() {
                         FLEX
                       </span>
                     )}
-                    <Corte cuando={p.despacharAntesDe} />
+                    <Corte
+                      cuando={p.despacharAntesDe}
+                      minutos={p.minutosParaElCorte}
+                      atrasado={p.atrasado}
+                    />
                     <Estado situacion={p.situacion} />
                   </div>
                 </div>

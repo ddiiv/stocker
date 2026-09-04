@@ -82,7 +82,7 @@ export default function PacksPage() {
     <div>
       <PageHeader
         title="Packs"
-        subtitle="Vender de a N unidades de un producto. No llevan stock propio: se arman con lo que haya del producto."
+        subtitle="Vender de a N unidades de un producto. No llevan stock propio: se cuentan los packs ENTEROS que se pueden armar con lo que haya."
         actions={puedeEditar && (
           <button className="btn-primary" onClick={() => setCreando(true)}>
             <Plus size={16} /> Nuevo pack
@@ -218,7 +218,7 @@ function TarjetaPack({ pack, puedeEditar, onEliminar, onCompletar }) {
                   <th className="py-1.5 font-medium">Combinación</th>
                   <th className="py-1.5 font-medium">SKU del pack</th>
                   <th className="py-1.5 font-medium">Sale de</th>
-                  <th className="py-1.5 text-right font-medium">Se arman</th>
+                  <th className="py-1.5 text-right font-medium">Packs enteros</th>
                 </tr>
               </thead>
               <tbody>
@@ -230,6 +230,18 @@ function TarjetaPack({ pack, puedeEditar, onEliminar, onCompletar }) {
                       {v.componentes.map((c) => (
                         <span key={c.componenteVariantId}>
                           {c.cantidad}× <span className="font-mono">{c.sku}</span>
+                          {/*
+                            * Cuánto hay del componente, al lado del SKU.
+                            *
+                            * Sin esto, "se arman 5" pide un acto de fe: hay que
+                            * ir a Stock a contar para saber si está bien. Con el
+                            * stock a la vista la cuenta se comprueba de un
+                            * vistazo —15 disponibles, 3 por pack, 5 packs— y si
+                            * alguna vez el número estuviera mal, se nota.
+                            */}
+                          <span className="ml-1 text-ink-400">
+                            (hay {c.disponible ?? 0})
+                          </span>
                           {c.activo === false && (
                             <span className="ml-1 rounded bg-brick-100 px-1 py-0.5 text-[10px] text-brick-700">
                               desactivada
