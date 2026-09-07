@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import {
   RefreshCw, Link2, Unlink, AlertCircle, CheckCircle2, ExternalLink, Check,
-  ArrowUpDown, PackageSearch, Trash2, Plus, Store,
+  ArrowUpDown, PackageSearch, Trash2, Plus, Store, AlertTriangle,
 } from "lucide-react";
 import {
   getMlStatus, getMlAuthUrl, disconnectMl, previewMlSync, runMlSync,
@@ -237,6 +237,32 @@ export default function MercadoLibrePage() {
       {/* Conectada */}
       {status?.conectado && (
         <>
+          {/*
+            * El último error de la sincronización automática.
+            *
+            * Stocker sincroniza solo: en cada movimiento de stock y con un
+            * barrido cada quince minutos. Cuando eso falla —el token venció, ML
+            * rechazó una publicación— antes quedaba sólo en el log del
+            * servidor, donde no lo ve nadie: el stock publicado se iba quedando
+            * viejo en silencio mientras se seguía vendiendo contra él.
+            *
+            * Se muestra acá, que es la pantalla donde alguien vendría a mirar
+            * si algo anda raro con Mercado Libre.
+            */}
+          {status.ultimoError && (
+            <div className="mb-5 flex items-start gap-2 rounded-md border border-brick-200 bg-brick-50 px-3 py-2.5 text-sm text-brick-700">
+              <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+              <div>
+                <p className="font-medium">La última sincronización automática falló.</p>
+                <p className="mt-0.5 text-xs">{status.ultimoError}</p>
+                <p className="mt-1 text-xs">
+                  Se reintenta sola cada 15 minutos. Si el mensaje habla del token,
+                  desconectá y volvé a autorizar la cuenta: eso no se arregla solo.
+                </p>
+              </div>
+            </div>
+          )}
+
           <div className="mb-5 grid gap-4 sm:grid-cols-3">
             <Card>
               <p className="text-xs uppercase tracking-wide text-ink-600">Cuenta</p>
