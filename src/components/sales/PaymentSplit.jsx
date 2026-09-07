@@ -157,8 +157,15 @@ export default function PaymentSplit({ metodos, total, lineas, onChange, cuits =
       {calculadas.map((l, idx) => (
         <div key={idx} className="rounded-md border border-line bg-paper-50 p-3">
           <div className="flex items-center gap-2">
+            {/*
+              * Sin etiqueta visible —la fila se entiende sola— pero con nombre
+              * accesible: un lector de pantalla anunciaba "combo, Efectivo" sin
+              * decir de qué era, y con dos o tres medios de pago en la misma
+              * venta no hay forma de saber cuál se está tocando.
+              */}
             <select
               className="input flex-1"
+              aria-label={`Medio de pago ${idx + 1}`}
               value={l.paymentMethodId}
               onChange={(e) => actualizar(idx, { paymentMethodId: e.target.value })}
             >
@@ -219,8 +226,15 @@ export default function PaymentSplit({ metodos, total, lineas, onChange, cuits =
                   <span className="ml-1 font-normal normal-case text-ink-500">· se ajusta solo</span>
                 )}
               </label>
+              {/*
+                * `aria-label` y no envolver con el <label>: esa etiqueta ya
+                * lleva adentro un texto condicional —"se ajusta solo"— y
+                * envolver el campo haría que el lector de pantalla lo anuncie
+                * entero cada vez que cambia el número.
+                */}
               <input
                 type="number" step="0.01" min="0" className="input"
+                aria-label={`Importe del medio de pago ${idx + 1}`}
                 value={l.monto}
                 disabled={esUnico}
                 onChange={(e) => cambiarMonto(idx, e.target.value)}

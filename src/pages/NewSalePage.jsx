@@ -225,7 +225,8 @@ export default function NewSalePage() {
           <Card>
             <div className="mb-4 flex items-center gap-2">
               <TypeToggle tipo={tipo} setTipo={setTipo} />
-              <input type="date" className="input ml-auto w-auto" value={fecha} onChange={(e) => setFecha(e.target.value)} />
+              <input type="date" className="input ml-auto w-auto" aria-label="Fecha del comprobante"
+                value={fecha} onChange={(e) => setFecha(e.target.value)} />
             </div>
             {/* El "≥ 3 prendas" estaba escrito a mano y dejó de ser cierto en
                 cuanto cada local pudo tener su regla: un cartel que afirma algo
@@ -343,20 +344,25 @@ export default function NewSalePage() {
             {puedeElegirVendedor ? (
               <div className="space-y-4">
                 <div>
-                  <label className="label">Empleado</label>
-                  <select className="input" value={employeeId} onChange={(e) => setEmployeeId(e.target.value)}>
-                    {employees.map((e) => <option key={e.id} value={e.id}>{e.nombre} {e.apellido}</option>)}
-                  </select>
+                  <label className="block">
+                    <span className="label">Empleado</span>
+                    <select className="input" value={employeeId} onChange={(e) => setEmployeeId(e.target.value)}>
+                      {employees.map((e) => <option key={e.id} value={e.id}>{e.nombre} {e.apellido}</option>)}
+                    </select>
+                  </label>
                 </div>
                 <div>
                   {/* Ya no existe "sin local específico": el stock sale de un
                       local concreto y hay que decir de cuál. */}
-                  <label className="label">Local <span className="text-brick-500">*</span></label>
-                  <select className={`input ${!locationId ? "border-brick-500" : ""}`}
-                    value={locationId} onChange={(e) => setLocationId(e.target.value)}>
-                    <option value="">Elegí el local…</option>
-                    {locations.map((l) => <option key={l.id} value={l.id}>{l.nombre}</option>)}
-                  </select>
+                  <label className="block">
+                    <span className="label">Local <span className="text-brick-500">*</span></span>
+                    <select className={`input ${!locationId ? "border-brick-500" : ""}`}
+                      aria-required="true"
+                      value={locationId} onChange={(e) => setLocationId(e.target.value)}>
+                      <option value="">Elegí el local…</option>
+                      {locations.map((l) => <option key={l.id} value={l.id}>{l.nombre}</option>)}
+                    </select>
+                  </label>
                 </div>
               </div>
             ) : (
@@ -501,8 +507,10 @@ export default function NewSalePage() {
             )}
 
             <div className="mt-4">
-              <label className="label">Notas</label>
-              <textarea className="input min-h-16" value={notas} onChange={(e) => setNotas(e.target.value)} />
+              <label className="block">
+                <span className="label">Notas</span>
+                <textarea className="input min-h-16" value={notas} onChange={(e) => setNotas(e.target.value)} />
+              </label>
             </div>
             {/*
               * Falta decir a qué CUIT entra alguno de los cobros. Se avisa acá

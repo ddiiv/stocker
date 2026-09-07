@@ -421,25 +421,33 @@ export default function EnviosDelDiaPage() {
       {/* ── Filtros ───────────────────────────────────────────── */}
       <Card className="mb-4">
         <div className="flex flex-wrap items-end gap-3">
-          <div>
-            <label className="label">Día</label>
+          {/*
+            * La etiqueta ENVUELVE al control.
+            *
+            * Antes era un <label> hermano, sin `for` ni id: se veía la palabra
+            * "Día" pero el lector de pantalla anunciaba el campo como "fecha,
+            * en blanco", sin decir de qué. Envolviendo, la asociación es
+            * implícita y no depende de mantener ids únicos a mano.
+            */}
+          <label className="block">
+            <span className="label">Día</span>
             <input type="date" className="input h-9 w-40 text-sm"
               value={fecha} onChange={(e) => setFecha(e.target.value)} />
-          </div>
-          <div>
-            <label className="label">Local</label>
+          </label>
+          <label className="block">
+            <span className="label">Local</span>
             <select className="input h-9 w-52 text-sm"
               value={locationId} onChange={(e) => setLocationId(e.target.value)}>
               <option value="">Todos</option>
               {locales.map((l) => <option key={l.id} value={l.id}>{l.nombre}</option>)}
             </select>
-          </div>
+          </label>
           <label className="flex items-center gap-2 pb-1.5 text-sm text-ink-700">
             <input type="checkbox" checked={soloFlex} onChange={(e) => setSoloFlex(e.target.checked)} />
             Sólo los que tienen corte (Flex)
           </label>
-          <div>
-            <label className="label">Alcance</label>
+          <label className="block">
+            <span className="label">Alcance</span>
             <select className="input h-9 w-44 text-sm"
               value={dias} onChange={(e) => setDias(Number(e.target.value))}>
               <option value={0}>Sólo hoy</option>
@@ -447,7 +455,7 @@ export default function EnviosDelDiaPage() {
               <option value={7}>Próximos 7 días</option>
               <option value={30}>Próximos 30 días</option>
             </select>
-          </div>
+          </label>
         </div>
       </Card>
 

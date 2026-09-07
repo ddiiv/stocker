@@ -425,7 +425,10 @@ export default function DepositoPage() {
       <Card className="p-0">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-4 py-3">
           <h3 className="font-display text-base font-semibold text-ink-950">Ingresos</h3>
-          <select className="input w-auto py-1 text-sm" value={filtroEstado} onChange={(e) => setFiltroEstado(e.target.value)}>
+          {/* Sin etiqueta visible: al lado del título "Ingresos" se entiende. Pero
+              un lector de pantalla lo anunciaba como "combo, Todos". */}
+          <select className="input w-auto py-1 text-sm" aria-label="Filtrar ingresos por estado"
+            value={filtroEstado} onChange={(e) => setFiltroEstado(e.target.value)}>
             <option value="">Todos</option>
             <option value="pendiente">Pendientes</option>
             <option value="aplicado">Aplicados</option>

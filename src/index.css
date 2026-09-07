@@ -126,12 +126,28 @@
    * donde sale la sensación de aire. Cambiar los nombres costaba tocar 220
    * lugares; cambiar los valores, ninguno.
    */
+  /*
+   * La escala de tinta, medida contra los cuatro fondos que existen.
+   *
+   * `ink-400` estaba en #9a9a9a y daba 2.48:1 sobre la capa hundida — la mitad
+   * de lo que pide WCAG AA para texto chico (4.5:1). Se usaba en los títulos
+   * de sección de la barra lateral y en el nombre del usuario: texto real, no
+   * decoración. Se midió sobre el DOM ya pintado y se eligió el valor más
+   * claro que pasa en el PEOR fondo, no en el mejor.
+   *
+   * `ink-500` FALTABA. Se usa en 307 lugares y Tailwind no generaba ninguna
+   * regla para él, así que esos elementos heredaban el color del padre: 307
+   * textos que querían ser secundarios se pintaban con la intensidad del
+   * cuerpo. Se comprobó en el navegador —cero reglas CSS, color idéntico al
+   * del padre— antes de darlo por cierto.
+   */
   --color-ink-950: #1c1c1c;
-  --color-ink-900: #2a2a2a;
-  --color-ink-800: #3d3d3d;
-  --color-ink-700: #555555;
-  --color-ink-600: #6b6b6b;
-  --color-ink-400: #9a9a9a;
+  --color-ink-900: #262626;
+  --color-ink-800: #333333;
+  --color-ink-700: #454545;
+  --color-ink-600: #595959;
+  --color-ink-500: #626262;
+  --color-ink-400: #6b6b6b;
 
   --color-paper-50: #f7f9fb;
   --color-paper-100: #ffffff;
@@ -242,9 +258,11 @@
     --color-ink-950: #ffffff;
     --color-ink-900: #f0f0f0;
     --color-ink-800: #dcdcdc;
-    --color-ink-700: #bdbdbd;
-    --color-ink-600: #9a9a9a;
-    --color-ink-400: #6f6f6f;
+    --color-ink-700: #c7c7c7;
+    --color-ink-600: #b5b5b5;
+    --color-ink-500: #ababab;
+    /* El más apagado que sigue pasando 4.5:1 sobre la capa hundida (#333333). */
+    --color-ink-400: #a3a3a3;
 
     /* Misma lógica de capas que en claro, dada vuelta: la tarjeta es apenas
        MÁS clara que la página, que es como se ve el relieve cuando el fondo
@@ -288,12 +306,14 @@
 }
 
 :root[data-theme="dark"] {
-  --color-ink-950: #ffffff;
+    --color-ink-950: #ffffff;
   --color-ink-900: #f0f0f0;
   --color-ink-800: #dcdcdc;
-  --color-ink-700: #bdbdbd;
-  --color-ink-600: #9a9a9a;
-  --color-ink-400: #6f6f6f;
+  --color-ink-700: #c7c7c7;
+  --color-ink-600: #b5b5b5;
+  --color-ink-500: #ababab;
+  /* El más apagado que sigue pasando 4.5:1 sobre la capa hundida (#333333). */
+  --color-ink-400: #a3a3a3;
 
   /* Misma lógica de capas que en claro, dada vuelta: la tarjeta es apenas
      MÁS clara que la página, que es como se ve el relieve cuando el fondo

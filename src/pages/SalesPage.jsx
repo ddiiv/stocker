@@ -153,8 +153,12 @@ export default function SalesPage() {
         */}
         <div className="flex items-center gap-2">
           <Filter size={14} className="text-ink-400" />
+          {/* El ícono de embudo dice "filtro" a quien lo ve, y nada a quien no
+              lo ve: el desplegable se anunciaba como "combo, Cualquier medio de
+              pago", sin decir qué filtra. */}
           <select
             className="input h-8 w-auto py-0 text-xs"
+            aria-label="Filtrar por medio de pago"
             value={medioPago}
             onChange={(e) => setMedioPago(e.target.value)}
           >

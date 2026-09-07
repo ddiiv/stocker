@@ -977,20 +977,30 @@ export default function PosPage() {
               desplegables para no sugerir una elección que no existe. */}
           {puedeElegirVendedor ? (
             <Card>
-              <label className="label">Vendedor</label>
-              <select className="input mb-3" value={employeeId} onChange={(e) => setEmployeeId(e.target.value)}>
-                <option value="">Sin asignar</option>
-                {employees.map((e) => <option key={e.id} value={e.id}>{e.nombre} {e.apellido || ""}</option>)}
-              </select>
+              {/* La etiqueta envuelve al control: así el lector de pantalla
+                  anuncia "Vendedor" al llegar al desplegable. Como hermana, la
+                  palabra se veía pero el campo se anunciaba sin nombre. */}
+              <label className="mb-3 block">
+                <span className="label">Vendedor</span>
+                <select className="input" value={employeeId} onChange={(e) => setEmployeeId(e.target.value)}>
+                  <option value="">Sin asignar</option>
+                  {employees.map((e) => <option key={e.id} value={e.id}>{e.nombre} {e.apellido || ""}</option>)}
+                </select>
+              </label>
               {/* El local no es opcional: es de dónde sale la mercadería. Sin
                   elegirlo el stock se descontaría de otro local y quedarían dos
                   inventarios mal. Con un solo local se elige solo. */}
-              <label className="label">Local <span className="text-brick-500">*</span></label>
-              <select className={`input ${!locationId ? "border-brick-500" : ""}`}
-                value={locationId} onChange={(e) => setLocationId(e.target.value)}>
-                <option value="">Elegí el local…</option>
-                {locations.map((l) => <option key={l.id} value={l.id}>{l.nombre}</option>)}
-              </select>
+              <label className="block">
+                <span className="label">Local <span className="text-brick-500">*</span></span>
+                {/* `aria-required` además del asterisco: el asterisco es una
+                    convención visual y un lector de pantalla no la interpreta. */}
+                <select className={`input ${!locationId ? "border-brick-500" : ""}`}
+                  aria-required="true"
+                  value={locationId} onChange={(e) => setLocationId(e.target.value)}>
+                  <option value="">Elegí el local…</option>
+                  {locations.map((l) => <option key={l.id} value={l.id}>{l.nombre}</option>)}
+                </select>
+              </label>
               {!locationId && (
                 <p className="mt-1 text-xs text-brick-500">El stock se descuenta de este local.</p>
               )}
