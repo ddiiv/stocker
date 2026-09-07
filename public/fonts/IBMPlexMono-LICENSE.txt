@@ -1,0 +1,7 @@
+IBM Plex Mono — SIL Open Font License 1.1
+Copyright © 2017 IBM Corp. https://github.com/IBM/plex
+
+Los archivos .woff2 de esta carpeta son los subconjuntos latin y latin-ext
+publicados por Google Fonts, servidos desde nuestro propio dominio.
+
+Texto completo de la licencia: https://scripts.sil.org/OFL

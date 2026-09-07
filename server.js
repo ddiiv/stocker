@@ -140,11 +140,7 @@ app.use((req, res, next) => {
    * no deja ni un script embebido, y porque el script que aplica el tema antes
    * de pintar se movió a /tema.js justamente para no necesitarlo.
    *
-   * Las dos aperturas que NO son 'self', y por qué:
-   *
-   *   · fonts.googleapis.com / fonts.gstatic.com — el monoespaciado de los SKU
-   *     todavía viene de Google Fonts. Satoshi ya se sirve de acá; el día que
-   *     el mono también, estas dos líneas se van.
+   * Queda UNA sola apertura que no es 'self', y es a conciencia:
    *
    *   · 'wasm-unsafe-eval' — el lector de códigos por cámara. En Safari y
    *     Firefox no existe BarcodeDetector nativo y se cae a un decodificador
@@ -157,8 +153,8 @@ app.use((req, res, next) => {
   res.setHeader('Content-Security-Policy', [
     "default-src 'none'",
     "script-src 'self' 'wasm-unsafe-eval'",
-    "style-src 'self' https://fonts.googleapis.com",
-    "font-src 'self' https://fonts.gstatic.com",
+    "style-src 'self'",
+    "font-src 'self'",
     // `blob:` para las fotos que se sacan con la cámara antes de subirlas.
     "img-src 'self' data: blob:",
     // El <video> del escáner y los PDF que se abren desde memoria.
