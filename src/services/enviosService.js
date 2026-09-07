@@ -51,6 +51,36 @@ export async function abrirPdfJornada(filtros = {}) {
   setTimeout(() => URL.revokeObjectURL(url), 60000);
 }
 
+/**
+ * Las etiquetas de despacho de Mercado Libre, en un PDF.
+ *
+ * Viene todo en UN solo archivo: imprimir veinte es una impresión, no veinte.
+ * Se abre en una pestaña en vez de bajarlo, por lo mismo que la hoja de
+ * picking: bajarlo obliga a buscarlo en Descargas y esto se imprime en el acto.
+ *
+ * @param {string[]} envioIds  números de envío de ML.
+ */
+export async function abrirEtiquetas(envioIds) {
+  const { data } = await http.get("/envios/etiquetas", {
+    params: { envioIds: envioIds.join(",") },
+    responseType: "blob",
+  });
+  const url = URL.createObjectURL(data);
+  window.open(url, "_blank", "noopener");
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+}
+
+/**
+ * Despacha varios paquetes de una.
+ *
+ * Devuelve qué salió y qué no: cada paquete va por separado del lado del
+ * servidor, así que un fallo en el doceavo no voltea los once anteriores.
+ */
+export async function despacharVarios(pedidoIds) {
+  const { data } = await http.post("/envios/despachar-varios", { pedidoIds });
+  return data;
+}
+
 /** El paquete salió: la reserva se convierte en egreso. */
 export async function despacharPaquete(id) {
   const { data } = await http.post(`/envios/${id}/despachar`);

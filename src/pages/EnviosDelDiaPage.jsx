@@ -7,6 +7,7 @@ import { PageHeader, Card } from "../components/ui/Layout";
 import AvisoError from "../components/ui/AvisoError";
 import {
   fetchJornada, abrirPdfJornada, despacharPaquete, marcarFaltante, reprocesarPedido,
+  abrirEtiquetas, despacharVarios,
 } from "../services/enviosService";
 import { fetchLocalesDeVenta } from "../services/employeeService";
 import { useAuth } from "../context/AuthContext";
@@ -177,6 +178,15 @@ export default function EnviosDelDiaPage() {
   const [error, setError] = useState(null);
   const [aviso, setAviso] = useState("");
   const [trabajando, setTrabajando] = useState(null);   // id del paquete en curso
+  /*
+   * Los paquetes tildados, por clave de envío.
+   *
+   * Es lo que convierte la jornada en una tanda: imprimir veinte etiquetas y
+   * despachar veinte cajas pasan a ser dos acciones en vez de cuarenta. Se
+   * guarda por `claveEnvio` y no por índice porque la lista se recarga sola
+   * después de cada acción y los índices se corren.
+   */
+  const [elegidos, setElegidos] = useState(() => new Set());
   const [imprimiendo, setImprimiendo] = useState(false);
 
   const filtros = {
@@ -209,6 +219,13 @@ export default function EnviosDelDiaPage() {
   }, [fecha, locationId, soloFlex, dias, filtro]);
 
   useEffect(() => { cargar(); }, [cargar]);
+  /*
+   * Al cambiar de día o de filtro la selección se borra: lo tildado en la
+   * jornada de ayer no tiene por qué seguir tildado en la de hoy, y despachar
+   * "los seleccionados" sin ver cuáles son es la peor manera de descontar
+   * stock.
+   */
+  useEffect(() => { setElegidos(new Set()); }, [fecha, locationId, soloFlex, dias, filtro]);
   useEffect(() => { fetchLocalesDeVenta().then(setLocales).catch(() => setLocales([])); }, []);
 
   async function despachar(p) {
@@ -239,6 +256,99 @@ export default function EnviosDelDiaPage() {
       await cargar();
     } catch (e) {
       setError(analizarError(e, "No se pudo apartar el stock."));
+    } finally {
+      setTrabajando(null);
+    }
+  }
+
+  /*
+   * Los paquetes tildados que TODAVÍA hay que despachar.
+   *
+   * Se filtra por situación y no se confía en lo tildado a secas: entre que
+   * alguien tildó y apretó, la lista se pudo recargar y traer uno ya
+   * despachado. Mandarlo de nuevo no rompe nada —el servidor es idempotente—
+   * pero el resumen diría "20 despachados" cuando salieron 19.
+   */
+  const paquetes = jornada?.paquetes || [];
+  const seleccionados = paquetes.filter((p) => elegidos.has(p.claveEnvio));
+  const despachables = seleccionados.filter(
+    (p) => (p.situacion === "para_enviar" || p.situacion === "con_faltante")
+      && !p.items?.some((i) => i.sinApartar),
+  );
+  /*
+   * Sólo Mercado Libre tiene etiqueta, y sólo si sabemos su número de envío.
+   * Los pedidos de otra plataforma —o los que entraron sin envío— no tienen de
+   * dónde sacarla, y ofrecer el botón para que después falle es peor que no
+   * ofrecerlo.
+   */
+  const conEtiqueta = seleccionados.filter((p) => p.plataforma === "mercadolibre" && p.envioId);
+
+  function alternar(clave) {
+    setElegidos((prev) => {
+      const n = new Set(prev);
+      if (n.has(clave)) n.delete(clave); else n.add(clave);
+      return n;
+    });
+  }
+
+  function tildarTodos() {
+    // Si ya están todos, destildar: el mismo control hace las dos cosas, que es
+    // lo que uno espera de un "seleccionar todo".
+    setElegidos(elegidos.size === paquetes.length
+      ? new Set()
+      : new Set(paquetes.map((p) => p.claveEnvio)));
+  }
+
+  async function imprimirEtiquetas() {
+    if (!conEtiqueta.length) return;
+    setTrabajando("etiquetas"); setError(null); setAviso("");
+    try {
+      await abrirEtiquetas(conEtiqueta.map((p) => p.envioId));
+      const quedaron = seleccionados.length - conEtiqueta.length;
+      if (quedaron > 0) {
+        setAviso(`Se abrieron ${conEtiqueta.length} etiqueta(s). ${quedaron} de los `
+          + "seleccionados no tienen etiqueta de Mercado Libre.");
+      }
+    } catch (e) {
+      setError(analizarError(e, "No se pudieron traer las etiquetas."));
+    } finally {
+      setTrabajando(null);
+    }
+  }
+
+  async function despacharTanda() {
+    if (!despachables.length) return;
+    const ok = window.confirm(
+      `¿Despachar ${despachables.length} paquete(s)?\n\n`
+      + "Esto descuenta el stock de todo lo que llevan adentro. Hasta ahora está apartado.",
+    );
+    if (!ok) return;
+
+    setTrabajando("tanda"); setError(null); setAviso("");
+    try {
+      const r = await despacharVarios(despachables.map((p) => p.id));
+      setAviso(r.mensaje);
+      /*
+       * Se destildan sólo los que salieron. Los que fallaron quedan tildados a
+       * propósito: es lo que hay que volver a mirar, y destildarlos los
+       * escondería en el medio de la lista.
+       */
+      const salieron = new Set(r.despachados.map((d) => d.pedidoId));
+      setElegidos((prev) => new Set(
+        [...prev].filter((clave) => {
+          const p = paquetes.find((x) => x.claveEnvio === clave);
+          return p && !salieron.has(p.id);
+        }),
+      ));
+      if (r.fallaron.length) {
+        setError(analizarError(
+          { response: { data: { message: r.fallaron.map((f) => f.motivo).join(" · ") } } },
+          "Algunos paquetes no se pudieron despachar.",
+        ));
+      }
+      await cargar();
+    } catch (e) {
+      setError(analizarError(e, "No se pudo despachar la tanda."));
     } finally {
       setTrabajando(null);
     }
@@ -491,9 +601,86 @@ export default function EnviosDelDiaPage() {
               </p>
             </div>
 
+            {/*
+              * La barra de tanda.
+              *
+              * Es el arreglo a lo que más cuesta de la jornada: con quince
+              * cajas armadas, imprimir de a una e ir tocando quince botones de
+              * despachar es la mitad del tiempo de cerrar el día. Se tilda, se
+              * imprime todo junto y se despacha todo junto.
+              *
+              * Aparece sólo cuando hay algo tildado: una barra vacía arriba de
+              * la lista es una fila más que leer todos los días.
+              */}
+            {puedeDespachar && jornada.paquetes.length > 0 && (
+              <div className="flex flex-wrap items-center gap-2 rounded-md border border-line bg-paper-100 px-3 py-2">
+                <label className="flex cursor-pointer items-center gap-1.5 text-xs text-ink-700">
+                  <input
+                    type="checkbox"
+                    checked={elegidos.size > 0 && elegidos.size === jornada.paquetes.length}
+                    ref={(el) => {
+                      // Marca "algunos": ni todos ni ninguno. Sin esto, con tres
+                      // de veinte tildados la casilla se ve igual que vacía.
+                      if (el) el.indeterminate = elegidos.size > 0
+                        && elegidos.size < jornada.paquetes.length;
+                    }}
+                    onChange={tildarTodos}
+                  />
+                  {elegidos.size > 0
+                    ? `${elegidos.size} de ${jornada.paquetes.length} seleccionados`
+                    : "Seleccionar todos"}
+                </label>
+
+                {elegidos.size > 0 && (
+                  <>
+                    <button
+                      className="btn-ghost gap-1.5 px-3 py-1.5 text-xs"
+                      onClick={imprimirEtiquetas}
+                      disabled={trabajando !== null || conEtiqueta.length === 0}
+                      title={conEtiqueta.length === 0
+                        ? "Ninguno de los seleccionados tiene etiqueta de Mercado Libre"
+                        : undefined}
+                    >
+                      <Printer size={13} />
+                      {trabajando === "etiquetas"
+                        ? "Abriendo…"
+                        : `Etiquetas (${conEtiqueta.length})`}
+                    </button>
+                    <button
+                      className="btn-accent gap-1.5 px-3 py-1.5 text-xs"
+                      onClick={despacharTanda}
+                      disabled={trabajando !== null || despachables.length === 0}
+                    >
+                      <PackageCheck size={13} />
+                      {trabajando === "tanda"
+                        ? "Despachando…"
+                        : `Despachar ${despachables.length}`}
+                    </button>
+                    <button
+                      className="btn-ghost px-2 py-1.5 text-xs"
+                      onClick={() => setElegidos(new Set())}
+                      disabled={trabajando !== null}
+                    >
+                      Limpiar
+                    </button>
+                  </>
+                )}
+              </div>
+            )}
+
             {jornada.paquetes.map((p) => (
               <Card key={p.id} className={p.estadoEnvio === "con_faltante" ? "border-brick-500/40" : ""}>
                 <div className="flex flex-wrap items-start justify-between gap-2">
+                  <div className="flex min-w-0 items-start gap-2">
+                    {puedeDespachar && (
+                      <input
+                        type="checkbox"
+                        className="mt-1 shrink-0"
+                        checked={elegidos.has(p.claveEnvio)}
+                        onChange={() => alternar(p.claveEnvio)}
+                        aria-label={`Seleccionar el envío ${p.envioId || p.id}`}
+                      />
+                    )}
                   <div className="min-w-0">
                     {/*
                       * El título es el ENVÍO y no la venta: es lo que dice la
@@ -522,6 +709,7 @@ export default function EnviosDelDiaPage() {
                         venta {p.ventas?.[0]?.pedidoExterno}
                       </p>
                     )}
+                  </div>
                   </div>
                   <div className="flex flex-wrap items-center gap-1.5">
                     {p.envioTipo === "flex" && (
