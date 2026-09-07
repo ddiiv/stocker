@@ -1,4 +1,5 @@
 const { Op } = require('sequelize');
+const { NO_ES_FERIA } = require('../utils/feria');
 const { cuitValido, emailValido, normalizarCuit } = require('../utils/identificadores');
 const { sanitizarPermisos } = require('../config/permisos');
 const bcrypt = require('bcryptjs');
@@ -472,7 +473,23 @@ const getDashboard = async (req, res, next) => {
     for (const s of paid) byDay.set(s.fecha, (byDay.get(s.fecha) || 0) + Number(s.total));
 
     const invoices = await Invoice.findAll({ where: { businessId, estado: 'emitida' } });
-    const stockBajo = await ProductVariant.findAll({ include: [{ model: Product, as: 'producto', where: { businessId } }], order: [['stock', 'ASC']], limit: 200 });
+    /*
+     * Sin packs ni artículos de evento.
+     *
+     * Un pack no tiene stock propio —lo que hay de él se calcula con lo que
+     * haya de las prendas que lleva adentro— así que su `stock` es siempre 0 y
+     * entraba en "stock bajo" como si estuviera agotado. Con veinte packs
+     * publicados, el aviso que tiene que mostrar las diez prendas por reponer
+     * mostraba diez packs que no hay nada que reponer.
+     *
+     * Los de evento tampoco llevan stock, por el mismo motivo.
+     */
+    const stockBajo = await ProductVariant.findAll({
+      where: { esPack: false },
+      include: [{ model: Product, as: 'producto', where: { businessId, ...NO_ES_FERIA } }],
+      order: [['stock', 'ASC']],
+      limit: 200,
+    });
 
     // ── Progreso histórico ──────────────────────────────────────────
     // Query aparte sin filtro de fecha: el rango de arriba solo aplica a los
