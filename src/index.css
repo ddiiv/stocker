@@ -1,5 +1,35 @@
 @import "tailwindcss";
-@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+
+/*
+ * Satoshi, en una sola fuente variable.
+ *
+ * Un archivo de 42 kB cubre de Light a Black. Con las seis estáticas serían
+ * seis descargas y unos 180 kB, y el navegador no puede interpolar pesos
+ * intermedios. Va servida desde el propio dominio y no desde un CDN: es una
+ * pantalla de trabajo que se abre todos los días y no tiene por qué depender
+ * de que un tercero esté arriba.
+ *
+ * `font-display: swap` para que el texto se lea desde el primer momento con la
+ * tipografía del sistema y cambie cuando la fuente llegue. En un depósito con
+ * mala señal, esperar a la fuente es esperar a poder trabajar.
+ */
+@font-face {
+  font-family: "Satoshi";
+  src: url("/fonts/Satoshi-Variable.woff2") format("woff2-variations"),
+       url("/fonts/Satoshi-Variable.woff2") format("woff2");
+  font-weight: 300 900;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Satoshi";
+  src: url("/fonts/Satoshi-VariableItalic.woff2") format("woff2-variations"),
+       url("/fonts/Satoshi-VariableItalic.woff2") format("woff2");
+  font-weight: 300 900;
+  font-style: italic;
+  font-display: swap;
+}
 
 @theme {
   /* Palette: warehouse ledger — graphite + warm brass tag accent */
@@ -37,14 +67,159 @@
   --color-plum-600:  #5c4364;
   --color-plum-50:   #efe9f1;
 
-  --font-display: "Space Grotesk", "Inter", sans-serif;
-  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  /*
+   * Satoshi para todo el texto. El display y el cuerpo comparten familia y se
+   * distinguen por peso y espaciado, que es lo que hace que una pantalla llena
+   * de datos se lea como una sola cosa y no como un collage.
+   *
+   * El monoespaciado se queda: los SKU, los códigos de barras y los CUIT se
+   * leen de a caracteres y necesitan ancho fijo para poder compararlos de un
+   * vistazo. Satoshi no tiene variante mono.
+   */
+  --font-display: "Satoshi", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "Satoshi", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+
+  /* La sombra de las tarjetas, como token: en oscuro tiene que ser otra. */
+  --shadow-card: 0 1px 2px rgba(20, 23, 31, 0.04);
+
+  /*
+   * La barra lateral tiene su propio color y NO se da vuelta con el tema.
+   *
+   * Es la única superficie que ya era oscura en el modo claro: es un riel de
+   * navegación, no contenido. Usando `ink-950` —que sí se da vuelta— en modo
+   * oscuro se convertía en una franja BLANCA de 256 px pegada al costado, que
+   * es la superficie más grande de la pantalla y la que más molesta.
+   *
+   * En oscuro se pone un punto más oscura que el fondo del contenido: así se
+   * sigue distinguiendo del área de trabajo sin ser lo primero que se ve.
+   */
+  --color-rail: #14171f;
+  --color-rail-fuerte: #fbfaf7;
+  --color-rail-suave: #f7f5f0cc;
+}
+
+/*
+ * ── Modo oscuro ───────────────────────────────────────────────────
+ *
+ * No se reescribe ni una clase de los componentes: se redefinen las variables
+ * que Tailwind ya usa. Eso es posible porque la paleta está armada por ROL:
+ *
+ *   · `paper` es superficie. En claro va de casi blanco a beige; en oscuro, de
+ *     casi negro a gris carbón. En los dos, `paper-50` es la tarjeta y
+ *     `paper-100` el fondo detrás: la tarjeta siempre "flota" sobre el fondo.
+ *   · `ink` es texto y superficie fuerte. Se da vuelta entero, así que
+ *     `bg-ink-950 text-paper-50` —el botón principal— es negro sobre claro en
+ *     un tema y claro sobre negro en el otro, que es lo correcto en los dos.
+ *   · En los acentos, `*-50` es siempre "fondo suave" y `*-500/600/700`
+ *     siempre "primer plano fuerte". En oscuro el fondo suave pasa a ser un
+ *     tinte oscuro y el primer plano, uno claro.
+ *
+ * El brass sube de brillo en oscuro en vez de bajar: un botón de acento sobre
+ * fondo negro se lee bien claro con texto oscuro, y apagado se pierde contra
+ * el fondo. Por eso `.btn-accent` fija su color de texto y no hereda del
+ * inversor: sobre brass el texto tiene que ser oscuro en los DOS temas.
+ *
+ * Se define dos veces a propósito: una para quien tiene el sistema en oscuro y
+ * nunca eligió, y otra para quien eligió oscuro con el botón. La primera lleva
+ * `:not([data-theme="light"])` para que elegir claro le gane al sistema.
+ */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --color-ink-950: #f6f4ef;
+    --color-ink-900: #e9e6df;
+    --color-ink-800: #d6d2c9;
+    --color-ink-700: #b8b3a8;
+    --color-ink-600: #979289;
+    --color-ink-400: #6e6a62;
+
+    --color-paper-50: #1c2027;
+    --color-paper-100: #14171c;
+    --color-paper-200: #272c35;
+    --color-line: #313742;
+
+    --color-brass-50: #3a2f18;
+    --color-brass-100: #4d3d1f;
+    --color-brass-400: #f0bd63;
+    --color-brass-500: #e0a545;
+    --color-brass-600: #c98f34;
+    --color-brass-700: #ecc885;
+
+    --color-teal-500: #6fb2a0;
+    --color-teal-600: #8ec8b8;
+    --color-teal-50: #1a2f2a;
+
+    --color-brick-500: #ec8a72;
+    --color-brick-50: #3a201b;
+
+    --color-slate-600: #a8bdd6;
+    --color-slate-50: #1e2733;
+    --color-plum-600: #c6a8d1;
+    --color-plum-50: #2a2130;
+
+    /*
+     * En oscuro una sombra negra no se ve. Lo que separa la tarjeta del fondo
+     * es un borde de luz arriba, que es como se ve el relieve cuando la luz
+     * viene de arriba.
+     */
+    --shadow-card: 0 1px 0 rgba(255, 255, 255, 0.04) inset, 0 1px 2px rgba(0, 0, 0, 0.4);
+
+    /* El riel: un punto más oscuro que el contenido. Ver el comentario arriba. */
+    --color-rail: #0e1116;
+    --color-rail-fuerte: #f2efe9;
+    --color-rail-suave: #cfcbc2cc;
+  }
+}
+
+:root[data-theme="dark"] {
+  --color-ink-950: #f6f4ef;
+  --color-ink-900: #e9e6df;
+  --color-ink-800: #d6d2c9;
+  --color-ink-700: #b8b3a8;
+  --color-ink-600: #979289;
+  --color-ink-400: #6e6a62;
+
+  --color-paper-50: #1c2027;
+  --color-paper-100: #14171c;
+  --color-paper-200: #272c35;
+  --color-line: #313742;
+
+  --color-brass-50: #3a2f18;
+  --color-brass-100: #4d3d1f;
+  --color-brass-400: #f0bd63;
+  --color-brass-500: #e0a545;
+  --color-brass-600: #c98f34;
+  --color-brass-700: #ecc885;
+
+  --color-teal-500: #6fb2a0;
+  --color-teal-600: #8ec8b8;
+  --color-teal-50: #1a2f2a;
+
+  --color-brick-500: #ec8a72;
+  --color-brick-50: #3a201b;
+
+  --color-slate-600: #a8bdd6;
+  --color-slate-50: #1e2733;
+  --color-plum-600: #c6a8d1;
+  --color-plum-50: #2a2130;
+
+  --shadow-card: 0 1px 0 rgba(255, 255, 255, 0.04) inset, 0 1px 2px rgba(0, 0, 0, 0.4);
+
+  /* El riel: un punto más oscuro que el contenido. Ver el comentario arriba. */
+  --color-rail: #0e1116;
+  --color-rail-fuerte: #f2efe9;
+  --color-rail-suave: #cfcbc2cc;
 }
 
 @layer base {
   html {
     font-family: var(--font-sans);
+    /*
+     * El fondo va en el <html> y no sólo en el <body>: scrolleando más allá del
+     * contenido, el navegador pinta el fondo de la raíz, y sin esto aparece una
+     * franja blanca abajo en modo oscuro.
+     */
+    background-color: var(--color-paper-100);
   }
   body {
     @apply bg-paper-100 text-ink-900;
@@ -81,7 +256,8 @@
   }
 
   .card {
-    @apply rounded-lg border border-line bg-paper-50 shadow-[0_1px_2px_rgba(20,23,31,0.04)];
+    @apply rounded-lg border border-line bg-paper-50;
+    box-shadow: var(--shadow-card);
   }
 
   .btn-primary {
@@ -91,8 +267,17 @@
   }
   .btn-accent {
     @apply inline-flex items-center justify-center gap-2 rounded-md bg-brass-500 px-4 py-2
-           text-sm font-medium text-ink-950 transition-colors hover:bg-brass-400
+           text-sm font-medium transition-colors hover:bg-brass-400
            disabled:opacity-50 disabled:pointer-events-none;
+    /*
+     * El texto sobre el acento NO se da vuelta con el tema.
+     *
+     * El brass es un dorado claro en los dos temas —en oscuro incluso más
+     * brillante— así que el texto encima tiene que ser oscuro siempre.
+     * Heredando de `ink-950`, en modo oscuro quedaba casi blanco sobre dorado:
+     * legible a duras penas y feo.
+     */
+    color: #14171f;
   }
   .btn-ghost {
     @apply inline-flex items-center justify-center gap-2 rounded-md border border-line px-4 py-2

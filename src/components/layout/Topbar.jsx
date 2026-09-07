@@ -1,7 +1,9 @@
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { Menu, LogOut, UserCog } from "lucide-react";
+import { Menu, LogOut, UserCog, Sun, Moon } from "lucide-react";
 import { useAuth } from "../../context/AuthContext";
 import { initials } from "../../utils/formatters";
+import { temaEfectivo, elegirTema, seguirAlSistema } from "../../utils/tema";
 
 export default function Topbar({ title, onMenuClick }) {
   const { user, negocio: datosNegocio, logout } = useAuth();
@@ -35,6 +37,7 @@ export default function Topbar({ title, onMenuClick }) {
         <h1 className="font-display text-lg font-semibold text-ink-950 md:text-xl">{title}</h1>
       </div>
       <div className="flex items-center gap-3">
+        <BotonTema />
         <div className="hidden text-right sm:block">
           <p className="text-sm font-medium leading-none text-ink-900">{negocio}</p>
           <p className="mt-1 text-xs text-ink-400">{subtitulo}</p>
@@ -52,5 +55,46 @@ export default function Topbar({ title, onMenuClick }) {
         </button>
       </div>
     </header>
+  );
+}
+
+/*
+ * Claro / oscuro, a un clic.
+ *
+ * Va en la barra de arriba y no adentro de Configuración porque no es un ajuste
+ * que se toca una vez: en un local cambia la luz a lo largo del día, y quien
+ * está seis horas frente a la pantalla lo cambia cuando le molesta, no cuando
+ * se acuerda de ir a buscarlo.
+ *
+ * Antes de que alguien toque el botón, Stocker sigue al sistema: quien tiene el
+ * celular en oscuro lo abre en oscuro sin elegir nada. El primer clic fija una
+ * preferencia y a partir de ahí manda ésa.
+ */
+function BotonTema() {
+  const [tema, setTema] = useState(() => temaEfectivo());
+
+  useEffect(() => seguirAlSistema(setTema), []);
+
+  function alternar() {
+    const nuevo = tema === "oscuro" ? "claro" : "oscuro";
+    elegirTema(nuevo);
+    setTema(nuevo);
+  }
+
+  const esOscuro = tema === "oscuro";
+  return (
+    <button
+      type="button"
+      onClick={alternar}
+      className="rounded-md p-2 text-ink-600 transition-colors hover:bg-paper-200 hover:text-ink-900"
+      /*
+       * El nombre dice a qué se va a cambiar, no en cuál se está: es lo que
+       * pasa al tocarlo, que es lo único que se pregunta quien lo mira.
+       */
+      aria-label={esOscuro ? "Cambiar a modo claro" : "Cambiar a modo oscuro"}
+      title={esOscuro ? "Modo claro" : "Modo oscuro"}
+    >
+      {esOscuro ? <Sun size={18} /> : <Moon size={18} />}
+    </button>
   );
 }

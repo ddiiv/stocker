@@ -167,11 +167,11 @@ export default function Sidebar({ open, onClose }) {
          * `invisible` cuando está cerrado saca los quince links del tabulador:
          * corridos fuera de pantalla se seguían pudiendo enfocar a ciegas.
          */
-        className={`fixed z-40 flex h-dvh w-64 flex-col bg-ink-950 text-paper-50 transition-transform md:static md:h-full md:visible md:translate-x-0
+        className={`fixed z-40 flex h-dvh w-64 flex-col bg-rail text-rail-fuerte transition-transform md:static md:h-full md:visible md:translate-x-0
         ${open ? "translate-x-0" : "invisible -translate-x-full"}`}
       >
         <div className="flex shrink-0 items-center gap-2 border-b border-white/10 px-5 py-5">
-          <div className="flex h-8 w-8 items-center justify-center rounded-md bg-brass-500 text-ink-950">
+          <div className="flex h-8 w-8 items-center justify-center rounded-md bg-brass-500 text-[#14171f]">
             <Tag size={16} strokeWidth={2.5} />
           </div>
           <div>
@@ -209,8 +209,8 @@ export default function Sidebar({ open, onClose }) {
                           aria-current={activo ? "page" : undefined}
                           className={`flex items-center gap-3 rounded-md px-3 py-2.5 text-sm font-medium transition-colors ${
                             activo
-                              ? "bg-brass-500 text-ink-950"
-                              : "text-paper-100/80 hover:bg-white/5 hover:text-paper-50"
+                              ? "bg-brass-500 text-[#14171f]"
+                              : "text-rail-suave hover:bg-white/5 hover:text-rail-fuerte"
                           }`}
                         >
                           <Icon size={17} strokeWidth={2} className="shrink-0" />
@@ -225,7 +225,7 @@ export default function Sidebar({ open, onClose }) {
           </nav>
 
           {hayMas && (
-            <div className="pointer-events-none absolute inset-x-0 bottom-0 h-10 bg-gradient-to-t from-ink-950 via-ink-950/85 to-transparent" />
+            <div className="pointer-events-none absolute inset-x-0 bottom-0 h-10 bg-gradient-to-t from-rail via-rail/85 to-transparent" />
           )}
         </div>
       </aside>
