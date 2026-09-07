@@ -170,6 +170,20 @@ async function traerEnvio(cuenta, envioId) {
  */
 async function procesarNotificacion({ topic, resource, userId }) {
   const tema = String(topic || '');
+
+  /*
+   * Los de posventa —mensajes y reclamos— los atiende otro archivo.
+   *
+   * Se derivan acá y no en el controlador para que siga habiendo UNA sola
+   * puerta de entrada de notificaciones de ML: el controlador no tiene por qué
+   * saber qué tópico maneja quién, y la próxima que se agregue se engancha en
+   * un solo lugar.
+   */
+  const postventa = require('./mercadolibrePostventaService');
+  if (postventa.TOPICOS_POSTVENTA.includes(tema)) {
+    return postventa.procesarNotificacion({ topic: tema, resource, userId });
+  }
+
   if (!TOPICOS.includes(tema)) {
     /*
      * El mensaje dice qué falta, no sólo que sobra.
@@ -181,8 +195,9 @@ async function procesarNotificacion({ topic, resource, userId }) {
      * el problema es de dos casillas, y buscándolo en el código.
      */
     return {
-      ignorado: `tópico que no usamos. Para que entren los pedidos hay que tildar `
-        + `"orders_v2" y "shipments" en el panel de la aplicación de Mercado Libre`,
+      ignorado: `tópico que no usamos. En el panel de la aplicación de Mercado Libre `
+        + `hay que tildar "orders_v2" y "shipments" para los pedidos, y "messages" y `
+        + `"claims" para los mensajes y reclamos de los compradores`,
       tema,
     };
   }

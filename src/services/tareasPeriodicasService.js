@@ -27,6 +27,7 @@
  */
 
 const ml = require('./mercadolibreService');
+const postventa = require('./mercadolibrePostventaService');
 const { MercadoLibreAccount } = require('../models');
 const { log } = require('../utils/logger');
 
@@ -56,7 +57,9 @@ let corriendo = false;
  * el log.
  */
 async function barrerStockMl() {
-  if (!ml.estaConfigurado()) return { cuentas: 0, actualizados: 0, fallaron: 0 };
+  if (!ml.estaConfigurado()) {
+    return { cuentas: 0, actualizados: 0, fallaron: 0, mensajesNuevos: 0, reclamosNuevos: 0 };
+  }
 
   /*
    * Sólo cuentas con refresh token: sin él la renovación no puede funcionar y
@@ -67,8 +70,37 @@ async function barrerStockMl() {
 
   let actualizados = 0;
   let fallaron = 0;
+  let mensajesNuevos = 0;
+  let reclamosNuevos = 0;
 
   for (const cuenta of conectadas) {
+    /*
+     * Los mensajes y los reclamos van en su propio try.
+     *
+     * Son la parte más frágil: si a la app de ML le falta el permiso, esto
+     * falla siempre. Compartiendo el try con el stock, ese permiso faltante
+     * dejaría de sincronizar el stock también — que es lo que hace que se venda
+     * lo que no está.
+     */
+    try {
+      const post = await postventa.barrer(cuenta);
+      mensajesNuevos += post.mensajesNuevos || 0;
+      reclamosNuevos += post.reclamos?.nuevos || 0;
+      if (post.mensajesNuevos || post.reclamos?.nuevos) {
+        log.info('ml-postventa', 'barrido periódico', {
+          businessId: cuenta.businessId,
+          mensajes: post.mensajesNuevos, reclamos: post.reclamos?.nuevos,
+        });
+      }
+    } catch (e) {
+      if (e.codigo === 'ML_SIN_PERMISO') {
+        await cuenta.update({ ultimoError: e.message.slice(0, 400) }).catch(() => {});
+      }
+      log.warn('ml-postventa', 'el barrido de posventa falló', {
+        businessId: cuenta.businessId, motivo: e.message?.slice(0, 200),
+      });
+    }
+
     try {
       const r = await ml.sincronizarStock(cuenta.businessId);
       actualizados += r.resumen?.actualizados || 0;
@@ -96,7 +128,7 @@ async function barrerStockMl() {
     }
   }
 
-  return { cuentas: conectadas.length, actualizados, fallaron };
+  return { cuentas: conectadas.length, actualizados, fallaron, mensajesNuevos, reclamosNuevos };
 }
 
 /*

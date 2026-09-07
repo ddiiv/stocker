@@ -508,6 +508,95 @@ const MercadoLibreLink = db.define('MercadoLibreLink', {
   ultimoError:     { type: DataTypes.STRING(500) },
 }, { tableName: 'mercadolibre_links' });
 
+/* ─── MercadoLibreMensaje (lo que escribe el comprador) ──────────
+ *
+ * Se guarda en Stocker en vez de leerse de ML cada vez que alguien abre la
+ * pantalla. Tres razones, en orden de importancia:
+ *
+ *   · Se puede saber qué está sin leer. ML marca leído cuando lo abrís EN ML;
+ *     acá hace falta un estado propio para que la pantalla sirva como bandeja
+ *     de trabajo y no como un espejo.
+ *   · Un mensaje de una venta de hace dos meses se sigue viendo aunque ML ya
+ *     no lo devuelva en las consultas recientes.
+ *   · La pantalla abre sin esperar a la API de ML, que con doscientas ventas
+ *     serían doscientas consultas.
+ */
+const MercadoLibreMensaje = db.define('MercadoLibreMensaje', {
+  id:            { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
+  businessId:    { type: DataTypes.INTEGER, allowNull: false },
+  // El id del mensaje en ML. Es lo que evita guardarlo dos veces cuando la
+  // misma notificación llega repetida, que en ML pasa seguido.
+  mensajeIdMl:   { type: DataTypes.STRING(80), allowNull: false },
+  /*
+   * El "pack": la conversación. Para una venta de un solo artículo coincide
+   * con el número de la orden; cuando el comprador junta varias en un carrito,
+   * ML abre una sola conversación para todas.
+   */
+  packId:        { type: DataTypes.STRING(30), allowNull: false },
+  pedidoExterno: { type: DataTypes.STRING(40) },
+  // 'comprador' o 'vendedor'. Los del vendedor se guardan igual: sin ellos la
+  // conversación queda coja y no se entiende qué se contestó.
+  deQuien:       { type: DataTypes.STRING(12), allowNull: false, defaultValue: 'comprador' },
+  remitenteMl:   { type: DataTypes.STRING(30) },
+  texto:         { type: DataTypes.TEXT },
+  // Los nombres de los archivos que mandó, si mandó. No se bajan: pesan y se
+  // pueden mirar en ML; lo que hace falta acá es saber que existen.
+  adjuntos:      { type: DataTypes.TEXT },
+  enviadoEn:     { type: DataTypes.DATE },
+  // Leído EN STOCKER. Es distinto de lo que diga ML: ver el comentario de arriba.
+  leidoEn:       { type: DataTypes.DATE, allowNull: true },
+}, {
+  tableName: 'mercadolibre_mensajes',
+  indexes: [
+    { name: 'uq_ml_mensaje', unique: true, fields: ['businessId', 'mensajeIdMl'] },
+    { name: 'idx_ml_mensaje_pack', fields: ['businessId', 'packId'] },
+  ],
+});
+
+/* ─── MercadoLibreReclamo (reclamos que afectan a la cuenta) ──────
+ *
+ * Un reclamo tiene reloj: ML da un plazo para responder y, si se vence, lo
+ * resuelve a favor del comprador y le pega a la reputación de la cuenta. Por
+ * eso lo que se guarda no es sólo "hay un reclamo" sino hasta cuándo hay para
+ * contestarlo, y un estado propio para llevar el seguimiento acá.
+ */
+const MercadoLibreReclamo = db.define('MercadoLibreReclamo', {
+  id:            { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
+  businessId:    { type: DataTypes.INTEGER, allowNull: false },
+  reclamoIdMl:   { type: DataTypes.STRING(40), allowNull: false },
+  // Con qué venta tiene que ver, cuando ML lo dice.
+  pedidoExterno: { type: DataTypes.STRING(40) },
+  envioId:       { type: DataTypes.STRING(40) },
+  // Lo que informa ML, tal cual: tipo, estado y etapa.
+  tipo:          { type: DataTypes.STRING(40) },
+  estadoMl:      { type: DataTypes.STRING(40) },
+  etapa:         { type: DataTypes.STRING(40) },
+  razon:         { type: DataTypes.STRING(200) },
+  abiertoEn:     { type: DataTypes.DATE },
+  /*
+   * Hasta cuándo hay para contestar. Es el dato que convierte la lista en algo
+   * accionable: sin él, un reclamo abierto hace tres días se ve igual que uno
+   * que vence en dos horas.
+   */
+  venceEn:       { type: DataTypes.DATE },
+  cerradoEn:     { type: DataTypes.DATE },
+  // La respuesta cruda de ML, para poder mostrar lo que todavía no modelamos
+  // sin tener que volver a pedirla.
+  detalle:       { type: DataTypes.TEXT },
+  // Seguimiento nuestro: quién lo tomó y qué se hizo. ML no tiene dónde anotar
+  // esto y es lo que se pierde cuando lo maneja una persona sola de memoria.
+  atendidoEn:    { type: DataTypes.DATE, allowNull: true },
+  atendidoPorEmployeeId: { type: DataTypes.INTEGER, allowNull: true },
+  nota:          { type: DataTypes.TEXT },
+  ultimaSync:    { type: DataTypes.DATE },
+}, {
+  tableName: 'mercadolibre_reclamos',
+  indexes: [
+    { name: 'uq_ml_reclamo', unique: true, fields: ['businessId', 'reclamoIdMl'] },
+    { name: 'idx_ml_reclamo_estado', fields: ['businessId', 'estadoMl'] },
+  ],
+});
+
 // ─── VariantType (variantes maestras: Color, Talle, …) ───────────
 const VariantType = db.define('VariantType', {
   id:         { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
@@ -1578,7 +1667,7 @@ module.exports = {
   db,
   Plan, Subscription, SubscriptionPayment, PlatformAdmin, PlatformSetting, AuthAttempt,
   Business, BusinessLocation, BusinessCuit, BusinessArcaConfig, ArcaToken, VariantType, VariantStock,
-  MercadoLibreAccount, MercadoLibreLink,
+  MercadoLibreAccount, MercadoLibreLink, MercadoLibreMensaje, MercadoLibreReclamo,
   PedidoPlataforma, PedidoPlataformaItem,
   Role, Employee, EmployeeSession, PasswordResetCode, AccountChangeCode, Client,
   Product, ProductVariant, StockMovement,

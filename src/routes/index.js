@@ -28,6 +28,7 @@ const packCtrl = require('../controllers/packController');
 const businessCuitCtrl = require('../controllers/businessCuitController');
 const { testSend: whatsappTestSend } = require('../controllers/whatsappTestController');
 const mlCtrl = require('../controllers/mercadolibreController');
+const mlPostCtrl = require('../controllers/mercadolibrePostventaController');
 const metricsCtrl = require('../controllers/metricsController');
 const creditCtrl = require('../controllers/creditController');
 const paymentCtrl = require('../controllers/paymentMethodController');
@@ -352,6 +353,21 @@ r.post  ('/mercadolibre/sync',        requireAuth, requirePermission('integracio
 r.get   ('/mercadolibre/links',       requireAuth, requirePermission('integraciones','ver'),    mlCtrl.listLinks);
 r.post  ('/mercadolibre/links',       requireAuth, requirePermission('integraciones','editar'), requireFeature(FEATURES.ECOMMERCE), mlCtrl.upsertLink);
 r.delete('/mercadolibre/links/:id',   requireAuth, requirePermission('integraciones','editar'), mlCtrl.deleteLink);
+
+/*
+ * Posventa: lo que escribe el comprador y lo que reclama.
+ *
+ * Leer va con permiso de ver integraciones; marcar leído y anotar el
+ * seguimiento de un reclamo cambian estado, así que piden editar.
+ *
+ * `/postventa/sincronizar` pega contra la API de ML, así que además exige el
+ * plan con e-commerce, igual que el resto de lo que consume la integración.
+ */
+r.get   ('/mercadolibre/mensajes',              requireAuth, requirePermission('integraciones','ver'),    mlPostCtrl.listarMensajes);
+r.post  ('/mercadolibre/mensajes/:packId/leido', requireAuth, requirePermission('integraciones','editar'), mlPostCtrl.marcarLeida);
+r.get   ('/mercadolibre/reclamos',              requireAuth, requirePermission('integraciones','ver'),    mlPostCtrl.listarReclamos);
+r.patch ('/mercadolibre/reclamos/:id',          requireAuth, requirePermission('integraciones','editar'), mlPostCtrl.seguirReclamo);
+r.post  ('/mercadolibre/postventa/sincronizar', requireAuth, requirePermission('integraciones','editar'), requireFeature(FEATURES.ECOMMERCE), mlPostCtrl.sincronizar);
 
 // ── Variant types (variantes maestras del negocio) ───────────────
 r.get   ('/variant-types',      requireAuth, requirePermission('stock','ver'),    variantTypeCtrl.list);
