@@ -535,6 +535,20 @@ export default function EnviosDelDiaPage() {
                       * parece que entró recién — sobre todo los que no traen
                       * hora de corte, que no llegan a marcarse "atrasado".
                       */}
+                    {/*
+                      * ML ya avisó al comprador que salió, pero acá todavía no
+                      * se descontó el stock. Sigue habiendo que despacharla:
+                      * lo que cambia es la urgencia, porque del otro lado ya
+                      * están esperando el paquete.
+                      */}
+                    {p.mlYaDespacho && (
+                      <span
+                        className="rounded-full bg-brass-50 px-2 py-0.5 text-[11px] font-medium text-brass-700"
+                        title="Mercado Libre ya la marcó despachada, seguramente al imprimir la etiqueta. Acá todavía falta descontar el stock."
+                      >
+                        ML ya la dio por despachada
+                      </span>
+                    )}
                     {p.deDiasAnteriores && !p.atrasado && (
                       <span className="rounded-full bg-paper-200 px-2 py-0.5 text-[11px] font-medium text-ink-700">
                         de días anteriores
