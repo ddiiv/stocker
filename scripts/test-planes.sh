@@ -83,20 +83,49 @@ chk "el mensaje ofrece subir de plan" "si" "$(node -e "console.log(/plan superio
 tit "4. UN EMAIL, UNA SOLA PERSONA"
 chkAlta "no se registra una cuenta con el mail del dueño" \
   "$(code -X POST $API/auth/register -H 'Content-Type: application/json' \
-     -d '{"nombreNegocio":"Trucho","ownerNombre":"A","ownerApellido":"B","cuit":"20111111112","email":"demo@stocker.app","password":"Prueba2026!!"}')"
+     -d '{"nombreNegocio":"Trucho","ownerNombre":"A","ownerApellido":"B","cuit":"20111111112","email":"demo@stocker.app","password":"Prueba2026!!","aceptaTerminos":true}')"
 if [ "${#CREADOS[@]}" -gt 0 ]; then
   chkAlta "no se registra una cuenta con el mail de un empleado" \
     "$(code -X POST $API/auth/register -H 'Content-Type: application/json' \
-       -d '{"nombreNegocio":"Trucho","ownerNombre":"A","ownerApellido":"B","cuit":"20111111112","email":"cupo.qa1@test.local","password":"Prueba2026!!"}')"
+       -d '{"nombreNegocio":"Trucho","ownerNombre":"A","ownerApellido":"B","cuit":"20111111112","email":"cupo.qa1@test.local","password":"Prueba2026!!","aceptaTerminos":true}')"
 fi
 chk "no se da de alta un empleado con el mail del dueño" "409" \
   "$(CC -X POST $API/employees -d '{"nombre":"X","apellido":"Y","email":"demo@stocker.app","dni":"90000098","password":"CupoQa2026!"}')"
+
+tit "4b. SIN ACEPTAR LOS TÉRMINOS NO HAY CUENTA"
+# Se comprueba en el SERVIDOR y no sólo en el formulario: una casilla del
+# navegador es una sugerencia, y este registro es lo que respalda que alguien
+# aceptó. Sin la comprobación acá, quien arme el pedido a mano crea una cuenta
+# sin aceptar nada y el dato queda en null sin que nadie lo note.
+#
+# Una sola llamada para las dos comprobaciones: el limitador de registro corta
+# a los pocos intentos por minuto, y gastarlo en pruebas hace que la siguiente
+# mida un 429 en vez de lo que dice medir.
+REGSIN=$(curl -s -w '\n%{http_code}' -X POST $API/auth/register -H 'Content-Type: application/json' \
+  -d '{"nombreNegocio":"Sin Terminos","ownerNombre":"A","ownerApellido":"B","cuit":"20333333338","email":"sin.terminos.qa@test.local","password":"Prueba2026!!","aceptaTerminos":false}')
+CODSIN=$(printf '%s' "$REGSIN" | tail -1)
+MSGSIN=$(printf '%s' "$REGSIN" | sed '$d' | J .message)
+
+if [ "$CODSIN" = "429" ]; then
+  printf "  \033[33m—\033[0m %-48s %s\n" "sin aceptar los términos no hay cuenta" "límite de registro activo — reintentar en 15 min"
+else
+  # `false` tampoco alcanza: un booleano en falso no es una aceptación.
+  chk "aceptar en falso no crea la cuenta" "400" "$CODSIN"
+  chk "y el mensaje dice qué falta" "si" \
+    "$(node -e "console.log(/T\u00e9rminos/.test(process.argv[1])?'si':'no')" "$MSGSIN")"
+  chk "no quedó ninguna cuenta creada" "0" \
+    "$(node -e "
+      require('dotenv').config();
+      const m=require('$PWD/src/models');
+      m.Business.count({where:{email:'sin.terminos.qa@test.local'}}).then(n=>{console.log(n);process.exit(0)});
+    " 2>/dev/null | tail -1)"
+fi
 
 tit "5. UN CUIT, UN SOLO NEGOCIO"
 CUIT=$(C $API/business-cuits | J '[0].cuit')
 chkAlta "no se registra otra cuenta con un CUIT ya usado" \
   "$(code -X POST $API/auth/register -H 'Content-Type: application/json' \
-     -d "{\"nombreNegocio\":\"Trucho\",\"ownerNombre\":\"A\",\"ownerApellido\":\"B\",\"cuit\":\"$CUIT\",\"email\":\"otro.qa@test.local\",\"password\":\"Prueba2026!!\"}")"
+     -d "{\"nombreNegocio\":\"Trucho\",\"ownerNombre\":\"A\",\"ownerApellido\":\"B\",\"cuit\":\"$CUIT\",\"email\":\"otro.qa@test.local\",\"password\":\"Prueba2026!!\",\"aceptaTerminos\":true}")"
 
 tit "6. FUNCIONES SEGÚN EL PLAN"
 # El demo está en Pro, que sí incluye cuentas corrientes; lo que no incluye es

@@ -25,6 +25,20 @@ const Business = db.define('Business', {
   email:         { type: DataTypes.STRING(150), allowNull: false },
   passwordHash:  { type: DataTypes.STRING(255), allowNull: false },
   /*
+   * Quién aceptó los términos, cuándo y qué versión.
+   *
+   * No alcanza con un `true`. Si mañana hay una discusión sobre qué se aceptó,
+   * la pregunta no es "¿aceptó?" sino "¿aceptó ESTE texto?", y los términos
+   * cambian. Guardar la versión es lo que convierte el registro en algo que se
+   * puede sostener; sin ella queda un booleano que no prueba nada.
+   *
+   * La IP y la fecha son lo que hace que sea un consentimiento y no una
+   * declaración nuestra sobre el cliente.
+   */
+  terminosVersion:   { type: DataTypes.STRING(20), allowNull: true },
+  terminosAceptadosEn: { type: DataTypes.DATE, allowNull: true },
+  terminosIp:        { type: DataTypes.STRING(60), allowNull: true },
+  /*
    * Reglas de confección de SKU de las variantes.
    *
    * TEXT con JSON adentro y no un tipo JSON: MSSQL no lo tiene, y el proyecto

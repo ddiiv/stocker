@@ -167,6 +167,11 @@ const COLUMNAS_ESPERADAS = {
     saldoCuenta:      { type: DataTypes.DECIMAL(12, 2), allowNull: true, defaultValue: 0 },
   },
   businesses: {
+    // Quién aceptó los términos, cuándo y qué versión. Ver el modelo: sin la
+    // versión, un booleano no prueba QUÉ texto se aceptó.
+    terminosVersion:     { type: DataTypes.STRING(20), allowNull: true },
+    terminosAceptadosEn: { type: DataTypes.DATE, allowNull: true },
+    terminosIp:          { type: DataTypes.STRING(60), allowNull: true },
     // Datos que ahora se traen del padrón de ARCA.
     condicionIva: { type: DataTypes.STRING(60), allowNull: true },
     arcaSyncEn:   { type: DataTypes.DATE, allowNull: true },

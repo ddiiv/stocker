@@ -1,4 +1,17 @@
 const bcrypt   = require('bcryptjs');
+
+/*
+ * La versión de los términos vigente.
+ *
+ * Va en el código y no en la base para que cambiarla sea parte de un despliegue
+ * y quede en el historial: el día que se discuta qué decía el texto que alguien
+ * aceptó, el commit es la respuesta.
+ *
+ * Al cambiar el texto de /terminos hay que subir esta versión. Si no, las
+ * cuentas nuevas quedan registradas aceptando una versión que ya no es la que
+ * leyeron.
+ */
+const TERMINOS_VERSION = '2026-09';
 const crypto   = require('node:crypto');
 const { Op }   = require('sequelize');
 const { Business, Employee, Role, EmployeeSession, BusinessCuit, PasswordResetCode, PaymentMethod } = require('../models');
@@ -31,9 +44,28 @@ const sanitizeEmployee = (e) => {
 // POST /api/auth/register  (crea negocio + dueño)
 const register = async (req, res, next) => {
   try {
-    const { nombreNegocio, ownerNombre, ownerApellido, cuit, telefono, ownerTelefono, email, password } = req.body;
+    const {
+      nombreNegocio, ownerNombre, ownerApellido, cuit, telefono, ownerTelefono,
+      email, password, aceptaTerminos,
+    } = req.body;
     if (!nombreNegocio || !ownerNombre || !ownerApellido || !cuit || !email || !password)
       return res.status(400).json({ message: 'Faltan campos obligatorios.' });
+
+    /*
+     * Los términos se aceptan acá o no hay cuenta.
+     *
+     * Se comprueba en el servidor y no sólo en el formulario: una casilla del
+     * navegador es una sugerencia, y este registro es lo que respalda que
+     * alguien aceptó. Sin la comprobación acá, cualquiera que arme el pedido a
+     * mano crea una cuenta sin aceptar nada y el dato queda en null sin que
+     * nadie lo note.
+     */
+    if (aceptaTerminos !== true) {
+      return res.status(400).json({
+        message: 'Para crear la cuenta hay que aceptar los Términos y Condiciones '
+          + 'y la Política de Privacidad.',
+      });
+    }
 
     // El email no puede estar en uso en NINGUNA de las tres tablas con login
     // (dueños, empleados, operadores). Antes sólo se miraba `businesses`, así
@@ -54,6 +86,16 @@ const register = async (req, res, next) => {
     const business = await Business.create({
       nombreNegocio, ownerNombre, ownerApellido, cuit: cuitLimpio,
       telefono, ownerTelefono, email, passwordHash,
+      /*
+       * Qué versión se aceptó, cuándo y desde dónde.
+       *
+       * La versión la pone el SERVIDOR, no el navegador: si viniera del
+       * cuerpo del pedido, cualquiera podría declarar que aceptó una versión
+       * distinta de la que leyó, y el registro dejaría de probar nada.
+       */
+      terminosVersion: TERMINOS_VERSION,
+      terminosAceptadosEn: new Date(),
+      terminosIp: String(req.ip || '').slice(0, 60) || null,
     });
 
     // CUIT principal (para facturación multi-CUIT)
