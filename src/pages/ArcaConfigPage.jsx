@@ -99,6 +99,31 @@ export default function ArcaConfigPage() {
         )}
       </div>
 
+      {/*
+        * Homologación, dicho fuerte.
+        *
+        * Antes el ambiente aparecía sólo como una opción de un desplegable y
+        * como una línea del resumen. Con eso, un negocio puede facturar meses
+        * en homologación creyendo que factura de verdad: los comprobantes
+        * salen con CAE, con número y con PDF, y el problema recién se ve
+        * cuando alguien busca un CAE en AFIP y no está. Fue exactamente lo
+        * que pasó.
+        */}
+      {!data.mockMode && ambiente !== "produccion" && (
+        <div className="mb-6 rounded-md border border-brick-500/40 bg-brick-50 px-4 py-3 text-sm text-brick-700">
+          <p className="font-semibold">Estás en homologación: las facturas NO tienen validez fiscal.</p>
+          <p className="mt-1 text-xs">
+            Los comprobantes salen con CAE y con PDF, pero ese CAE existe sólo en el ambiente
+            de prueba de ARCA: buscándolo en AFIP no aparece, y no sirve como respaldo ante
+            nadie. Por eso tampoco se le mandan por mail al cliente.
+          </p>
+          <p className="mt-1 text-xs">
+            Cuando termines de probar, cambiá el ambiente a <strong>producción</strong> acá abajo
+            y volvé a emitir. Los comprobantes de prueba no se convierten: quedan como prueba.
+          </p>
+        </div>
+      )}
+
       {/* Explicación rápida del modelo */}
       <div className="mb-6 rounded-md border border-brass-500/40 bg-brass-50/50 px-4 py-3 text-sm text-ink-700">
         <p className="mb-1 flex items-center gap-1 font-medium text-ink-950"><Info size={14} /> ¿Qué hago acá?</p>

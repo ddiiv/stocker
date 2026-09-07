@@ -175,7 +175,39 @@ export default function BillingPage() {
                       ) : "—"}
                     </td>
                     <td className="px-4 py-3 text-ink-900">{inv.clienteNombre || (inv.cliente ? `${inv.cliente.nombre} ${inv.cliente.apellido || ""}`.trim() : "—")}</td>
-                    <td className="px-4 py-3 font-mono text-xs text-ink-600">{inv.cae}</td>
+                    <td className="px-4 py-3 font-mono text-xs text-ink-600">
+                      {inv.cae}
+                      {/*
+                        * Un CAE de homologación —o uno simulado— se ve igual
+                        * que uno real y NO existe en ARCA: buscarlo no devuelve
+                        * nada. Sin esta marca, la única forma de saberlo era
+                        * acordarse de en qué ambiente estaba el CUIT el día que
+                        * se emitió.
+                        */}
+                      {(inv.simulado || (inv.ambiente && inv.ambiente !== "produccion")) && (
+                        <span
+                          className="ml-1.5 rounded bg-brick-50 px-1.5 py-0.5 font-sans text-[10px] font-semibold text-brick-500"
+                          title={inv.simulado
+                            ? "CAE simulado: no se le pidió a ARCA. No existe en AFIP."
+                            : "Emitida en homologación (prueba). No existe en ARCA."}
+                        >
+                          {inv.simulado ? "SIMULADO" : "PRUEBA"}
+                        </span>
+                      )}
+                      {/*
+                        * Si el mail no salió, se dice acá y no sólo en el log
+                        * del servidor: el que reclama es el cliente, y hasta
+                        * ahora nadie se enteraba hasta que reclamaba.
+                        */}
+                      {inv.emailEstado && inv.emailEstado !== "enviado" && (
+                        <span
+                          className="ml-1.5 rounded bg-paper-200 px-1.5 py-0.5 font-sans text-[10px] text-ink-600"
+                          title={inv.emailError || "El mail al cliente no salió."}
+                        >
+                          sin mail
+                        </span>
+                      )}
+                    </td>
                     <td className="px-4 py-3 font-medium text-ink-900">{formatCurrency(inv.total)}</td>
                     <td className="px-4 py-3">
                       <span className={`badge ${inv.estado === "emitida" ? "badge-ok" : "badge-out"}`}>{inv.estado}</span>
