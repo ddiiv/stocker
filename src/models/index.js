@@ -1432,6 +1432,33 @@ const Invoice = db.define('Invoice', {
   total:            { type: DataTypes.DECIMAL(12,2), allowNull: false },
   esMayorista:      { type: DataTypes.BOOLEAN, defaultValue: false },
   cae:              { type: DataTypes.STRING(20) },
+  /*
+   * En qué ambiente de ARCA se emitió, y si el CAE es de verdad.
+   *
+   * Sin esto, un comprobante de homologación y uno de producción se guardan
+   * exactamente iguales: mismo formato de CAE, mismo PDF, mismo mail. Y no son
+   * lo mismo — el de homologación NO existe en ARCA, así que buscarlo por CAE
+   * no devuelve nada y no sirve para respaldar una venta ante nadie.
+   *
+   * Eso fue justamente lo que se reportó: "busco por el número de CAE y esa
+   * factura no existe". El comprobante estaba bien emitido; estaba bien emitido
+   * en el ambiente de prueba, y nada en la pantalla lo decía.
+   *
+   * `simulado` es todavía peor y por eso va aparte: con ARCA_MOCK el CAE lo
+   * inventa Stocker a partir del reloj. Nunca pasó por AFIP.
+   */
+  ambiente:         { type: DataTypes.STRING(20), allowNull: true },
+  simulado:         { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
+  /*
+   * Si el mail al cliente salió, y por qué no si no salió.
+   *
+   * Antes un fallo de correo quedaba sólo en el log del servidor: la pantalla
+   * decía "factura emitida" y nadie se enteraba de que el cliente no la había
+   * recibido nunca. Se anota en el comprobante, que es donde alguien lo va a
+   * mirar cuando el cliente reclame.
+   */
+  emailEstado:      { type: DataTypes.STRING(20), allowNull: true },
+  emailError:       { type: DataTypes.STRING(300), allowNull: true },
   caeVencimiento:   { type: DataTypes.DATEONLY },
   arcaRespuesta: {
     type: DataTypes.TEXT,

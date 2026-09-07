@@ -386,6 +386,23 @@ async function start() {
        * fallan, el proceso muere igual, y arrancarlas antes sólo agregaría un
        * barrido a medio hacer al lío del arranque.
        */
+      /*
+       * ARCA en modo simulado, dicho en el arranque.
+       *
+       * Con ARCA_MOCK=true el CAE lo inventa Stocker a partir del reloj: las
+       * facturas salen con número, PDF y mail, y NO existen en AFIP. Es una
+       * variable que se prende para probar y se olvida prendida, y el síntoma
+       * aparece semanas después cuando alguien busca un CAE y no está.
+       *
+       * Se imprime en cada deploy por el mismo motivo que el estado de las
+       * defensas: el modo de fallar de esto es silencioso.
+       */
+      if (process.env.ARCA_MOCK === 'true') {
+        console.log('  ── Facturación ──');
+        console.log('    \u001b[31m✖ ARCA_MOCK=true — los CAE son INVENTADOS y no existen en AFIP.\u001b[0m');
+        console.log('      Las facturas no se le mandan al cliente y salen marcadas "sin validez fiscal".');
+      }
+
       console.log('  ── Automático ──');
       require('./src/services/tareasPeriodicasService').arrancar();
 

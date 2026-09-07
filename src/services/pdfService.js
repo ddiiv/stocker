@@ -86,6 +86,42 @@ function drawHeaderBar(doc, { titulo, subtitulo, badge, badgeColor = COLOR.brass
   doc.fillColor(COLOR.ink900);
 }
 
+/*
+ * La franja de "esto no es una factura".
+ *
+ * Un comprobante de homologación —o uno simulado— sale idéntico a uno real:
+ * mismo formato de CAE, mismo número, mismo diseño. Impreso y archivado, nadie
+ * puede distinguirlo, y el día que alguien lo busque por CAE en ARCA no va a
+ * estar. Un papel que parece una factura y no lo es hace más daño que no tener
+ * ninguno, porque se archiva y se deja de pensar en él.
+ *
+ * Por eso va arriba de todo, en rojo, ocupando el ancho entero: la información
+ * más importante de esa hoja no es el total, es que no sirve para respaldar
+ * nada.
+ *
+ * Devuelve la nueva `y`, para que el resto del comprobante baje.
+ */
+function drawAvisoNoFiscal(doc, invoice, y) {
+  const esProduccion = invoice.ambiente === 'produccion';
+  if (esProduccion && !invoice.simulado) return y;
+
+  const motivo = invoice.simulado
+    ? 'CAE SIMULADO — no se pidió a ARCA'
+    : 'EMITIDO EN HOMOLOGACIÓN (AMBIENTE DE PRUEBA)';
+
+  doc.save();
+  doc.rect(40, y, 515, 34).fill('#f8e9e4');
+  doc.rect(40, y, 4, 34).fill('#b3432d');
+  doc.fillColor('#b3432d').font('Helvetica-Bold').fontSize(11)
+    .text('COMPROBANTE SIN VALIDEZ FISCAL', 54, y + 6, { width: 490 });
+  doc.font('Helvetica').fontSize(8.5)
+    .text(`${motivo}. Este comprobante NO existe en ARCA y no sirve como respaldo `
+      + 'de la operación ante AFIP ni ante el comprador.', 54, y + 20, { width: 490 });
+  doc.restore();
+
+  return y + 44;
+}
+
 function drawSectionTitle(doc, text, y) {
   doc.font('Helvetica-Bold').fontSize(10).fillColor(COLOR.brass600).text(text.toUpperCase(), 50, y, { characterSpacing: 1 });
   doc.moveTo(50, y + 14).lineTo(doc.page.width - 50, y + 14).lineWidth(0.5).strokeColor(COLOR.line).stroke();
@@ -199,6 +235,7 @@ async function generateInvoicePdf(invoice, items, business) {
     });
 
     let y = 110;
+    y = drawAvisoNoFiscal(doc, invoice, y);
     y = drawSectionTitle(doc, 'Comprobante', y);
     const col1x = 50, col2x = 310;
     drawKeyValue(doc, col1x, y,     'N° Factura',    invoice.numero);
@@ -273,6 +310,7 @@ async function generateInvoicePdfBuffer(invoice, items, business) {
     });
 
     let y = 110;
+    y = drawAvisoNoFiscal(doc, invoice, y);
     y = drawSectionTitle(doc, 'Comprobante', y);
     const col1x = 50, col2x = 310;
     drawKeyValue(doc, col1x, y,    'N° Factura',    invoice.numero);

@@ -198,10 +198,14 @@ const CUIT_IMPOSTOR = '27222222228';
 
     tit('4. LOS DOS MAILS: EL DEL CLIENTE Y LA COPIA DEL NEGOCIO');
     /*
-     * Sin correo configurado los dos envíos se omiten, y eso es lo que hay que
-     * comprobar: que se INTENTEN los dos y que ninguno rompa la emisión. La
-     * factura ya tiene CAE cuando esto corre — un problema de correo no puede
-     * deshacer un comprobante fiscal.
+     * ── Un comprobante que no es fiscal NO se le manda al cliente ────
+     *
+     * Este servidor corre con ARCA_MOCK: el CAE lo inventa Stocker y no existe
+     * en AFIP. Mandárselo al comprador es entregarle un papel que parece una
+     * factura, que va a archivar como respaldo y que no le sirve para nada.
+     *
+     * La copia al negocio SÍ se intenta: quien está probando la integración
+     * necesita ver que el circuito anduvo de punta a punta.
      */
     salida.length = 0;
     const venta3 = await vender({ clientId: cliente.id });
@@ -211,11 +215,50 @@ const CUIT_IMPOSTOR = '27222222228';
     chk('la factura se emite con los envíos pedidos', 201, conMail.status);
 
     await esperar(1200);   // los envíos no bloquean la respuesta
+    const emitida = await Invoice.findOne({ where: { saleId: venta3.json.id } });
+    chk('la factura queda emitida igual', 'emitida', emitida?.estado);
+    chk('queda marcada como simulada', true, Boolean(emitida?.simulado));
+    chk('y no se le mandó al cliente', 'no_enviado', emitida?.emailEstado);
+    chk('con el motivo escrito en el comprobante', true,
+      /validez fiscal/.test(emitida?.emailError || ''));
+
     const log = salida.join('');
+    /*
+     * La copia al negocio sí se intenta. Sin credenciales de correo se omite,
+     * y ESA omisión es la que se cuenta: una sola, no dos.
+     */
     const omitidos = (log.match(/sin credenciales para la cuenta de envío/g) || []).length;
-    chk('se intentaron los dos envíos, no uno', true, omitidos >= 2);
-    chk('y la factura quedó emitida igual', 'emitida',
-      (await Invoice.findOne({ where: { saleId: venta3.json.id } }))?.estado);
+    chk('la copia al negocio sí se intenta', true, omitidos >= 1);
+
+    tit('4b. EL PDF DICE QUE NO ES UNA FACTURA');
+    /*
+     * Impreso y archivado, un comprobante de prueba es indistinguible de uno
+     * real: mismo formato de CAE, mismo número, mismo diseño. El aviso va
+     * arriba de todo porque la información más importante de esa hoja no es el
+     * total, es que no sirve para respaldar nada.
+     */
+    const { generateInvoicePdf } = require('../src/services/pdfService');
+    const rutaPdf = await generateInvoicePdf(emitida.toJSON(), [], negocio.toJSON());
+    const textoPdf = require('child_process')
+      .execSync(`pdftotext -layout ${JSON.stringify(rutaPdf)} -`, { encoding: 'utf8' });
+    chk('el PDF avisa que no tiene validez fiscal', true,
+      /SIN VALIDEZ FISCAL/.test(textoPdf));
+    chk('y dice por qué', true, /SIMULADO/.test(textoPdf));
+    chk('nombrando que no existe en ARCA', true, /no existe en ARCA/i.test(textoPdf));
+    await require('fs-extra').remove(rutaPdf).catch(() => {});
+
+    /*
+     * Y uno de producción no lleva el aviso: el aviso tiene que aparecer sólo
+     * cuando corresponde, o se vuelve ruido que nadie lee.
+     */
+    const rutaReal = await generateInvoicePdf(
+      { ...emitida.toJSON(), ambiente: 'produccion', simulado: false }, [], negocio.toJSON(),
+    );
+    const textoReal = require('child_process')
+      .execSync(`pdftotext -layout ${JSON.stringify(rutaReal)} -`, { encoding: 'utf8' });
+    chk('un comprobante de producción no lleva el aviso', false,
+      /SIN VALIDEZ FISCAL/.test(textoReal));
+    await require('fs-extra').remove(rutaReal).catch(() => {});
 
     tit('5. LA FACTURA SE QUEDA CON SU PROPIA COPIA DEL CLIENTE');
     /*

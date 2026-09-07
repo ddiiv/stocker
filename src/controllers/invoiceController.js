@@ -247,12 +247,13 @@ const createInvoice = async (req, res, next) => {
 
     // La config del emisor ya se leyó arriba para decidir la letra.
     const arcaConfig = configEmisor;
+    const ambienteArca = arcaConfig?.ambiente === 'produccion' ? 'produccion' : 'homologacion';
     const { cae, caeVencimiento, respuesta: arcaRespuesta } = await solicitarCAE({
       tipo, total: totalAFacturar, clienteCuit: finalCuit,
       clienteCondicion: condicionReceptor,
       businessCuit: emisorCuit,
       puntoVenta: arcaConfig?.puntoVenta || null,
-      ambiente:   arcaConfig?.ambiente   || 'homologacion',
+      ambiente:   ambienteArca,
       items: sale.items,
     });
 
@@ -293,6 +294,16 @@ const createInvoice = async (req, res, next) => {
         esMayorista:   sale.esMayorista,
         cae, caeVencimiento,
         arcaRespuesta,
+        /*
+         * Queda escrito en el comprobante si es fiscal o no.
+         *
+         * Un comprobante de homologación tiene CAE, número y PDF igual que uno
+         * real, pero NO existe en ARCA: buscarlo por CAE no devuelve nada. Sin
+         * este dato guardado, la única forma de saberlo era acordarse de en qué
+         * ambiente estaba configurado el CUIT el día que se emitió.
+         */
+        ambiente: ambienteArca,
+        simulado: Boolean(arcaRespuesta?.mock),
         businessCuitId: emisor?.id || null,
         cobroDestino,
         emisorCuit, emisorNombre,
@@ -377,14 +388,57 @@ const createInvoice = async (req, res, next) => {
      * y se sigue.
      */
     const envios = [];
-    if (finalEmail && enviarEmail) {
+
+    /*
+     * ── Al cliente NO se le manda un comprobante que no es fiscal ────
+     *
+     * Un comprobante de homologación —o uno simulado con ARCA_MOCK— tiene CAE,
+     * número y PDF iguales a uno real, pero no existe en ARCA. Mandárselo al
+     * comprador es entregarle un papel que parece una factura, que él va a
+     * archivar como respaldo, y que no le sirve para nada: no lo puede
+     * presentar, no lo puede computar, y cuando lo busque por CAE no va a
+     * estar. El daño no es nuestro, es de él.
+     *
+     * La copia al negocio sí sale, marcada: quien está probando la integración
+     * necesita ver que el circuito anduvo de punta a punta.
+     */
+    const esFiscal = ambienteArca === 'produccion' && !arcaRespuesta?.mock;
+    const motivoNoFiscal = arcaRespuesta?.mock
+      ? 'el CAE es simulado (ARCA_MOCK está activo)'
+      : 'la facturación está en modo homologación (prueba)';
+
+    if (finalEmail && enviarEmail && !esFiscal) {
+      await invoice.update({
+        emailEstado: 'no_enviado',
+        emailError: `No se le mandó al cliente porque ${motivoNoFiscal}: `
+          + 'este comprobante no tiene validez fiscal.',
+      }).catch(() => {});
+      log.warn('factura', 'no se envía al cliente: el comprobante no es fiscal', {
+        invoiceId: invoice.id, ambiente: ambienteArca, simulado: Boolean(arcaRespuesta?.mock),
+      });
+    } else if (finalEmail && enviarEmail) {
       envios.push(
         sendInvoiceEmail({
           to: finalEmail, clienteNombre, invoice: invoice.toJSON(),
           pdfPath: absPdf, business: business.toJSON(),
-        }).catch((err) => log.error('factura', 'no se pudo enviar al cliente', {
-          motivo: sinDatos(err.message, 160),
-        })),
+        })
+          .then(() => invoice.update({ emailEstado: 'enviado', emailError: null }))
+          /*
+           * El motivo queda EN EL COMPROBANTE, no sólo en el log.
+           *
+           * Antes un fallo de correo se registraba en el servidor y la pantalla
+           * decía "factura emitida" a secas: nadie se enteraba de que el
+           * cliente nunca la recibió, hasta que el cliente reclamaba.
+           */
+          .catch((err) => {
+            log.error('factura', 'no se pudo enviar al cliente', {
+              motivo: sinDatos(err.message, 160),
+            });
+            return invoice.update({
+              emailEstado: 'falló',
+              emailError: sinDatos(err.message, 280),
+            }).catch(() => {});
+          }),
       );
     }
     if (business.email) {

@@ -133,6 +133,14 @@ const COLUMNAS_ESPERADAS = {
     // A qué CUIT del negocio entró el cobro, como texto para imprimir. Ver el
     // modelo: es una foto, igual que emisorNombre.
     cobroDestino: { type: DataTypes.STRING(300), allowNull: true },
+    // En qué ambiente de ARCA se emitió y si el CAE es real. Ver el modelo:
+    // un comprobante de homologación no existe en AFIP y hay que poder saberlo
+    // mirando el comprobante, no adivinando.
+    ambiente:     { type: DataTypes.STRING(20), allowNull: true },
+    simulado:     { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
+    // Si el mail al cliente salió. Antes un fallo quedaba sólo en el log.
+    emailEstado:  { type: DataTypes.STRING(20), allowNull: true },
+    emailError:   { type: DataTypes.STRING(300), allowNull: true },
   },
   payment_methods: {
     esEfectivo: { type: DataTypes.BOOLEAN, allowNull: true, defaultValue: false },
