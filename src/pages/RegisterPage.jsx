@@ -26,6 +26,15 @@ const schema = z.object({
   email:         z.string().email("Email inválido"),
   password:      passwordStrong,
   confirmPassword: z.string(),
+  /*
+   * La aceptación es obligatoria y el mensaje dice qué falta.
+   *
+   * `literal(true)` en vez de `boolean()`: con boolean, `false` es un valor
+   * válido y el formulario se manda sin aceptar nada.
+   */
+  aceptaTerminos: z.literal(true, {
+    errorMap: () => ({ message: "Hay que aceptar los términos para crear la cuenta" }),
+  }),
 }).refine((d) => d.password === d.confirmPassword, {
   message: "Las contraseñas no coinciden", path: ["confirmPassword"],
 });
@@ -141,6 +150,27 @@ export default function RegisterPage() {
             <input className="input" type="password" {...register("confirmPassword")} />
             {errors.confirmPassword && <p className="field-error">{errors.confirmPassword.message}</p>}
           </div>
+
+          {/*
+            * La aceptación, arriba del botón y no en la letra chica.
+            *
+            * Los enlaces abren en otra pestaña: mandar a alguien fuera del
+            * formulario a mitad de camino le borra lo que ya escribió, y eso
+            * hace que nadie los abra. El objetivo es que se puedan leer sin
+            * perder el registro.
+            */}
+          <label className="flex items-start gap-2.5 text-sm text-ink-700">
+            <input type="checkbox" className="mt-0.5 shrink-0" {...register("aceptaTerminos")} />
+            <span>
+              Leí y acepto los{" "}
+              <a className="text-brass-600 underline" href="https://stocker.com.ar/terminos"
+                target="_blank" rel="noopener noreferrer">Términos y Condiciones</a>{" "}
+              y la{" "}
+              <a className="text-brass-600 underline" href="https://stocker.com.ar/privacidad"
+                target="_blank" rel="noopener noreferrer">Política de Privacidad</a>.
+            </span>
+          </label>
+          {errors.aceptaTerminos && <p className="field-error">{errors.aceptaTerminos.message}</p>}
 
           <button className="btn-accent w-full" type="submit" disabled={isSubmitting}>
             {isSubmitting ? "Creando cuenta…" : "Crear cuenta"}
