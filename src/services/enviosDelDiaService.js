@@ -142,6 +142,33 @@ async function delDia(businessId, {
    * note. Es preferible que aparezca el día que entró: como mucho se adelanta
    * un día, y eso se ve.
    */
+  /*
+   * ── Lo que quedó de días anteriores viene con ─────────────────────
+   *
+   * Un envío que había que despachar ayer y no salió sigue habiendo que
+   * despacharlo. Acotado sólo al día elegido, desaparecía de la pantalla al
+   * cambiar la fecha: la mercadería seguía apartada, el comprador esperando, y
+   * en Stocker no quedaba ninguna pantalla donde eso se viera. La única forma
+   * de encontrarlo era acordarse de mirar el día anterior.
+   *
+   * Esto es una bandeja de trabajo pendiente, no un diario: una caja sale de la
+   * lista cuando se despacha, se entrega o se cancela — no porque pasó un día.
+   *
+   * Sólo arrastra lo que sigue pendiente. Las vistas históricas —entregados,
+   * cancelados, en camino— mantienen el corte por fecha, porque ahí sí se está
+   * mirando un día y no una tarea.
+   */
+  const ATRASO_MAXIMO_DIAS = 60;
+  const arrastreDesde = new Date(desde);
+  arrastreDesde.setDate(arrastreDesde.getDate() - ATRASO_MAXIMO_DIAS);
+
+  const sigueSinSalir = {
+    [Op.or]: [
+      { estadoEnvio: null },
+      { estadoEnvio: { [Op.in]: ['pendiente', 'con_faltante'] } },
+    ],
+  };
+
   const delDiaOEntradoHoy = {
     [Op.or]: [
       { despacharAntesDe: { [Op.between]: [desde, hasta] } },
@@ -149,6 +176,28 @@ async function delDia(businessId, {
         [Op.and]: [
           { despacharAntesDe: null },
           { recibidoEn: { [Op.between]: [desde, hasta] } },
+        ],
+      },
+      /*
+       * Vencido y sin despachar: se arrastra al día que se esté mirando.
+       *
+       * El tope de 60 días no es una regla de negocio, es un freno: sin él, la
+       * primera vez que alguien abre la pantalla en un negocio con años de
+       * pedidos mal cerrados se trae media tabla. Lo más viejo que eso es un
+       * problema de datos y se resuelve cancelando, no despachando.
+       */
+      {
+        [Op.and]: [
+          sigueSinSalir,
+          { despacharAntesDe: { [Op.between]: [arrastreDesde, desde] } },
+        ],
+      },
+      // Lo mismo para las plataformas que no mandan fecha de corte.
+      {
+        [Op.and]: [
+          sigueSinSalir,
+          { despacharAntesDe: null },
+          { recibidoEn: { [Op.between]: [arrastreDesde, desde] } },
         ],
       },
     ],
@@ -524,6 +573,15 @@ async function delDia(businessId, {
         minutosParaElCorte: p.despacharAntesDe
           ? Math.round((new Date(p.despacharAntesDe).getTime() - Date.now()) / 60000)
           : null,
+        /*
+         * Viene arrastrado de un día anterior.
+         *
+         * No es lo mismo que `atrasado`: una plataforma que no manda hora de
+         * corte deja pedidos sin reloj, así que uno de hace tres días no está
+         * "atrasado" —nunca tuvo hora— pero tampoco es de hoy. Sin decirlo, en
+         * la lista se mezcla con los del día y parece que entró recién.
+         */
+        deDiasAnteriores: new Date(p.despacharAntesDe || p.recibidoEn).getTime() < desde.getTime(),
         comprador: p.comprador,
         recibidoEn: p.recibidoEn,
         // Las ventas que van en esta caja. Casi siempre una; cuando son varias,

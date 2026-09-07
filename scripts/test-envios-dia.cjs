@@ -433,6 +433,64 @@ function sesion() {
       { where: { pedidoExterno: 'QA-ENV-2' } },
     );
 
+    tit('12c. LO QUE NO SALIÓ AYER SIGUE APARECIENDO HOY');
+    /*
+     * Esto es una bandeja de trabajo pendiente, no un diario.
+     *
+     * Acotado sólo al día elegido, un envío que había que despachar ayer y no
+     * salió desaparecía de la pantalla: la mercadería seguía apartada, el
+     * comprador esperando, y en Stocker no quedaba ninguna pantalla donde eso
+     * se viera. La única forma de encontrarlo era acordarse de mirar el día
+     * anterior.
+     */
+    const anteayer = new Date(Date.now() - 48 * 3600 * 1000);
+    await PedidoPlataforma.update(
+      { despacharAntesDe: anteayer, estadoEnvio: 'pendiente', estadoEnvioMl: null },
+      { where: { pedidoExterno: 'QA-ENV-1' } },
+    );
+    const hoy = await api('GET', '/api/envios/del-dia?filtro=todos');
+    const viejo = paqueteDe(hoy, 'QA-ENV-1');
+    chk('el de anteayer sin despachar aparece hoy', true, Boolean(viejo));
+    chk('marcado como atrasado', true, viejo?.atrasado);
+    chk('y como venido de días anteriores', true, viejo?.deDiasAnteriores);
+
+    /*
+     * Pero sólo lo que sigue pendiente. Uno despachado anteayer pertenece a
+     * ESE día: arrastrarlo llenaría la jornada de trabajo ya hecho.
+     */
+    await PedidoPlataforma.update(
+      { estadoEnvio: 'despachado' },
+      { where: { pedidoExterno: 'QA-ENV-1' } },
+    );
+    chk('el ya despachado no se arrastra', false,
+      Boolean(paqueteDe(await api('GET', '/api/envios/del-dia?filtro=todos'), 'QA-ENV-1')));
+
+    // Y uno cancelado tampoco vuelve a aparecer.
+    await PedidoPlataforma.update(
+      { estadoEnvio: 'pendiente', estadoEnvioMl: 'cancelled' },
+      { where: { pedidoExterno: 'QA-ENV-1' } },
+    );
+    const cancelado = paqueteDe(await api('GET', '/api/envios/del-dia?filtro=todos'), 'QA-ENV-1');
+    chk('el cancelado se arrastra pero se ve cancelado', 'cancelado', cancelado?.situacion);
+
+    /*
+     * El tope: lo más viejo que el arrastre no entra. Sin freno, la primera vez
+     * que alguien abre la pantalla en un negocio con años de pedidos mal
+     * cerrados se trae media tabla.
+     */
+    const haceUnAnio = new Date(Date.now() - 400 * 24 * 3600 * 1000);
+    await PedidoPlataforma.update(
+      { despacharAntesDe: haceUnAnio, estadoEnvio: 'pendiente', estadoEnvioMl: null },
+      { where: { pedidoExterno: 'QA-ENV-1' } },
+    );
+    chk('lo de hace un año no se arrastra', false,
+      Boolean(paqueteDe(await api('GET', '/api/envios/del-dia?filtro=todos'), 'QA-ENV-1')));
+
+    await PedidoPlataforma.update(
+      { despacharAntesDe: null, estadoEnvio: 'pendiente', estadoEnvioMl: null },
+      { where: { pedidoExterno: 'QA-ENV-1' } },
+    );
+
     tit('13. UN ENVÍO QUE JUNTA VARIAS VENTAS ES UNA SOLA CAJA');
     /*
      * Mercado Libre agrupa varias compras del mismo comprador en un solo envío.
