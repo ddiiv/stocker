@@ -36,7 +36,7 @@ Module._load = function (pedido) {
      * texto de la URL era mirar donde no están, y todas las respuestas salían
      * vacías sin que se notara.
      */
-    const responder = async (metodo, url, cfg) => {
+    const responder = async (metodo, url, cfg, cuerpo) => {
       LLAMADAS.push({ url, metodo });
       concurrentes += 1;
       picoConcurrencia = Math.max(picoConcurrencia, concurrentes);
@@ -62,12 +62,25 @@ Module._load = function (pedido) {
         e.response = { status: 429, data: { message: 'too many requests' } };
         throw e;
       }
+      /*
+       * Un PUT que anda deja la publicación con el número nuevo.
+       *
+       * Sin esto el mock miente: por más que se mandara la corrección, la
+       * siguiente lectura seguía devolviendo el valor viejo, y una prueba de
+       * "ya está todo al día, no mandes nada" no podía pasar nunca. Peor: una
+       * que dijera lo contrario pasaría siempre sin medir nada.
+       */
+      if (metodo === 'put' && item && cuerpo
+          && cuerpo.available_quantity !== undefined) {
+        const pub = publicaciones.find((p) => p.id === item);
+        if (pub) pub.available_quantity = cuerpo.available_quantity;
+      }
       return { data: {} };
     };
     const cliente = {
       get:  (url, cfg) => responder('get', url, cfg),
-      put:  (url, cuerpo, cfg) => responder('put', url, cfg),
-      post: (url, cuerpo, cfg) => responder('post', url, cfg),
+      put:  (url, cuerpo, cfg) => responder('put', url, cfg, cuerpo),
+      post: (url, cuerpo, cfg) => responder('post', url, cfg, cuerpo),
       create: () => cliente,
     };
     return cliente;
@@ -281,6 +294,73 @@ const CUANTAS = 204;   // el número exacto que disparó el aviso
       (conMenos.resultados || []).find((d) => d.sku === pack.sku)?.stockStocker);
     await stock.mover({ variantId: variantes[0].id, businessId: negocio.id,
       locationId: local.id, fijar: 10, tipo: 'ajuste', motivo: 'QA sync pack' });
+
+    tit('9. LO QUE SE APARTA TAMBIÉN AVISA');
+    /*
+     * Lo publicado es `stock - reservado`, así que apartar unidades lo baja
+     * igual que venderlas. Hasta ahora sólo avisaba `mover`, que toca `stock`:
+     * entraba una venta de ML, se apartaban 3 unidades, lo disponible pasaba de
+     * 10 a 7 y la publicación seguía ofreciendo 10. Por ahí se vende algo que
+     * ya está comprometido.
+     */
+    const avisados = [];
+    const original = ml.marcarParaSync;
+    ml.marcarParaSync = (bid, sku) => { avisados.push(sku); return original(bid, sku); };
+    try {
+      await stock.reservar(variantes[1].id, local.id, negocio.id, 2);
+      chk('apartar avisa a Mercado Libre', true, avisados.includes(variantes[1].sku));
+      avisados.length = 0;
+      await stock.liberarReserva(variantes[1].id, local.id, negocio.id, 2);
+      chk('soltar la reserva también', true, avisados.includes(variantes[1].sku));
+
+      /*
+       * Despachar NO tiene que avisar: baja `stock` y `reservado` a la vez, así
+       * que lo disponible no cambia. Un aviso ahí sería una llamada a ML para
+       * mandar el mismo número que ya tenía.
+       */
+      avisados.length = 0;
+      await stock.reservar(variantes[1].id, local.id, negocio.id, 1);
+      avisados.length = 0;
+      await stock.consumirReserva(variantes[1].id, local.id, negocio.id, 1, null,
+        { motivo: 'QA sync', registrarMovimiento: false });
+      chk('despachar no avisa: lo disponible no cambió', false,
+        avisados.includes(variantes[1].sku));
+    } finally {
+      ml.marcarParaSync = original;
+    }
+
+    tit('10. UN COMPONENTE QUE SE MUEVE ARRASTRA A SUS PACKS');
+    /*
+     * Vender una remera suelta cambia cuántos packs se pueden armar, aunque el
+     * SKU del pack no se haya tocado. Sin esto, la publicación del pack se
+     * quedaba con el número viejo hasta que alguien sincronizara a mano, y
+     * mientras tanto puede vender packs que ya no se pueden armar.
+     */
+    const expandidos = await ml.__conLosPacksQueLosUsan([variantes[0].sku], negocio.id);
+    chk('a la tanda se le suma el pack que usa esa variante', true,
+      expandidos.includes(pack.sku));
+    chk('sin perder el SKU que la disparó', true, expandidos.includes(variantes[0].sku));
+    const sinPacks = await ml.__conLosPacksQueLosUsan([variantes[5].sku], negocio.id);
+    chk('una variante que no está en ningún pack no agrega nada', 1, sinPacks.length);
+
+    tit('11. EL BARRIDO PERIÓDICO');
+    /*
+     * La red debajo del aviso inmediato: el aviso vive en memoria del proceso y
+     * un deploy se lo lleva. El barrido compara y manda sólo lo que difiere.
+     */
+    const tareas = require('../src/services/tareasPeriodicasService');
+    reset();
+    // La publicación del pack quedó en 0 y en Stocker se pueden armar varios.
+    const r = await tareas.barrerStockMl();
+    chk('el barrido recorre las cuentas conectadas', true, r.cuentas >= 1);
+    chk('y manda lo que estaba distinto', true, r.actualizados > 0);
+    chk('sin errores', 0, r.fallaron);
+
+    // Corriéndolo de nuevo ya no queda nada por mandar.
+    reset();
+    const r2 = await tareas.barrerStockMl();
+    chk('un segundo barrido no manda nada', 0, r2.actualizados);
+    chk('y no hace ni una petición de escritura', 0, puts());
 
     tit('Limpieza');
     const ids = variantes.map((v) => v.id);

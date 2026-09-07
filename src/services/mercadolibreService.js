@@ -651,12 +651,58 @@ const DEMORA_SYNC_MS = Number(process.env.ML_SYNC_DEMORA_MS) || 6000;
 // businessId → { skus: Set, timer }
 const pendientesSync = new Map();
 
+/*
+ * A la lista de SKU que cambiaron, se le agregan los packs que los llevan.
+ *
+ * Un pack no tiene stock propio: lo que se publica de él es cuántos se pueden
+ * armar con lo que haya adentro. Así que vender una remera suelta cambia el
+ * stock publicado del pack de tres remeras, aunque el SKU del pack no se haya
+ * tocado. Sin esto, la publicación del pack se quedaba con el número viejo
+ * hasta que alguien sincronizara a mano — y mientras tanto puede vender packs
+ * que ya no se pueden armar.
+ *
+ * Se resuelve acá, al vaciar la tanda, y no en cada movimiento de stock: es UNA
+ * consulta por tanda en vez de una por línea de cada venta.
+ */
+async function conLosPacksQueLosUsan(skus, businessId) {
+  if (!skus.length) return skus;
+  try {
+    const { ProductVariant, PackComponente } = require('../models');
+    const variantes = await ProductVariant.findAll({
+      where: { businessId, sku: skus }, attributes: ['id'],
+    });
+    if (!variantes.length) return skus;
+
+    const filas = await PackComponente.findAll({
+      where: { businessId, componenteVariantId: variantes.map((v) => v.id) },
+      attributes: ['packVariantId'],
+    });
+    if (!filas.length) return skus;
+
+    const packs = await ProductVariant.findAll({
+      where: { id: filas.map((f) => f.packVariantId), businessId, activo: true },
+      attributes: ['sku'],
+    });
+    return [...new Set([...skus, ...packs.map((p) => p.sku)])];
+  } catch (e) {
+    /*
+     * Si esto falla se sincroniza igual lo que sí se sabe. Perder la
+     * actualización de un pack es malo; perder también la de la prenda que la
+     * disparó, peor.
+     */
+    log.warn('mercadolibre', 'no se pudieron resolver los packs afectados', {
+      businessId, motivo: e.message?.slice(0, 200),
+    });
+    return skus;
+  }
+}
+
 async function correrSyncPendiente(businessId) {
   const entrada = pendientesSync.get(businessId);
   if (!entrada) return;
   pendientesSync.delete(businessId);
 
-  const skus = [...entrada.skus];
+  const skus = await conLosPacksQueLosUsan([...entrada.skus], businessId);
   if (!skus.length) return;
 
   try {
@@ -712,4 +758,7 @@ module.exports = {
   listarPublicaciones,
   mapearPorSku,
   sincronizarStock,
+  // Expuesto para las pruebas: es la regla que hace que un pack publicado no
+  // se quede con el stock viejo cuando se mueve una de sus prendas.
+  __conLosPacksQueLosUsan: conLosPacksQueLosUsan,
 };

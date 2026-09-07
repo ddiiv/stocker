@@ -379,6 +379,16 @@ async function start() {
        * nadie se enteró hasta que pasó algo. Verlo en cada deploy es la forma
        * más barata de que no pase inadvertido.
        */
+      /*
+       * Las tareas que corren solas.
+       *
+       * Se arrancan después de escuchar y no antes: si la base o el esquema
+       * fallan, el proceso muere igual, y arrancarlas antes sólo agregaría un
+       * barrido a medio hacer al lío del arranque.
+       */
+      console.log('  ── Automático ──');
+      require('./src/services/tareasPeriodicasService').arrancar();
+
       const { estado: estadoIps, VARIABLE } = require('./src/middleware/ipAllowlist');
       const ips = estadoIps();
       console.log('  ── Seguridad ──');

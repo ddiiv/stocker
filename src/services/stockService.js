@@ -496,6 +496,27 @@ async function disponibleEn(variantId, locationId, t = null) {
  * La condición es sobre lo DISPONIBLE, no sobre el stock: si hay 3 en el
  * estante y 2 ya están apartados para otro pedido, sólo queda 1 para reservar.
  */
+/*
+ * Avisarle a Mercado Libre que lo disponible de esta variante cambió.
+ *
+ * Lo publicado es `stock - reservado`, así que apartar unidades lo baja igual
+ * que venderlas. Hasta ahora sólo avisaba `mover`, que toca `stock`: entraba
+ * una venta de ML, se apartaban 3 unidades, lo disponible pasaba de 10 a 7 y la
+ * publicación seguía ofreciendo 10. Ése es el camino por el que se vende algo
+ * que ya está comprometido.
+ *
+ * Sin await y con el error atrapado, igual que en `mover`: avisarle a ML nunca
+ * puede tumbar una reserva.
+ */
+async function avisarAMercadoLibre(variantId, businessId, t = null) {
+  try {
+    const v = await ProductVariant.findByPk(variantId, {
+      attributes: ['id', 'sku'], transaction: t,
+    });
+    if (v?.sku) require('./mercadolibreService').marcarParaSync(businessId, v.sku);
+  } catch { /* no puede tumbar la operación que lo disparó */ }
+}
+
 async function reservar(variantId, locationId, businessId, cantidad, t = null) {
   const n = Number(cantidad);
   if (!Number.isInteger(n) || n <= 0) {
@@ -511,6 +532,7 @@ async function reservar(variantId, locationId, businessId, cantidad, t = null) {
       transaction: t,
     },
   );
+  if (tocadas > 0) await avisarAMercadoLibre(variantId, businessId, t);
   return tocadas > 0;
 }
 
@@ -529,6 +551,7 @@ async function liberarReserva(variantId, locationId, businessId, cantidad, t = n
       transaction: t,
     },
   );
+  if (tocadas > 0) await avisarAMercadoLibre(variantId, businessId, t);
   return tocadas > 0;
 }
 
