@@ -368,16 +368,29 @@ async function importarPedidos(businessId, { desde = null, dias = 7, tope = 200 
       if (['cancelled', 'invalid'].includes(orden.status)) { resumen.cancelados += 1; continue; }
 
       /*
-       * El estado del envío decide si vale la pena traerlo. Se mira ANTES de
-       * encolar: encolar es lo que aparta el stock, y apartarlo para algo que
-       * ya salió es inventar un faltante.
+       * El estado del envío decide si vale la pena traerlo.
+       *
+       * Sólo se saltea lo que TERMINÓ: entregado, cancelado o devuelto. Ahí no
+       * hay nada que despachar y apartar stock sería inventar un faltante.
+       *
+       * `shipped` NO cuenta como terminado, aunque lo parezca. En Flex, ML lo
+       * pone apenas se imprime la etiqueta: la mercadería puede estar todavía
+       * en el estante esperando que alguien la baje. Salteándolo, esa venta no
+       * entraba nunca a Stocker —no aparecía en Envíos del día para despachar y
+       * su stock no se descontaba jamás—. Es exactamente lo que se reportó:
+       * "aunque haya imprimido las etiquetas me debería aparecer para
+       * despachar".
+       *
+       * Entra como cualquier otra: aparta el stock, se ve en la jornada, y al
+       * despacharla en Stocker la reserva se vuelve egreso. Marcada, para que
+       * quien la mire sepa que ML ya la dio por despachada.
        */
       let yaSalio = false;
       let envio = null;
       if (orden.shipping?.id) {
         try {
           envio = await traerEnvio(cuenta, String(orden.shipping.id));
-          yaSalio = ['shipped', 'delivered', 'not_delivered', 'cancelled'].includes(envio.estadoMl);
+          yaSalio = ['delivered', 'not_delivered', 'cancelled'].includes(envio.estadoMl);
         } catch {
           // Sin poder leer el envío se sigue: la venta importa más que saber
           // cómo se despacha, y el dato lo va a traer su notificación.

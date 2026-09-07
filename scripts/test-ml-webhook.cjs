@@ -338,7 +338,7 @@ const ML_USER = '999000111';
     BUSCADOR = [
       vieja(77000010, 'ready_to_ship'),   // todavía hay que despacharla
       vieja(77000011, 'delivered'),       // ya llegó: no se toca
-      vieja(77000012, 'shipped'),         // ya salió: no se toca
+      vieja(77000012, 'shipped'),         // etiqueta impresa: FALTA despacharla acá
       { ...vieja(77000013, 'ready_to_ship'), status: 'cancelled' },
     ];
 
@@ -346,8 +346,15 @@ const ML_USER = '999000111';
     const imp = await mlPedidos.importarPedidos(negocio.id, { dias: 14 });
 
     chk('encuentra las cuatro', 4, imp.encontrados);
-    chk('importa sólo la que falta despachar', 1, imp.importados);
-    chk('saltea las dos que ya salieron', 2, imp.yaDespachados);
+    /*
+     * Dos: la que está lista para despachar y la que tiene la etiqueta
+     * impresa. `shipped` NO es "ya salió": en Flex, ML lo pone apenas se
+     * imprime la etiqueta y la mercadería puede seguir en el estante.
+     * Salteándola, esa venta no entraba nunca a Stocker y su stock no se
+     * descontaba jamás.
+     */
+    chk('importa las dos que todavía hay que despachar', 2, imp.importados);
+    chk('saltea sólo la entregada', 1, imp.yaDespachados);
     chk('y la cancelada', 1, imp.cancelados);
 
     /*
@@ -356,22 +363,43 @@ const ML_USER = '999000111';
      * faltante inventado después aparece como un pedido que no se puede
      * despachar.
      */
-    chk('aparta sólo por la que falta despachar', apartadoAntesImport + 1, await apartado());
+    chk('aparta por las dos que faltan despachar', apartadoAntesImport + 2, await apartado());
 
     const importada = await PedidoPlataforma.findOne({
       where: { pedidoExterno: '77000010' },
     });
     chk('la importada queda lista para despachar', 'aceptado', importada.estado);
     chk('con su envío', 'flex', importada.envioTipo);
-    chk('las que ya salieron no se cargaron', 0,
-      await PedidoPlataforma.count({ where: { pedidoExterno: ['77000011', '77000012', '77000013'] } }));
+    chk('la entregada y la cancelada no se cargaron', 0,
+      await PedidoPlataforma.count({ where: { pedidoExterno: ['77000011', '77000013'] } }));
+
+    /*
+     * La de la etiqueta impresa sí entra, y queda para despachar. Es el caso
+     * reportado: "aunque haya imprimido las etiquetas me debería aparecer para
+     * despachar el envío".
+     */
+    const conEtiqueta = await PedidoPlataforma.findOne({
+      where: { pedidoExterno: '77000012' },
+    });
+    chk('la de etiqueta impresa entra igual', true, Boolean(conEtiqueta));
+    chk('y queda lista para despachar', 'aceptado', conEtiqueta?.estado);
+    chk('con el estado que informa ML', 'shipped', conEtiqueta?.estadoEnvioMl);
+
+    const envios = require('../src/services/enviosDelDiaService');
+    const jornadaEtiqueta = await envios.delDia(negocio.id, { filtro: 'todos', diasAdelante: 30 });
+    const paqEtiqueta = jornadaEtiqueta.paquetes.find(
+      (q) => q.ventas.some((v2) => v2.pedidoExterno === '77000012'),
+    );
+    chk('aparece en Envíos del día', true, Boolean(paqEtiqueta));
+    chk('todavía para enviar', 'para_enviar', paqEtiqueta?.situacion);
+    chk('marcada: ML ya la dio por despachada', true, paqEtiqueta?.mlYaDespacho);
 
     tit('11. IMPORTAR DOS VECES NO APARTA DOS VECES');
     // Se corre de nuevo porque uno la corre de nuevo: no está claro si anduvo,
     // o se cambia el rango de días y se vuelve a apretar.
     const trasPrimera = await apartado();
     const imp2 = await mlPedidos.importarPedidos(negocio.id, { dias: 14 });
-    chk('la segunda vez las reconoce', 1, imp2.repetidos);
+    chk('la segunda vez las reconoce', 2, imp2.repetidos);
     chk('sin importar ninguna nueva', 0, imp2.importados);
     chk('y sin apartar de nuevo', trasPrimera, await apartado());
 
@@ -387,15 +415,15 @@ const ML_USER = '999000111';
     const antesPack = await estante();
     const apartadoAntes = await apartado();
 
-    RESPUESTAS.set('/orders/77000012', orden(77000012, {
+    RESPUESTAS.set('/orders/77000020', orden(77000020, {
       order_items: [{ quantity: 2, unit_price: 15000,
         item: { id: 'MLAPACK', seller_sku: 'QA-MLPACK-M' } }],
-      shipping: { id: 4400012 },
+      shipping: { id: 4400020 },
     }));
-    RESPUESTAS.set('/shipments/4400012', envio({ id: 4400012, order_id: 77000012 }));
+    RESPUESTAS.set('/shipments/4400020', envio({ id: 4400020, order_id: 77000020 }));
 
     const rPack = await mlPedidos.procesarNotificacion({
-      topic: 'orders_v2', resource: '/orders/77000012', userId: ML_USER,
+      topic: 'orders_v2', resource: '/orders/77000020', userId: ML_USER,
     });
     chk('la venta del pack se acepta', 'aceptado', rPack.estado);
     chk('el SKU del pack no queda como desconocido', 0,
@@ -416,7 +444,7 @@ const ML_USER = '999000111';
     const envios = require('../src/services/enviosDelDiaService');
     const jornada = await envios.delDia(negocio.id, { filtro: 'todos', diasAdelante: 30 });
     const paquete = jornada.paquetes.find(
-      (pq) => pq.ventas.some((vt) => vt.pedidoExterno === '77000012'),
+      (pq) => pq.ventas.some((vt) => vt.pedidoExterno === '77000020'),
     );
     chk('el paquete aparece en Envíos del Día', true, !!paquete);
     const linea = paquete?.items?.[0];

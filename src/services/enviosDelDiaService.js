@@ -582,6 +582,16 @@ async function delDia(businessId, {
          * la lista se mezcla con los del día y parece que entró recién.
          */
         deDiasAnteriores: new Date(p.despacharAntesDe || p.recibidoEn).getTime() < desde.getTime(),
+        /*
+         * Mercado Libre ya la dio por despachada, pero acá todavía no salió.
+         *
+         * En Flex, ML pone el envío en `shipped` apenas se imprime la etiqueta:
+         * la mercadería puede seguir en el estante. Sigue estando "para
+         * enviar" —hay que bajarla, ponerla en la caja y descontar el stock—
+         * pero quien la mira tiene que saber que del lado de ML el reloj ya
+         * corrió, porque el comprador ya recibió el aviso de que salió.
+         */
+        mlYaDespacho: p.estadoEnvioMl === 'shipped' && p.estadoEnvio !== 'despachado',
         comprador: p.comprador,
         recibidoEn: p.recibidoEn,
         // Las ventas que van en esta caja. Casi siempre una; cuando son varias,
