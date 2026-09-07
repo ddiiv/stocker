@@ -124,6 +124,79 @@ app.use((req, res, next) => {
   res.setHeader('X-Frame-Options', 'DENY');
   // Este panel no es un sitio público: que no aparezca en ningún buscador.
   res.setHeader('X-Robots-Tag', 'noindex, nofollow');
+
+  /*
+   * ── Política de Seguridad de Contenido ──────────────────────────
+   *
+   * Es la defensa que importa cuando algo falla en otro lado. Si un día se
+   * cuela HTML de un tercero —el nombre de un negocio, un motivo de rechazo,
+   * cualquier texto que termine en la pantalla— sin CSP ese HTML puede traer
+   * un <script> y ejecutarse con la sesión del administrador de la plataforma,
+   * que es la cuenta que ve los datos de TODOS los clientes.
+   *
+   * Se arranca de `default-src 'none'` y se abre sólo lo que hace falta. Al
+   * revés —permitir todo y prohibir algunos— la lista se queda vieja el día
+   * que alguien agrega una dependencia.
+   *
+   * Lo que hace que esto sirva de verdad es que NO hay 'unsafe-inline' en
+   * script-src. Ese permiso es justamente el que convierte una inyección de
+   * HTML en ejecución de código, así que una CSP que lo incluye da una falsa
+   * sensación de protección. Se puede porque el build de Vite no deja ni un
+   * script embebido: sale todo en archivos con hash.
+   *
+   *   script-src 'self'   los bundles, del propio dominio.
+   *   style-src  'self'   el CSS del build. Sin 'unsafe-inline': React aplica
+   *                       los estilos dinámicos por CSSOM, que la CSP no toca.
+   *   img-src    data:    el favicon va embebido como SVG en el HTML.
+   *   connect-src 'self'  la API viaja por el proxy de este mismo servidor, así
+   *                       que no hace falta abrir ningún origen externo.
+   *   frame-ancestors     lo mismo que X-Frame-Options, pero es lo que miran
+   *                       los navegadores modernos.
+   *   base-uri 'none'     sin esto, una etiqueta <base> inyectada puede
+   *                       redirigir TODAS las rutas relativas a otro dominio.
+   *   form-action 'self'  que un formulario inyectado no pueda postear las
+   *                       credenciales afuera.
+   */
+  res.setHeader('Content-Security-Policy', [
+    "default-src 'none'",
+    "script-src 'self'",
+    "style-src 'self'",
+    "img-src 'self' data:",
+    "font-src 'self'",
+    "connect-src 'self'",
+    "manifest-src 'self'",
+    "form-action 'self'",
+    "base-uri 'none'",
+    "frame-ancestors 'none'",
+    "object-src 'none'",
+    // Que el navegador convierta solo cualquier http:// que se haya colado.
+    'upgrade-insecure-requests',
+  ].join('; '));
+
+  /*
+   * Aislamiento entre ventanas y orígenes.
+   *
+   * `same-origin` corta la referencia `window.opener`: una pestaña abierta
+   * desde acá no puede manipular ésta. Y `Cross-Origin-Resource-Policy` impide
+   * que otro sitio incruste recursos de éste para medir cosas sobre la sesión.
+   */
+  res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+  res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
+
+  /*
+   * Permisos del navegador: se apaga todo lo que este panel no usa.
+   *
+   * No suma puntos en ningún análisis, y sirve igual: si mañana una
+   * dependencia intenta leer la ubicación o prender el micrófono, no puede.
+   */
+  res.setHeader('Permissions-Policy', [
+    'accelerometer=()', 'autoplay=()', 'camera=()', 'display-capture=()',
+    'encrypted-media=()', 'fullscreen=(self)', 'geolocation=()', 'gyroscope=()',
+    'magnetometer=()', 'microphone=()', 'midi=()', 'payment=()',
+    'publickey-credentials-get=()', 'screen-wake-lock=()', 'usb=()',
+    'xr-spatial-tracking=()',
+  ].join(', '));
+
   next();
 });
 
