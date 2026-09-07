@@ -106,18 +106,37 @@
 }
 
 @theme {
-  /* Palette: warehouse ledger — graphite + warm brass tag accent */
-  --color-ink-950: #14171f;
-  --color-ink-900: #1b1f2b;
-  --color-ink-800: #232735;
-  --color-ink-700: #2e3346;
-  --color-ink-600: #454b63;
-  --color-ink-400: #7a8099;
+  /*
+   * ── Neutros ──────────────────────────────────────────────────
+   *
+   * Grises fríos y no beige. El beige daba el aire de cuaderno de depósito
+   * que la primera versión buscaba; el gris frío es lo que hace que una
+   * pantalla llena de datos se lea como una herramienta y no como un
+   * formulario impreso. Los valores salen del sistema Snow.
+   *
+   * OJO con la escala de `paper`: NO va de más claro a más oscuro. Va por
+   * CAPA, y en modo claro la tarjeta es apenas más oscura que la página:
+   *
+   *   paper-100  el fondo de la página (blanco)
+   *   paper-50   la tarjeta que se apoya encima
+   *   paper-200  lo que se hunde: hover, celdas, campos
+   *
+   * Es al revés de lo que sugieren los números y es a propósito: así una
+   * tarjeta se separa del fondo sin necesitar borde ni sombra, que es de
+   * donde sale la sensación de aire. Cambiar los nombres costaba tocar 220
+   * lugares; cambiar los valores, ninguno.
+   */
+  --color-ink-950: #1c1c1c;
+  --color-ink-900: #2a2a2a;
+  --color-ink-800: #3d3d3d;
+  --color-ink-700: #555555;
+  --color-ink-600: #6b6b6b;
+  --color-ink-400: #9a9a9a;
 
-  --color-paper-50: #fbfaf7;
-  --color-paper-100: #f7f5f0;
-  --color-paper-200: #efebe1;
-  --color-line: #e2ddd0;
+  --color-paper-50: #f7f9fb;
+  --color-paper-100: #ffffff;
+  --color-paper-200: #eef1f5;
+  --color-line: #e8eaee;
 
   --color-brass-50: #fbf2e2;
   --color-brass-100: #f3ddb2;
@@ -158,19 +177,38 @@
   --shadow-card: 0 1px 2px rgba(20, 23, 31, 0.04);
 
   /*
-   * La barra lateral tiene su propio color y NO se da vuelta con el tema.
+   * La barra lateral.
    *
-   * Es la única superficie que ya era oscura en el modo claro: es un riel de
-   * navegación, no contenido. Usando `ink-950` —que sí se da vuelta— en modo
-   * oscuro se convertía en una franja BLANCA de 256 px pegada al costado, que
-   * es la superficie más grande de la pantalla y la que más molesta.
+   * Antes era un riel oscuro en los DOS temas. Ahora sigue al tema, como en el
+   * sistema Snow: clara sobre claro, oscura sobre oscuro. Se separa del
+   * contenido con una línea y no con un bloque de color.
    *
-   * En oscuro se pone un punto más oscura que el fondo del contenido: así se
-   * sigue distinguiendo del área de trabajo sin ser lo primero que se ve.
+   * Sigue teniendo tokens propios en vez de usar `paper-*` porque el riel es
+   * otra superficie: es el mismo color que el FONDO de la página, no que las
+   * tarjetas. Con `paper-50` quedaría del color de una tarjeta y parecería una
+   * tarjeta muy alta pegada al costado.
    */
-  --color-rail: #14171f;
-  --color-rail-fuerte: #fbfaf7;
-  --color-rail-suave: #f7f5f0cc;
+  --color-rail: #ffffff;
+  --color-rail-fuerte: #1c1c1c;
+  --color-rail-suave: #6b6b6b;
+
+  /*
+   * Un oscuro que NO se da vuelta con el tema.
+   *
+   * `ink-950` se invierte —es lo que hace que el botón principal sea negro
+   * sobre claro y claro sobre negro— y por eso no sirve para lo que tiene que
+   * ser oscuro SIEMPRE:
+   *
+   *   · El velo detrás de un modal. Con `ink-950/50` en modo oscuro quedaba un
+   *     velo BLANCO sobre una app oscura: en vez de atenuar el fondo, lo
+   *     encendía.
+   *   · El visor de la cámara del escáner, que es una ventana a un video y
+   *     tiene que ser negra para que la imagen se lea.
+   *
+   * Los tres estaban mal en modo oscuro desde que existe el modo oscuro; no se
+   * habían visto porque hay que abrir un modal o el escáner para notarlo.
+   */
+  --color-noche: #0d0d0d;
 }
 
 /*
@@ -200,17 +238,20 @@
  */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --color-ink-950: #f6f4ef;
-    --color-ink-900: #e9e6df;
-    --color-ink-800: #d6d2c9;
-    --color-ink-700: #b8b3a8;
-    --color-ink-600: #979289;
-    --color-ink-400: #6e6a62;
+    --color-ink-950: #ffffff;
+    --color-ink-900: #f0f0f0;
+    --color-ink-800: #dcdcdc;
+    --color-ink-700: #bdbdbd;
+    --color-ink-600: #9a9a9a;
+    --color-ink-400: #6f6f6f;
 
-    --color-paper-50: #1c2027;
-    --color-paper-100: #14171c;
-    --color-paper-200: #272c35;
-    --color-line: #313742;
+    /* Misma lógica de capas que en claro, dada vuelta: la tarjeta es apenas
+       MÁS clara que la página, que es como se ve el relieve cuando el fondo
+       es oscuro. */
+    --color-paper-50: #282828;
+    --color-paper-100: #1c1c1c;
+    --color-paper-200: #333333;
+    --color-line: #333333;
 
     --color-brass-50: #3a2f18;
     --color-brass-100: #4d3d1f;
@@ -238,25 +279,28 @@
      */
     --shadow-card: 0 1px 0 rgba(255, 255, 255, 0.04) inset, 0 1px 2px rgba(0, 0, 0, 0.4);
 
-    /* El riel: un punto más oscuro que el contenido. Ver el comentario arriba. */
-    --color-rail: #0e1116;
-    --color-rail-fuerte: #f2efe9;
-    --color-rail-suave: #cfcbc2cc;
+    /* El riel, del color del fondo. Ver el comentario de arriba. */
+    --color-rail: #1c1c1c;
+    --color-rail-fuerte: #ffffff;
+    --color-rail-suave: #9a9a9a;
   }
 }
 
 :root[data-theme="dark"] {
-  --color-ink-950: #f6f4ef;
-  --color-ink-900: #e9e6df;
-  --color-ink-800: #d6d2c9;
-  --color-ink-700: #b8b3a8;
-  --color-ink-600: #979289;
-  --color-ink-400: #6e6a62;
+  --color-ink-950: #ffffff;
+  --color-ink-900: #f0f0f0;
+  --color-ink-800: #dcdcdc;
+  --color-ink-700: #bdbdbd;
+  --color-ink-600: #9a9a9a;
+  --color-ink-400: #6f6f6f;
 
-  --color-paper-50: #1c2027;
-  --color-paper-100: #14171c;
-  --color-paper-200: #272c35;
-  --color-line: #313742;
+  /* Misma lógica de capas que en claro, dada vuelta: la tarjeta es apenas
+     MÁS clara que la página, que es como se ve el relieve cuando el fondo
+     es oscuro. */
+  --color-paper-50: #282828;
+  --color-paper-100: #1c1c1c;
+  --color-paper-200: #333333;
+  --color-line: #333333;
 
   --color-brass-50: #3a2f18;
   --color-brass-100: #4d3d1f;
@@ -279,10 +323,10 @@
 
   --shadow-card: 0 1px 0 rgba(255, 255, 255, 0.04) inset, 0 1px 2px rgba(0, 0, 0, 0.4);
 
-  /* El riel: un punto más oscuro que el contenido. Ver el comentario arriba. */
-  --color-rail: #0e1116;
-  --color-rail-fuerte: #f2efe9;
-  --color-rail-suave: #cfcbc2cc;
+  /* El riel, del color del fondo. Ver el comentario de arriba. */
+  --color-rail: #1c1c1c;
+  --color-rail-fuerte: #ffffff;
+  --color-rail-suave: #9a9a9a;
 }
 
 @layer base {
@@ -329,9 +373,19 @@
     flex-shrink: 0;
   }
 
+  /*
+   * La tarjeta se separa del fondo por su relleno, no por un borde.
+   *
+   * Antes tenía borde de 1px y una sombra apenas visible. Con veinte tarjetas
+   * en una pantalla eso son veinte rectángulos dibujados, y el ojo termina
+   * leyendo la grilla en vez del contenido. El relleno solo alcanza para
+   * separar, y de ahí sale la sensación de aire del sistema Snow.
+   *
+   * Radio 16 y no 8: es el cambio de forma que más se nota y el que hace que
+   * una pantalla de tablas no parezca una planilla.
+   */
   .card {
-    @apply rounded-lg border border-line bg-paper-50;
-    box-shadow: var(--shadow-card);
+    @apply rounded-2xl bg-paper-50;
   }
 
   .btn-primary {

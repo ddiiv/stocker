@@ -71,13 +71,13 @@ export default function RegisterPage() {
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-ink-950 px-4 py-10">
+    <div className="flex min-h-screen items-center justify-center bg-paper-100 px-4 py-10">
       <div className="w-full max-w-lg">
         <div className="mb-8 flex flex-col items-center text-center">
-          <div className="flex h-11 w-11 items-center justify-center rounded-md bg-brass-500 text-ink-950">
+          <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-brass-500 text-[#1c1c1c]">
             <Tag size={20} strokeWidth={2.5} />
           </div>
-          <h1 className="mt-4 font-display text-xl font-semibold text-paper-50">Registrá tu negocio</h1>
+          <h1 className="mt-4 font-display text-xl font-semibold text-ink-950">Registrá tu negocio</h1>
           <p className="mt-1 text-sm text-ink-400">Creá tu cuenta de administración</p>
         </div>
 

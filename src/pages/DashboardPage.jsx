@@ -60,10 +60,10 @@ export default function DashboardPage() {
       ) : (
         <>
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-            <StatCard label="Facturación (pagas)" value={formatCurrency(metrics.revenue)} icon={DollarSign} accent="brass" hint={`${metrics.salesCount} ventas cobradas`} />
+            <StatCard tinta label="Facturación (pagas)" value={formatCurrency(metrics.revenue)} icon={DollarSign} accent="brass" hint={`${metrics.salesCount} ventas cobradas`} />
             <StatCard label="Margen bruto" value={formatCurrency(metrics.margin)} icon={TrendingUp} accent="teal" hint={`${metrics.marginPct}% sobre facturado`} />
             <StatCard label="Ticket promedio" value={formatCurrency(metrics.ticketPromedio)} icon={ShoppingBag} accent="ink" hint="Por venta cobrada" />
-            <StatCard label="Pendiente de cobro" value={formatCurrency(metrics.pendingAmount)} icon={PackageX} accent="brick" hint="Ventas sin cobrar en el período" />
+            <StatCard tinta label="Pendiente de cobro" value={formatCurrency(metrics.pendingAmount)} icon={PackageX} accent="brick" hint="Ventas sin cobrar en el período" />
           </div>
 
           <div className="mt-6 grid gap-4 lg:grid-cols-5">

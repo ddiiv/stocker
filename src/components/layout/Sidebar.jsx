@@ -154,7 +154,7 @@ export default function Sidebar({ open, onClose }) {
   return (
     <>
       {open && (
-        <div className="fixed inset-0 z-30 bg-ink-950/40 md:hidden" onClick={onClose} />
+        <div className="fixed inset-0 z-30 bg-noche/40 md:hidden" onClick={onClose} />
       )}
       <aside
         aria-label="Menú principal"
@@ -167,10 +167,10 @@ export default function Sidebar({ open, onClose }) {
          * `invisible` cuando está cerrado saca los quince links del tabulador:
          * corridos fuera de pantalla se seguían pudiendo enfocar a ciegas.
          */
-        className={`fixed z-40 flex h-dvh w-64 flex-col bg-rail text-rail-fuerte transition-transform md:static md:h-full md:visible md:translate-x-0
+        className={`fixed z-40 flex h-dvh w-64 flex-col border-r border-line bg-rail text-rail-fuerte transition-transform md:static md:h-full md:visible md:translate-x-0
         ${open ? "translate-x-0" : "invisible -translate-x-full"}`}
       >
-        <div className="flex shrink-0 items-center gap-2 border-b border-white/10 px-5 py-5">
+        <div className="flex shrink-0 items-center gap-2 border-b border-line px-5 py-5">
           <div className="flex h-8 w-8 items-center justify-center rounded-md bg-brass-500 text-[#14171f]">
             <Tag size={16} strokeWidth={2.5} />
           </div>
@@ -210,7 +210,7 @@ export default function Sidebar({ open, onClose }) {
                           className={`flex items-center gap-3 rounded-md px-3 py-2.5 text-sm font-medium transition-colors ${
                             activo
                               ? "bg-brass-500 text-[#14171f]"
-                              : "text-rail-suave hover:bg-white/5 hover:text-rail-fuerte"
+                              : "text-rail-suave hover:bg-paper-200 hover:text-rail-fuerte"
                           }`}
                         >
                           <Icon size={17} strokeWidth={2} className="shrink-0" />

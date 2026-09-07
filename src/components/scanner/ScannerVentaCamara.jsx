@@ -54,7 +54,7 @@ export default function ScannerVentaCamara({
   const unidades = items.reduce((s, i) => s + i.cantidad, 0);
 
   return (
-    <div className="fixed inset-0 z-50 flex flex-col bg-ink-950">
+    <div className="fixed inset-0 z-50 flex flex-col bg-noche">
       <div className="flex items-center gap-2 px-3 py-2.5">
         <button
           type="button"

@@ -93,13 +93,13 @@ export default function ForgotPasswordPage() {
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-ink-950 px-4 py-10">
+    <div className="flex min-h-screen items-center justify-center bg-paper-100 px-4 py-10">
       <div className="w-full max-w-sm">
         <div className="mb-8 flex flex-col items-center text-center">
-          <div className="flex h-11 w-11 items-center justify-center rounded-md bg-brass-500 text-ink-950">
+          <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-brass-500 text-[#1c1c1c]">
             <Tag size={20} strokeWidth={2.5} />
           </div>
-          <h1 className="mt-4 font-display text-xl font-semibold text-paper-50">Recuperar contraseña</h1>
+          <h1 className="mt-4 font-display text-xl font-semibold text-ink-950">Recuperar contraseña</h1>
           <p className="mt-1 text-sm text-ink-400">
             {step === "request"      && "Ingresá tu email y CUIT del dueño"}
             {step === "code"         && "Ingresá el código que te enviamos"}

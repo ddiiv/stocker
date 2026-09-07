@@ -13,7 +13,7 @@ export default function Modal({ open, onClose, title, children, width = "max-w-l
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-ink-950/50 p-4 py-10 backdrop-blur-sm">
+    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-noche/50 p-4 py-10 backdrop-blur-sm">
       <div className={`w-full ${width} rounded-lg border border-line bg-paper-50 shadow-xl`}>
         <div className="flex items-center justify-between border-b border-line px-5 py-4">
           <h3 className="font-display text-base font-semibold text-ink-950">{title}</h3>

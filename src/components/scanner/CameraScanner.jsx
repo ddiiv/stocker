@@ -290,7 +290,7 @@ export default function CameraScanner({ onScan, activo = true, onEstado, repetir
   ];
 
   return (
-    <div ref={contRef} className="relative h-full w-full select-none overflow-hidden bg-ink-950">
+    <div ref={contRef} className="relative h-full w-full select-none overflow-hidden bg-noche">
       <video ref={videoRef} playsInline muted className="h-full w-full object-cover" />
 
       {estado === "leyendo" && (
@@ -314,7 +314,7 @@ export default function CameraScanner({ onScan, activo = true, onEstado, repetir
               >
                 {/* El área táctil es de 36 px aunque el punto se vea de 14: con
                     el dedo, un blanco de 14 px se falla más de lo que se acierta. */}
-                <span className="h-3.5 w-3.5 rounded-sm border-2 border-white bg-ink-950/60" />
+                <span className="h-3.5 w-3.5 rounded-sm border-2 border-white bg-noche/60" />
               </button>
             ))}
           </div>
@@ -327,12 +327,12 @@ export default function CameraScanner({ onScan, activo = true, onEstado, repetir
             {tieneLinterna && (
               <button type="button" onClick={alternarLinterna} aria-pressed={linterna}
                 aria-label={linterna ? "Apagar la linterna" : "Prender la linterna"}
-                className={`rounded-full p-2.5 backdrop-blur ${linterna ? "bg-white text-ink-950" : "bg-ink-950/60 text-white"}`}>
+                className={`rounded-full p-2.5 backdrop-blur ${linterna ? "bg-white text-ink-950" : "bg-noche/60 text-white"}`}>
                 {linterna ? <Flashlight size={18} /> : <FlashlightOff size={18} />}
               </button>
             )}
             <button type="button" onClick={() => setTrasera((v) => !v)} aria-label="Cambiar de cámara"
-              className="rounded-full bg-ink-950/60 p-2.5 text-white backdrop-blur">
+              className="rounded-full bg-noche/60 p-2.5 text-white backdrop-blur">
               <SwitchCamera size={18} />
             </button>
           </div>

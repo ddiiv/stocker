@@ -49,25 +49,25 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-ink-950 px-4">
+    <div className="flex min-h-screen items-center justify-center bg-paper-100 px-4">
       <div className="w-full max-w-sm">
         <div className="mb-8 flex flex-col items-center text-center">
-          <div className="flex h-11 w-11 items-center justify-center rounded-md bg-brass-500 text-ink-950">
+          <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-brass-500 text-[#1c1c1c]">
             <Tag size={20} strokeWidth={2.5} />
           </div>
-          <h1 className="mt-4 font-display text-xl font-semibold text-paper-50">Stocker</h1>
+          <h1 className="mt-4 font-display text-xl font-semibold text-ink-950">Stocker</h1>
           <p className="mt-1 text-sm text-ink-400">Iniciá sesión en tu cuenta</p>
           
         </div>
 
-        <div className="mb-3 flex rounded-md border border-white/10 bg-ink-900 p-1">
+        <div className="mb-3 flex rounded-lg border border-line bg-paper-200 p-1">
           {TABS.map((t) => (
             <button
               key={t.value}
               type="button"
               onClick={() => { setMode(t.value); setServerError(""); }}
               className={`flex-1 rounded px-3 py-1.5 text-xs font-medium transition-colors ${
-                mode === t.value ? "bg-brass-500 text-ink-950" : "text-paper-100/70 hover:text-paper-50"
+                mode === t.value ? "bg-brass-500 text-[#1c1c1c]" : "text-ink-600 hover:text-ink-900"
               }`}
             >
               {t.label}
