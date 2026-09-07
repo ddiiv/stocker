@@ -81,7 +81,28 @@ const vari = (sku, color, talle, codigoBarras = null) =>
     await new Promise((res) => { const w = fs.createWriteStream(archivo); doc.pipe(w); doc.end(); w.on('finish', res); });
     execFileSync('pdftoppm', ['-r', '203', '-png', archivo, path.join(dir, 'p')]);
 
-    const { readBarcodes } = await import('/home/ddiiv/Desktop/repo/front/stocker/node_modules/zxing-wasm/dist/es/reader/index.js');
+    /*
+     * El lector de códigos vive en el front, que es el que lo tiene instalado.
+     *
+     * La ruta se arma desde ESTE archivo y no está escrita a mano: la versión
+     * anterior tenía la ruta absoluta del disco de quien la escribió, y el día
+     * que se movieron las carpetas del proyecto la suite dejó de correr entera
+     * —sin resumen, sin fallas, sin nada que dijera qué pasó—.
+     *
+     * Si el front no está instalado al lado, se dice y se saltea: esta suite
+     * comprueba el PDF, y no poder leer los códigos es una comprobación menos,
+     * no un motivo para no correr las otras.
+     */
+    const rutaLector = path.resolve(
+      __dirname, '..', '..', '..', 'front', 'stocker',
+      'node_modules', 'zxing-wasm', 'dist', 'es', 'reader', 'index.js',
+    );
+    if (!fs.existsSync(rutaLector)) {
+      console.log('  \x1b[33m—\x1b[0m no está el lector de códigos del front: se saltea la lectura');
+      fs.rmSync(dir, { recursive: true, force: true });
+      return;
+    }
+    const { readBarcodes } = await import(`file://${rutaLector}`);
     for (let i = 0; i < casos.length; i++) {
       const png = fs.readFileSync(path.join(dir, `p-${i + 1}.png`));
       const r = await readBarcodes(new Blob([png]), { tryHarder: true, formats: ['Code128'] });
