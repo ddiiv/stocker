@@ -11,9 +11,13 @@
  * de otro negocio.
  */
 
+const { Op } = require('sequelize');
 const envios = require('../services/enviosDelDiaService');
 const { generarPickingPdf } = require('../services/pickingPdfService');
-const { Business, BusinessLocation } = require('../models');
+const mlPedidos = require('../services/mercadolibrePedidosService');
+const {
+  Business, BusinessLocation, MercadoLibreAccount, PedidoPlataforma,
+} = require('../models');
 
 const getDelDia = async (req, res, next) => {
   try {
@@ -121,4 +125,97 @@ const postFaltante = async (req, res, next) => {
   } catch (e) { next(e); }
 };
 
-module.exports = { getDelDia, getPdf, postDespachar, postFaltante };
+/*
+ * POST /api/envios/despachar-varios
+ *
+ * Body: { pedidoIds: [1, 2, 3] }
+ *
+ * Con quince cajas armadas, tocar quince botones y esperar quince respuestas es
+ * la mitad del tiempo de cerrar la jornada.
+ *
+ * Se contesta 200 aunque alguno falle, con la lista de cuáles: un 500 haría
+ * pensar que no salió ninguno cuando en realidad salieron catorce, y rehacerlos
+ * todos descontaría stock de nuevo.
+ */
+const postDespacharVarios = async (req, res, next) => {
+  try {
+    const r = await envios.despacharVarios({
+      pedidoIds: Array.isArray(req.body?.pedidoIds) ? req.body.pedidoIds : [],
+      businessId: req.auth.businessId,
+      employeeId: req.auth.employeeId || null,
+    });
+
+    const salieron = r.despachados.filter((d) => !d.repetido).length;
+    const repetidos = r.despachados.filter((d) => d.repetido).length;
+    const partes = [];
+    if (salieron) partes.push(`${salieron} paquete(s) despachado(s), ${r.unidades} unidad(es)`);
+    if (repetidos) partes.push(`${repetidos} ya estaba(n) despachado(s)`);
+    if (r.fallaron.length) partes.push(`${r.fallaron.length} no se pudo(ieron)`);
+
+    return res.json({
+      ok: r.fallaron.length === 0,
+      ...r,
+      mensaje: partes.join(' · ') || 'No había nada para despachar.',
+    });
+  } catch (e) { return next(e); }
+};
+
+/*
+ * GET /api/envios/etiquetas?envioIds=1,2,3
+ *
+ * Las etiquetas de despacho de Mercado Libre, en un PDF.
+ *
+ * Los ids se comprueban contra los pedidos DE ESTE NEGOCIO antes de pedírselos
+ * a ML. El token es nuestro: sin ese filtro, mandar el id de envío de otro
+ * vendedor de la misma cuenta imprimiría una etiqueta que no corresponde, y con
+ * los datos del comprador adentro.
+ */
+const getEtiquetas = async (req, res, next) => {
+  try {
+    const pedidos = String(req.query.envioIds || '')
+      .split(',').map((x) => x.trim()).filter(Boolean);
+    if (!pedidos.length) {
+      return res.status(400).json({ message: 'Elegí al menos un envío.' });
+    }
+
+    const cuenta = await MercadoLibreAccount.findOne({
+      where: { businessId: req.auth.businessId },
+    });
+    if (!cuenta?.refreshToken) {
+      return res.status(409).json({
+        message: 'No hay ninguna cuenta de Mercado Libre conectada. Conectala en Integraciones.',
+      });
+    }
+
+    const propios = await PedidoPlataforma.findAll({
+      where: {
+        businessId: req.auth.businessId,
+        plataforma: 'mercadolibre',
+        envioId: { [Op.in]: pedidos },
+      },
+      attributes: ['envioId'],
+    });
+    const ids = [...new Set(propios.map((p) => p.envioId).filter(Boolean))];
+    if (!ids.length) {
+      return res.status(404).json({
+        message: 'Ninguno de esos envíos es de este negocio.',
+      });
+    }
+
+    const pdf = await mlPedidos.traerEtiquetas(cuenta, ids);
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition',
+      `inline; filename="etiquetas-${ids.length}.pdf"`);
+    // Para que la pantalla pueda avisar si alguno quedó afuera sin abrir el PDF.
+    res.setHeader('X-Etiquetas', String(ids.length));
+    return res.send(pdf);
+  } catch (e) {
+    if (e.status) return res.status(e.status).json({ message: e.message });
+    return next(e);
+  }
+};
+
+module.exports = {
+  getDelDia, getPdf, postDespachar, postDespacharVarios, postFaltante, getEtiquetas,
+};

@@ -60,7 +60,25 @@ const DESPACHABLES = ['aceptado', 'parcial'];
 
 /** El día en horario local, de 00:00 a 23:59:59.999. */
 function limitesDelDia(fecha) {
-  const base = fecha ? new Date(fecha) : new Date();
+  /*
+   * "2026-09-04" es un DÍA, no un instante en UTC.
+   *
+   * `new Date('2026-09-04')` lo interpreta como medianoche UTC, que en
+   * Argentina —UTC-3— son las 21 del día ANTERIOR. Después se le pide el
+   * comienzo del día local a esa fecha y sale el 3, no el 4: pedir la jornada
+   * del jueves devolvía la del miércoles, entera y sin ningún error a la
+   * vista. La pantalla mandaba la fecha del selector en ese formato, así que
+   * pasaba siempre que alguien tocara el día.
+   *
+   * Se parte a mano y se arma con el constructor de fecha local, que es la
+   * única forma de que un día calendario signifique ese día acá.
+   */
+  const soloDia = typeof fecha === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(fecha.trim())
+    ? fecha.trim().split('-').map(Number)
+    : null;
+  const base = soloDia
+    ? new Date(soloDia[0], soloDia[1] - 1, soloDia[2], 12, 0, 0, 0)
+    : (fecha ? new Date(fecha) : new Date());
   if (Number.isNaN(base.getTime())) throw error('La fecha no es válida.', 400);
   const desde = new Date(base.getFullYear(), base.getMonth(), base.getDate(), 0, 0, 0, 0);
   const hasta = new Date(base.getFullYear(), base.getMonth(), base.getDate(), 23, 59, 59, 999);
@@ -749,6 +767,48 @@ const vacio = () => ({
  * despachado deja al depósito descuadrado y al comprador esperando algo que
  * nadie sabe si salió.
  */
+/**
+ * Despacha varios paquetes de una.
+ *
+ * Es el pedido más repetido del depósito: con quince cajas armadas, tocar
+ * quince botones y esperar quince respuestas es la mitad del tiempo de cerrar
+ * la jornada.
+ *
+ * Cada paquete va en SU PROPIA transacción, no todos en una sola. Parece menos
+ * prolijo y es lo correcto: si el paquete doce falla porque alguien le ajustó
+ * el stock por otro lado, con una transacción común se caen los once que ya
+ * habían salido bien y la persona no sabe cuáles rehacer. Así, once salieron,
+ * uno falla, y el resultado dice exactamente cuál y por qué.
+ *
+ * @returns {Promise<{despachados:Array, fallaron:Array, unidades:number}>}
+ */
+async function despacharVarios({ pedidoIds, businessId, employeeId = null }) {
+  const ids = [...new Set((pedidoIds || []).map(Number).filter(Number.isFinite))];
+  if (!ids.length) throw error('No elegiste ningún envío para despachar.', 400);
+  if (ids.length > 100) throw error('Son demasiados envíos de una: elegí hasta 100.', 400);
+
+  const despachados = [];
+  const fallaron = [];
+  let unidades = 0;
+
+  for (const pedidoId of ids) {
+    try {
+      const r = await despachar({ pedidoId, businessId, employeeId });
+      unidades += r.movidas || 0;
+      despachados.push({
+        pedidoId,
+        repetido: Boolean(r.repetido),
+        unidades: r.movidas || 0,
+        ventas: r.ventas || 1,
+      });
+    } catch (e) {
+      fallaron.push({ pedidoId, motivo: e.message, codigo: e.codigo || null });
+    }
+  }
+
+  return { despachados, fallaron, unidades };
+}
+
 async function despachar({ pedidoId, businessId, employeeId = null }) {
   const t = await db.transaction();
   try {
@@ -959,4 +1019,6 @@ async function marcarFaltante({ pedidoId, businessId, nota = null, employeeId = 
   return pedido;
 }
 
-module.exports = { delDia, despachar, marcarFaltante, ESTADOS, DESPACHABLES, limitesDelDia };
+module.exports = {
+  delDia, despachar, despacharVarios, marcarFaltante, ESTADOS, DESPACHABLES, limitesDelDia,
+};

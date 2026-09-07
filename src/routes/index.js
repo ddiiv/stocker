@@ -229,6 +229,12 @@ r.get ('/online/pedidos',   requireAuth, requireAnyPermission(['ventas', 'stock'
  */
 r.get ('/envios/del-dia',       requireAuth, requireAnyPermission(['stock', 'ventas'], 'ver'), enviosCtrl.getDelDia);
 r.get ('/envios/del-dia/pdf',   requireAuth, requireAnyPermission(['stock', 'ventas'], 'ver'), enviosCtrl.getPdf);
+/*
+ * Las etiquetas de despacho de ML. Van antes de `/envios/:id/...` para que
+ * "etiquetas" no caiga adentro de :id, que es lo primero que matchea.
+ */
+r.get ('/envios/etiquetas',     requireAuth, requireAnyPermission(['stock', 'ventas'], 'ver'), enviosCtrl.getEtiquetas);
+r.post('/envios/despachar-varios', requireAuth, requirePermission('stock', 'editar'), enviosCtrl.postDespacharVarios);
 r.post('/envios/:id/despachar', requireAuth, requirePermission('stock', 'editar'), enviosCtrl.postDespachar);
 r.post('/envios/:id/faltante',  requireAuth, requirePermission('stock', 'editar'), enviosCtrl.postFaltante);
 

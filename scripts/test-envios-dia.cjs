@@ -491,6 +491,118 @@ function sesion() {
       { where: { pedidoExterno: 'QA-ENV-1' } },
     );
 
+    tit('12d. DESPACHAR UNA TANDA');
+    /*
+     * Con quince cajas armadas, tocar quince botones y esperar quince
+     * respuestas es la mitad del tiempo de cerrar la jornada.
+     *
+     * Cada paquete va en SU PROPIA transacción del lado del servidor: si el
+     * doceavo falla, los once anteriores tienen que quedar despachados igual.
+     * Con una transacción común se caen todos y nadie sabe cuáles rehacer.
+     */
+    await fijarStock(vA, 20);
+    await fijarStock(vB, 20);
+    const paraTanda = [];
+    for (const n of [1, 2, 3]) {
+      const p = await PedidoPlataforma.create({
+        businessId: negocio.id, plataforma: 'mercadolibre',
+        pedidoExterno: `QA-ENV-T${n}`, estado: 'aceptado',
+        envioId: `QA-ENVIO-T${n}`, estadoEnvio: 'pendiente', recibidoEn: new Date(),
+      });
+      await PedidoPlataformaItem.create({
+        pedidoId: p.id, sku: vA.sku, cantidad: 2,
+        productVariantId: vA.id, locationId: local.id,
+      });
+      await stock.reservar(vA.id, local.id, negocio.id, 2);
+      paraTanda.push(p);
+    }
+
+    const antesTanda = await estante(vA);
+    const tanda = await api('POST', '/api/envios/despachar-varios', {
+      pedidoIds: paraTanda.map((p) => p.id),
+    });
+    chk('la tanda responde', 200, tanda.status);
+    chk('salieron los tres', 3, tanda.json?.despachados?.length);
+    chk('ninguno falló', 0, tanda.json?.fallaron?.length);
+    chk('y suma las unidades de todos', 6, tanda.json?.unidades);
+    chk('el estante bajó por los tres', antesTanda - 6, await estante(vA));
+
+    // Repetir la tanda no descuenta de nuevo: cada uno es idempotente.
+    const repetida = await api('POST', '/api/envios/despachar-varios', {
+      pedidoIds: paraTanda.map((p) => p.id),
+    });
+    chk('repetirla no mueve stock', antesTanda - 6, await estante(vA));
+    chk('y los reconoce como ya despachados', 3,
+      (repetida.json?.despachados || []).filter((d) => d.repetido).length);
+
+    /*
+     * Uno que falla no voltea a los demás. Se arma una tanda con dos buenos y
+     * un id que no existe en este negocio.
+     */
+    const masPedidos = [];
+    for (const n of [4, 5]) {
+      const p = await PedidoPlataforma.create({
+        businessId: negocio.id, plataforma: 'mercadolibre',
+        pedidoExterno: `QA-ENV-T${n}`, estado: 'aceptado',
+        envioId: `QA-ENVIO-T${n}`, estadoEnvio: 'pendiente', recibidoEn: new Date(),
+      });
+      await PedidoPlataformaItem.create({
+        pedidoId: p.id, sku: vA.sku, cantidad: 1,
+        productVariantId: vA.id, locationId: local.id,
+      });
+      await stock.reservar(vA.id, local.id, negocio.id, 1);
+      masPedidos.push(p);
+    }
+    const antesMixta = await estante(vA);
+    const mixta = await api('POST', '/api/envios/despachar-varios', {
+      pedidoIds: [masPedidos[0].id, 99999999, masPedidos[1].id],
+    });
+    chk('los dos buenos salen igual', 2, mixta.json?.despachados?.length);
+    chk('y el malo se reporta aparte', 1, mixta.json?.fallaron?.length);
+    chk('diciendo cuál', 99999999, mixta.json?.fallaron?.[0]?.pedidoId);
+    chk('el stock bajó sólo por los dos', antesMixta - 2, await estante(vA));
+    chk('la respuesta avisa que no salió todo', false, mixta.json?.ok);
+
+    // Un pedido de otro negocio no se despacha ni entre varios.
+    const negocioAjeno = await Business.findOne({ where: { id: { [Op.ne]: negocio.id } } });
+    if (negocioAjeno) {
+      const ajeno = await PedidoPlataforma.create({
+        businessId: negocioAjeno.id, plataforma: 'mercadolibre',
+        pedidoExterno: 'QA-ENV-AJENO', estado: 'aceptado', estadoEnvio: 'pendiente',
+        recibidoEn: new Date(),
+      });
+      const conAjeno = await api('POST', '/api/envios/despachar-varios', {
+        pedidoIds: [ajeno.id],
+      });
+      chk('el de otro negocio se rechaza', 1, conAjeno.json?.fallaron?.length);
+      chk('y sigue sin despachar', 'pendiente',
+        (await PedidoPlataforma.findByPk(ajeno.id)).estadoEnvio);
+      await ajeno.destroy();
+    }
+
+    // Sin nada elegido no se hace nada, y se dice.
+    const vacia = await api('POST', '/api/envios/despachar-varios', { pedidoIds: [] });
+    chk('una tanda vacía se rechaza', 400, vacia.status);
+
+    tit('12e. LAS ETIQUETAS DE DESPACHO');
+    /*
+     * Los ids se comprueban contra los pedidos DE ESTE NEGOCIO antes de
+     * pedírselos a ML. El token es nuestro: sin ese filtro, mandar el id de
+     * envío de otro vendedor imprimiría una etiqueta que no corresponde, con
+     * los datos del comprador adentro.
+     */
+    const sinCuenta = await api('GET', '/api/envios/etiquetas?envioIds=QA-ENVIO-T1');
+    chk('sin cuenta de ML conectada, lo dice', 409, sinCuenta.status);
+    chk('y explica qué hacer', true, /Integraciones/.test(sinCuenta.json?.message || ''));
+
+    const sinIds = await api('GET', '/api/envios/etiquetas');
+    chk('sin envíos elegidos se rechaza', 400, sinIds.status);
+
+    for (const p of [...paraTanda, ...masPedidos]) {
+      await PedidoPlataformaItem.destroy({ where: { pedidoId: p.id } });
+      await p.destroy();
+    }
+
     tit('13. UN ENVÍO QUE JUNTA VARIAS VENTAS ES UNA SOLA CAJA');
     /*
      * Mercado Libre agrupa varias compras del mismo comprador en un solo envío.

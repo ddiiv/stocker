@@ -479,7 +479,73 @@ async function ingresarOrdenImportada(cuenta, orden, envioYaLeido = null) {
   return { repetido, estado: pedido.estado, pedidoId: pedido.id };
 }
 
+/**
+ * Las etiquetas de despacho, en un PDF.
+ *
+ * Es lo mismo que el botón "imprimir etiquetas" del panel de Mercado Libre,
+ * pero desde acá: quien arma los paquetes ya está en Envíos del Día con la
+ * lista en la mano, y mandarlo a otra pestaña a buscar los mismos envíos de a
+ * uno es donde se va el tiempo de la jornada.
+ *
+ * ML devuelve UN solo PDF con todas las etiquetas pedidas, así que imprimir
+ * veinte es una llamada y un botón, no veinte de cada cosa.
+ *
+ * @param {string[]} envioIds  ids de envío de ML. Quien llama ya comprobó que
+ *                             son de este negocio: acá no hay forma de saberlo.
+ * @returns {Promise<Buffer>}
+ */
+async function traerEtiquetas(cuenta, envioIds) {
+  const ids = [...new Set((envioIds || []).map(String).filter(Boolean))];
+  if (!ids.length) {
+    const err = new Error('No hay ningún envío para imprimir.');
+    err.status = 400;
+    throw err;
+  }
+
+  const token = await ml.tokenValido(cuenta);
+  try {
+    const { data } = await axios.get(`${ML_API}/shipment_labels`, {
+      headers: { Authorization: `Bearer ${token}` },
+      params: { shipment_ids: ids.join(','), response_type: 'pdf' },
+      // Sin esto axios interpreta el PDF como texto y lo entrega corrupto: el
+      // archivo baja, pesa lo que tiene que pesar y no abre.
+      responseType: 'arraybuffer',
+      timeout: 30000,
+    });
+    return Buffer.from(data);
+  } catch (e) {
+    /*
+     * Los tres errores que se dan en la práctica, dichos con lo que hay que
+     * hacer. El cuerpo de un error de ML viene como buffer por el
+     * `responseType`, así que hay que volverlo texto antes de mirarlo.
+     */
+    const status = e.response?.status;
+    let detalle = '';
+    try { detalle = Buffer.from(e.response?.data || '').toString('utf8').slice(0, 300); } catch { /* sin detalle */ }
+
+    if (status === 404) {
+      const err = new Error(
+        'Mercado Libre no tiene etiqueta para alguno de estos envíos. Suele pasar cuando '
+        + 'todavía no está listo para despachar, o cuando el envío no lo maneja el vendedor.',
+      );
+      err.status = 409;
+      throw err;
+    }
+    if (status === 403 || status === 401) {
+      const err = new Error(
+        'Mercado Libre rechazó la descarga por permisos. Volvé a autorizar la cuenta '
+        + 'desde Integraciones.',
+      );
+      err.status = 403;
+      throw err;
+    }
+    const err = new Error(`No se pudieron traer las etiquetas de Mercado Libre. ${detalle}`.trim());
+    err.status = 502;
+    throw err;
+  }
+}
+
 module.exports = {
-  procesarNotificacion, traerOrden, traerEnvio, importarPedidos,
+  procesarNotificacion, traerOrden, traerEnvio, importarPedidos, traerEtiquetas,
   __skuDeLinea: skuDeLinea, __tipoDeEnvio: tipoDeEnvio, __idDeRecurso: idDeRecurso, TOPICOS,
 };
