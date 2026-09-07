@@ -529,6 +529,17 @@ export default function EnviosDelDiaPage() {
                         FLEX
                       </span>
                     )}
+                    {/*
+                      * Viene de un día anterior y sigue sin salir. Se dice
+                      * porque si no, en la lista se mezcla con los de hoy y
+                      * parece que entró recién — sobre todo los que no traen
+                      * hora de corte, que no llegan a marcarse "atrasado".
+                      */}
+                    {p.deDiasAnteriores && !p.atrasado && (
+                      <span className="rounded-full bg-paper-200 px-2 py-0.5 text-[11px] font-medium text-ink-700">
+                        de días anteriores
+                      </span>
+                    )}
                     <Corte
                       cuando={p.despacharAntesDe}
                       minutos={p.minutosParaElCorte}
