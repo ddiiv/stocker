@@ -10,6 +10,7 @@ import {
   getMlLinks, saveMlLink, deleteMlLink,
 } from "../services/mercadolibreService";
 import { PageHeader, Card } from "../components/ui/Layout";
+import Postventa from "../components/mercadolibre/Postventa";
 import Modal from "../components/ui/Modal";
 
 export default function MercadoLibrePage() {
@@ -146,9 +147,11 @@ export default function MercadoLibrePage() {
 
   async function importarVentas() {
     if (!confirm(
-      `Se van a traer las ventas de los últimos ${diasImportar} días que todavía no se despacharon.\n\n`
-      + "Las que ya salieron o se cancelaron NO se tocan: apartarles stock restaría del inventario "
-      + "mercadería que físicamente ya no está.",
+      `Se van a traer las ventas de los últimos ${diasImportar} días que todavía hay que despachar.\n\n`
+      + "Las que ya se entregaron o se cancelaron NO se tocan: apartarles stock restaría del inventario "
+      + "mercadería que físicamente ya no está.\n\n"
+      + "Las que tienen la etiqueta impresa SÍ entran: Mercado Libre las marca despachadas al imprimir, "
+      + "pero la mercadería puede seguir en el estante.",
     )) return;
 
     setImportando(true); setError(""); setAviso("");
@@ -280,6 +283,15 @@ export default function MercadoLibrePage() {
             </Card>
           </div>
 
+          {/*
+            * La posventa va ARRIBA de la sincronización.
+            *
+            * Sincronizar stock es algo que ahora pasa solo; lo que trae a
+            * alguien a esta pantalla es un comprador esperando respuesta o un
+            * reclamo con el reloj corriendo. Lo que hay que atender va primero.
+            */}
+          <Postventa />
+
           <Card className="mb-5">
             <div className="flex flex-wrap items-center gap-2">
               <button className="btn-ghost" onClick={verCambios} disabled={trabajando}>
@@ -322,8 +334,9 @@ export default function MercadoLibrePage() {
             </div>
             <p className="mt-3 text-xs text-ink-500">
               Las notificaciones de Mercado Libre sólo avisan de lo que pasa <strong>desde</strong> que se
-              configuraron: para ver las ventas anteriores hay que traerlas con el botón de arriba. Las que ya
-              se despacharon o se cancelaron no se tocan.
+              configuraron: para ver las ventas anteriores hay que traerlas con el botón de arriba. Sólo se
+              saltean las que ya se entregaron o se cancelaron. Una con la etiqueta impresa entra igual:
+              Mercado Libre la marca despachada al imprimir, pero la mercadería puede seguir en el estante.
             </p>
             <p className="mt-2 text-xs text-ink-500">
               Stocker manda el stock hacia MercadoLibre. El matcheo es por SKU: el campo que ML muestra como

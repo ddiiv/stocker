@@ -67,3 +67,44 @@ export async function saveMlLink(payload) {
 export async function deleteMlLink(id) {
   return http.delete(`/mercadolibre/links/${id}`);
 }
+
+/* ── Posventa: mensajes y reclamos ──────────────────────────────
+ *
+ * Lo que pasa después de la venta. Se lee de Stocker y no de ML: acá hace falta
+ * un estado propio —qué está sin leer, qué reclamo tomó alguien y qué anotó—
+ * que ML no tiene dónde guardar.
+ */
+
+/** Las conversaciones, agrupadas. `sinLeer` filtra a las que esperan respuesta. */
+export async function getMlMensajes({ sinLeer = false } = {}) {
+  const { data } = await http.get("/mercadolibre/mensajes", {
+    params: sinLeer ? { sinLeer: 1 } : undefined,
+  });
+  return data;
+}
+
+/** Marca leída la conversación entera: se lee de una, no mensaje por mensaje. */
+export async function marcarConversacionLeida(packId) {
+  const { data } = await http.post(`/mercadolibre/mensajes/${encodeURIComponent(packId)}/leido`);
+  return data;
+}
+
+/** Los reclamos. Los abiertos primero y, entre ésos, el que vence antes. */
+export async function getMlReclamos({ abiertos = false } = {}) {
+  const { data } = await http.get("/mercadolibre/reclamos", {
+    params: abiertos ? { abiertos: 1 } : undefined,
+  });
+  return data;
+}
+
+/** El seguimiento de acá: quién lo tomó y qué se hizo. */
+export async function seguirReclamo(id, { atendido, nota } = {}) {
+  const { data } = await http.patch(`/mercadolibre/reclamos/${id}`, { atendido, nota });
+  return data;
+}
+
+/** Trae mensajes y reclamos de ML ahora, sin esperar al barrido. */
+export async function sincronizarPostventa() {
+  const { data } = await http.post("/mercadolibre/postventa/sincronizar");
+  return data;
+}
