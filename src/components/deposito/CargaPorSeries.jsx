@@ -216,7 +216,7 @@ export default function CargaPorSeries({ onAgregar }) {
           {dosDimensiones && (
             <div className="mb-3">
               <p className="mb-1 text-xs text-ink-600">Armar la serie fijando:</p>
-              <div className="grid grid-cols-2 gap-1 rounded-md bg-paper-100 p-1">
+              <div className="grid grid-cols-2 gap-1 rounded-lg bg-paper-200 p-1">
                 {[
                   { v: "variante1", texto: eje === "variante1" ? nombreFijo : nombreRecorrido },
                   { v: "variante2", texto: eje === "variante1" ? nombreRecorrido : nombreFijo },
@@ -226,7 +226,7 @@ export default function CargaPorSeries({ onAgregar }) {
                     type="button"
                     onClick={() => cambiarEje(op.v)}
                     className={`rounded px-2 py-1 text-xs font-medium transition-colors ${
-                      eje === op.v ? "bg-paper-50 text-ink-950 shadow-sm" : "text-ink-600 hover:text-ink-900"
+                      eje === op.v ? "bg-paper-100 text-ink-950 shadow-sm" : "text-ink-600 hover:text-ink-900"
                     }`}
                   >
                     {op.texto}

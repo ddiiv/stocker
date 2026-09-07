@@ -412,7 +412,7 @@ export default function NewSalePage() {
               <div className="flex items-center justify-between gap-2">
                 <span className="shrink-0 text-ink-600">Descuento</span>
                 <div className="flex items-center gap-2">
-                  <div className="flex rounded-md bg-paper-100 p-0.5">
+                  <div className="flex rounded-lg bg-paper-200 p-0.5">
                     {[
                       { valor: "pct", texto: "%" },
                       { valor: "monto", texto: "$" },
@@ -424,7 +424,7 @@ export default function NewSalePage() {
                         aria-pressed={descuentoModo === op.valor}
                         className={`rounded px-2.5 py-1 text-xs font-semibold transition-colors ${
                           descuentoModo === op.valor
-                            ? "bg-paper-50 text-ink-950 shadow-sm"
+                            ? "bg-paper-100 text-ink-950 shadow-sm"
                             : "text-ink-500"
                         }`}
                       >
@@ -526,7 +526,7 @@ export default function NewSalePage() {
 
 function TypeToggle({ tipo, setTipo }) {
   return (
-    <div className="flex rounded-md border border-line bg-paper-100 p-1">
+    <div className="flex rounded-lg bg-paper-200 p-1">
       {[{ v: "venta", label: "Venta" }, { v: "cotizacion", label: "Cotización" }].map((opt) => (
         <button key={opt.v} type="button" onClick={() => setTipo(opt.v)}
           className={`rounded px-3 py-1.5 text-xs font-medium transition-colors ${tipo === opt.v ? "bg-ink-950 text-paper-50" : "text-ink-600 hover:bg-paper-200"}`}>

@@ -613,7 +613,7 @@ export default function EnviosDelDiaPage() {
               * la lista es una fila más que leer todos los días.
               */}
             {puedeDespachar && jornada.paquetes.length > 0 && (
-              <div className="flex flex-wrap items-center gap-2 rounded-md border border-line bg-paper-100 px-3 py-2">
+              <div className="flex flex-wrap items-center gap-2 rounded-xl bg-paper-50 px-3 py-2">
                 <label className="flex cursor-pointer items-center gap-1.5 text-xs text-ink-700">
                   <input
                     type="checkbox"

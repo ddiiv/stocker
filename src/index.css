@@ -183,12 +183,13 @@
    * sistema Snow: clara sobre claro, oscura sobre oscuro. Se separa del
    * contenido con una línea y no con un bloque de color.
    *
-   * Sigue teniendo tokens propios en vez de usar `paper-*` porque el riel es
-   * otra superficie: es el mismo color que el FONDO de la página, no que las
-   * tarjetas. Con `paper-50` quedaría del color de una tarjeta y parecería una
-   * tarjeta muy alta pegada al costado.
+   * Tiene TONO PROPIO, ni el del fondo ni el de las tarjetas. Con el mismo
+   * color que el fondo lo único que lo separaba era la línea de 1px, y a
+   * simple vista la navegación y el contenido se leían como una sola
+   * superficie. Un punto de diferencia alcanza para que el ojo los separe sin
+   * que el riel pese.
    */
-  --color-rail: #ffffff;
+  --color-rail: #f2f5f8;
   --color-rail-fuerte: #1c1c1c;
   --color-rail-suave: #6b6b6b;
 
@@ -279,8 +280,8 @@
      */
     --shadow-card: 0 1px 0 rgba(255, 255, 255, 0.04) inset, 0 1px 2px rgba(0, 0, 0, 0.4);
 
-    /* El riel, del color del fondo. Ver el comentario de arriba. */
-    --color-rail: #1c1c1c;
+    /* Un punto más oscuro que el fondo. Ver el comentario de arriba. */
+    --color-rail: #141417;
     --color-rail-fuerte: #ffffff;
     --color-rail-suave: #9a9a9a;
   }
@@ -323,8 +324,8 @@
 
   --shadow-card: 0 1px 0 rgba(255, 255, 255, 0.04) inset, 0 1px 2px rgba(0, 0, 0, 0.4);
 
-  /* El riel, del color del fondo. Ver el comentario de arriba. */
-  --color-rail: #1c1c1c;
+  /* Un punto más oscuro que el fondo. Ver el comentario de arriba. */
+  --color-rail: #141417;
   --color-rail-fuerte: #ffffff;
   --color-rail-suave: #9a9a9a;
 }

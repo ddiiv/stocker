@@ -582,7 +582,7 @@ export default function PosPage() {
           cajera no sabe si es de ella, de hace un minuto o de hace una hora, y
           termina cobrando algo que no armó. */}
       {avisoCarrito && items.length > 0 && (
-        <div className="mb-4 flex items-start justify-between gap-3 rounded-md border border-line bg-paper-50 px-3 py-2 text-xs text-ink-600">
+        <div className="mb-4 flex items-start justify-between gap-3 rounded-xl bg-paper-50 px-3 py-2 text-xs text-ink-600">
           <p>
             Recuperamos el carrito que tenías armado
             {avisoCarrito.minutos > 0 ? ` hace ${avisoCarrito.minutos} minuto${avisoCarrito.minutos === 1 ? "" : "s"}` : " recién"}.
@@ -789,7 +789,7 @@ export default function PosPage() {
               <div className="mt-3 border-t border-line pt-3">
                 <div className="flex items-center gap-2">
                   <span className="text-xs text-ink-500">Descuento</span>
-                  <div className="flex rounded-md bg-paper-100 p-0.5">
+                  <div className="flex rounded-lg bg-paper-200 p-0.5">
                     {[
                       { valor: "pct", texto: "%" },
                       { valor: "monto", texto: "$" },
@@ -801,7 +801,7 @@ export default function PosPage() {
                         aria-pressed={descuentoModo === op.valor}
                         className={`rounded px-2.5 py-1 text-xs font-semibold transition-colors ${
                           descuentoModo === op.valor
-                            ? "bg-paper-50 text-ink-950 shadow-sm"
+                            ? "bg-paper-100 text-ink-950 shadow-sm"
                             : "text-ink-500"
                         }`}
                       >
@@ -851,7 +851,7 @@ export default function PosPage() {
 
           <Card>
             <label className="label">Condición</label>
-            <div className="mb-3 grid grid-cols-2 gap-1 rounded-md bg-paper-100 p-1">
+            <div className="mb-3 grid grid-cols-2 gap-1 rounded-lg bg-paper-200 p-1">
               {[
                 { valor: "contado", texto: "Cobra ahora" },
                 { valor: "cuenta_corriente", texto: "Fiado" },
@@ -862,7 +862,7 @@ export default function PosPage() {
                   onClick={() => setCondicionPago(op.valor)}
                   className={`rounded px-3 py-1.5 text-sm font-medium transition-colors ${
                     condicionPago === op.valor
-                      ? "bg-paper-50 text-ink-950 shadow-sm"
+                      ? "bg-paper-100 text-ink-950 shadow-sm"
                       : "text-ink-600 hover:text-ink-900"
                   }`}
                 >
@@ -915,7 +915,7 @@ export default function PosPage() {
               Cliente {esFiado && <span className="text-brick-500">· obligatorio para fiar</span>}
             </label>
             {clientId ? (
-              <div className="flex items-center justify-between rounded-md border border-line bg-paper-100 px-3 py-2">
+              <div className="flex items-center justify-between rounded-xl bg-paper-200 px-3 py-2">
                 <span className="text-sm text-ink-900">
                   {`${clienteSel?.nombre || ""} ${clienteSel?.apellido || ""}`.trim() || "Cliente"}
                 </span>
@@ -932,7 +932,7 @@ export default function PosPage() {
                   onChange={(e) => setBuscarCliente(e.target.value)}
                 />
                 {buscarCliente.trim().length >= 2 && (
-                  <div className="mt-1 max-h-40 overflow-y-auto rounded-md border border-line">
+                  <div className="mt-1 max-h-40 overflow-y-auto rounded-xl border border-line">
                     {clientes.map((c) => (
                       <button
                         key={c.id} type="button"

@@ -177,7 +177,7 @@ export default function StockPage() {
         * remera en el catálogo equivocado y no encontrarla es lo que hace
         * pensar que el producto no está cargado.
         */}
-      <div className="mb-4 inline-grid grid-cols-2 gap-1 rounded-md bg-paper-100 p-1">
+      <div className="mb-4 inline-grid grid-cols-2 gap-1 rounded-lg bg-paper-200 p-1">
         {[
           { v: "locales", texto: "Locales de venta" },
           { v: "evento",  texto: "Evento" },
@@ -187,7 +187,7 @@ export default function StockPage() {
             type="button"
             onClick={() => cambiarCatalogo(op.v)}
             className={`rounded px-4 py-1.5 text-sm font-medium transition-colors ${
-              catalogo === op.v ? "bg-paper-50 text-ink-950 shadow-sm" : "text-ink-600 hover:text-ink-900"
+              catalogo === op.v ? "bg-paper-100 text-ink-950 shadow-sm" : "text-ink-600 hover:text-ink-900"
             }`}
           >
             {op.texto}
