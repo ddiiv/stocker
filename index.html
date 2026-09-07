@@ -6,24 +6,15 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Stocker — Panel de gestión</title>
     <!--
-      El tema se aplica ANTES de que React pinte.
+      El tema se aplica antes de que React pinte, desde un archivo aparte.
 
-      Puesto sólo en React, la primera pintura sale en claro y recién después
-      cambia: en modo oscuro eso es un flash blanco a pantalla completa cada vez
-      que se abre o se recarga. Son seis líneas y se ejecutan antes del primer
-      pixel, así que no hay parpadeo.
+      Aparte y no embebido por la Política de Seguridad de Contenido: permitir
+      scripts embebidos obliga a 'unsafe-inline' en script-src, que es el
+      permiso que convierte cualquier inyección de HTML en ejecución de código.
+      Con `src` propio no hace falta. Sigue siendo bloqueante y va en el <head>,
+      así que corre antes del primer pixel.
     -->
-    <script>
-      (function () {
-        try {
-          var g = localStorage.getItem('stocker:tema');
-          var oscuro = g === 'oscuro'
-            || (!g && window.matchMedia('(prefers-color-scheme: dark)').matches);
-          document.documentElement.setAttribute('data-theme', oscuro ? 'dark' : 'light');
-          document.documentElement.style.colorScheme = oscuro ? 'dark' : 'light';
-        } catch (e) { /* sin localStorage se queda en claro */ }
-      })();
-    </script>
+    <script src="/tema.js"></script>
   </head>
   <body>
     <div id="root"></div>

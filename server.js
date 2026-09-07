@@ -122,7 +122,77 @@ app.use((req, res, next) => {
   // La app no se embebe en ningún lado: bloquear iframes evita clickjacking
   // sobre el punto de venta.
   res.setHeader('X-Frame-Options', 'DENY');
-  next();
+  
+  /*
+   * ── Política de Seguridad de Contenido ──────────────────────────
+   *
+   * Es la defensa que queda en pie cuando algo falla en otro lado. Si un día se
+   * cuela HTML de un tercero —el nombre de un comprador de Mercado Libre, el
+   * texto de un mensaje, el título de una publicación— sin CSP ese HTML puede
+   * traer un <script> y correr con la sesión de quien esté en la caja.
+   *
+   * Se arranca de `default-src 'none'` y se abre sólo lo necesario: al revés
+   * —permitir todo y prohibir algunos— la lista se queda vieja el día que
+   * alguien agrega una dependencia.
+   *
+   * Sin 'unsafe-inline' en script-src, que es el permiso que convierte una
+   * inyección de HTML en ejecución de código. Se puede porque el build de Vite
+   * no deja ni un script embebido, y porque el script que aplica el tema antes
+   * de pintar se movió a /tema.js justamente para no necesitarlo.
+   *
+   * Las dos aperturas que NO son 'self', y por qué:
+   *
+   *   · fonts.googleapis.com / fonts.gstatic.com — el monoespaciado de los SKU
+   *     todavía viene de Google Fonts. Satoshi ya se sirve de acá; el día que
+   *     el mono también, estas dos líneas se van.
+   *
+   *   · 'wasm-unsafe-eval' — el lector de códigos por cámara. En Safari y
+   *     Firefox no existe BarcodeDetector nativo y se cae a un decodificador
+   *     WebAssembly, y compilar WebAssembly necesita ese permiso. Es MUCHO más
+   *     angosto que 'unsafe-eval': habilita compilar wasm, no evaluar texto
+   *     como código. Sacarlo dejaría el escáner del teléfono muerto en la mitad
+   *     de los navegadores, que es peor cambio que el margen de seguridad que
+   *     se gana.
+   */
+  res.setHeader('Content-Security-Policy', [
+    "default-src 'none'",
+    "script-src 'self' 'wasm-unsafe-eval'",
+    "style-src 'self' https://fonts.googleapis.com",
+    "font-src 'self' https://fonts.gstatic.com",
+    // `blob:` para las fotos que se sacan con la cámara antes de subirlas.
+    "img-src 'self' data: blob:",
+    // El <video> del escáner y los PDF que se abren desde memoria.
+    "media-src 'self' blob:",
+    "connect-src 'self'",
+    "worker-src 'self' blob:",
+    "manifest-src 'self'",
+    "form-action 'self'",
+    "base-uri 'none'",
+    "frame-ancestors 'none'",
+    "object-src 'none'",
+    'upgrade-insecure-requests',
+  ].join('; '));
+
+  res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+  res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
+
+  /*
+   * Permisos del navegador.
+   *
+   * `camera=(self)` es la única que queda prendida y es a propósito: el
+   * escaneo de códigos con el teléfono es una función de la app. Todo lo demás
+   * se apaga, así que una dependencia no puede prender el micrófono ni leer la
+   * ubicación sin que nadie lo pida.
+   */
+  res.setHeader('Permissions-Policy', [
+    'accelerometer=()', 'autoplay=()', 'camera=(self)', 'display-capture=()',
+    'encrypted-media=()', 'fullscreen=(self)', 'geolocation=()', 'gyroscope=()',
+    'magnetometer=()', 'microphone=()', 'midi=()', 'payment=()',
+    'publickey-credentials-get=()', 'screen-wake-lock=()', 'usb=()',
+    'xr-spatial-tracking=()',
+  ].join(', '));
+
+next();
 });
 
 // Se monta en la raíz con pathFilter en vez de app.use('/api', ...): Express
