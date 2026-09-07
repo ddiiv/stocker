@@ -114,7 +114,21 @@ app.use((req, res, next) => {
   // siquiera manda el request que después habría que redirigir. Sólo tiene
   // sentido anunciarlo sobre una conexión ya segura.
   if (req.secure) {
-    res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+    /*
+     * Dos años, no uno.
+     *
+     * `max-age` es cuánto tiempo el navegador RECUERDA que este dominio es
+     * sólo-HTTPS. Con un año, alguien que no entra en trece meses vuelve a
+     * hacer un primer pedido en claro; con dos, en la práctica no se olvida
+     * nunca, porque nadie usa un sistema de gestión con esa frecuencia.
+     *
+     * Dos años es además el mínimo que pide la lista de precarga de los
+     * navegadores. No estamos inscriptos —eso compromete el dominio y TODOS
+     * sus subdominios a HTTPS de forma muy difícil de revertir, y conviene
+     * esperar a que el dominio esté quieto— pero dejarlo en el valor que esa
+     * lista exige es gratis y deja la puerta abierta.
+     */
+    res.setHeader('Strict-Transport-Security', 'max-age=63072000; includeSubDomains');
   }
 
   res.setHeader('X-Content-Type-Options', 'nosniff');
