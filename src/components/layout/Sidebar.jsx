@@ -126,7 +126,28 @@ export default function Sidebar({ open, onClose }) {
    * final.
    */
   const navRef = useRef(null);
+  const previoRef = useRef(null);
   const [hayMas, setHayMas] = useState(false);
+
+  /*
+   * El drawer del teléfono se abre encima del contenido, pero el backdrop
+   * sólo cierra al tacto: por teclado no había forma de salir salvo tabular
+   * hasta encontrar un link. Escape lo cierra y devuelve el foco a quien lo
+   * abrió, igual que un modal.
+   */
+  useEffect(() => {
+    if (!open) return;
+    previoRef.current = document.activeElement;
+    navRef.current?.querySelector("a, button")?.focus();
+    function onKey(e) {
+      if (e.key === "Escape") onClose?.();
+    }
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      previoRef.current?.focus?.();
+    };
+  }, [open, onClose]);
   const revisar = useCallback(() => {
     const n = navRef.current;
     if (!n) return;

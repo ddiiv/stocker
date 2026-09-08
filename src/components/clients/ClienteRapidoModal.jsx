@@ -43,16 +43,26 @@ export default function ClienteRapidoModal({ open, onClose, onCreado }) {
   const [bloqueados, setBloqueados] = useState([]);
   const [guardando, setGuardando] = useState(false);
   const [error, setError] = useState("");
+  /*
+   * El mismo nombre y apellido ya cargados, sin CUIT que lo distinga.
+   *
+   * A diferencia de `repetido` (CUIT, una certeza), esto es una sospecha: se
+   * puede seguir igual apretando "Guardar" de nuevo, que ahí sí crea la ficha.
+   */
+  const [nombreRepetido, setNombreRepetido] = useState(null);
   const debounce = useRef(null);
 
   useEffect(() => {
     if (!open) return;
-    setForm(VACIO); setPadron(null); setBloqueados([]); setError("");
+    setForm(VACIO); setPadron(null); setBloqueados([]); setError(""); setNombreRepetido(null);
   }, [open]);
 
   useEffect(() => () => clearTimeout(debounce.current), []);
 
-  const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
+  const set = (k, v) => {
+    setForm((f) => ({ ...f, [k]: v }));
+    if (k === "nombre" || k === "apellido") setNombreRepetido(null);
+  };
   const esBloqueado = (k) => bloqueados.includes(k);
 
   function cambiarCuit(valor) {
@@ -137,7 +147,7 @@ export default function ClienteRapidoModal({ open, onClose, onCreado }) {
   // Con el CUIT ya usado no se guarda: sería la misma persona dos veces.
   const puedeGuardar = Boolean(form.nombre.trim()) && !cuitIncompleto && !repetido && !guardando;
 
-  async function guardar() {
+  async function guardar({ forzar = false } = {}) {
     setGuardando(true); setError("");
     try {
       const cliente = await createClient({
@@ -148,10 +158,15 @@ export default function ClienteRapidoModal({ open, onClose, onCreado }) {
         email: form.email.trim() || null,
         telefono: form.telefono.trim() || null,
         direccion: form.direccion.trim() || null,
+        forzar,
       });
       onCreado?.(cliente);
       onClose?.();
     } catch (e) {
+      if (e.response?.data?.codigo === "NOMBRE_REPETIDO") {
+        setNombreRepetido(e.response.data.cliente);
+        return;
+      }
       setError(mensajeDeError(e, "No se pudo guardar el cliente."));
     } finally {
       setGuardando(false);
@@ -271,11 +286,46 @@ export default function ClienteRapidoModal({ open, onClose, onCreado }) {
             />
           </div>
         )}
+
+        {/*
+          * Mismo nombre y apellido, sin CUIT que distinga: el servidor lo
+          * detectó recién al guardar, porque acá no hay nada que consultar
+          * mientras se escribe como con el CUIT. Se ofrecen las dos salidas:
+          * era el mismo cliente, o de verdad es otra persona.
+          */}
+        {nombreRepetido && (
+          <div className="rounded-md bg-brass-50 px-3 py-2 text-xs text-brass-800">
+            <p className="flex items-start gap-1">
+              <AlertTriangle size={12} className="mt-0.5 shrink-0" />
+              <span>
+                Ya tenés cargado a{" "}
+                <strong>{`${nombreRepetido.nombre || ""} ${nombreRepetido.apellido || ""}`.trim()}</strong>
+                {nombreRepetido.cuit ? ` (CUIT ${nombreRepetido.cuit})` : ", sin CUIT"}.
+              </span>
+            </p>
+            <div className="mt-1.5 flex gap-3">
+              <button
+                type="button"
+                className="btn-ghost px-2 py-1 text-xs"
+                onClick={() => { onCreado?.(nombreRepetido); onClose?.(); }}
+              >
+                Usar ese cliente
+              </button>
+              <button
+                type="button"
+                className="btn-ghost px-2 py-1 text-xs"
+                onClick={() => guardar({ forzar: true })}
+              >
+                Es otra persona, guardar igual
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="mt-5 flex justify-end gap-2">
         <button type="button" className="btn-ghost" onClick={onClose} disabled={guardando}>Cancelar</button>
-        <button type="button" className="btn-accent" onClick={guardar} disabled={!puedeGuardar}>
+        <button type="button" className="btn-accent" onClick={() => guardar()} disabled={!puedeGuardar || Boolean(nombreRepetido)}>
           {guardando
             ? <><Loader2 size={15} className="animate-spin" /> Guardando…</>
             : <><UserPlus size={15} /> Guardar y usar en esta venta</>}

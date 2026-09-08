@@ -157,6 +157,9 @@ function ClientFormModal({ open, onClose, onSaved, client }) {
   const [cuitStatus, setCuitStatus] = useState(null); // { loading, data, error }
   // Campos bloqueados porque los devolvió AFIP (fuente oficial, no editable).
   const [lockedFields, setLockedFields] = useState([]);
+  // El mismo nombre y apellido ya cargados, sin CUIT que lo distinga: ver
+  // ClienteRapidoModal, que tiene el mismo mecanismo para el alta rápida.
+  const [nombreRepetido, setNombreRepetido] = useState(null);
   const cuitDebounce = useRef(null);
 
   useEffect(() => {
@@ -164,9 +167,13 @@ function ClientFormModal({ open, onClose, onSaved, client }) {
     setCuitStatus(null);
     setLockedFields([]);
     setServerError("");
+    setNombreRepetido(null);
   }, [client, open]);
 
-  function update(key, value) { setForm((f) => ({ ...f, [key]: value })); }
+  function update(key, value) {
+    setForm((f) => ({ ...f, [key]: value }));
+    if (key === "nombre" || key === "apellido") setNombreRepetido(null);
+  }
   const isLocked = (k) => lockedFields.includes(k);
   // El DNI sale del CUIT: solo lo bloqueamos si efectivamente hay un CUIT válido.
   const dniDerivadoDelCuit = String(form.cuit || "").replace(/\D/g, "").length === 11;
@@ -229,15 +236,20 @@ function ClientFormModal({ open, onClose, onSaved, client }) {
     }, 500);
   }
 
-  async function handleSubmit(e) {
+  async function handleSubmit(e, { forzar = false } = {}) {
     e.preventDefault();
     setSaving(true);
     setServerError("");
     try {
-      if (client) await updateClient(client.id, form);
-      else await createClient(form);
+      const payload = forzar ? { ...form, forzar: true } : form;
+      if (client) await updateClient(client.id, payload);
+      else await createClient(payload);
       onSaved();
     } catch (err) {
+      if (err.response?.data?.codigo === "NOMBRE_REPETIDO") {
+        setNombreRepetido(err.response.data.cliente);
+        return;
+      }
       setServerError(err.response?.data?.message || "Error al guardar el cliente");
     } finally {
       setSaving(false);
@@ -317,9 +329,35 @@ function ClientFormModal({ open, onClose, onSaved, client }) {
           </div>
           <div className="col-span-2"><label className="label">Notas</label><textarea className="input min-h-16" value={form.notas || ""} onChange={(e) => update("notas", e.target.value)} /></div>
         </div>
+
+        {nombreRepetido && (
+          <div className="rounded-md bg-brass-50 px-3 py-2 text-xs text-brass-800">
+            <p className="flex items-start gap-1">
+              <AlertCircle size={12} className="mt-0.5 shrink-0" />
+              <span>
+                Ya tenés cargado a{" "}
+                <strong>{`${nombreRepetido.nombre || ""} ${nombreRepetido.apellido || ""}`.trim()}</strong>
+                {nombreRepetido.cuit ? ` (CUIT ${nombreRepetido.cuit})` : ", sin CUIT"}.
+              </span>
+            </p>
+            <div className="mt-1.5 flex gap-3">
+              <button type="button" className="btn-ghost px-2 py-1 text-xs" onClick={onClose}>
+                Ir a buscarlo
+              </button>
+              <button
+                type="button"
+                className="btn-ghost px-2 py-1 text-xs"
+                onClick={(e) => handleSubmit(e, { forzar: true })}
+              >
+                Es otra persona, guardar igual
+              </button>
+            </div>
+          </div>
+        )}
+
         <div className="flex justify-end gap-2">
           <button type="button" className="btn-ghost" onClick={onClose}>Cancelar</button>
-          <button type="submit" className="btn-accent" disabled={saving}>{saving ? "Guardando…" : (client ? "Guardar cambios" : "Crear cliente")}</button>
+          <button type="submit" className="btn-accent" disabled={saving || Boolean(nombreRepetido)}>{saving ? "Guardando…" : (client ? "Guardar cambios" : "Crear cliente")}</button>
         </div>
       </form>
     </Modal>

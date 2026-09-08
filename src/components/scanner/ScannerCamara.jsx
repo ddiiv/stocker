@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { X, Plus, Minus, Hash, AlertTriangle, Loader2 } from "lucide-react";
 import CameraScanner from "./CameraScanner";
 import ResumenEscaneo from "./ResumenEscaneo";
+import { useOverlayKeyboard } from "../../hooks/useOverlayKeyboard";
 
 /*
  * Pantalla de escaneo con la cámara, a pantalla completa.
@@ -40,22 +41,23 @@ export default function ScannerCamara({
     return () => clearTimeout(t);
   }, [error]);
 
-  // Escapar cierra, y mientras está abierto no se scrollea la página de atrás.
-  useEffect(() => {
-    const tecla = (e) => e.key === "Escape" && onCerrar();
-    const previo = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    window.addEventListener("keydown", tecla);
-    return () => {
-      document.body.style.overflow = previo;
-      window.removeEventListener("keydown", tecla);
-    };
-  }, [onCerrar]);
+  const titleId = useId();
+  const contenedorRef = useRef(null);
+  // Escapar cierra, Tab no se escapa a lo de atrás, y mientras está abierto
+  // no se scrollea la página de atrás.
+  useOverlayKeyboard(contenedorRef, { activo: true, onCerrar, bloquearScroll: true });
 
   const cant = Number(cantidad) || (modo === "fijar" ? 0 : 1);
 
   return (
-    <div className="fixed inset-0 z-50 flex flex-col bg-noche">
+    <div
+      ref={contenedorRef}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby={titleId}
+      tabIndex={-1}
+      className="fixed inset-0 z-50 flex flex-col bg-noche"
+    >
       {/* Barra superior */}
       <div className="flex items-center gap-2 px-3 py-2.5">
         <button type="button" onClick={onCerrar}
@@ -63,7 +65,7 @@ export default function ScannerCamara({
           <X size={20} />
         </button>
         <div className="min-w-0 flex-1">
-          <p className="font-display text-sm font-semibold text-white">Escanear stock</p>
+          <p id={titleId} className="font-display text-sm font-semibold text-white">Escanear stock</p>
           <p className="truncate text-[11px] text-white/50">
             {modo === "fijar" ? `Cada lectura deja el stock en ${cant}` : `Cada lectura ${modo === "agregar" ? "suma" : "resta"} ${cant}`}
           </p>

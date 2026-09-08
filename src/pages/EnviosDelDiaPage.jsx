@@ -107,6 +107,103 @@ function Corte({ cuando, minutos, atrasado }) {
  * canceló—. Quien mira la pantalla no piensa en dos campos, y traducir
  * `not_delivered` mentalmente cada vez es trabajo que puede hacer el sistema.
  */
+const fechaHora = (d) => (d
+  ? new Intl.DateTimeFormat("es-AR", {
+    day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false,
+  }).format(new Date(d))
+  : null);
+
+const CONFIRMADOS_ML = ["shipped", "delivered"];
+
+/*
+ * Dos historiales, uno al lado del otro.
+ *
+ * "¿Qué se despachó?" tiene dos respuestas distintas y las dos hacen falta:
+ * la del depósito —quién armó la caja y cuándo— y la de Mercado Libre —si el
+ * transportista de verdad la levantó—. Mirados por separado, cada uno se ve
+ * completo y no dice nada raro; puestos uno al lado del otro aparece la
+ * pregunta real: ¿coinciden, o uno de los dos está adelantado?
+ */
+function HistorialReconciliacion({ paquetes }) {
+  const porStocker = paquetes.filter((p) => p.estadoEnvio === "despachado");
+  const porMl = paquetes.filter((p) => CONFIRMADOS_ML.includes(p.estadoEnvioMl));
+
+  return (
+    <div className="grid gap-4 lg:grid-cols-2">
+      <Card className="p-0">
+        <div className="border-b border-line px-4 py-3">
+          <p className="font-display text-sm font-semibold text-ink-950">Despachado por Stocker</p>
+          <p className="mt-0.5 text-xs text-ink-500">
+            Lo que el depósito marcó como salido, con quién y cuándo.
+          </p>
+        </div>
+        {porStocker.length === 0 ? (
+          <p className="px-4 py-6 text-center text-sm text-ink-500">Nada despachado en esta jornada.</p>
+        ) : (
+          <ul className="divide-y divide-line">
+            {porStocker.map((p) => (
+              <li key={`s-${p.claveEnvio}`} className="px-4 py-2.5">
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium text-ink-900">
+                      {p.envioId ? `Envío ${p.envioId}` : `${p.plataforma} · ${p.ventas?.[0]?.pedidoExterno || ""}`}
+                    </p>
+                    <p className="text-xs text-ink-500">{p.comprador || "Sin nombre de comprador"}</p>
+                    <p className="mt-0.5 text-[11px] text-ink-400">
+                      {fechaHora(p.despachadoEn)}{p.despachadoPor ? ` · ${p.despachadoPor}` : ""}
+                    </p>
+                  </div>
+                  <Estado situacion={p.situacion} />
+                </div>
+                {!CONFIRMADOS_ML.includes(p.estadoEnvioMl) && (
+                  <p className="mt-1.5 flex items-start gap-1 rounded-md bg-brass-50 px-2 py-1 text-[11px] text-brass-700">
+                    <AlertTriangle size={11} className="mt-0.5 shrink-0" />
+                    Mercado Libre todavía no lo confirma como salido.
+                  </p>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+      </Card>
+
+      <Card className="p-0">
+        <div className="border-b border-line px-4 py-3">
+          <p className="font-display text-sm font-semibold text-ink-950">Confirmado por Mercado Libre</p>
+          <p className="mt-0.5 text-xs text-ink-500">
+            Lo que ML dice que el transportista levantó o entregó.
+          </p>
+        </div>
+        {porMl.length === 0 ? (
+          <p className="px-4 py-6 text-center text-sm text-ink-500">Mercado Libre no confirmó nada todavía.</p>
+        ) : (
+          <ul className="divide-y divide-line">
+            {porMl.map((p) => (
+              <li key={`m-${p.claveEnvio}`} className="px-4 py-2.5">
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium text-ink-900">
+                      {p.envioId ? `Envío ${p.envioId}` : `${p.plataforma} · ${p.ventas?.[0]?.pedidoExterno || ""}`}
+                    </p>
+                    <p className="text-xs text-ink-500">{p.comprador || "Sin nombre de comprador"}</p>
+                  </div>
+                  <Estado situacion={p.situacion} />
+                </div>
+                {p.estadoEnvio !== "despachado" && (
+                  <p className="mt-1.5 flex items-start gap-1 rounded-md bg-brick-50 px-2 py-1 text-[11px] text-brick-500">
+                    <AlertTriangle size={11} className="mt-0.5 shrink-0" />
+                    Mercado Libre dice que salió, pero acá todavía no se despachó.
+                  </p>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+      </Card>
+    </div>
+  );
+}
+
 function Estado({ situacion }) {
   const mapa = {
     para_enviar:  { texto: "Para enviar", clase: "bg-paper-100 text-ink-600" },
@@ -478,6 +575,7 @@ export default function EnviosDelDiaPage() {
           { clave: "con_faltante", texto: "Con faltante" },
           { clave: "cancelado",    texto: "Cancelados" },
           { clave: "todos",        texto: "Todos" },
+          { clave: "historial",   texto: "Historial Stocker / ML" },
         ].map((t) => {
           const activa = filtro === t.clave;
           const cuantos = jornada?.porEstado?.[t.clave];
@@ -538,12 +636,18 @@ export default function EnviosDelDiaPage() {
         <Card>
           <div className="py-14 text-center">
             <Truck size={32} className="mx-auto text-ink-300" />
-            <p className="mt-3 text-sm text-ink-600">No hay envíos para despachar en esta jornada.</p>
+            <p className="mt-3 text-sm text-ink-600">
+              {filtro === "historial"
+                ? "Nada despachado ni confirmado por Mercado Libre en esta jornada."
+                : "No hay envíos para despachar en esta jornada."}
+            </p>
             <p className="mt-1 text-xs text-ink-500">
               Los pedidos aparecen acá apenas entran de Mercado Libre o Jumpseller.
             </p>
           </div>
         </Card>
+      ) : filtro === "historial" ? (
+        <HistorialReconciliacion paquetes={jornada.paquetes} />
       ) : (
         <div className="grid gap-5 lg:grid-cols-5">
           {/* ── 1. El recorrido ──────────────────────────────── */}
