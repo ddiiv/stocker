@@ -323,6 +323,29 @@ async function clienteConMismoCuit(businessId, cuit, exceptoId = null) {
 }
 
 const nombreDe = (c) => `${c.nombre || ''} ${c.apellido || ''}`.trim() || 'otro cliente';
+const normalizarNombre = (nombre, apellido) =>
+  `${nombre || ''} ${apellido || ''}`.trim().toLowerCase().replace(/\s+/g, ' ');
+
+/*
+ * ¿Ya hay un cliente de este negocio con el mismo nombre y apellido?
+ *
+ * Sin CUIT no hay un identificador duro para comparar, así que esto es una
+ * sospecha y no una certeza —dos clientes distintos pueden llamarse igual—.
+ * Por eso no se usa para bloquear como el CUIT: avisa y deja elegir, con
+ * `forzar` para el caso legítimo de que sea otra persona.
+ */
+async function clienteConMismoNombre(businessId, nombre, apellido, exceptoId = null) {
+  const buscado = normalizarNombre(nombre, apellido);
+  if (!buscado) return null;
+
+  const where = { businessId };
+  if (exceptoId) where.id = { [Op.ne]: exceptoId };
+
+  const candidatos = await Client.findAll({
+    where, attributes: ['id', 'nombre', 'apellido', 'cuit'],
+  });
+  return candidatos.find((c) => normalizarNombre(c.nombre, c.apellido) === buscado) || null;
+}
 
 /*
  * GET /api/clients/por-cuit?cuit=...
@@ -369,6 +392,27 @@ const createClient = async (req, res, next) => {
         clienteId: repetido.id,
       });
     }
+
+    /*
+     * Mismo nombre y apellido, sin CUIT que lo distinga.
+     *
+     * Es el caso que se ve en el mostrador: "María Gómez" ya está cargada sin
+     * CUIT, y el próximo turno la vuelve a cargar en vez de buscarla porque no
+     * hay forma de saber que ya existe. `forzar` es la salida para cuando de
+     * verdad son dos personas distintas con el mismo nombre.
+     */
+    if (!req.body?.forzar) {
+      const mismoNombre = await clienteConMismoNombre(req.auth.businessId, req.body?.nombre, req.body?.apellido);
+      if (mismoNombre) {
+        return res.status(409).json({
+          message: `Ya tenés cargado a ${nombreDe(mismoNombre)}`
+            + (mismoNombre.cuit ? ` (CUIT ${mismoNombre.cuit})` : ', sin CUIT')
+            + '. Si es la misma persona usá ese cliente; si es otra, guardalo igual.',
+          codigo: 'NOMBRE_REPETIDO',
+          cliente: { id: mismoNombre.id, nombre: mismoNombre.nombre, apellido: mismoNombre.apellido, cuit: mismoNombre.cuit },
+        });
+      }
+    }
     // El businessId va DESPUÉS del spread a propósito: al revés, un businessId
     // enviado por el cliente pisaba el de la sesión y el cliente nacía en otro
     // negocio.
@@ -395,6 +439,23 @@ const updateClient = async (req, res, next) => {
           message: `Ya tenés otro cliente con el CUIT ${req.body.cuit}: ${nombreDe(repetido)}.`,
           codigo: 'CUIT_REPETIDO',
           clienteId: repetido.id,
+        });
+      }
+    }
+    if (!req.body?.forzar && (req.body?.nombre !== undefined || req.body?.apellido !== undefined)) {
+      const mismoNombre = await clienteConMismoNombre(
+        req.auth.businessId,
+        req.body?.nombre ?? client.nombre,
+        req.body?.apellido ?? client.apellido,
+        client.id,
+      );
+      if (mismoNombre) {
+        return res.status(409).json({
+          message: `Ya tenés cargado a ${nombreDe(mismoNombre)}`
+            + (mismoNombre.cuit ? ` (CUIT ${mismoNombre.cuit})` : ', sin CUIT')
+            + '. Si es la misma persona usá ese cliente; si es otra, guardalo igual.',
+          codigo: 'NOMBRE_REPETIDO',
+          cliente: { id: mismoNombre.id, nombre: mismoNombre.nombre, apellido: mismoNombre.apellido, cuit: mismoNombre.cuit },
         });
       }
     }

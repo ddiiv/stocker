@@ -1406,7 +1406,16 @@ const getStockPorLocal = async (req, res, next) => {
     const { count, rows } = await ProductVariant.findAndCountAll({
       where: whereVariante,
       include: [
-        { model: Product, as: 'producto', attributes: ['id', 'titulo', 'skuAgrupador', 'categoria'], required: true },
+        /*
+         * Sin productos de evento: un evento sólo lleva registro de venta, no
+         * stock por talle y color — su `stock` no significa nada acá y
+         * mezclarlo con el catálogo real corre lo que sí hay que reponer.
+         * `esFeria` vive en el producto, así que el filtro va en el include.
+         */
+        {
+          model: Product, as: 'producto', attributes: ['id', 'titulo', 'skuAgrupador', 'categoria'],
+          required: true, where: { ...NO_ES_FERIA },
+        },
       ],
       order: [[{ model: Product, as: 'producto' }, 'titulo', 'ASC'], ['sku', 'ASC']],
       offset: (page - 1) * limit,
@@ -1503,7 +1512,8 @@ const getProductosPorLocal = async (req, res, next) => {
     const whereProducto = {
       businessId: req.auth.businessId, activo: true,
       // Un pack no ocupa lugar en ningún local: ver getStockPorLocal.
-      [Op.and]: [productoNoEsPack()],
+      // Un producto de evento tampoco: no lleva stock real, sólo registro de venta.
+      [Op.and]: [productoNoEsPack(), NO_ES_FERIA],
     };
     if (q) {
       const texto = `%${String(q).trim()}%`;
@@ -1587,7 +1597,9 @@ const getProductosPorLocal = async (req, res, next) => {
 const getVariantesPorLocal = async (req, res, next) => {
   try {
     const producto = await Product.findOne({
-      where: { id: req.params.id, businessId: req.auth.businessId },
+      // Un producto de evento no tiene nada que mostrar acá: no lleva stock
+      // por local, sólo un total de ventas. Ver getStockPorLocal.
+      where: { id: req.params.id, businessId: req.auth.businessId, ...NO_ES_FERIA },
       attributes: ['id', 'titulo', 'sku', 'skuAgrupador', 'categoria'],
     });
     if (!producto) return res.status(404).json({ message: 'Producto no encontrado.' });

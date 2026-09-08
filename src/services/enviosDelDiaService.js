@@ -31,7 +31,7 @@
 const { Op } = require('sequelize');
 const db = require('../config/database');
 const {
-  PedidoPlataforma, PedidoPlataformaItem, ProductVariant, Product, BusinessLocation,
+  PedidoPlataforma, PedidoPlataformaItem, ProductVariant, Product, BusinessLocation, Employee,
 } = require('../models');
 const stockService = require('./stockService');
 const packService = require('./packService');
@@ -111,6 +111,13 @@ const FILTROS = {
   cancelado:   (p) => esCancelado(p),
   // Lo que el depósito no encontró: no mueve stock y hay que resolverlo.
   con_faltante: (p) => p.estadoEnvio === 'con_faltante',
+  /*
+   * Para comparar lo que dice cada uno: todo lo que YA salió, según cualquiera
+   * de los dos lados. Incluye lo que despachamos nosotros y lo que Mercado
+   * Libre ya dio por salido, aunque acá todavía no se haya tocado el botón —
+   * es justo la diferencia que esta vista existe para mostrar.
+   */
+  historial: (p) => p.estadoEnvio === 'despachado' || ['shipped', 'delivered'].includes(p.estadoEnvioMl),
   todos: () => true,
 };
 
@@ -416,10 +423,12 @@ async function delDia(businessId, {
    * mirando otro: una pestaña "Cancelados" sin número al lado obliga a entrar
    * para descubrir que está vacía.
    */
-  const porEstado = { para_enviar: 0, en_camino: 0, entregado: 0, cancelado: 0, con_faltante: 0, todos: 0 };
+  const porEstado = {
+    para_enviar: 0, en_camino: 0, entregado: 0, cancelado: 0, con_faltante: 0, historial: 0, todos: 0,
+  };
   for (const p of pedidos) {
     porEstado.todos += 1;
-    for (const clave of ['para_enviar', 'en_camino', 'entregado', 'cancelado', 'con_faltante']) {
+    for (const clave of ['para_enviar', 'en_camino', 'entregado', 'cancelado', 'con_faltante', 'historial']) {
       if (FILTROS[clave](p)) porEstado[clave] += 1;
     }
   }
@@ -455,6 +464,10 @@ async function delDia(businessId, {
       // El estado que informa ML, y la lectura en una palabra: la pantalla no
       // tiene por qué saber que `not_delivered` también es una cancelación.
       estadoEnvioMl: p.estadoEnvioMl || null,
+      // Cuándo y quién lo despachó de este lado, para el historial de la
+      // sección 3: sin esto no hay forma de decir "salió el martes a las 10".
+      despachadoEn: p.despachadoEn || null,
+      despachadoPorEmployeeId: p.despachadoPorEmployeeId || null,
       situacion: esCancelado(p) ? 'cancelado'
         : esEntregado(p) ? 'entregado'
           : p.estadoEnvio === 'despachado' ? 'en_camino'
@@ -556,6 +569,8 @@ async function delDia(businessId, {
         plataforma: p.plataforma,
         estadoEnvio: p.estadoEnvio,
         estadoEnvioMl: p.estadoEnvioMl,
+        despachadoEn: p.despachadoEn,
+        despachadoPorEmployeeId: p.despachadoPorEmployeeId,
         situacion: p.situacion,
         /*
          * ── ¿Va tarde? ─────────────────────────────────────────
@@ -633,6 +648,25 @@ async function delDia(businessId, {
      * la caja no se puede despachar entera y eso es lo que hay que ver.
      */
     if (p.situacion === 'con_faltante') caja.situacion = 'con_faltante';
+  }
+
+  /*
+   * Quién despachó cada paquete, para el historial de la sección 3.
+   *
+   * Se resuelve en una sola consulta y no una por paquete: son los mismos
+   * pocos empleados de siempre despachando, no uno distinto por caja.
+   */
+  const idsEmpleados = [...new Set(paquetes.map((p) => p.despachadoPorEmployeeId).filter(Boolean))];
+  const empleados = idsEmpleados.length
+    ? await Employee.findAll({ where: { id: idsEmpleados }, attributes: ['id', 'nombre', 'apellido'] })
+    : [];
+  const nombreEmpleado = new Map(
+    empleados.map((e) => [e.id, `${e.nombre} ${e.apellido}`.trim()]),
+  );
+  for (const p of paquetes) {
+    p.despachadoPor = p.despachadoPorEmployeeId
+      ? (nombreEmpleado.get(p.despachadoPorEmployeeId) || null) : null;
+    delete p.despachadoPorEmployeeId;
   }
 
   /*

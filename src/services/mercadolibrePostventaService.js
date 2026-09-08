@@ -225,9 +225,17 @@ function normalizarReclamo(c) {
  * días y lo que importa es su estado de hoy, no el del día que se abrió.
  */
 async function traerReclamos(cuenta, { limite = 50 } = {}) {
+  /*
+   * ML exige al menos uno de dos pares de filtro: resource+resource_id o
+   * players.role+players.user_id. Sin ninguno responde 400 siempre, sin
+   * importar el resto de los parámetros. El negocio es el vendedor, así que
+   * siempre es "respondent" del lado del que reclaman.
+   */
   const data = await pedir(cuenta, '/post-purchase/v1/claims/search', {
     limit: limite,
     sort: 'date_created:desc',
+    'players.role': 'respondent',
+    'players.user_id': cuenta.mlUserId,
   });
   const crudos = Array.isArray(data?.data) ? data.data
     : Array.isArray(data?.results) ? data.results
