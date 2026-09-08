@@ -189,10 +189,20 @@ function HistorialReconciliacion({ paquetes }) {
                   </div>
                   <Estado situacion={p.situacion} />
                 </div>
-                {p.estadoEnvio !== "despachado" && (
+                {/*
+                  * `shipped` no alarma: en Flex, ML lo pone apenas se imprime la
+                  * etiqueta, ANTES de que el depósito baje la mercadería del
+                  * estante — es el orden normal, no un error. Ya se avisa aparte
+                  * con "ML ya la dio por despachada" en el armado de paquetes.
+                  *
+                  * `delivered` sí: si el comprador ya lo recibió y acá el stock
+                  * nunca se descontó, esta caja quedó apartada para siempre y el
+                  * inventario está mintiendo. Eso sí hay que resolverlo.
+                  */}
+                {p.estadoEnvio !== "despachado" && p.estadoEnvioMl === "delivered" && (
                   <p className="mt-1.5 flex items-start gap-1 rounded-md bg-brick-50 px-2 py-1 text-[11px] text-brick-500">
                     <AlertTriangle size={11} className="mt-0.5 shrink-0" />
-                    Mercado Libre dice que salió, pero acá todavía no se despachó.
+                    Mercado Libre dice que ya lo ENTREGÓ, pero acá nunca se despachó: el stock sigue apartado.
                   </p>
                 )}
               </li>
