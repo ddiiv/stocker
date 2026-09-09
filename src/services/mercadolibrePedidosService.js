@@ -36,6 +36,7 @@ const axios = require('axios');
 const { MercadoLibreAccount, PedidoPlataforma } = require('../models');
 const ml = require('./mercadolibreService');
 const cola = require('./colaVentasOnlineService');
+const enviosDelDia = require('./enviosDelDiaService');
 const { log } = require('../utils/logger');
 
 const ML_API = 'https://api.mercadolibre.com';
@@ -47,11 +48,15 @@ const ML_API = 'https://api.mercadolibre.com';
  * dos notificaciones distintas para el mismo pedido y llegan en cualquier
  * orden: la del envío puede llegar antes que la de la orden.
  *
- * `flex-handshakes` avisa cuando el paquete se escanea por primera vez. No se
- * usa todavía; queda anotado porque es el que permitiría cerrar el despacho
- * solo, sin que nadie toque el botón.
+ * `flex-handshakes` avisa cuando el paquete se escanea por primera vez —el
+ * cadete lo levanta de verdad—, y es lo que permite despachar solo en Stocker
+ * sin que nadie toque el botón. No sirve usar `shipments` para esto en Flex:
+ * ahí el estado pasa a `shipped` apenas se imprime la etiqueta, antes de que
+ * el paquete salga del estante, así que despachar con eso descontaría stock
+ * de mercadería que todavía puede estar en el depósito. Ver
+ * `autoDespacharSiCorresponde` más abajo.
  */
-const TOPICOS = ['orders_v2', 'orders', 'shipments'];
+const TOPICOS = ['orders_v2', 'orders', 'shipments', 'flex-handshakes'];
 
 /** El id que viene al final del `resource` de la notificación. */
 function idDeRecurso(resource) {
@@ -215,6 +220,7 @@ async function procesarNotificacion({ topic, resource, userId }) {
   if (!cuenta) return { ignorado: 'no hay cuenta conectada para ese vendedor', tema };
 
   if (tema === 'shipments') return actualizarEnvio(cuenta, id);
+  if (tema === 'flex-handshakes') return manejarFlexHandshake(cuenta, id);
   return ingresarOrden(cuenta, id);
 }
 
@@ -252,6 +258,7 @@ async function ingresarOrden(cuenta, ordenId) {
         despacharAntesDe: envio.despacharAntesDe,
         estadoEnvioMl: envio.estadoMl,
       });
+      await autoDespacharSiCorresponde(pedido, envio, cuenta);
     } catch (e) {
       // Que no se pueda leer el envío no invalida la venta: el pedido ya está
       // encolado y con el stock apartado, que es lo que no se puede perder.
@@ -298,10 +305,96 @@ async function actualizarEnvio(cuenta, envioId) {
     estadoEnvioMl: envio.estadoMl,
   });
 
+  await autoDespacharSiCorresponde(pedido, envio, cuenta);
+
   log.info('ml-pedidos', 'envío actualizado', {
     negocio: cuenta.businessId, tipo: envio.envioTipo,
   });
   return { accion: 'envio_actualizado', tipo: envio.envioTipo, pedidoId: pedido.id };
+}
+
+/*
+ * ── El despacho solo, sin que nadie toque el botón ────────────────
+ *
+ * El depósito despacha del lado de Mercado Libre —imprime la etiqueta ahí, le
+ * entrega el paquete al cadete— y no vuelve a Stocker a tocar "Despachar". El
+ * resultado, antes de esto: el stock de esos envíos quedaba apartado para
+ * siempre, porque el único lugar que lo descuenta es ese botón.
+ *
+ * Así que Stocker lo aprieta solo, apenas se entera por la propia Mercado
+ * Libre de que el paquete salió de verdad. "De verdad" es la parte que
+ * importa, y no es el mismo momento para todos los tipos de envío:
+ *
+ *   · Flex: el handshake —`flex-handshakes`—, que es el cadete escaneando el
+ *     paquete al levantarlo. `shipped` en Flex llega antes, apenas se imprime
+ *     la etiqueta, con el paquete todavía en el estante: usarlo despacharía
+ *     mercadería que nadie bajó.
+ *   · El resto (colecta, cross-docking, full): `shipped` sí es la salida real
+ *     —el vendedor lo entrega en la agencia o al transportista en ese
+ *     momento—, así que alcanza con el estado que ya trae `shipments`.
+ *   · `delivered` dispara siempre, sea cual sea el tipo: si el comprador ya
+ *     lo tiene en la mano, el paquete salió hace rato. Es la red de
+ *     seguridad para cuando el handshake no llegó —el tópico no está tildado
+ *     en el panel de ML, o se perdió la notificación—: tarde, pero el stock
+ *     se termina corrigiendo solo.
+ *
+ * No se llama desde la importación de ventas anteriores (`ingresarOrdenImportada`):
+ * ese backfill puede traer de una cientos de pedidos viejos ya entregados, y
+ * descontar stock de mercadería que se vendió hace meses —y que probablemente
+ * ya se ajustó a mano— es un movimiento grande para hacerlo sin que nadie lo
+ * vea venir.
+ */
+async function autoDespacharSiCorresponde(pedido, envio, cuenta, origen = null) {
+  if (!pedido?.envioId || pedido.estadoEnvio === 'despachado') return;
+
+  const esFlex = (envio?.envioTipo || pedido.envioTipo) === 'flex';
+  const salioDeVerdad = origen === 'flex-handshake'
+    || envio?.estadoMl === 'delivered'
+    || (!esFlex && envio?.estadoMl === 'shipped');
+  if (!salioDeVerdad) return;
+
+  try {
+    const r = await enviosDelDia.despachar({
+      pedidoId: pedido.id, businessId: cuenta.businessId, employeeId: null,
+    });
+    if (!r.repetido) {
+      log.info('ml-pedidos', 'despacho automático: Mercado Libre confirmó la salida', {
+        negocio: cuenta.businessId, pedido: pedido.id, origen: origen || envio?.estadoMl,
+        unidades: r.movidas, ventas: r.ventas,
+      });
+    }
+  } catch (e) {
+    /*
+     * No descontó, y hay que poder verlo: el paquete sigue en "Para enviar"
+     * con el motivo que ya explica por qué (SKU sin apartar, reserva
+     * perdida), así que no hace falta más que dejarlo en el log — no hay
+     * notificación de ML que reintentar, porque la falla es nuestra, no de
+     * la conexión.
+     */
+    log.warn('ml-pedidos', 'no se pudo despachar solo tras la confirmación de Mercado Libre', {
+      negocio: cuenta.businessId, pedido: pedido.id, motivo: e.message, codigo: e.codigo || null,
+    });
+  }
+}
+
+/**
+ * El handshake de Flex: el cadete escaneó el paquete al levantarlo.
+ *
+ * El recurso de la notificación es `/flex/sites/{site}/shipments/{id}/assignment/v1`
+ * y no hace falta leerlo: que la notificación exista ya dice que el paquete
+ * cambió de manos, que es la única pregunta que importa acá. Pedir ese
+ * recurso sería gastar una llamada contra la API para algo que no se usa.
+ */
+async function manejarFlexHandshake(cuenta, shipmentId) {
+  const pedido = await PedidoPlataforma.findOne({
+    where: { businessId: cuenta.businessId, plataforma: 'mercadolibre', envioId: String(shipmentId) },
+  });
+  if (!pedido) {
+    return { accion: 'ignorada', motivo: 'no hay ningún pedido con ese envío todavía' };
+  }
+
+  await autoDespacharSiCorresponde(pedido, { envioTipo: pedido.envioTipo }, cuenta, 'flex-handshake');
+  return { accion: 'handshake_flex_procesado', pedidoId: pedido.id };
 }
 
 /*

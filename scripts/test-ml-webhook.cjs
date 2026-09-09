@@ -403,8 +403,102 @@ const ML_USER = '999000111';
     chk('sin importar ninguna nueva', 0, imp2.importados);
     chk('y sin apartar de nuevo', trasPrimera, await apartado());
 
+    tit('12. EL DESPACHO SOLO, CUANDO ML CONFIRMA QUE SALIÓ');
+    /*
+     * El depósito despacha del lado de Mercado Libre y no vuelve a Stocker a
+     * tocar "Despachar": sin esto, el stock de esos envíos quedaba apartado
+     * para siempre.
+     */
+    const despachadoDe = async (pedidoExterno) => (
+      await PedidoPlataforma.findOne({ where: { pedidoExterno } })
+    ).estadoEnvio;
+
+    // 12a: Flex + `shipped` — todavía NO. Es el momento en que ML imprime la
+    // etiqueta, no cuando el cadete la levanta: despachar acá restaría stock
+    // de mercadería que puede seguir en el estante.
+    RESPUESTAS.set('/orders/77000030', orden(77000030, { shipping: { id: 4400030 } }));
+    RESPUESTAS.set('/shipments/4400030', envio({ id: 4400030, order_id: 77000030 }));
+    await mlPedidos.procesarNotificacion({
+      topic: 'orders_v2', resource: '/orders/77000030', userId: ML_USER,
+    });
+    const apartadoFlexAntes = await apartado();
+    const estanteFlexAntes = await estante();
+    RESPUESTAS.set('/shipments/4400030', envio({ id: 4400030, order_id: 77000030, status: 'shipped' }));
+    await mlPedidos.procesarNotificacion({
+      topic: 'shipments', resource: '/shipments/4400030', userId: ML_USER,
+    });
+    chk('Flex con `shipped`: no despacha solo', null, await despachadoDe('77000030'));
+    chk('y no toca el estante', apartadoFlexAntes, await apartado());
+
+    // 12b: el handshake —el cadete escaneando el paquete— sí despacha.
+    const r12b = await mlPedidos.procesarNotificacion({
+      topic: 'flex-handshakes',
+      resource: '/flex/sites/MLA/shipments/4400030/assignment/v1',
+      userId: ML_USER,
+    });
+    chk('el handshake se procesa', 'handshake_flex_procesado', r12b.accion);
+    chk('y ahora sí despacha', 'despachado', await despachadoDe('77000030'));
+    chk('bajó del estante', estanteFlexAntes - 2, await estante());
+    chk('y libera lo apartado', apartadoFlexAntes - 2, await apartado());
+
+    // 12c: un segundo handshake del mismo envío no descuenta dos veces.
+    const apartadoTrasHandshake = await apartado();
+    await mlPedidos.procesarNotificacion({
+      topic: 'flex-handshakes',
+      resource: '/flex/sites/MLA/shipments/4400030/assignment/v1',
+      userId: ML_USER,
+    });
+    chk('el handshake repetido no aparta ni descuenta de nuevo', apartadoTrasHandshake, await apartado());
+
+    // 12d: un handshake de un envío que no existe se ignora sin romper.
+    const r12d = await mlPedidos.procesarNotificacion({
+      topic: 'flex-handshakes',
+      resource: '/flex/sites/MLA/shipments/9999999/assignment/v1',
+      userId: ML_USER,
+    });
+    chk('handshake de un envío desconocido se ignora', 'ignorada', r12d.accion);
+    chk('diciendo por qué', true, /no hay ningún pedido/.test(r12d.motivo || ''));
+
+    // 12e: colecta/cross-docking + `shipped` — ahí sí es la salida real
+    // (se entrega en la agencia en ese momento), así que despacha directo.
+    RESPUESTAS.set('/orders/77000031', orden(77000031, {
+      shipping: { id: 4400031 },
+      order_items: [{ quantity: 1, unit_price: 5000, item: { id: 'MLA9', seller_sku: 'QA-ML-1' } }],
+    }));
+    RESPUESTAS.set('/shipments/4400031', envio({
+      id: 4400031, order_id: 77000031, logistic_type: 'xd_drop_off',
+    }));
+    await mlPedidos.procesarNotificacion({
+      topic: 'orders_v2', resource: '/orders/77000031', userId: ML_USER,
+    });
+    RESPUESTAS.set('/shipments/4400031', envio({
+      id: 4400031, order_id: 77000031, logistic_type: 'xd_drop_off', status: 'shipped',
+    }));
+    await mlPedidos.procesarNotificacion({
+      topic: 'shipments', resource: '/shipments/4400031', userId: ML_USER,
+    });
+    chk('colecta con `shipped` sí despacha solo', 'despachado', await despachadoDe('77000031'));
+
+    // 12f: `delivered` es la red de seguridad — dispara aunque sea Flex y el
+    // handshake nunca haya llegado (tópico no tildado, notificación perdida).
+    RESPUESTAS.set('/orders/77000032', orden(77000032, {
+      shipping: { id: 4400032 },
+      order_items: [{ quantity: 1, unit_price: 5000, item: { id: 'MLA9', seller_sku: 'QA-ML-1' } }],
+    }));
+    RESPUESTAS.set('/shipments/4400032', envio({ id: 4400032, order_id: 77000032 }));
+    await mlPedidos.procesarNotificacion({
+      topic: 'orders_v2', resource: '/orders/77000032', userId: ML_USER,
+    });
+    RESPUESTAS.set('/shipments/4400032', envio({
+      id: 4400032, order_id: 77000032, status: 'delivered',
+    }));
+    await mlPedidos.procesarNotificacion({
+      topic: 'shipments', resource: '/shipments/4400032', userId: ML_USER,
+    });
+    chk('Flex sin handshake pero `delivered`: despacha igual', 'despachado', await despachadoDe('77000032'));
+
   } finally {
-    tit('12. UNA VENTA DE UN PACK POR MERCADO LIBRE');
+    tit('13. UNA VENTA DE UN PACK POR MERCADO LIBRE');
     /*
      * Lo que se publica en ML es el SKU del pack. Lo que tiene que bajar del
      * estante son las unidades de la variante que lleva adentro: un pack no
