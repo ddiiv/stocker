@@ -260,9 +260,22 @@ app.use(express.static(DIST, {
 
 // SPA: cualquier ruta que no sea archivo ni API la resuelve React Router.
 // Va como middleware sin patrón porque Express 5 ya no acepta '*' suelto.
+/*
+ * SPA: lo que no es archivo ni API lo resuelve React Router.
+ *
+ * Pero si el pedido PARECE un archivo —tiene extensión— y el estático de
+ * arriba no lo sirvió, es que no existe: 404. Contestar el HTML del panel con
+ * un 200 para `/server.js`, `/.env` o `/package.json` es la respuesta más
+ * confusa posible: quien sondea el sitio ve un 200 y concluye que el archivo
+ * está ahí, y un asset mal tipeado llega al navegador como HTML y revienta con
+ * "unexpected token '<'" en vez de dar un 404 legible.
+ */
 app.use((req, res) => {
   res.setHeader('Cache-Control', 'no-store');
-  res.sendFile(path.join(DIST, 'index.html'));
+  if (/\.[a-z0-9]{1,8}$/i.test(req.path)) {
+    return res.status(404).type('text/plain').send('No encontrado.');
+  }
+  return res.sendFile(path.join(DIST, 'index.html'));
 });
 
 const server = app.listen(PORT, '::', () => {
