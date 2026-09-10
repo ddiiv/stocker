@@ -23,7 +23,21 @@ export default function LoginPage() {
   const [mode, setMode] = useState("business");
   // El cierre automático redirige con ?motivo=inactividad.
   const [searchParams] = useSearchParams();
-  const cerroPorInactividad = searchParams.get("motivo") === "inactividad";
+  const motivoCierre = searchParams.get("motivo");
+  const cerroPorInactividad = motivoCierre === "inactividad";
+  /*
+   * Por qué te sacamos, dicho en la pantalla a la que caés.
+   *
+   * Al que le cerraron la sesión desde otro lado —cambio de contraseña de la
+   * cuenta, o su usuario desactivado— lo escupe acá en la mitad de lo que
+   * estuviera haciendo. Sin una línea que lo explique parece que el sistema se
+   * rompió, y lo primero que hace es reintentar la contraseña vieja.
+   */
+  const AVISOS_DE_CIERRE = {
+    SESION_CERRADA: "Se cambió la contraseña, así que se cerraron las sesiones abiertas. Entrá con la nueva.",
+    SESION_REVOCADA: "Tu usuario ya no tiene acceso. Pedile al dueño de la cuenta que lo revise.",
+  };
+  const avisoDeCierre = AVISOS_DE_CIERRE[motivoCierre] || null;
   const {
     register,
     handleSubmit,
@@ -82,6 +96,14 @@ export default function LoginPage() {
               <p className="flex items-start gap-1">
                 <Clock size={14} className="mt-0.5 shrink-0" />
                 <span>Cerramos tu sesión por inactividad. Ingresá de nuevo para seguir.</span>
+              </p>
+            </div>
+          )}
+          {avisoDeCierre && !serverError && (
+            <div className="rounded-md bg-paper-200 px-3 py-2 text-sm text-ink-700">
+              <p className="flex items-start gap-1">
+                <AlertCircle size={14} className="mt-0.5 shrink-0" />
+                <span>{avisoDeCierre}</span>
               </p>
             </div>
           )}

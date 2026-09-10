@@ -276,8 +276,19 @@ export default function AccountPage() {
             <p className="mb-1 flex items-center gap-2 font-display text-base font-semibold text-ink-950">
               <KeyRound size={17} /> Contraseña
             </p>
-            <p className="mb-3 text-sm text-ink-600">
+            <p className="mb-2 text-sm text-ink-600">
               Por seguridad no se muestra. Para cambiarla pedimos la actual y un código al mail.
+            </p>
+            {/*
+              Se avisa ANTES de tocar nada, no después.
+              Cerrar las sesiones es el sentido de cambiar la contraseña cuando
+              sospechás que alguien entró, pero si el aviso llegara recién con
+              el resultado, quien la cambia por rutina descubre que dejó a la
+              cajera afuera en el peor momento sin haber podido preverlo.
+            */}
+            <p className="mb-3 rounded-md bg-paper-200 px-3 py-2 text-sm text-ink-700">
+              Al cambiarla se cierran las sesiones abiertas en otros dispositivos.
+              En éste vas a seguir adentro.
             </p>
 
             {errorPass && <p className="mb-2 rounded-md bg-brick-50 px-3 py-2 text-sm text-brick-500">{errorPass}</p>}

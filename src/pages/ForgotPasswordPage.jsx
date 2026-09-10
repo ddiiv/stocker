@@ -180,6 +180,16 @@ export default function ForgotPasswordPage() {
         {step === "new-password" && (
           <form onSubmit={handleReset} className="card space-y-4 p-6">
             {pwdError && <ErrorBox msg={pwdError} />}
+            {/*
+              Este camino lo usa quien perdió el control de la cuenta, así que
+              acá el cierre de sesiones no tiene excepciones: se va también la
+              de quien esté cambiando la contraseña, porque puede ser el
+              intruso. Decirlo antes evita que después parezca un error.
+            */}
+            <p className="rounded-md bg-paper-200 px-3 py-2 text-sm text-ink-700">
+              Al cambiarla se cierran todas las sesiones abiertas, en cualquier dispositivo.
+              Vas a tener que entrar de nuevo con la contraseña nueva.
+            </p>
             <div>
               <label className="label">Nueva contraseña</label>
               <input className="input" type="password" value={newPass} onChange={(e) => setNewPass(e.target.value)} autoFocus />
@@ -201,7 +211,10 @@ export default function ForgotPasswordPage() {
             <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-teal-50 text-teal-500">
               <CheckCircle2 size={30} />
             </div>
-            <p className="text-sm text-ink-700">Actualizamos tu contraseña. Ya podés iniciar sesión con la nueva.</p>
+            <p className="text-sm text-ink-700">
+              Actualizamos tu contraseña y cerramos las sesiones que estaban abiertas.
+              Ya podés iniciar sesión con la nueva.
+            </p>
             <button className="btn-accent w-full" onClick={() => navigate("/login")}>Ir al login</button>
           </div>
         )}

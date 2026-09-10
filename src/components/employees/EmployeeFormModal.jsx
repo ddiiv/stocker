@@ -74,6 +74,17 @@ export default function EmployeeFormModal({ open, onClose, onSave, posList = [],
             <label className="label">Contraseña {isEdit && <span className="text-ink-500 font-normal">(dejar vacío = sin cambios)</span>}</label>
             <input className="input" type="password" autoComplete="new-password" value={form.password} onChange={(e) => set("password", e.target.value)} />
             {form.password && <PasswordStrength password={form.password} />}
+            {/*
+              Sólo al editar y sólo si de verdad se escribió una contraseña
+              nueva: en el alta no hay sesiones que cerrar, y un cartel que
+              aparece siempre se deja de leer.
+            */}
+            {isEdit && form.password && (
+              <p className="mt-2 rounded-md bg-paper-200 px-3 py-2 text-xs text-ink-700">
+                Se van a cerrar las sesiones que esta persona tenga abiertas, en cualquier
+                dispositivo. Si está vendiendo, va a tener que entrar de nuevo.
+              </p>
+            )}
           </div>
           <div>
             <label className="label">Cargo</label>
