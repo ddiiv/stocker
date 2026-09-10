@@ -22,10 +22,26 @@ const respuesta = (mensaje) => (req, res) => {
 // dirección exacta. Importa: a un cliente IPv6 el proveedor le asigna un
 // bloque entero, así que contar por dirección exacta permitiría rotar y
 // saltear el límite. La red de Railway es IPv6.
+/*
+ * La clave del limitador: IP más QUIÉN, cuando se puede saber quién.
+ *
+ * El email del cuerpo cubre los endpoints públicos —login, recupero—, donde es
+ * el único identificador que hay. Pero `/account/password/solicitar` no lleva
+ * email: va autenticado y el dato viaja en la cookie. Sin mirar la sesión, ese
+ * endpoint quedaba llaveado sólo por IP, y en un negocio con una sola IP
+ * pública —o sea, cualquier local— el dueño y los empleados compartían un cupo
+ * de cinco cada quince minutos: el tercero que intentara cambiar su contraseña
+ * se comía un bloqueo por lo que hicieron los otros dos.
+ *
+ * Mirar `req.auth` no afloja nada: los endpoints públicos no lo tienen y
+ * siguen exactamente como estaban.
+ */
 function claveIpMasEmail(req) {
   const ip = ipKeyGenerator(req.ip);
   const email = String(req.body?.email || '').toLowerCase().trim();
-  return email ? `${ip}|${email}` : ip;
+  if (email) return `${ip}|${email}`;
+  if (req.auth?.businessId) return `${ip}|negocio:${req.auth.businessId}`;
+  return ip;
 }
 
 // Login: el PDF pide 5 intentos por minuto. Los exitosos no cuentan, así que

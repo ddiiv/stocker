@@ -25,6 +25,17 @@ const Business = db.define('Business', {
   email:         { type: DataTypes.STRING(150), allowNull: false },
   passwordHash:  { type: DataTypes.STRING(255), allowNull: false },
   /*
+   * Desde cuándo valen las sesiones de esta cuenta.
+   *
+   * Cambiar la contraseña tiene que echar a quien ya esté adentro, en
+   * cualquier computadora — si no, cambiarla después de sospechar que alguien
+   * entró no sirve de nada: el intruso sigue con su cookie hasta el tope de
+   * 24 h. Como las sesiones son un JWT sin tabla detrás, no hay una lista que
+   * borrar: se guarda desde cuándo valen, y toda sesión iniciada antes deja de
+   * verificar en el pedido siguiente.
+   */
+  sesionesDesde: { type: DataTypes.DATE, allowNull: true },
+  /*
    * Quién aceptó los términos, cuándo y qué versión.
    *
    * No alcanza con un `true`. Si mañana hay una discusión sobre qué se aceptó,
@@ -772,6 +783,11 @@ const Employee = db.define('Employee', {
   telefono:       { type: DataTypes.STRING(30) },
   email:          { type: DataTypes.STRING(150), allowNull: false },
   passwordHash:   { type: DataTypes.STRING(255) },
+  /*
+   * Igual que en el negocio, pero por empleado: cambiarle la contraseña a
+   * alguien cierra las sesiones que esa contraseña había abierto.
+   */
+  sesionesDesde:  { type: DataTypes.DATE, allowNull: true },
   activo:         { type: DataTypes.BOOLEAN, defaultValue: true },
   ultimaConexion: { type: DataTypes.DATE, allowNull: true },
 }, { tableName: 'employees' });

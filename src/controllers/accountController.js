@@ -5,6 +5,8 @@ const { lookupCuit } = require('../services/arcaLookupService');
 const { sendAccountChangeCode } = require('../services/emailService');
 const { log, mask } = require('../utils/logger');
 const identidad = require('../services/identityRegistry');
+const { crearSesion, corteDeSesiones } = require('../utils/session');
+const { setAuthCookie } = require('../utils/authCookie');
 
 /*
  * Cuenta del dueño.
@@ -242,11 +244,26 @@ const confirmarCambioPassword = async (req, res, next) => {
       return res.status(400).json({ message: 'La contraseña nueva tiene que ser distinta de la actual.' });
     }
 
-    await b.update({ passwordHash: await bcrypt.hash(nueva, 10) });
+    /*
+     * Se cambia la contraseña y se cierran todas las sesiones abiertas.
+     *
+     * Menos ésta. Cerrar también la del que está cambiando la contraseña lo
+     * echaría de la pantalla en la que está parado, y el que cambia su
+     * contraseña por las dudas terminaría creyendo que rompió algo. Se le
+     * emite una sesión nueva —posterior al corte— así que este dispositivo
+     * sigue adentro y todos los demás quedan afuera en su próximo pedido.
+     */
+    const corte = corteDeSesiones();
+    await b.update({ passwordHash: await bcrypt.hash(nueva, 10), sesionesDesde: corte });
     await registro.update({ usedAt: new Date() });
 
-    log.info('cuenta', 'contraseña de la cuenta actualizada');
-    res.json({ message: 'Contraseña actualizada.' });
+    setAuthCookie(res, crearSesion({ type: 'business', businessId: b.id }), req);
+
+    log.info('cuenta', 'contraseña de la cuenta actualizada y sesiones cerradas');
+    res.json({
+      message: 'Contraseña actualizada. Se cerraron las sesiones abiertas en otros dispositivos.',
+      sesionesCerradas: true,
+    });
   } catch (error) { next(error); }
 };
 

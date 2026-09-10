@@ -46,11 +46,34 @@ function cookieOptions(req) {
   };
 }
 
+/*
+ * Saca cualquier Set-Cookie de sesión que ya se haya puesto en esta respuesta.
+ *
+ * `res.cookie` AGREGA una cabecera; no reemplaza. Y hay un caso donde se pone
+ * dos veces en el mismo pedido: el middleware renueva la ventana deslizante y
+ * después el controlador emite una sesión nueva —es lo que pasa al cambiar la
+ * contraseña, para no echar de la pantalla al que la está cambiando—. La
+ * respuesta salía con dos Set-Cookie del mismo nombre: los navegadores se
+ * quedan con la última, pero un cliente que no sea un navegador puede mandar
+ * las dos de vuelta y el servidor queda leyendo la vieja. Con esto, la última
+ * llamada gana siempre y sin depender de quién interprete la cabecera.
+ */
+function quitarCookiePrevia(res) {
+  const actual = res.getHeader('Set-Cookie');
+  if (!actual) return;
+  const lista = Array.isArray(actual) ? actual : [actual];
+  const resto = lista.filter((c) => !String(c).startsWith(`${COOKIE_NAME}=`));
+  if (resto.length) res.setHeader('Set-Cookie', resto);
+  else res.removeHeader('Set-Cookie');
+}
+
 function setAuthCookie(res, token, req = res.req) {
+  quitarCookiePrevia(res);
   res.cookie(COOKIE_NAME, token, cookieOptions(req));
 }
 
 function clearAuthCookie(res, req = res.req) {
+  quitarCookiePrevia(res);
   // clearCookie sólo borra si coinciden path/sameSite/secure con los del set.
   const { maxAge, ...opts } = cookieOptions(req);
   res.clearCookie(COOKIE_NAME, opts);

@@ -20,7 +20,7 @@ const { exigirLibre, normalizar } = require('../services/cuitRegistry');
 const identidad = require('../services/identityRegistry');
 const { iniciarTrial } = require('../services/planService');
 const bloqueo = require('../services/bloqueoService');
-const { crearSesion, IDLE_MIN } = require('../utils/session');
+const { crearSesion, corteDeSesiones, IDLE_MIN } = require('../utils/session');
 const { setAuthCookie, clearAuthCookie } = require('../utils/authCookie');
 const { sendPasswordResetCode, sendPasswordResetAlert } = require('../services/emailService');
 const { log, mask, sinDatos } = require('../utils/logger');
@@ -438,7 +438,15 @@ const resetPassword = async (req, res, next) => {
     }
 
     const passwordHash = await bcrypt.hash(newPassword, 10);
-    await result.business.update({ passwordHash });
+    /*
+     * Y se cierran TODAS las sesiones abiertas, en cualquier computadora.
+     *
+     * Este camino es el que usa alguien que perdió el control de su cuenta.
+     * Cambiar la contraseña sin cerrar las sesiones es la peor combinación
+     * posible: la persona cree que echó al intruso y el intruso sigue adentro
+     * con su cookie hasta el tope de 24 h.
+     */
+    await result.business.update({ passwordHash, sesionesDesde: corteDeSesiones() });
     await result.reset.update({ usedAt: new Date() });
 
     res.json({ ok: true, message: 'Contraseña actualizada. Ya podés iniciar sesión.' });

@@ -184,6 +184,15 @@ const COLUMNAS_ESPERADAS = {
     // Funciones que el negocio conserva aunque su plan no las incluya. La
     // llena `heredarFeaturesEnUso` una sola vez. Ver el modelo Business.
     featuresHeredadas: { type: DataTypes.STRING(255), allowNull: true },
+    // Desde cuándo valen las sesiones de la cuenta. Cambiar la contraseña la
+    // pone en ahora y echa a todo el mundo. Ver el modelo Business.
+    // Nula a propósito para las cuentas que ya existen: nula = todo vale, así
+    // que el deploy no desloguea a nadie.
+    sesionesDesde: { type: DataTypes.DATE, allowNull: true },
+  },
+  employees: {
+    // Lo mismo por empleado: cambiarle la contraseña cierra SUS sesiones.
+    sesionesDesde: { type: DataTypes.DATE, allowNull: true },
   },
   products: {
     // Producto de feria: se vende sin llevar inventario. Ver el modelo.

@@ -1,8 +1,8 @@
 const { verifyToken } = require('../utils/jwt');
-const { renovarSesion } = require('../utils/session');
+const { renovarSesion, sesionVigente } = require('../utils/session');
 const { readAuthCookie, setAuthCookie } = require('../utils/authCookie');
 const { motivoDeBloqueo } = require('./plan');
-const { Employee, EmployeeSession, Role } = require('../models');
+const { Business, Employee, EmployeeSession, Role } = require('../models');
 
 // El token vive en una cookie httpOnly. El header Bearer se sigue aceptando
 // para clientes que no son el navegador (scripts, Postman) y para que las
@@ -42,9 +42,36 @@ async function requireAuth(req, res, next) {
      * renovar la cookie para que el token que se re-firma lleve los permisos
      * de ahora y no los del login.
      */
+    /*
+     * El dueño: ¿la cuenta cerró sus sesiones desde que ésta empezó?
+     *
+     * Es una lectura por clave primaria de dos columnas —medida en 0,7 ms— y
+     * es la única forma de que un cambio de contraseña eche a quien ya está
+     * adentro. Sin esto, cambiar la contraseña porque sospechás que te
+     * entraron no echa a nadie: el intruso sigue con su cookie hasta el tope
+     * de 24 h, que es justo lo contrario de lo que la persona cree que hizo.
+     *
+     * El empleado no paga esta consulta: su fila ya se relee acá abajo por
+     * otro motivo, así que la comprobación va pegada a esa lectura.
+     */
+    if (req.auth.type === 'business' && req.auth.businessId) {
+      const negocio = await Business.findByPk(req.auth.businessId, {
+        attributes: ['id', 'sesionesDesde'],
+      });
+      if (!negocio) {
+        return res.status(401).json({ message: 'La cuenta ya no existe.', codigo: 'SESION_REVOCADA' });
+      }
+      if (!sesionVigente(req.auth, negocio.sesionesDesde)) {
+        return res.status(401).json({
+          message: 'Se cambió la contraseña de la cuenta, así que se cerraron las sesiones abiertas. Volvé a entrar.',
+          codigo: 'SESION_CERRADA',
+        });
+      }
+    }
+
     if (req.auth.type === 'employee' && req.auth.employeeId) {
       const empleado = await Employee.findByPk(req.auth.employeeId, {
-        attributes: ['id', 'businessId', 'activo', 'roleId'],
+        attributes: ['id', 'businessId', 'activo', 'roleId', 'sesionesDesde'],
         include: [{ model: Role, as: 'cargo', attributes: ['id', 'permisos'] }],
       });
 
@@ -58,6 +85,15 @@ async function requireAuth(req, res, next) {
         return res.status(401).json({
           message: 'Tu usuario ya no tiene acceso. Pedile al dueño de la cuenta que lo revise.',
           codigo: 'SESION_REVOCADA',
+        });
+      }
+
+      // Le cambiaron la contraseña: las sesiones que esa contraseña había
+      // abierto —en ésta y en cualquier otra computadora— dejan de valer.
+      if (!sesionVigente(req.auth, empleado.sesionesDesde)) {
+        return res.status(401).json({
+          message: 'Se cambió la contraseña de tu usuario, así que se cerraron las sesiones abiertas. Volvé a entrar.',
+          codigo: 'SESION_CERRADA',
         });
       }
 

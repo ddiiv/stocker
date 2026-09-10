@@ -4,6 +4,7 @@ const identidad = require('../services/identityRegistry');
 const { exigirCupo } = require('../services/planService');
 const bloqueo = require('../services/bloqueoService');
 const { emailValido, soloDigitos } = require('../utils/identificadores');
+const { corteDeSesiones } = require('../utils/session');
 
 const sanitize = (e) => { const { passwordHash, ...s } = e.toJSON(); return s; };
 
@@ -198,7 +199,16 @@ const updateEmployee = async (req, res, next) => {
     }
     Object.assign(patch, await resolverRelaciones(req.body || {}, req.auth.businessId));
 
-    if (req.body?.password) patch.passwordHash = await bcrypt.hash(req.body.password, 10);
+    if (req.body?.password) {
+      patch.passwordHash = await bcrypt.hash(req.body.password, 10);
+      /*
+       * Y se cierran las sesiones que esa contraseña había abierto, en
+       * cualquier computadora. Es el motivo más común para cambiársela a
+       * alguien: se fue, o se la mandó por WhatsApp a un tercero. Si la sesión
+       * que ya tenía abierta sigue viva, cambiarla no sirvió de nada.
+       */
+      patch.sesionesDesde = corteDeSesiones();
+    }
     // Cambiar el email también tiene que respetar la unicidad global; sin esto
     // se podía esquivar la validación del alta editando después.
     if (patch.email && patch.email !== e.email) {
