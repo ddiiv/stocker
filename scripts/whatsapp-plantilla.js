@@ -41,9 +41,15 @@ function faltaAlgo() {
   if (!TOKEN) faltan.push('WHATSAPP_META_TOKEN');
   if (!WABA)  faltan.push('WHATSAPP_META_WABA_ID');
   if (!faltan.length) return null;
-  return `Faltan variables de entorno: ${faltan.join(', ')}.\n`
-    + '  El WABA_ID está en Business Manager → Cuentas de WhatsApp → tu cuenta.\n'
-    + '  Ojo: NO es el mismo id que WHATSAPP_META_PHONE_NUMBER_ID.';
+  return `Faltan variables de entorno: ${faltan.join(', ')}.\n\n`
+    + '  WHATSAPP_META_WABA_ID sale de la MISMA pantalla de donde saliste el\n'
+    + '  identificador del teléfono:\n\n'
+    + '    developers.facebook.com → tu app → WhatsApp → Configuración de la API\n\n'
+    + '  Ahí figuran uno debajo del otro:\n'
+    + '    · Identificador del número de teléfono   → WHATSAPP_META_PHONE_NUMBER_ID (ya lo tenés)\n'
+    + '    · Identificador de la cuenta de WhatsApp Business → WHATSAPP_META_WABA_ID (falta éste)\n\n'
+    + '  No se puede deducir del token: un token de usuario de sistema no dice\n'
+    + '  por qué negocio entra, así que hay que copiarlo a mano una vez.';
 }
 
 async function api(ruta, opciones = {}) {
