@@ -44,3 +44,28 @@ export async function cerrarTodasLasSesiones(passwordActual) {
   const { data } = await http.post("/account/sesiones/cerrar", { passwordActual });
   return data;
 }
+
+/*
+ * ── Verificación en dos pasos ────────────────────────────────────
+ *
+ * Activar son DOS llamadas: `iniciar` entrega el secreto para cargar en la app
+ * y `activar` lo confirma con un código. Hasta la segunda no protege nada, y
+ * es a propósito: si se activara de una, quien abre la pantalla y se distrae
+ * queda con el 2FA prendido y sin ninguna app cargada.
+ */
+export async function iniciar2FA(passwordActual) {
+  const { data } = await http.post("/account/2fa/iniciar", { passwordActual });
+  return data;
+}
+export async function activar2FA(code) {
+  const { data } = await http.post("/account/2fa/activar", { code });
+  return data;
+}
+export async function desactivar2FA({ passwordActual, code }) {
+  const { data } = await http.post("/account/2fa/desactivar", { passwordActual, code });
+  return data;
+}
+export async function regenerarCodigos2FA({ passwordActual, code }) {
+  const { data } = await http.post("/account/2fa/codigos", { passwordActual, code });
+  return data;
+}

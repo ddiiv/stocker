@@ -9,6 +9,9 @@ import { useAuth } from "../context/AuthContext";
 const schema = z.object({
   email: z.string().email("Ingresá un email válido"),
   password: z.string().min(1, "Ingresá tu contraseña"),
+  // Opcional en el esquema: sólo hace falta si la cuenta tiene el segundo
+  // paso activado, y eso no se sabe hasta que el servidor lo dice.
+  code: z.string().optional(),
 });
 
 const TABS = [
@@ -42,7 +45,16 @@ export default function LoginPage() {
     register,
     handleSubmit,
     formState: { errors, isSubmitting },
-  } = useForm({ resolver: zodResolver(schema), defaultValues: { email: "", password: "" } });
+  } = useForm({ resolver: zodResolver(schema), defaultValues: { email: "", password: "", code: "" } });
+
+  /*
+   * El segundo paso aparece recién cuando el servidor lo pide.
+   *
+   * No se puede saber antes si la cuenta lo tiene activado: preguntarlo por
+   * email sería decirle a cualquiera qué cuentas tienen 2FA y cuáles no, que
+   * es justo la lista por la que empezaría alguien que está probando.
+   */
+  const [pide2fa, setPide2fa] = useState(false);
 
   async function onSubmit(values) {
     setServerError("");
@@ -52,6 +64,14 @@ export default function LoginPage() {
       navigate("/dashboard");
     } catch (err) {
       const status = err.response?.status;
+
+      // La contraseña estaba bien; falta el código de la app.
+      if (status === 401 && err.response?.data?.codigo === "TOTP_REQUERIDO") {
+        setPide2fa(true);
+        setServerError(pide2fa ? (err.response?.data?.message || "El código no es correcto.") : "");
+        return;
+      }
+
       if (status === 401) {
         setServerError(mode === "employee"
           ? "Email o contraseña de empleado incorrectos. Verificá con el dueño."
@@ -79,7 +99,7 @@ export default function LoginPage() {
             <button
               key={t.value}
               type="button"
-              onClick={() => { setMode(t.value); setServerError(""); }}
+              onClick={() => { setMode(t.value); setServerError(""); setPide2fa(false); }}
               className={`flex-1 rounded px-3 py-1.5 text-xs font-medium transition-colors ${
                 mode === t.value ? "bg-brass-500 text-[#1c1c1c]" : "text-ink-600 hover:text-ink-900"
               }`}
@@ -127,8 +147,28 @@ export default function LoginPage() {
             <input className="input" type="password" placeholder="••••••••" {...register("password")} />
             {errors.password && <p className="field-error">{errors.password.message}</p>}
           </div>
+          {pide2fa && mode === "business" && (
+            <div>
+              <label className="label">Código de tu app de autenticación</label>
+              <input
+                className="input font-mono tracking-widest"
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                placeholder="000000"
+                autoFocus
+                {...register("code")}
+              />
+              <p className="mt-1 text-xs text-ink-500">
+                Si perdiste el teléfono, escribí uno de tus códigos de recuperación.
+              </p>
+            </div>
+          )}
           <button className="btn-accent w-full" type="submit" disabled={isSubmitting}>
-            {isSubmitting ? "Ingresando…" : (mode === "employee" ? "Ingresar como empleado" : "Ingresar")}
+            {isSubmitting
+              ? "Ingresando…"
+              : pide2fa && mode === "business"
+                ? "Verificar y entrar"
+                : (mode === "employee" ? "Ingresar como empleado" : "Ingresar")}
           </button>
           {mode === "employee" && (
             <p className="text-center text-xs text-ink-500">

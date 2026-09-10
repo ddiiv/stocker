@@ -7,8 +7,16 @@ export async function register(payload) {
   return data;
 }
 
-export async function login({ email, password }) {
-  const { data } = await http.post("/auth/login", { email, password });
+/*
+ * El código del segundo factor viaja en el MISMO pedido que la contraseña.
+ *
+ * La alternativa sería que el primer pedido devolviera un token de "media
+ * sesión" y el segundo lo canjeara. Eso es una credencial más para robar, con
+ * su propia vigencia y sus propias formas de salir mal, a cambio de ahorrarle
+ * al servidor una comparación de contraseña que ya sabe hacer.
+ */
+export async function login({ email, password, code }) {
+  const { data } = await http.post("/auth/login", { email, password, code });
   return data;
 }
 
