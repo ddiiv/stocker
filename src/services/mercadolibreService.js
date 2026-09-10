@@ -263,17 +263,50 @@ async function conectarConCodigo({ businessId, code, verifier = null }) {
   return MercadoLibreAccount.create(valores);
 }
 
+const MARGEN_RENOVACION_MS = 5 * 60 * 1000; // renovamos 5 min antes de que expire
+
+/*
+ * Renovaciones en curso, por cuenta.
+ *
+ * El refresh_token de ML es de UN SOLO USO: al canjearlo, el anterior queda
+ * muerto. Y las renovaciones llegan de a montones, no de a una: el token dura
+ * seis horas, y cuando vence, lo que despierta al sistema suele ser una ráfaga
+ * de notificaciones —ML manda hasta ocho por venta— que entran en paralelo
+ * como pedidos HTTP distintos. Las ocho leen el mismo refresh_token vencido y
+ * las ocho lo canjean: gana una y las otras siete reciben `invalid_grant`,
+ * escriben "Reconectá la cuenta" en la pantalla del cliente y lo mandan a
+ * rehacer una autorización que no hacía falta.
+ *
+ * Con esto, la primera que llega hace el canje y las demás esperan SU
+ * resultado en vez de pedir otro. Es por proceso, no por base: alcanza para el
+ * caso real —un servicio, muchas peticiones—, y el `catch` de abajo cubre lo
+ * que esto no puede cubrir.
+ */
+const renovaciones = new Map();
+
+function estaVigente(cuenta) {
+  return Boolean(cuenta.accessToken)
+    && Boolean(cuenta.tokenExpiraEn)
+    && new Date(cuenta.tokenExpiraEn).getTime() - MARGEN_RENOVACION_MS > Date.now();
+}
+
 /**
  * Devuelve un access_token válido, renovándolo si está por vencer.
  * OJO: ML rota el refresh_token en cada renovación, por eso lo persistimos.
  */
 async function tokenValido(cuenta) {
-  const margenMs = 5 * 60 * 1000; // renovamos 5 min antes de que expire
-  if (cuenta.accessToken && cuenta.tokenExpiraEn && new Date(cuenta.tokenExpiraEn).getTime() - margenMs > Date.now()) {
-    return cuenta.accessToken;
-  }
+  if (estaVigente(cuenta)) return cuenta.accessToken;
   if (!cuenta.refreshToken) throw new Error('La cuenta de MercadoLibre no está conectada. Volvé a autorizar la app.');
 
+  const enCurso = renovaciones.get(cuenta.id);
+  if (enCurso) return enCurso;
+
+  const promesa = renovarToken(cuenta).finally(() => renovaciones.delete(cuenta.id));
+  renovaciones.set(cuenta.id, promesa);
+  return promesa;
+}
+
+async function renovarToken(cuenta) {
   const c = config();
   try {
     const { data } = await httpML.post(`${ML_API}/oauth/token`, new URLSearchParams({
@@ -291,6 +324,24 @@ async function tokenValido(cuenta) {
     });
     return data.access_token;
   } catch (err) {
+    /*
+     * Antes de dar la cuenta por caída, mirar si otro ya la renovó.
+     *
+     * El candado de arriba es por proceso: con dos instancias del backend, o
+     * con el barrido y un webhook cayendo en instancias distintas, las dos
+     * pueden canjear el mismo refresh_token y una va a fallar aunque la cuenta
+     * haya quedado perfectamente conectada. Releer la fila lo distingue: si
+     * hay un access_token vigente, esto no fue una desconexión sino una
+     * carrera, y la respuesta correcta es usar el token que ya está.
+     */
+    try {
+      await cuenta.reload();
+      if (estaVigente(cuenta)) {
+        log.warn('mercadolibre', 'renovación en carrera: ya había un token vigente', { cuenta: cuenta.id });
+        return cuenta.accessToken;
+      }
+    } catch { /* si ni releer se puede, sigue el error original */ }
+
     const detalle = err.response?.data?.message || err.message;
     await cuenta.update({ ultimoError: `Renovación de token falló: ${detalle}` });
     throw new Error(`No se pudo renovar el acceso a MercadoLibre: ${detalle}. Reconectá la cuenta.`);
