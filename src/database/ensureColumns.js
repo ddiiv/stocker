@@ -189,6 +189,12 @@ const COLUMNAS_ESPERADAS = {
     // Nula a propósito para las cuentas que ya existen: nula = todo vale, así
     // que el deploy no desloguea a nadie.
     sesionesDesde: { type: DataTypes.DATE, allowNull: true },
+    // Segundo factor con app de autenticación. Ver el modelo Business.
+    totpSecret:       { type: DataTypes.STRING(64), allowNull: true },
+    totpPendiente:    { type: DataTypes.STRING(64), allowNull: true },
+    totpActivadoEn:   { type: DataTypes.DATE, allowNull: true },
+    totpUltimoPaso:   { type: DataTypes.BIGINT, allowNull: true },
+    totpRecuperacion: { type: DataTypes.TEXT, allowNull: true },
   },
   employees: {
     // Lo mismo por empleado: cambiarle la contraseña cierra SUS sesiones.

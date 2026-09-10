@@ -21,6 +21,7 @@ const identidad = require('../services/identityRegistry');
 const { iniciarTrial } = require('../services/planService');
 const bloqueo = require('../services/bloqueoService');
 const { crearSesion, corteDeSesiones, IDLE_MIN } = require('../utils/session');
+const dosFactores = require('../services/dosFactoresService');
 const { setAuthCookie, clearAuthCookie } = require('../utils/authCookie');
 const { sendPasswordResetCode, sendPasswordResetAlert } = require('../services/emailService');
 const { log, mask, sinDatos } = require('../utils/logger');
@@ -145,12 +146,56 @@ const login = async (req, res, next) => {
       return res.status(401).json({ message: 'Email o contraseña incorrectos.' });
     }
 
+    /*
+     * ── Segundo paso, si la cuenta lo tiene activado ──────────────
+     *
+     * La contraseña ya está bien. Si falta el código, se contesta que hace
+     * falta y NO se emite sesión: el 401 con `TOTP_REQUERIDO` es lo que la
+     * pantalla usa para mostrar el campo del código.
+     *
+     * El pedido siguiente trae email, contraseña y código juntos, y se
+     * vuelve a validar todo. Podría emitirse un token intermedio de "media
+     * sesión", pero eso es una credencial más para robar, con su propia
+     * vigencia y su propia forma de salir mal, a cambio de ahorrarle al
+     * navegador una comparación de contraseña que ya sabe hacer.
+     *
+     * Un código equivocado cuenta como intento fallido para el bloqueo por
+     * fuerza bruta, igual que una contraseña equivocada: si no, el segundo
+     * factor sería el único lugar del login sin freno.
+     */
+    if (business.totpSecret) {
+      const code = req.body?.code;
+      if (!code) {
+        return res.status(401).json({
+          message: 'Escribí el código de tu app de autenticación.',
+          codigo: 'TOTP_REQUERIDO',
+        });
+      }
+      const r = await dosFactores.verificar(business, code);
+      if (!r.ok) {
+        await bloqueo.registrar({ req, tipo: 'business', identificador: email, exito: false });
+        return res.status(401).json({
+          message: r.motivo === 'repetido'
+            ? 'Ese código ya se usó. Esperá a que la app muestre el siguiente.'
+            : 'El código no es correcto. Si perdiste el teléfono, usá uno de recuperación.',
+          codigo: 'TOTP_REQUERIDO',
+        });
+      }
+      if (r.motivo === 'recuperacion') {
+        log.warn('auth', 'entró con un código de recuperación', { email: mask.email(email) });
+      }
+    }
+
     await bloqueo.registrar({ req, tipo: 'business', identificador: email, exito: true });
     await bloqueo.limpiar({ req, identificador: email });
 
     const token = crearSesion({ type: 'business', businessId: business.id });
     setAuthCookie(res, token);
-    res.json({ business: sanitizeBusiness(business) });
+    res.json({
+      business: sanitizeBusiness(business),
+      // Para avisarle que gastó uno y le quedan pocos.
+      codigosDeRecuperacionRestantes: business.totpSecret ? dosFactores.codigosRestantes(business) : null,
+    });
   } catch (error) { next(error); }
 };
 

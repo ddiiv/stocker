@@ -35,6 +35,29 @@ const Business = db.define('Business', {
    * verificar en el pedido siguiente.
    */
   sesionesDesde: { type: DataTypes.DATE, allowNull: true },
+
+  /*
+   * ── Segundo factor (TOTP, el código de la app del teléfono) ──────
+   *
+   * `totpPendiente` es el secreto de una activación a medio hacer: se genera
+   * al empezar y sólo pasa a `totpSecret` cuando la persona escribe un código
+   * correcto. Sin ese paso intermedio, alguien que abre la pantalla y se va
+   * queda con el 2FA prendido y sin ninguna app cargada — o sea, afuera de su
+   * propia cuenta.
+   *
+   * `totpUltimoPaso` es el último bloque de 30 segundos aceptado. Un código
+   * vale 90 segundos contando la tolerancia; guardando cuál se usó, el mismo
+   * código no entra dos veces.
+   *
+   * `totpRecuperacion` son los códigos de un solo uso para cuando el teléfono
+   * se pierde. Se guardan HASHEADOS: si alguien lee la base, encuentra lo
+   * mismo que encontraría con las contraseñas, que es nada útil.
+   */
+  totpSecret:       { type: DataTypes.STRING(64), allowNull: true },
+  totpPendiente:    { type: DataTypes.STRING(64), allowNull: true },
+  totpActivadoEn:   { type: DataTypes.DATE, allowNull: true },
+  totpUltimoPaso:   { type: DataTypes.BIGINT, allowNull: true },
+  totpRecuperacion: { type: DataTypes.TEXT, allowNull: true },
   /*
    * Quién aceptó los términos, cuándo y qué versión.
    *

@@ -6,6 +6,8 @@ const { sendAccountChangeCode } = require('../services/emailService');
 const { log, mask } = require('../utils/logger');
 const identidad = require('../services/identityRegistry');
 const { crearSesion, corteDeSesiones } = require('../utils/session');
+const totp = require('../utils/totp');
+const dosFactores = require('../services/dosFactoresService');
 const { setAuthCookie } = require('../utils/authCookie');
 
 /*
@@ -118,7 +120,14 @@ const obtener = async (req, res, next) => {
       // El frontend lo usa para mostrar el 2FA como "próximamente" sin tener
       // que conocer qué canales existen del lado del servidor.
       canales: Object.keys(CANALES),
-      dobleFactor: { habilitado: false, canalesDisponibles: [] },
+      dobleFactor: {
+        habilitado: Boolean(b.totpSecret),
+        activadoEn: b.totpActivadoEn || null,
+        codigosRestantes: dosFactores.codigosRestantes(b),
+        // Una activación empezada y no terminada: la pantalla la ofrece para
+        // retomarla en vez de arrancar de cero.
+        pendiente: Boolean(b.totpPendiente) && !b.totpSecret,
+      },
     });
   } catch (error) { next(error); }
 };
@@ -372,8 +381,164 @@ const cerrarTodasLasSesiones = async (req, res, next) => {
   } catch (error) { next(error); }
 };
 
+/*
+ * ── Segundo factor con app de autenticación ──────────────────────
+ *
+ * Tres pasos, y el orden importa:
+ *
+ *   1. `iniciar` genera un secreto PENDIENTE y lo devuelve para cargar en la
+ *      app. Todavía no protege nada.
+ *   2. `activar` exige un código correcto de ese secreto pendiente. Recién ahí
+ *      pasa a ser el secreto real. Sin este paso, quien abre la pantalla y se
+ *      distrae queda con el 2FA prendido y sin ninguna app cargada: afuera de
+ *      su propia cuenta, sin forma de volver.
+ *   3. `desactivar` pide contraseña Y código, por la misma razón por la que se
+ *      pide algo más que la sesión para cualquier cambio de credenciales.
+ */
+
+// POST /api/account/2fa/iniciar  { passwordActual }
+const iniciar2FA = async (req, res, next) => {
+  try {
+    const b = await Business.findByPk(req.auth.businessId);
+    const actual = String(req.body?.passwordActual || '');
+    if (!actual || !(await bcrypt.compare(actual, b.passwordHash))) {
+      return res.status(400).json({ message: 'La contraseña actual no es correcta.' });
+    }
+    if (b.totpSecret) {
+      return res.status(400).json({
+        message: 'La verificación en dos pasos ya está activa. Desactivala primero si querés cargarla en otro teléfono.',
+        codigo: 'TOTP_YA_ACTIVO',
+      });
+    }
+
+    /*
+     * Un secreto nuevo en cada intento, aunque hubiera uno pendiente.
+     *
+     * Si se reutilizara el pendiente, un secreto que quedó a la vista en una
+     * pantalla abierta —o en el historial de alguien que empezó y no terminó—
+     * seguiría siendo válido para siempre.
+     */
+    const secreto = totp.generarSecreto();
+    await b.update({ totpPendiente: secreto });
+
+    log.info('cuenta', 'activación de segundo factor iniciada');
+    res.json({
+      secreto,
+      uri: totp.uriParaQr({ secreto, cuenta: b.email, emisor: 'Stocker' }),
+      digitos: totp.DIGITOS,
+      periodoSegundos: totp.PASO_SEG,
+    });
+  } catch (error) { next(error); }
+};
+
+// POST /api/account/2fa/activar  { code }
+const activar2FA = async (req, res, next) => {
+  try {
+    const b = await Business.findByPk(req.auth.businessId);
+    if (!b.totpPendiente) {
+      return res.status(400).json({ message: 'No hay ninguna activación empezada. Empezá de nuevo.' });
+    }
+
+    const paso = totp.pasoValido(b.totpPendiente, req.body?.code);
+    if (paso === null) {
+      return res.status(400).json({
+        message: 'Ese código no coincide. Fijate que el reloj del teléfono esté en hora y probá con el siguiente.',
+        codigo: 'TOTP_INVALIDO',
+      });
+    }
+
+    /*
+     * Los códigos de recuperación se muestran UNA vez y no se guardan en
+     * claro. Si se perdieran del lado del servidor no habría forma de
+     * recuperarlos, que es exactamente lo que se busca: sirven para volver a
+     * entrar sin el teléfono, así que guardarlos legibles los convierte en una
+     * segunda contraseña esperando a que alguien lea la base.
+     */
+    const { planos, hashes } = dosFactores.generarCodigosDeRecuperacion();
+    await b.update({
+      totpSecret: b.totpPendiente,
+      totpPendiente: null,
+      totpActivadoEn: new Date(),
+      totpUltimoPaso: paso,
+      totpRecuperacion: JSON.stringify(hashes),
+    });
+
+    log.info('cuenta', 'segundo factor activado');
+    res.json({
+      message: 'Listo, la verificación en dos pasos quedó activa.',
+      codigosDeRecuperacion: planos,
+    });
+  } catch (error) { next(error); }
+};
+
+// POST /api/account/2fa/desactivar  { passwordActual, code }
+const desactivar2FA = async (req, res, next) => {
+  try {
+    const b = await Business.findByPk(req.auth.businessId);
+    const actual = String(req.body?.passwordActual || '');
+    if (!actual || !(await bcrypt.compare(actual, b.passwordHash))) {
+      return res.status(400).json({ message: 'La contraseña actual no es correcta.' });
+    }
+    if (!b.totpSecret) {
+      return res.status(400).json({ message: 'La verificación en dos pasos no está activa.' });
+    }
+
+    const r = await dosFactores.verificar(b, req.body?.code);
+    if (!r.ok) {
+      return res.status(400).json({
+        message: r.motivo === 'repetido'
+          ? 'Ese código ya se usó. Esperá a que la app muestre el siguiente.'
+          : 'El código no es correcto. Podés usar uno de recuperación.',
+        codigo: 'TOTP_INVALIDO',
+      });
+    }
+
+    await b.update({
+      totpSecret: null, totpPendiente: null, totpActivadoEn: null,
+      totpUltimoPaso: null, totpRecuperacion: null,
+    });
+
+    log.info('cuenta', 'segundo factor desactivado');
+    res.json({ message: 'La verificación en dos pasos quedó desactivada.' });
+  } catch (error) { next(error); }
+};
+
+// POST /api/account/2fa/codigos  { passwordActual, code }
+const regenerarCodigos2FA = async (req, res, next) => {
+  try {
+    const b = await Business.findByPk(req.auth.businessId);
+    const actual = String(req.body?.passwordActual || '');
+    if (!actual || !(await bcrypt.compare(actual, b.passwordHash))) {
+      return res.status(400).json({ message: 'La contraseña actual no es correcta.' });
+    }
+    if (!b.totpSecret) {
+      return res.status(400).json({ message: 'La verificación en dos pasos no está activa.' });
+    }
+
+    const r = await dosFactores.verificar(b, req.body?.code);
+    if (!r.ok) {
+      return res.status(400).json({ message: 'El código no es correcto.', codigo: 'TOTP_INVALIDO' });
+    }
+
+    /*
+     * Los anteriores dejan de servir. Se regeneran cuando se perdieron o
+     * quedaron a la vista: si los viejos siguieran valiendo, regenerarlos no
+     * arreglaría nada.
+     */
+    const { planos, hashes } = dosFactores.generarCodigosDeRecuperacion();
+    await b.update({ totpRecuperacion: JSON.stringify(hashes) });
+
+    log.info('cuenta', 'códigos de recuperación regenerados');
+    res.json({
+      message: 'Códigos nuevos. Los anteriores dejaron de servir.',
+      codigosDeRecuperacion: planos,
+    });
+  } catch (error) { next(error); }
+};
+
 module.exports = {
   obtener, actualizar, sincronizarConArca,
+  iniciar2FA, activar2FA, desactivar2FA, regenerarCodigos2FA,
   solicitarCambioEmail, confirmarCambioEmail,
   solicitarCambioPassword, confirmarCambioPassword,
   cerrarTodasLasSesiones,

@@ -186,6 +186,20 @@ r.post('/account/password/confirmar', requireAuth, requireOwner, validatePasswor
 r.post('/account/sesiones/cerrar', requireAuth, requireOwner, loginLimiter, accountCtrl.cerrarTodasLasSesiones);
 
 /*
+ * Verificación en dos pasos (TOTP).
+ *
+ * Los cuatro van con `loginLimiter` porque los cuatro comparan un secreto
+ * —la contraseña, o un código de seis dígitos—. Seis dígitos son un millón de
+ * combinaciones: sin freno, probarlas todas contra un endpoint que contesta al
+ * instante es cuestión de horas. Los aciertos no cuentan para el límite, así
+ * que activar o desactivar de verdad nunca se acerca al tope.
+ */
+r.post('/account/2fa/iniciar',    requireAuth, requireOwner, loginLimiter, accountCtrl.iniciar2FA);
+r.post('/account/2fa/activar',    requireAuth, requireOwner, loginLimiter, accountCtrl.activar2FA);
+r.post('/account/2fa/desactivar', requireAuth, requireOwner, loginLimiter, accountCtrl.desactivar2FA);
+r.post('/account/2fa/codigos',    requireAuth, requireOwner, loginLimiter, accountCtrl.regenerarCodigos2FA);
+
+/*
  * A partir de acá, todo lo que ESCRIBE exige la cuenta al día.
  *
  * Va como un `use` y no repetido ruta por ruta: una ruta nueva que alguien

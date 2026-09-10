@@ -68,17 +68,30 @@ function codigoPara(secreto, contador) {
  * filtra cuántos dígitos acertó quien está probando.
  */
 function validar(secreto, codigo) {
+  return pasoValido(secreto, codigo) !== null;
+}
+
+/**
+ * Igual que `validar`, pero devuelve QUÉ paso de 30 segundos coincidió (o null).
+ *
+ * Sirve para que el que llama no acepte dos veces el mismo código. Un código
+ * vive noventa segundos contando la tolerancia, y en ese rato alguien que lo
+ * vio —por encima del hombro, en una captura, en un mensaje reenviado— puede
+ * volver a usarlo. Guardando el último paso aceptado y exigiendo que el
+ * siguiente sea mayor, el código sirve una sola vez.
+ */
+function pasoValido(secreto, codigo) {
   const limpio = String(codigo || '').replace(/\D/g, '');
-  if (limpio.length !== DIGITOS || !secreto) return false;
+  if (limpio.length !== DIGITOS || !secreto) return null;
 
   const ahora = Math.floor(Date.now() / 1000 / PASO_SEG);
   for (let i = -VENTANA; i <= VENTANA; i++) {
     const esperado = codigoPara(secreto, ahora + i);
     const a = Buffer.from(esperado);
     const b = Buffer.from(limpio);
-    if (a.length === b.length && crypto.timingSafeEqual(a, b)) return true;
+    if (a.length === b.length && crypto.timingSafeEqual(a, b)) return ahora + i;
   }
-  return false;
+  return null;
 }
 
 /** URI para el QR que se escanea con la app del teléfono. */
@@ -88,4 +101,4 @@ function uriParaQr({ secreto, cuenta, emisor = 'Stocker Backoffice' }) {
          `&issuer=${encodeURIComponent(emisor)}&algorithm=SHA1&digits=${DIGITOS}&period=${PASO_SEG}`;
 }
 
-module.exports = { generarSecreto, validar, codigoPara, uriParaQr, PASO_SEG, DIGITOS };
+module.exports = { generarSecreto, validar, pasoValido, codigoPara, uriParaQr, PASO_SEG, DIGITOS };
