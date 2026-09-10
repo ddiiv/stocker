@@ -1,7 +1,7 @@
 const { Op } = require('sequelize');
 const { AccountChangeCode } = require('../models');
 const { sendAccountChangeCode } = require('./emailService');
-const { sendWhatsappMessage, whatsappConfigurado } = require('./whatsappService');
+const { sendWhatsappOtp, whatsappConfigurado, plantillaOtpConfigurada } = require('./whatsappService');
 const { log, mask } = require('../utils/logger');
 
 /*
@@ -44,7 +44,13 @@ const CANALES = {
     },
   },
   whatsapp: {
-    disponible: () => whatsappConfigurado(),
+    /*
+     * Hacen falta las dos cosas: credenciales Y plantilla aprobada. Con
+     * credenciales pero sin plantilla, el canal se ofrece y después no
+     * entrega — que es el peor de los dos mundos, porque la persona ya eligió
+     * esperar por ahí.
+     */
+    disponible: () => whatsappConfigurado() && Boolean(plantillaOtpConfigurada().nombre),
     destinoDe: (business, datos) => datos.telefonoNuevo || business.ownerTelefono,
     // Se muestran los últimos cuatro dígitos: alcanza para reconocer el
     // teléfono propio y no publica el número entero en una pantalla pública.
@@ -52,20 +58,23 @@ const CANALES = {
       const d = String(destino || '').replace(/\D/g, '');
       return d.length > 4 ? `••••${d.slice(-4)}` : '••••';
     },
-    enviar: async ({ destino, code, business }) => {
+    enviar: async ({ destino, code }) => {
       /*
-       * `sendWhatsappMessage` avisa el fallo devolviendo `{ok:false}`, no
-       * tirando: sirve para un aviso de venta, que si no sale no rompe nada.
-       * Acá no: si el código no salió, la persona se queda esperando en la
-       * pantalla de entrar. Se convierte en error para que el pedido falle y
-       * la pantalla pueda ofrecer otro canal.
+       * Por plantilla de autenticación, no por texto libre: fuera de la
+       * ventana de 24 h Meta no deja mandar texto, y para un código de login
+       * esa ventana casi nunca está abierta —nadie le escribe a su propio
+       * sistema antes de entrar—.
+       *
+       * `sendWhatsappOtp` avisa el fallo devolviendo `{ok:false}` en vez de
+       * tirar, como todo el servicio. Acá se convierte en error: si el código
+       * no salió, la persona queda esperando en la pantalla de entrar, y lo
+       * que corresponde es que el pedido falle para poder ofrecerle el mail.
        */
-      const r = await sendWhatsappMessage({
-        telefono: destino,
-        mensaje: `Tu código de Stocker es ${code}. Vence en ${VIGENCIA_MIN} minutos. `
-          + `Si no lo pediste vos, cambiá la contraseña de ${business.nombreNegocio}.`,
-      });
+      const r = await sendWhatsappOtp({ telefono: destino, codigo: code });
       if (!r?.ok) {
+        log.warn('cuenta', 'no se pudo mandar el código por WhatsApp', {
+          motivo: r?.error, ...(r?.comoArreglarlo ? { comoArreglarlo: r.comoArreglarlo } : {}),
+        });
         throw Object.assign(
           new Error('No se pudo enviar el WhatsApp. Probá con el código al mail.'),
           { status: 502 },

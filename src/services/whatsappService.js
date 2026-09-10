@@ -113,6 +113,132 @@ async function sendViaMeta({ to, text, templateName, templateLang }) {
   }
 }
 
+/*
+ * ── El código de verificación va por plantilla, no por texto ──────
+ *
+ * Dos motivos, y los dos son bloqueantes:
+ *
+ *  1. La ventana de 24 h. Un negocio sólo puede escribir texto libre si el
+ *     cliente le habló en las últimas 24 horas. Para un código de login eso
+ *     casi nunca se cumple —nadie le escribe a su propio sistema antes de
+ *     entrar—, así que el texto rebota y el código no llega.
+ *
+ *  2. La política de Meta. Los códigos de un solo uso tienen que ir en una
+ *     plantilla de categoría AUTHENTICATION. Mandarlos como texto, además de
+ *     no llegar, es motivo de sanción sobre el número.
+ *
+ * Por eso acá NO se intenta texto primero, a diferencia de `sendWhatsappMessage`:
+ * ese primer intento sería una llamada perdida y un error en el log en cada
+ * login.
+ *
+ * El cuerpo de una plantilla de autenticación lo fija Meta —"{{1}} es tu código
+ * de verificación"— y nosotros sólo mandamos la variable: el código. Si la
+ * plantilla se creó con botón de copiar, el mismo código va TAMBIÉN como
+ * parámetro del botón; ésa es la parte que Meta rechaza con 132000 si falta.
+ */
+function armarPlantillaOtp({ to, codigo, nombre, idioma, conBoton }) {
+  const componentes = [
+    { type: 'body', parameters: [{ type: 'text', text: String(codigo) }] },
+  ];
+  if (conBoton) {
+    componentes.push({
+      type: 'button',
+      sub_type: 'url',
+      index: '0',
+      parameters: [{ type: 'text', text: String(codigo) }],
+    });
+  }
+  return {
+    messaging_product: 'whatsapp',
+    to,
+    type: 'template',
+    template: {
+      name: nombre,
+      language: { code: idioma },
+      components: componentes,
+    },
+  };
+}
+
+/*
+ * Los datos de la plantilla de códigos.
+ *
+ * Variables propias, sin caer en `WHATSAPP_TEMPLATE_NAME`. Ésa es la del aviso
+ * de venta y es de otra categoría: una plantilla de UTILITY no sirve para
+ * mandar un código, y peor, si existiera con ese nombre se mandaría el mensaje
+ * equivocado. Que falte la variable propia es la señal correcta de que el canal
+ * todavía no está listo.
+ */
+function plantillaOtpConfigurada() {
+  return {
+    nombre: process.env.WHATSAPP_OTP_TEMPLATE || null,
+    idioma: process.env.WHATSAPP_OTP_TEMPLATE_LANG || 'es_AR',
+    // Sólo si la plantilla se creó con el botón de copiar. Mandar el parámetro
+    // del botón a una plantilla que no lo tiene también da 132000.
+    conBoton: process.env.WHATSAPP_OTP_TEMPLATE_BOTON === 'copiar',
+  };
+}
+
+/**
+ * Manda un código de verificación por WhatsApp.
+ *
+ * Devuelve `{ ok, ... }` como el resto del servicio. Quien lo llama tiene que
+ * mirar `ok`: si el código no salió, la persona se queda esperando en la
+ * pantalla de entrar.
+ */
+async function sendWhatsappOtp({ telefono, codigo }) {
+  const to = normalizeToE164(telefono);
+  if (!to) return { ok: false, error: 'telefono inválido' };
+
+  const token   = process.env.WHATSAPP_META_TOKEN;
+  const phoneId = process.env.WHATSAPP_META_PHONE_NUMBER_ID;
+  const { nombre, idioma, conBoton } = plantillaOtpConfigurada();
+
+  if (!token || !phoneId) {
+    return { ok: false, error: 'sin credenciales de Meta', comoArreglarlo: 'Cargá WHATSAPP_META_TOKEN y WHATSAPP_META_PHONE_NUMBER_ID.' };
+  }
+  if (!nombre) {
+    return {
+      ok: false,
+      error: 'sin plantilla de códigos',
+      comoArreglarlo: 'Creá la plantilla con `node scripts/whatsapp-plantilla.js crear` y poné su nombre en WHATSAPP_OTP_TEMPLATE.',
+    };
+  }
+
+  const version = process.env.WHATSAPP_META_API_VERSION || 'v22.0';
+  const url = `https://graph.facebook.com/${version}/${phoneId}/messages`;
+  const cuerpo = armarPlantillaOtp({ to, codigo, nombre, idioma, conBoton });
+
+  try {
+    const res = await axios.post(url, cuerpo, {
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      timeout: 10000,
+    });
+    log.info('whatsapp', 'código enviado por plantilla', { plantilla: nombre, a: mask.telefono(to) });
+    return { ok: true, provider: 'meta', mode: 'template', template: nombre, messageId: res.data?.messages?.[0]?.id || null };
+  } catch (err) {
+    const e = err.response?.data?.error || {};
+    /*
+     * 132000 es "la cantidad de parámetros no coincide", y en la práctica
+     * significa una de dos: la plantilla tiene botón de copiar y no se lo
+     * estamos mandando, o no lo tiene y se lo estamos mandando de más. Se dice
+     * en el log, porque si no el mensaje de Meta a secas no lleva a ningún
+     * lado.
+     */
+    const pista = e.code === 132000
+      ? `La plantilla "${nombre}" espera otra cantidad de parámetros. Si se creó con botón de copiar, poné WHATSAPP_OTP_TEMPLATE_BOTON=copiar; si no tiene botón, sacá esa variable.`
+      : e.code === 132001
+        ? `No existe una plantilla "${nombre}" aprobada en el idioma ${idioma}. Revisala con \`node scripts/whatsapp-plantilla.js ver\`.`
+        : null;
+
+    log.error('whatsapp', 'Meta rechazó el código', {
+      plantilla: nombre, code: e.code, sub: e.error_subcode || '-',
+      motivo: sinDatos(e.message || err.message, 140), ...(pista ? { pista } : {}),
+    });
+    return { ok: false, provider: 'meta', error: e.message || err.message, code: e.code, comoArreglarlo: pista };
+  }
+}
+
 async function sendViaCallMeBot({ to, text }) {
   const apiKey = process.env.WHATSAPP_API_KEY;
   const apiUrl = process.env.WHATSAPP_API_URL || 'https://api.callmebot.com/whatsapp.php';
@@ -271,5 +397,5 @@ function whatsappConfigurado() {
 module.exports = {
   sendWhatsappMessage, sendInvoiceWhatsapp, sendSaleWhatsapp,
   sendSaleNotificationWhatsapp, armarAvisoVentaNegocio, normalizeToE164,
-  whatsappConfigurado,
+  whatsappConfigurado, sendWhatsappOtp, armarPlantillaOtp, plantillaOtpConfigurada,
 };

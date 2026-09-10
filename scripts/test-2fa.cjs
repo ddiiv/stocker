@@ -31,6 +31,8 @@ const {
 const bcryptjs = require('bcryptjs');
 const { iniciarTrial } = require('../src/services/planService');
 const totp = require('../src/utils/totp');
+const wsp = require('../src/services/whatsappService');
+const codigosSrv = require('../src/services/codigosCuentaService');
 const path = require('node:path');
 const fs = require('node:fs');
 
@@ -302,6 +304,64 @@ async function limpiar() {
     chk('y dice qué falta',                 true, /tel[eé]fono|WhatsApp/i.test(wa.json?.message || ''));
     chk('y el canal NO quedó prendido',     false,
       (await api('GET', '/api/account')).json?.dobleFactor?.canales?.includes('whatsapp'));
+
+    tit('13b. LA PLANTILLA DE WHATSAPP SE ARMA COMO PIDE META');
+    /*
+     * El código va como parámetro del cuerpo, y ADEMÁS como parámetro del
+     * botón si la plantilla se creó con el botón de copiar. Mandar de menos o
+     * de más da 132000 y el mensaje no sale — y eso se descubriría recién con
+     * un cliente esperando el código para entrar.
+     *
+     * Se prueba el armado y no el envío: mandar de verdad implicaría un
+     * WhatsApp real a un teléfono real en cada corrida de la suite.
+     */
+    const sinBoton = wsp.armarPlantillaOtp({
+      to: '5491100000000', codigo: '123456', nombre: 'codigo_stocker', idioma: 'es_AR', conBoton: false,
+    });
+    chk('es un envío de plantilla',        'template',       sinBoton.type);
+    chk('con el nombre y el idioma',       ['codigo_stocker', 'es_AR'],
+      [sinBoton.template.name, sinBoton.template.language.code]);
+    chk('un solo componente sin botón',    1,                sinBoton.template.components.length);
+    chk('y el código va en el cuerpo',     '123456',         sinBoton.template.components[0].parameters[0].text);
+
+    const conBoton = wsp.armarPlantillaOtp({
+      to: '5491100000000', codigo: '654321', nombre: 'codigo_stocker', idioma: 'es_AR', conBoton: true,
+    });
+    chk('con botón son dos componentes',   2,        conBoton.template.components.length);
+    chk('el segundo es el botón',          'button', conBoton.template.components[1].type);
+    chk('en la posición 0',                '0',      conBoton.template.components[1].index);
+    /*
+     * El MISMO código en los dos lugares. Si difirieran, el botón copiaría un
+     * código distinto al que dice el mensaje — y la persona pegaría el que no
+     * es, sin entender por qué no entra.
+     */
+    chk('y lleva el mismo código que el cuerpo', true,
+      conBoton.template.components[0].parameters[0].text === conBoton.template.components[1].parameters[0].text);
+
+    tit('13c. SIN PLANTILLA, EL CANAL NO SE OFRECE');
+    /*
+     * Con credenciales de Meta pero sin plantilla aprobada, el canal se
+     * ofrecería y después no entregaría: el peor de los dos mundos, porque la
+     * persona ya eligió esperar el código por ahí.
+     */
+    const conf = wsp.plantillaOtpConfigurada();
+    if (!conf.nombre) {
+      /*
+       * Sólo se llama a `sendWhatsappOtp` cuando NO hay plantilla, porque en
+       * ese caso corta antes de salir a la red. Con plantilla configurada, la
+       * llamada mandaría un WhatsApp de verdad —o un pedido de verdad a Meta—
+       * en cada corrida de la suite.
+       */
+      const intentoWsp = await wsp.sendWhatsappOtp({ telefono: '5491100000000', codigo: '123456' });
+      chk('sin plantilla configurada, no manda', false, intentoWsp.ok);
+      chk('y dice cómo arreglarlo',              true,  /plantilla/i.test(intentoWsp.comoArreglarlo || intentoWsp.error || ''));
+      // Directo contra el servicio: no depende de una sesión HTTP ni gasta
+      // cupo del limitador, y es exactamente lo que mira la pantalla.
+      chk('y el canal no figura entre los utilizables', false,
+        codigosSrv.canalesUtilizables({ email: EMAIL, ownerTelefono: '1122334455' }).includes('whatsapp'));
+    } else {
+      console.log(`  (hay plantilla configurada: "${conf.nombre}" — no se sale a la red en la prueba)`);
+    }
 
     tit('14. LOS EMPLEADOS NO PASAN POR EL SEGUNDO FACTOR');
     /*

@@ -269,6 +269,12 @@ WHATSAPP_META_PHONE_NUMBER_ID=
 WHATSAPP_TEMPLATE_NAME=            # opcional pero importante, ver abajo
 WHATSAPP_TEMPLATE_LANG=es_AR
 WHATSAPP_AVISAR_NEGOCIO=true       # aviso de cada venta al teléfono del negocio
+
+# Segundo factor por WhatsApp (opcional). Plantilla APARTE de la de ventas.
+WHATSAPP_META_WABA_ID=             # id de la cuenta de WhatsApp Business, para crear la plantilla
+WHATSAPP_OTP_TEMPLATE=             # nombre de la plantilla de códigos
+WHATSAPP_OTP_TEMPLATE_LANG=es_AR
+WHATSAPP_OTP_TEMPLATE_BOTON=copiar # sólo si la plantilla tiene botón de copiar
 ```
 
 Cada venta cobrada dispara dos mensajes distintos: al cliente su comprobante, y
@@ -287,6 +293,37 @@ simplemente no llegan y queda en el log.
 Y cada mensaje fuera de la ventana se cobra. Un local con doscientas ventas al
 día son doscientos mensajes al dueño; por eso está `WHATSAPP_AVISAR_NEGOCIO`
 para apagarlo sin desactivar los del cliente.
+
+#### La plantilla del segundo factor
+
+Es **otra** plantilla, no la de las ventas, y no se puede reutilizar aquélla:
+los códigos de un solo uso tienen que ir en una plantilla de categoría
+`AUTHENTICATION`, y la de ventas es `UTILITY`. Mandar un código como texto
+libre, además de no llegar fuera de la ventana de 24 h, es motivo de sanción
+sobre el número.
+
+Por eso el envío del código **no intenta texto primero**: va directo por
+plantilla. Ese primer intento sería una llamada perdida y un error en el log en
+cada login.
+
+Para crearla:
+
+```bash
+node scripts/whatsapp-plantilla.js crear   # la da de alta en Meta
+node scripts/whatsapp-plantilla.js ver     # cómo va la aprobación
+```
+
+El cuerpo del mensaje no se redacta: en las plantillas de autenticación lo fija
+y lo traduce Meta ("{{1}} es tu código de verificación"). Lo único que se elige
+es la advertencia de seguridad, el aviso de vencimiento y el botón. El script la
+crea con botón de **copiar código**, que funciona en cualquier teléfono; los
+otros tipos —one-tap, zero-tap— necesitan una app Android firmada y declarada
+ante Meta, que acá no aplica porque el cliente entra por el navegador.
+
+Hasta que la plantilla esté aprobada y su nombre esté en `WHATSAPP_OTP_TEMPLATE`,
+la app **no ofrece** WhatsApp como segundo factor. Es a propósito: ofrecer un
+canal que no puede entregar deja a la persona esperando un código que no va a
+llegar, en la pantalla de entrar y sin otra forma de pasar.
 
 ### Mail
 
