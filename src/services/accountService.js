@@ -69,3 +69,24 @@ export async function regenerarCodigos2FA({ passwordActual, code }) {
   const { data } = await http.post("/account/2fa/codigos", { passwordActual, code });
   return data;
 }
+
+/*
+ * Canales para recibir el código: mail y WhatsApp.
+ *
+ * Dos pasos, igual que la app: primero se manda un código al canal y recién
+ * con ese código el canal queda prendido. Prenderlo sin comprobar dejaría un
+ * segundo factor apuntando a un mail que ya no se lee o a un teléfono que
+ * cambió — o sea, a la cuenta cerrada el día que importa.
+ */
+export async function enviarCodigoCanal2FA({ passwordActual, canal }) {
+  const { data } = await http.post("/account/2fa/canal/enviar", { passwordActual, canal });
+  return data;
+}
+export async function activarCanal2FA({ canal, code }) {
+  const { data } = await http.post("/account/2fa/canal/activar", { canal, code });
+  return data;
+}
+export async function desactivarCanal2FA({ passwordActual, canal, code }) {
+  const { data } = await http.post("/account/2fa/canal/desactivar", { passwordActual, canal, code });
+  return data;
+}

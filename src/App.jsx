@@ -61,6 +61,7 @@ const ScanStockPage = lazy(() => import("./pages/ScanStockPage"));
 const PosPage = lazy(() => import("./pages/PosPage"));
 const BusinessCuitsPage = lazy(() => import("./pages/BusinessCuitsPage"));
 const ArcaConfigPage = lazy(() => import("./pages/ArcaConfigPage"));
+const NotFoundPage = lazy(() => import("./pages/NotFoundPage"));
 
 export default function App() {
   return (
@@ -123,10 +124,18 @@ export default function App() {
             <Route path="/caja"                         element={<PermissionRoute permission="caja"><CashPage /></PermissionRoute>} />
             <Route path="/empleados"                    element={<PermissionRoute permission="empleados"><EmployeesPage /></PermissionRoute>} />
             <Route path="/integraciones/mercadolibre"   element={<PermissionRoute permission="integraciones"><MercadoLibrePage /></PermissionRoute>} />
+
+            {/*
+              Dirección que no existe.
+              Va DENTRO del armazón: el error es de la dirección, no de la
+              sesión, así que quien está adentro conserva la navegación en vez
+              de quedar en un callejón. Y va acá abajo, después de todas las
+              rutas reales, porque el comodín se lleva lo que nadie reclamó.
+            */}
+            <Route path="*" element={<NotFoundPage />} />
           </Route>
 
           <Route path="/" element={<Navigate to="/dashboard" replace />} />
-          <Route path="*" element={<Navigate to="/dashboard" replace />} />
         </Routes>
         </Suspense>
        </PermissionGuardProvider>

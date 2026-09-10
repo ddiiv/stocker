@@ -20,6 +20,16 @@ export async function login({ email, password, code }) {
   return data;
 }
 
+/*
+ * Pide el código de segundo factor antes de entrar, cuando el canal es el mail
+ * o el WhatsApp. Va con la contraseña: si no, cualquiera podría hacer que le
+ * lluevan códigos a un dueño ajeno hasta que se canse.
+ */
+export async function enviarCodigo2FA({ email, password, canal }) {
+  const { data } = await http.post("/auth/2fa/enviar", { email, password, canal });
+  return data;
+}
+
 export async function employeeLogin({ email, password }) {
   const { data } = await http.post("/auth/employee-login", { email, password });
   return data;

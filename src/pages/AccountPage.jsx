@@ -5,6 +5,7 @@ import {
   solicitarCambioEmail, confirmarCambioEmail,
   solicitarCambioPassword, confirmarCambioPassword, cerrarTodasLasSesiones,
   iniciar2FA, activar2FA, desactivar2FA, regenerarCodigos2FA,
+  enviarCodigoCanal2FA, activarCanal2FA, desactivarCanal2FA,
 } from "../services/accountService";
 import { PageHeader, Card } from "../components/ui/Layout";
 import PasswordStrength from "../components/ui/PasswordStrength";
@@ -61,6 +62,7 @@ export default function AccountPage() {
   const [codigo2fa, setCodigo2fa] = useState("");
   const [secreto2fa, setSecreto2fa] = useState(null);
   const [uri2fa, setUri2fa] = useState("");
+  const [qr2fa, setQr2fa] = useState(null);
   const [codigosRec, setCodigosRec] = useState(null);
   const [error2fa, setError2fa] = useState("");
   const [aviso2fa, setAviso2fa] = useState("");
@@ -69,7 +71,57 @@ export default function AccountPage() {
 
   function reiniciar2fa() {
     setPaso2fa("inicio"); setClave2fa(""); setCodigo2fa("");
-    setSecreto2fa(null); setUri2fa(""); setError2fa("");
+    setSecreto2fa(null); setUri2fa(""); setQr2fa(null); setError2fa("");
+  }
+
+  /*
+   * Canales de código: mail y WhatsApp.
+   *
+   * `canalEnCurso` guarda cuál se está prendiendo o apagando, para que dos
+   * filas no compartan el mismo formulario abierto. Con un booleano suelto,
+   * abrir el de WhatsApp mientras estaba abierto el del mail dejaba dos
+   * formularios pidiendo lo mismo y ninguno sabiendo cuál era el suyo.
+   */
+  const [canalEnCurso, setCanalEnCurso] = useState(null);
+  const [accionCanal, setAccionCanal] = useState(null);
+  const [claveCanal, setClaveCanal] = useState("");
+  const [codigoCanal, setCodigoCanal] = useState("");
+  const [destinoCanal, setDestinoCanal] = useState("");
+  const [errorCanal, setErrorCanal] = useState("");
+  const [ocupadoCanal, setOcupadoCanal] = useState(false);
+
+  function cerrarCanal() {
+    setCanalEnCurso(null); setAccionCanal(null);
+    setClaveCanal(""); setCodigoCanal(""); setDestinoCanal(""); setErrorCanal("");
+  }
+
+  async function mandarCodigoCanal(e) {
+    e.preventDefault();
+    setOcupadoCanal(true); setErrorCanal("");
+    try {
+      const r = await enviarCodigoCanal2FA({ passwordActual: claveCanal, canal: canalEnCurso });
+      setDestinoCanal(r.destino || "");
+    } catch (err) {
+      setErrorCanal(err.response?.data?.message || "No se pudo mandar el código");
+    } finally { setOcupadoCanal(false); }
+  }
+
+  async function confirmarCanal(e) {
+    e.preventDefault();
+    setOcupadoCanal(true); setErrorCanal("");
+    try {
+      if (accionCanal === "apagar") {
+        await desactivarCanal2FA({ passwordActual: claveCanal, canal: canalEnCurso, code: codigoCanal.trim() });
+        setAviso2fa("Listo, ese canal quedó apagado.");
+      } else {
+        await activarCanal2FA({ canal: canalEnCurso, code: codigoCanal.trim() });
+        setAviso2fa("Listo, ya podés recibir el código por ahí.");
+      }
+      cerrarCanal();
+      await load();
+    } catch (err) {
+      setErrorCanal(err.response?.data?.message || "No se pudo confirmar");
+    } finally { setOcupadoCanal(false); }
   }
 
   async function pedirSecreto(e) {
@@ -77,7 +129,7 @@ export default function AccountPage() {
     setOcupado2fa(true); setError2fa("");
     try {
       const r = await iniciar2FA(clave2fa);
-      setSecreto2fa(r.secreto); setUri2fa(r.uri); setPaso2fa("cargar");
+      setSecreto2fa(r.secreto); setUri2fa(r.uri); setQr2fa(r.qr || null); setPaso2fa("cargar");
     } catch (err) {
       setError2fa(err.response?.data?.message || "No se pudo empezar");
     } finally { setOcupado2fa(false); }
@@ -557,7 +609,28 @@ export default function AccountPage() {
                   <form onSubmit={confirmarActivacion} className="space-y-3">
                     <p className="text-sm text-ink-700">
                       Abrí tu app de autenticación —Google Authenticator, Authy, 1Password,
-                      la que uses— y cargá esta clave:
+                      la que uses— y escaneá este código:
+                    </p>
+                    {/*
+                      El QR lo arma el servidor y llega como imagen embebida.
+                      Del lado del navegador habría que sumarle una librería al
+                      bundle que descargan todos los clientes, para una pantalla
+                      que se abre una vez en la vida de la cuenta.
+
+                      Si no se pudo generar, no se muestra un hueco: queda la
+                      clave para tipear, que es la que siempre funciona.
+                    */}
+                    {qr2fa && (
+                      <img
+                        src={qr2fa}
+                        alt="Código QR para cargar la cuenta en tu app de autenticación"
+                        className="rounded-md border border-line bg-paper-100 p-2"
+                        width={200}
+                        height={200}
+                      />
+                    )}
+                    <p className="text-sm text-ink-700">
+                      {qr2fa ? "O cargá la clave a mano:" : "Cargá esta clave en la app:"}
                     </p>
                     <p className="select-all break-all rounded-md bg-paper-200 px-3 py-2 font-mono text-sm text-ink-950">
                       {secreto2fa}
@@ -643,6 +716,104 @@ export default function AccountPage() {
                   </form>
                 )}
               </>
+            )}
+
+            {/*
+              ── Otras formas de recibir el código ──────────────────
+              Se pueden tener las tres prendidas. Cada una que se suma es otra
+              forma de entrar el día que se pierde el teléfono, y ninguna
+              debilita a las otras: para pasar hace falta UNA, y las tres piden
+              algo que sólo el dueño tiene.
+
+              Sólo se listan los canales que este servidor puede entregar de
+              verdad: ofrecer WhatsApp sin credenciales cargadas dejaría a
+              alguien esperando un código que no va a llegar.
+            */}
+            {paso2fa !== "codigos" && (
+              <div className="mt-4 border-t border-line pt-4">
+                <p className="mb-1 text-sm font-medium text-ink-900">Otras formas de recibir el código</p>
+                <p className="mb-3 text-xs text-ink-500">
+                  Podés tener varias prendidas a la vez. Con una alcanza para entrar.
+                </p>
+
+                {errorCanal && (
+                  <p className="mb-2 rounded-md bg-brick-50 px-3 py-2 text-sm text-brick-500">{errorCanal}</p>
+                )}
+
+                <ul className="space-y-2">
+                  {[
+                    { id: "email", nombre: "Código al mail", detalle: cuenta?.email },
+                    { id: "whatsapp", nombre: "Código por WhatsApp", detalle: cuenta?.ownerTelefono || "sin teléfono cargado" },
+                  ].map((c) => {
+                    const prendido = (cuenta?.dobleFactor?.canales || []).includes(c.id);
+                    const disponible = (cuenta?.dobleFactor?.canalesDisponibles || []).includes(c.id);
+                    const abierto = canalEnCurso === c.id;
+                    return (
+                      <li key={c.id} className="rounded-md bg-paper-200 px-3 py-2">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="min-w-0">
+                            <p className="text-sm text-ink-900">
+                              {c.nombre} {prendido && <span className="badge badge-ok ml-1">Activo</span>}
+                            </p>
+                            <p className="truncate text-xs text-ink-500">{c.detalle}</p>
+                          </div>
+                          {!abierto && (
+                            disponible || prendido ? (
+                              <button type="button" className="btn-ghost px-2 py-1 text-xs"
+                                onClick={() => {
+                                  cerrarCanal();
+                                  setCanalEnCurso(c.id);
+                                  setAccionCanal(prendido ? "apagar" : "prender");
+                                  setAviso2fa("");
+                                }}>
+                                {prendido ? "Apagar" : "Activar"}
+                              </button>
+                            ) : (
+                              <span className="text-xs text-ink-500">No disponible</span>
+                            )
+                          )}
+                        </div>
+
+                        {abierto && (
+                          <form className="mt-3 space-y-2" onSubmit={destinoCanal || accionCanal === "apagar" ? confirmarCanal : mandarCodigoCanal}>
+                            <div>
+                              <label className="label" htmlFor={`clave-canal-${c.id}`}>Contraseña actual</label>
+                              <input id={`clave-canal-${c.id}`} className="input" type="password" value={claveCanal}
+                                onChange={(e) => setClaveCanal(e.target.value)} autoComplete="current-password" />
+                            </div>
+
+                            {(destinoCanal || accionCanal === "apagar") && (
+                              <div>
+                                <label className="label" htmlFor={`codigo-canal-${c.id}`}>
+                                  {accionCanal === "apagar"
+                                    ? "Código de la app, del mail o uno de recuperación"
+                                    : `Código que te mandamos a ${destinoCanal}`}
+                                </label>
+                                <input id={`codigo-canal-${c.id}`} className="input font-mono tracking-widest"
+                                  value={codigoCanal} placeholder="000000"
+                                  onChange={(e) => setCodigoCanal(e.target.value)} />
+                              </div>
+                            )}
+
+                            <div className="flex gap-2">
+                              <button className="btn-accent px-3 py-1.5 text-xs" disabled={ocupadoCanal || !claveCanal}>
+                                {ocupadoCanal
+                                  ? "Un momento…"
+                                  : accionCanal === "apagar"
+                                    ? "Apagar"
+                                    : destinoCanal ? "Confirmar" : "Mandame el código"}
+                              </button>
+                              <button type="button" className="btn-ghost px-3 py-1.5 text-xs" onClick={cerrarCanal}>
+                                Cancelar
+                              </button>
+                            </div>
+                          </form>
+                        )}
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
             )}
 
             <p className="mt-3 flex items-start gap-1.5 text-xs text-ink-500">

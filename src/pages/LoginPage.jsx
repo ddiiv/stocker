@@ -5,6 +5,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "../lib/zod";
 import { Tag, AlertCircle, Clock } from "lucide-react";
 import { useAuth } from "../context/AuthContext";
+import { enviarCodigo2FA } from "../services/authService";
 
 const schema = z.object({
   email: z.string().email("Ingresá un email válido"),
@@ -44,6 +45,7 @@ export default function LoginPage() {
   const {
     register,
     handleSubmit,
+    getValues,
     formState: { errors, isSubmitting },
   } = useForm({ resolver: zodResolver(schema), defaultValues: { email: "", password: "", code: "" } });
 
@@ -55,6 +57,28 @@ export default function LoginPage() {
    * es justo la lista por la que empezaría alguien que está probando.
    */
   const [pide2fa, setPide2fa] = useState(false);
+  const [canales2fa, setCanales2fa] = useState([]);
+  const [avisoCodigo, setAvisoCodigo] = useState("");
+  const [pidiendoCodigo, setPidiendoCodigo] = useState(false);
+
+  /*
+   * Pedir el código por mail o WhatsApp desde la pantalla de entrar.
+   *
+   * Necesita la contraseña —el servidor la vuelve a comprobar— así que se lee
+   * del formulario en el momento. Guardarla en un estado aparte sería tener la
+   * contraseña en dos lugares para no leerla dos veces.
+   */
+  async function pedirCodigoPor(canal) {
+    setPidiendoCodigo(true); setServerError(""); setAvisoCodigo("");
+    try {
+      const r = await enviarCodigo2FA({
+        email: getValues("email"), password: getValues("password"), canal,
+      });
+      setAvisoCodigo(r.message || "Te mandamos el código.");
+    } catch (err) {
+      setServerError(err.response?.data?.message || "No se pudo mandar el código");
+    } finally { setPidiendoCodigo(false); }
+  }
 
   async function onSubmit(values) {
     setServerError("");
@@ -68,6 +92,7 @@ export default function LoginPage() {
       // La contraseña estaba bien; falta el código de la app.
       if (status === 401 && err.response?.data?.codigo === "TOTP_REQUERIDO") {
         setPide2fa(true);
+        setCanales2fa(err.response?.data?.canales || []);
         setServerError(pide2fa ? (err.response?.data?.message || "El código no es correcto.") : "");
         return;
       }
@@ -149,7 +174,9 @@ export default function LoginPage() {
           </div>
           {pide2fa && mode === "business" && (
             <div>
-              <label className="label">Código de tu app de autenticación</label>
+              <label className="label">
+                {canales2fa.includes("app") ? "Código de tu app de autenticación" : "Código de verificación"}
+              </label>
               <input
                 className="input font-mono tracking-widest"
                 inputMode="numeric"
@@ -158,6 +185,30 @@ export default function LoginPage() {
                 autoFocus
                 {...register("code")}
               />
+              {avisoCodigo && (
+                <p className="mt-1 rounded-md bg-paper-200 px-2 py-1.5 text-xs text-ink-700">{avisoCodigo}</p>
+              )}
+              {/*
+                Los botones salen de lo que el servidor dijo que la cuenta
+                tiene prendido. Mostrarlos siempre ofrecería mandar un código
+                por un canal que la cuenta no configuró.
+              */}
+              {(canales2fa.includes("email") || canales2fa.includes("whatsapp")) && (
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {canales2fa.includes("email") && (
+                    <button type="button" className="btn-ghost px-2 py-1 text-xs" disabled={pidiendoCodigo}
+                      onClick={() => pedirCodigoPor("email")}>
+                      Mandámelo al mail
+                    </button>
+                  )}
+                  {canales2fa.includes("whatsapp") && (
+                    <button type="button" className="btn-ghost px-2 py-1 text-xs" disabled={pidiendoCodigo}
+                      onClick={() => pedirCodigoPor("whatsapp")}>
+                      Mandámelo por WhatsApp
+                    </button>
+                  )}
+                </div>
+              )}
               <p className="mt-1 text-xs text-ink-500">
                 Si perdiste el teléfono, escribí uno de tus códigos de recuperación.
               </p>
