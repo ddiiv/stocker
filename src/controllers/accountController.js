@@ -1,6 +1,6 @@
 const bcrypt = require('bcryptjs');
 const { Op } = require('sequelize');
-const { Business, BusinessCuit, AccountChangeCode } = require('../models');
+const { Business, BusinessCuit, AccountChangeCode, Employee } = require('../models');
 const { lookupCuit } = require('../services/arcaLookupService');
 const { sendAccountChangeCode } = require('../services/emailService');
 const { log, mask } = require('../utils/logger');
@@ -322,8 +322,59 @@ const sincronizarConArca = async (req, res, next) => {
   } catch (error) { next(error); }
 };
 
+/*
+ * POST /api/account/sesiones/cerrar
+ *
+ * El botón de pánico: saca a todo el mundo de todas las computadoras, dueño y
+ * empleados, sin cambiarle la contraseña a nadie.
+ *
+ * Es distinto de cambiar la contraseña, que sólo cierra las sesiones que ESA
+ * contraseña abrió. Acá el caso es otro: se perdió un teléfono con la sesión
+ * abierta, quedó una computadora prendida en el local, se fue alguien que
+ * sabía una clave. No hace falta obligar a todo el equipo a inventarse
+ * contraseñas nuevas para volver a entrar — con que vuelvan a entrar alcanza.
+ *
+ * Pide la contraseña actual. Sin eso, cualquiera que agarre la máquina del
+ * mostrador con la sesión abierta puede dejar al negocio entero afuera en el
+ * medio de un sábado, que es un daño real y gratuito.
+ */
+const cerrarTodasLasSesiones = async (req, res, next) => {
+  try {
+    const b = await Business.findByPk(req.auth.businessId);
+    const actual = String(req.body?.passwordActual || '');
+    if (!actual || !(await bcrypt.compare(actual, b.passwordHash))) {
+      return res.status(400).json({ message: 'La contraseña actual no es correcta.' });
+    }
+
+    /*
+     * Un mismo instante para la cuenta y para todos los empleados: con dos
+     * `new Date()` distintos, una sesión que arranca entre medio se salva.
+     */
+    const corte = corteDeSesiones();
+    await b.update({ sesionesDesde: corte });
+    const [empleados] = await Employee.update(
+      { sesionesDesde: corte },
+      { where: { businessId: b.id } },
+    );
+
+    /*
+     * Menos la de acá: el que aprieta el botón se queda adentro. Echarlo
+     * también lo dejaría afuera justo cuando está resolviendo un problema de
+     * seguridad, y con la duda de si el botón funcionó o rompió algo.
+     */
+    setAuthCookie(res, crearSesion({ type: 'business', businessId: b.id }), req);
+
+    log.info('cuenta', 'se cerraron todas las sesiones del negocio', { empleados });
+    res.json({
+      message: 'Listo. Se cerraron todas las sesiones abiertas, menos la de este dispositivo.',
+      empleadosAfectados: empleados,
+    });
+  } catch (error) { next(error); }
+};
+
 module.exports = {
   obtener, actualizar, sincronizarConArca,
   solicitarCambioEmail, confirmarCambioEmail,
   solicitarCambioPassword, confirmarCambioPassword,
+  cerrarTodasLasSesiones,
 };

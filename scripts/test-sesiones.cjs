@@ -75,6 +75,8 @@ const CLAVE  = 'QaSesiones2026!';
 const CLAVE2 = 'QaSesiones2026!nueva';
 const EMP_EMAIL = `qa.sesiones.emp.${SUFIJO}@stocker.test`;
 const EMP_CLAVE = 'QaEmpleado2026!';
+// La sección 8 se la cambia; la 10 necesita entrar con la que quedó.
+const EMP_NUEVA = 'QaEmpleado2026!otra';
 
 async function limpiar() {
   /*
@@ -224,7 +226,7 @@ async function limpiar() {
     chk('sigue trabajando', 200, (await emp1('GET', '/api/auth/me')).status);
 
     tit('8. CAMBIARLE LA CONTRASEÑA AL EMPLEADO LO SACA DE TODAS LAS COMPUS');
-    const edicion = await compuC('PUT', `/api/employees/${empleado.id}`, { password: 'QaEmpleado2026!otra' });
+    const edicion = await compuC('PUT', `/api/employees/${empleado.id}`, { password: EMP_NUEVA });
     chk('el dueño se la cambia', 200, edicion.status);
 
     const e1 = await emp1('GET', '/api/auth/me');
@@ -268,6 +270,48 @@ async function limpiar() {
       chk('y D también',             401, (await compuD('GET', '/api/auth/me')).status);
     }
     }
+
+    tit('10. EL BOTÓN DE CERRAR TODO, INCLUIDOS LOS EMPLEADOS');
+    /*
+     * Es el caso del teléfono perdido con la sesión abierta: sacar a todos sin
+     * obligar a nadie a inventarse una contraseña nueva. A diferencia del
+     * cambio de contraseña, acá los empleados SÍ entran en la volteada — es
+     * justamente para lo que se aprieta.
+     */
+    const jefe = sesion(), jefeOtraCompu = sesion(), empA = sesion(), empB = sesion();
+    chk('el dueño entra',              200, (await jefe('POST', '/api/auth/login', { email: EMAIL, password: CLAVE })).status);
+    chk('y en otra computadora',       200, (await jefeOtraCompu('POST', '/api/auth/login', { email: EMAIL, password: CLAVE })).status);
+    chk('un empleado entra',           200, (await empA('POST', '/api/auth/employee-login', { email: EMP_EMAIL, password: EMP_NUEVA })).status);
+    chk('y en otra computadora',       200, (await empB('POST', '/api/auth/employee-login', { email: EMP_EMAIL, password: EMP_NUEVA })).status);
+
+    /*
+     * Con la contraseña equivocada no se cierra nada. Sin este control,
+     * cualquiera que agarre la máquina del mostrador con la sesión abierta
+     * deja al negocio entero afuera en el medio de un sábado.
+     */
+    const conClaveMala = await jefe('POST', '/api/account/sesiones/cerrar', { passwordActual: 'no-es-esta' });
+    chk('con la contraseña equivocada no cierra', 400, conClaveMala.status);
+    chk('y nadie se cayó',                        [200, 200],
+      [(await empA('GET', '/api/auth/me')).status, (await jefeOtraCompu('GET', '/api/auth/me')).status]);
+
+    const cierre = await jefe('POST', '/api/account/sesiones/cerrar', { passwordActual: CLAVE });
+    chk('con la correcta sí',            200,  cierre.status);
+    chk('y dice a cuántos empleados sacó', 1,  cierre.json?.empleadosAfectados);
+
+    chk('el empleado queda afuera en una compu', 401, (await empA('GET', '/api/auth/me')).status);
+    chk('y en la otra también',                  401, (await empB('GET', '/api/auth/me')).status);
+    chk('la otra compu del dueño también',       401, (await jefeOtraCompu('GET', '/api/auth/me')).status);
+    chk('pero el que apretó el botón sigue adentro', 200, (await jefe('GET', '/api/auth/me')).status);
+
+    /*
+     * Y nadie tuvo que cambiar su contraseña: vuelven a entrar con la de
+     * siempre. Es la diferencia con el cambio de contraseña, y es el motivo de
+     * que este botón exista aparte.
+     */
+    chk('el empleado vuelve con su misma contraseña', 200,
+      (await sesion()('POST', '/api/auth/employee-login', { email: EMP_EMAIL, password: EMP_NUEVA })).status);
+    chk('y el dueño con la suya',                     200,
+      (await sesion()('POST', '/api/auth/login', { email: EMAIL, password: CLAVE })).status);
 
   } finally {
     tit('Limpieza');

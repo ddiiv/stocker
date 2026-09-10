@@ -176,6 +176,16 @@ r.post('/account/password/solicitar', requireAuth, requireOwner, passwordResetLi
 r.post('/account/password/confirmar', requireAuth, requireOwner, validatePasswordBody('passwordNueva'), accountCtrl.confirmarCambioPassword);
 
 /*
+ * Cerrar todas las sesiones del negocio, dueño y empleados.
+ *
+ * Con `loginLimiter` porque pide la contraseña actual: sin freno, este
+ * endpoint es un oráculo cómodo para adivinarla —una petición por intento,
+ * respuesta inmediata—. Los aciertos no cuentan para el límite, así que
+ * usarlo de verdad nunca se acerca al tope.
+ */
+r.post('/account/sesiones/cerrar', requireAuth, requireOwner, loginLimiter, accountCtrl.cerrarTodasLasSesiones);
+
+/*
  * A partir de acá, todo lo que ESCRIBE exige la cuenta al día.
  *
  * Va como un `use` y no repetido ruta por ruta: una ruta nueva que alguien
