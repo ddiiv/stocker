@@ -17,7 +17,6 @@ const testSend = async (req, res, next) => {
       apiVersion:    process.env.WHATSAPP_META_API_VERSION || 'v22.0',
       templateName:  process.env.WHATSAPP_TEMPLATE_NAME || null,
       templateLang:  process.env.WHATSAPP_TEMPLATE_LANG || 'es_AR',
-      tokenPreview:  process.env.WHATSAPP_META_TOKEN ? (process.env.WHATSAPP_META_TOKEN.slice(0, 10) + '…' + process.env.WHATSAPP_META_TOKEN.slice(-4)) : null,
     };
 
     const result = await sendWhatsappMessage({ telefono: to, mensaje: text });

@@ -382,9 +382,16 @@ r.put   ('/variant-types/:id',  requireAuth, requirePermission('stock','editar')
 r.delete('/variant-types/:id',  requireAuth, requirePermission('stock','editar'), variantTypeCtrl.remove);
 
 // ── WhatsApp test (debug) ─────────────────────────────────────────
-// Manda mensajes reales: si lo alcanza cualquier empleado, es un spammer.
-r.post('/whatsapp/test', requireAuth, requireOwner, whatsappTestSend);
-r.get ('/whatsapp/test', requireAuth, requireOwner, whatsappTestSend);
+// Manda mensajes reales con las credenciales de Meta compartidas por toda la
+// plataforma: `requireOwner` sólo saca a los empleados, pero cualquier dueño
+// de cualquier negocio de Stocker seguía pudiendo mandarle un WhatsApp a
+// cualquier número (riesgo de spam/abuso con la identidad del número
+// compartido) y ver un preview del token en la respuesta. Ver informe QA F-03:
+// ahora sólo existe fuera de producción, para debug de quien lo despliega.
+if (process.env.NODE_ENV !== 'production') {
+  r.post('/whatsapp/test', requireAuth, requireOwner, whatsappTestSend);
+  r.get ('/whatsapp/test', requireAuth, requireOwner, whatsappTestSend);
+}
 
 // ── Business CUITs (multi-CUIT para facturación) ─────────────────
 // Lo lee la pantalla de CUITs y también el detalle de venta.

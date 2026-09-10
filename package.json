@@ -4,7 +4,7 @@
   "description": "Stocker — Backend (stock, ventas, facturación) sobre PostgreSQL o SQL Server",
   "main": "index.js",
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=20.0.0"
   },
   "scripts": {
     "start": "node index.js",
@@ -28,7 +28,7 @@
     "jsonwebtoken": "^9.0.2",
     "multer": "^2.2.0",
     "node-forge": "^1.4.0",
-    "nodemailer": "^6.9.14",
+    "nodemailer": "^10.0.1",
     "pdfkit": "^0.15.0",
     "pg": "^8.22.0",
     "pg-hstore": "^2.3.4",
@@ -37,5 +37,8 @@
   },
   "devDependencies": {
     "nodemon": "^3.1.14"
+  },
+  "overrides": {
+    "qs": "^6.16.0"
   }
 }

@@ -103,8 +103,17 @@ function limitesDelDia(fecha) {
  * "entregado", "cancelado".
  */
 const FILTROS = {
-  // Lo que todavía hay que armar y sacar. Es la vista por defecto.
-  para_enviar: (p) => p.estadoEnvio !== 'despachado' && !esCancelado(p) && p.estadoEnvio !== 'con_faltante',
+  /*
+   * Lo que todavía hay que armar y sacar. Es la vista por defecto.
+   *
+   * Excluye lo que ML ya dio por entregado aunque acá nunca se haya tocado el
+   * botón de despachar: si el comprador ya lo recibió no queda nada "para
+   * enviar" — lo que queda es la alerta de que el stock sigue apartado, y esa
+   * se ve en la pestaña Entregados y en el Historial, no acá. Sin esta
+   * exclusión, el mismo envío aparecía duplicado en dos pestañas a la vez.
+   */
+  para_enviar: (p) => p.estadoEnvio !== 'despachado' && !esCancelado(p)
+    && p.estadoEnvio !== 'con_faltante' && !esEntregado(p),
   // Salió de acá y todavía no llegó.
   en_camino:   (p) => p.estadoEnvio === 'despachado' && !esEntregado(p) && !esCancelado(p),
   entregado:   (p) => esEntregado(p),
