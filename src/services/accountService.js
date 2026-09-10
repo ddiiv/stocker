@@ -34,3 +34,13 @@ export async function confirmarCambioPassword({ code, passwordNueva }) {
   const { data } = await http.post("/account/password/confirmar", { code, passwordNueva });
   return data;
 }
+
+/*
+ * Saca a todo el mundo de todas las computadoras, sin cambiar contraseñas.
+ * Pide la actual: si no, cualquiera que agarre la máquina del mostrador con la
+ * sesión abierta deja al negocio afuera en el medio de un sábado.
+ */
+export async function cerrarTodasLasSesiones(passwordActual) {
+  const { data } = await http.post("/account/sesiones/cerrar", { passwordActual });
+  return data;
+}

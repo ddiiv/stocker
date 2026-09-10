@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
-import { UserCog, Mail, KeyRound, Smartphone, Check, ShieldCheck, Landmark, Lock, RefreshCw } from "lucide-react";
+import { UserCog, Mail, KeyRound, Smartphone, Check, ShieldCheck, Landmark, Lock, RefreshCw, LogOut } from "lucide-react";
 import {
   fetchAccount, updateAccount, sincronizarConArca,
   solicitarCambioEmail, confirmarCambioEmail,
-  solicitarCambioPassword, confirmarCambioPassword,
+  solicitarCambioPassword, confirmarCambioPassword, cerrarTodasLasSesiones,
 } from "../services/accountService";
 import { PageHeader, Card } from "../components/ui/Layout";
 import PasswordStrength from "../components/ui/PasswordStrength";
@@ -39,6 +39,33 @@ export default function AccountPage() {
   const [codigoPass, setCodigoPass] = useState("");
   const [errorPass, setErrorPass] = useState("");
   const [enviandoPass, setEnviandoPass] = useState(false);
+
+  // Cerrar todas las sesiones: se confirma pidiendo la contraseña actual.
+  const [abriendoCierre, setAbriendoCierre] = useState(false);
+  const [passCierre, setPassCierre] = useState("");
+  const [errorCierre, setErrorCierre] = useState("");
+  const [avisoCierre, setAvisoCierre] = useState("");
+  const [cerrando, setCerrando] = useState(false);
+
+  async function cerrarSesiones(e) {
+    e.preventDefault();
+    setCerrando(true); setErrorCierre(""); setAvisoCierre("");
+    try {
+      const r = await cerrarTodasLasSesiones(passCierre);
+      const n = r?.empleadosAfectados ?? 0;
+      setAvisoCierre(
+        n > 0
+          ? `Listo. Se cerraron las sesiones del negocio, incluidas las de ${n} ${n === 1 ? "empleado" : "empleados"}. En este dispositivo seguís adentro.`
+          : "Listo. Se cerraron las sesiones abiertas. En este dispositivo seguís adentro.",
+      );
+      setPassCierre("");
+      setAbriendoCierre(false);
+    } catch (err) {
+      setErrorCierre(err.response?.data?.message || "No se pudieron cerrar las sesiones");
+    } finally {
+      setCerrando(false);
+    }
+  }
 
   async function load() {
     setLoading(true);
@@ -322,6 +349,63 @@ export default function AccountPage() {
                     {enviandoPass ? "Guardando…" : "Cambiar contraseña"}
                   </button>
                   <button type="button" className="btn-ghost" onClick={() => { setPasoPass(1); setCodigoPass(""); setPassNueva(""); setErrorPass(""); }}>
+                    Cancelar
+                  </button>
+                </div>
+              </form>
+            )}
+          </Card>
+
+          {/*
+            ── Cerrar todas las sesiones ──────────────────────────────
+            Distinto de cambiar la contraseña, que sólo cierra las sesiones que
+            ESA contraseña abrió. Acá el caso es el teléfono perdido con la
+            sesión abierta, la computadora que quedó prendida en el local, el
+            que se fue sabiendo una clave: no hace falta que todo el equipo se
+            invente contraseñas nuevas, con que vuelvan a entrar alcanza.
+          */}
+          <Card>
+            <p className="mb-1 flex items-center gap-2 font-display text-base font-semibold text-ink-950">
+              <LogOut size={17} /> Cerrar todas las sesiones
+            </p>
+            <p className="mb-3 text-sm text-ink-600">
+              Saca a todos de todas las computadoras y teléfonos —vos y tus empleados—
+              sin cambiarle la contraseña a nadie. Cada uno vuelve a entrar con la que
+              ya tenía. En este dispositivo vas a seguir adentro.
+            </p>
+
+            {avisoCierre && (
+              <p className="mb-3 rounded-md bg-teal-50 px-3 py-2 text-sm text-teal-600">{avisoCierre}</p>
+            )}
+            {errorCierre && (
+              <p className="mb-2 rounded-md bg-brick-50 px-3 py-2 text-sm text-brick-500">{errorCierre}</p>
+            )}
+
+            {!abriendoCierre ? (
+              <button type="button" className="btn-ghost border border-line"
+                onClick={() => { setAbriendoCierre(true); setAvisoCierre(""); setErrorCierre(""); }}>
+                Cerrar sesiones
+              </button>
+            ) : (
+              <form onSubmit={cerrarSesiones} className="space-y-3">
+                {/*
+                  Se avisa lo que duele ANTES de pedir la contraseña: si hay
+                  gente vendiendo, esto los deja con la venta a medio cargar.
+                */}
+                <p className="rounded-md bg-paper-200 px-3 py-2 text-sm text-ink-700">
+                  Si hay alguien vendiendo en este momento, va a tener que volver a entrar.
+                </p>
+                <div>
+                  <label className="label" htmlFor="pass-cierre">Confirmá con tu contraseña actual</label>
+                  <input id="pass-cierre" className="input" type="password" value={passCierre}
+                    onChange={(e) => setPassCierre(e.target.value)} autoComplete="current-password" />
+                </div>
+                <div className="flex gap-2">
+                  <button className="btn-accent" disabled={cerrando || !passCierre}>
+                    {cerrando ? "Cerrando…" : "Cerrar todas las sesiones"}
+                  </button>
+                  <button type="button" className="btn-ghost"
+                    onClick={() => { setAbriendoCierre(false); setPassCierre(""); setErrorCierre(""); }}>
                     Cancelar
                   </button>
                 </div>
