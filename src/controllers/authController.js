@@ -22,6 +22,7 @@ const { iniciarTrial } = require('../services/planService');
 const bloqueo = require('../services/bloqueoService');
 const { crearSesion, corteDeSesiones, IDLE_MIN } = require('../utils/session');
 const dosFactores = require('../services/dosFactoresService');
+const codigos = require('../services/codigosCuentaService');
 const { setAuthCookie, clearAuthCookie } = require('../utils/authCookie');
 const { sendPasswordResetCode, sendPasswordResetAlert } = require('../services/emailService');
 const { log, mask, sinDatos } = require('../utils/logger');
@@ -163,12 +164,22 @@ const login = async (req, res, next) => {
      * fuerza bruta, igual que una contraseña equivocada: si no, el segundo
      * factor sería el único lugar del login sin freno.
      */
-    if (business.totpSecret) {
+    if (dosFactores.tieneSegundoFactor(business)) {
+      const canales = dosFactores.canalesActivos(business);
       const code = req.body?.code;
       if (!code) {
+        /*
+         * Se informan los canales para que la pantalla sepa qué ofrecer: el
+         * campo del código a secas, o además un botón de "mandámelo al mail".
+         * Se puede decir sin riesgo porque acá la contraseña YA fue correcta:
+         * quien ve esta respuesta es el dueño de la cuenta.
+         */
         return res.status(401).json({
-          message: 'Escribí el código de tu app de autenticación.',
+          message: canales.includes('app')
+            ? 'Escribí el código de tu app de autenticación.'
+            : 'Necesitamos un código para confirmar que sos vos.',
           codigo: 'TOTP_REQUERIDO',
+          canales,
         });
       }
       const r = await dosFactores.verificar(business, code);
@@ -179,6 +190,7 @@ const login = async (req, res, next) => {
             ? 'Ese código ya se usó. Esperá a que la app muestre el siguiente.'
             : 'El código no es correcto. Si perdiste el teléfono, usá uno de recuperación.',
           codigo: 'TOTP_REQUERIDO',
+          canales,
         });
       }
       if (r.motivo === 'recuperacion') {
@@ -498,4 +510,42 @@ const resetPassword = async (req, res, next) => {
   } catch (error) { next(error); }
 };
 
-module.exports = { register, login, employeeLogin, logout, me, forgotPassword, verifyResetCode, resetPassword };
+/*
+ * POST /api/auth/2fa/enviar   { email, password, canal }
+ *
+ * Manda el código de un solo uso ANTES de entrar, cuando el segundo factor es
+ * el mail o el WhatsApp. Pide la contraseña: si no, cualquiera con un email
+ * ajeno podría hacer que le lleguen códigos al dueño hasta que se canse — y de
+ * paso convertirnos en herramienta de spam contra su casilla.
+ *
+ * La respuesta no distingue entre contraseña mala y cuenta inexistente, igual
+ * que el login: este endpoint no puede ser el que revele qué cuentas existen.
+ */
+const enviarCodigo2FA = async (req, res, next) => {
+  try {
+    const { email, password, canal } = req.body || {};
+    const business = await Business.findOne({ where: { email } });
+    if (!business || !(await bcrypt.compare(String(password || ''), business.passwordHash))) {
+      await bloqueo.registrar({ req, tipo: 'business', identificador: email, exito: false });
+      return res.status(401).json({ message: 'Email o contraseña incorrectos.' });
+    }
+
+    const activos = dosFactores.canalesActivos(business);
+    if (!activos.includes(canal)) {
+      return res.status(400).json({ message: 'Esa forma de recibir el código no está activada en tu cuenta.' });
+    }
+
+    const { destinoEnmascarado } = await codigos.emitirCodigo({
+      business, tipo: dosFactores.TIPO_LOGIN, canal,
+    });
+    res.json({ message: `Te mandamos un código a ${destinoEnmascarado}.`, destino: destinoEnmascarado });
+  } catch (error) {
+    if (error.status) return res.status(error.status).json({ message: error.message });
+    next(error);
+  }
+};
+
+module.exports = {
+  register, login, employeeLogin, logout, me,
+  forgotPassword, verifyResetCode, resetPassword, enviarCodigo2FA,
+};

@@ -6,6 +6,7 @@ const { sendAccountChangeCode } = require('../services/emailService');
 const { log, mask } = require('../utils/logger');
 const identidad = require('../services/identityRegistry');
 const { crearSesion, corteDeSesiones } = require('../utils/session');
+const QRCode = require('qrcode');
 const totp = require('../utils/totp');
 const dosFactores = require('../services/dosFactoresService');
 const { setAuthCookie } = require('../utils/authCookie');
@@ -26,87 +27,18 @@ const { setAuthCookie } = require('../utils/authCookie');
  * alguien tomó la sesión pero no la casilla, la contraseña actual lo frena.
  */
 
-const VIGENCIA_MIN = 15;
-const MAX_INTENTOS = 4;
-
-const generarCodigo = () => String(Math.floor(100000 + Math.random() * 900000));
 
 /*
- * Canales de confirmación disponibles.
+ * Los códigos de confirmación y sus canales viven en `codigosCuentaService`.
  *
- * Hoy sólo email. La estructura queda lista para sumar teléfono como segundo
- * factor: el modelo ya guarda `canal` y `destino`, así que agregar SMS o
- * WhatsApp es implementar el envío y habilitarlo acá, sin tocar el esquema
- * ni el flujo de verificación.
+ * Se movieron ahí porque el login también los necesita: cuando el segundo
+ * factor es un código al mail o al WhatsApp, la pantalla de entrar emite y
+ * valida exactamente igual que esta. Duplicados, el día que se corrige el
+ * vencimiento o la cuenta de intentos en uno, el otro queda viejo.
  */
-const CANALES = {
-  email: {
-    disponible: () => true,
-    destinoDe: (business, datos) => datos.emailNuevo || business.email,
-    enviar: async ({ destino, code, business }) => {
-      await sendAccountChangeCode({
-        to: destino,
-        ownerName: business.ownerNombre,
-        businessName: business.nombreNegocio,
-        code,
-        expiresInMinutes: VIGENCIA_MIN,
-      });
-    },
-  },
-  // sms / whatsapp: pendientes. Al implementarlos, `disponible` debe mirar que
-  // el negocio tenga teléfono verificado antes de ofrecerlos.
-};
-
-async function emitirCodigo({ business, tipo, datos = {}, canal = 'email' }) {
-  const definicion = CANALES[canal];
-  if (!definicion?.disponible()) {
-    throw Object.assign(new Error(`El canal ${canal} no está disponible.`), { status: 400 });
-  }
-
-  // Un pedido nuevo invalida los anteriores del mismo tipo: si no, quedarían
-  // varios códigos válidos a la vez y cualquiera serviría.
-  await AccountChangeCode.update(
-    { usedAt: new Date() },
-    { where: { businessId: business.id, tipo, usedAt: null } }
-  );
-
-  const code = generarCodigo();
-  const destino = definicion.destinoDe(business, datos);
-
-  await AccountChangeCode.create({
-    businessId: business.id,
-    tipo, canal, destino, code,
-    payload: JSON.stringify(datos),
-    attemptsLeft: MAX_INTENTOS,
-    expiresAt: new Date(Date.now() + VIGENCIA_MIN * 60_000),
-  });
-
-  await definicion.enviar({ destino, code, business });
-  log.info('cuenta', `código de cambio de ${tipo} enviado`, { canal, a: mask.email(destino) });
-
-  return { destino, canal };
-}
-
-async function validarCodigo({ businessId, tipo, code }) {
-  const registro = await AccountChangeCode.findOne({
-    where: { businessId, tipo, usedAt: null, expiresAt: { [Op.gt]: new Date() } },
-    order: [['createdAt', 'DESC']],
-  });
-  if (!registro) {
-    throw Object.assign(new Error('El código venció o no existe. Pedí uno nuevo.'), { status: 400 });
-  }
-  if (registro.attemptsLeft <= 0) {
-    throw Object.assign(new Error('Se agotaron los intentos. Pedí un código nuevo.'), { status: 429 });
-  }
-  if (String(registro.code) !== String(code || '').trim()) {
-    await registro.update({ attemptsLeft: registro.attemptsLeft - 1 });
-    throw Object.assign(
-      new Error(`Código incorrecto. Te quedan ${registro.attemptsLeft - 1} intentos.`),
-      { status: 400 }
-    );
-  }
-  return registro;
-}
+const {
+  CANALES, canalesUtilizables, emitirCodigo, validarCodigo, VIGENCIA_MIN,
+} = require('../services/codigosCuentaService');
 
 const sinPassword = (b) => { const { passwordHash, ...safe } = b.toJSON(); return safe; };
 
@@ -121,12 +53,18 @@ const obtener = async (req, res, next) => {
       // que conocer qué canales existen del lado del servidor.
       canales: Object.keys(CANALES),
       dobleFactor: {
-        habilitado: Boolean(b.totpSecret),
-        activadoEn: b.totpActivadoEn || null,
+        habilitado: dosFactores.tieneSegundoFactor(b),
+        canales: dosFactores.canalesActivos(b),
+        // Los que este servidor puede entregar de verdad: sin credenciales de
+        // WhatsApp no se ofrece WhatsApp. Ofrecer un canal que no entrega deja
+        // a la persona esperando un código que no va a llegar.
+        canalesDisponibles: ['app', ...canalesUtilizables(b)],
+        app: {
+          activa: Boolean(b.totpSecret),
+          activadaEn: b.totpActivadoEn || null,
+          pendiente: Boolean(b.totpPendiente) && !b.totpSecret,
+        },
         codigosRestantes: dosFactores.codigosRestantes(b),
-        // Una activación empezada y no terminada: la pantalla la ofrece para
-        // retomarla en vez de arrancar de cero.
-        pendiente: Boolean(b.totpPendiente) && !b.totpSecret,
       },
     });
   } catch (error) { next(error); }
@@ -421,10 +359,31 @@ const iniciar2FA = async (req, res, next) => {
     const secreto = totp.generarSecreto();
     await b.update({ totpPendiente: secreto });
 
+    const uri = totp.uriParaQr({ secreto, cuenta: b.email, emisor: 'Stocker' });
+
+    /*
+     * El QR se arma acá y viaja como imagen embebida (data:).
+     *
+     * Del lado del navegador habría que sumar una librería al bundle que
+     * cargan todos los clientes, para una pantalla que se abre una vez en la
+     * vida de la cuenta. Y como `img-src` ya acepta `data:`, la imagen entra
+     * sin tocar la política de seguridad.
+     *
+     * Si fallara, se sigue igual: la clave para tipear a mano va aparte, y una
+     * pantalla sin QR se usa — una pantalla que no abre, no.
+     */
+    let qr = null;
+    try {
+      qr = await QRCode.toDataURL(uri, { margin: 1, width: 240, errorCorrectionLevel: 'M' });
+    } catch (e) {
+      log.warn('cuenta', 'no se pudo generar el QR del segundo factor', { motivo: e.message });
+    }
+
     log.info('cuenta', 'activación de segundo factor iniciada');
     res.json({
       secreto,
-      uri: totp.uriParaQr({ secreto, cuenta: b.email, emisor: 'Stocker' }),
+      uri,
+      qr,
       digitos: totp.DIGITOS,
       periodoSegundos: totp.PASO_SEG,
     });
@@ -536,9 +495,120 @@ const regenerarCodigos2FA = async (req, res, next) => {
   } catch (error) { next(error); }
 };
 
+/*
+ * ── Canales de segundo factor: código al mail y al WhatsApp ──────
+ *
+ * Mismo criterio de dos pasos que la app: primero se manda un código al canal
+ * y recién con ese código el canal queda prendido. Prenderlo sin comprobar
+ * dejaría a alguien con un segundo factor que apunta a un mail que ya no lee o
+ * a un teléfono que cambió — o sea, afuera de su cuenta el día que importa.
+ */
+
+const CANALES_CON_ENVIO = ['email', 'whatsapp'];
+
+function validarCanalPedido(b, canal) {
+  if (!CANALES_CON_ENVIO.includes(canal)) {
+    return 'Ese canal no existe. Los que se pueden prender así son el mail y el WhatsApp.';
+  }
+  if (!CANALES[canal]?.disponible()) {
+    return canal === 'whatsapp'
+      ? 'El servidor no tiene WhatsApp configurado, así que ese canal no puede entregar códigos.'
+      : 'Ese canal no está disponible.';
+  }
+  if (!CANALES[canal].destinoDe(b, {})) {
+    return canal === 'whatsapp'
+      ? 'Cargá tu teléfono en los datos del negocio antes de usar WhatsApp como segundo factor.'
+      : 'No hay a dónde mandar el código.';
+  }
+  return null;
+}
+
+// POST /api/account/2fa/canal/enviar  { passwordActual, canal }
+const enviarCodigoCanal2FA = async (req, res, next) => {
+  try {
+    const b = await Business.findByPk(req.auth.businessId);
+    const actual = String(req.body?.passwordActual || '');
+    if (!actual || !(await bcrypt.compare(actual, b.passwordHash))) {
+      return res.status(400).json({ message: 'La contraseña actual no es correcta.' });
+    }
+    const canal = String(req.body?.canal || '');
+    const problema = validarCanalPedido(b, canal);
+    if (problema) return res.status(400).json({ message: problema });
+
+    const { destinoEnmascarado } = await emitirCodigo({
+      business: b, tipo: dosFactores.TIPO_LOGIN, canal,
+    });
+    res.json({
+      message: `Te mandamos un código a ${destinoEnmascarado}.`,
+      destino: destinoEnmascarado,
+      expiraEnMinutos: VIGENCIA_MIN,
+    });
+  } catch (error) { next(error); }
+};
+
+// POST /api/account/2fa/canal/activar  { canal, code }
+const activarCanal2FA = async (req, res, next) => {
+  try {
+    const b = await Business.findByPk(req.auth.businessId);
+    const canal = String(req.body?.canal || '');
+    const problema = validarCanalPedido(b, canal);
+    if (problema) return res.status(400).json({ message: problema });
+
+    await validarCodigo({ businessId: b.id, tipo: dosFactores.TIPO_LOGIN, code: req.body?.code })
+      .then((r) => r.update({ usedAt: new Date() }));
+
+    const canales = new Set(dosFactores.canalesActivos(b).filter((c) => c !== 'app'));
+    canales.add(canal);
+    await b.update({ dobleFactorCanales: JSON.stringify([...canales]) });
+
+    log.info('cuenta', 'canal de segundo factor activado', { canal });
+    res.json({
+      message: canal === 'whatsapp'
+        ? 'Listo. Ahora podés recibir el código por WhatsApp.'
+        : 'Listo. Ahora podés recibir el código por mail.',
+      canales: dosFactores.canalesActivos(await b.reload()),
+    });
+  } catch (error) {
+    if (error.status) return res.status(error.status).json({ message: error.message });
+    next(error);
+  }
+};
+
+// POST /api/account/2fa/canal/desactivar  { passwordActual, canal, code }
+const desactivarCanal2FA = async (req, res, next) => {
+  try {
+    const b = await Business.findByPk(req.auth.businessId);
+    const actual = String(req.body?.passwordActual || '');
+    if (!actual || !(await bcrypt.compare(actual, b.passwordHash))) {
+      return res.status(400).json({ message: 'La contraseña actual no es correcta.' });
+    }
+    const canal = String(req.body?.canal || '');
+    if (!CANALES_CON_ENVIO.includes(canal)) {
+      return res.status(400).json({ message: 'Ese canal no existe.' });
+    }
+
+    /*
+     * Apagar un canal también pide el segundo factor: si con sólo la
+     * contraseña se pudieran ir apagando canales de a uno, el segundo factor
+     * dejaría de ser un segundo factor para quien ya tiene la contraseña.
+     */
+    const r = await dosFactores.verificar(b, req.body?.code);
+    if (!r.ok) {
+      return res.status(400).json({ message: 'El código no es correcto.', codigo: 'TOTP_INVALIDO' });
+    }
+
+    const canales = dosFactores.canalesActivos(b).filter((c) => c !== 'app' && c !== canal);
+    await b.update({ dobleFactorCanales: JSON.stringify(canales) });
+
+    log.info('cuenta', 'canal de segundo factor desactivado', { canal });
+    res.json({ message: 'Canal desactivado.', canales: dosFactores.canalesActivos(await b.reload()) });
+  } catch (error) { next(error); }
+};
+
 module.exports = {
   obtener, actualizar, sincronizarConArca,
   iniciar2FA, activar2FA, desactivar2FA, regenerarCodigos2FA,
+  enviarCodigoCanal2FA, activarCanal2FA, desactivarCanal2FA,
   solicitarCambioEmail, confirmarCambioEmail,
   solicitarCambioPassword, confirmarCambioPassword,
   cerrarTodasLasSesiones,

@@ -253,7 +253,23 @@ async function sendSaleNotificationWhatsapp(datos) {
   return sendWhatsappMessage({ telefono, mensaje: armarAvisoVentaNegocio(datos) });
 }
 
+/*
+ * ¿Este servidor puede mandar un WhatsApp?
+ *
+ * Misma condición exacta que usa `sendWhatsappMessage` para elegir proveedor.
+ * Sirve para no OFRECER un canal que no puede entregar: ofrecer WhatsApp como
+ * segundo factor sin credenciales deja a la persona esperando un código que no
+ * va a llegar, en la pantalla de entrar y sin otra forma de pasar.
+ */
+function whatsappConfigurado() {
+  return Boolean(
+    (process.env.WHATSAPP_META_TOKEN && process.env.WHATSAPP_META_PHONE_NUMBER_ID)
+    || process.env.WHATSAPP_API_KEY
+  );
+}
+
 module.exports = {
   sendWhatsappMessage, sendInvoiceWhatsapp, sendSaleWhatsapp,
   sendSaleNotificationWhatsapp, armarAvisoVentaNegocio, normalizeToE164,
+  whatsappConfigurado,
 };

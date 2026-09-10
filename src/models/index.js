@@ -58,6 +58,20 @@ const Business = db.define('Business', {
   totpActivadoEn:   { type: DataTypes.DATE, allowNull: true },
   totpUltimoPaso:   { type: DataTypes.BIGINT, allowNull: true },
   totpRecuperacion: { type: DataTypes.TEXT, allowNull: true },
+
+  /*
+   * Qué canales de segundo factor tiene prendidos la cuenta.
+   *
+   * JSON en texto con cualquier combinación de 'app', 'email' y 'whatsapp'.
+   * Se pueden tener los tres: cada uno que se suma es otra forma de entrar el
+   * día que se pierde el teléfono, y ninguno debilita a los otros —para pasar
+   * hace falta UNO, y todos exigen algo que sólo el dueño tiene—.
+   *
+   * 'app' es redundante con `totpSecret` a propósito: el secreto es el dato y
+   * esto es la preferencia. Sin separarlos, apagar el canal obligaría a borrar
+   * el secreto, y volver a prenderlo obligaría a re-escanear el QR.
+   */
+  dobleFactorCanales: { type: DataTypes.TEXT, allowNull: true },
   /*
    * Quién aceptó los términos, cuándo y qué versión.
    *

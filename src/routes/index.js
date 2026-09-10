@@ -5,7 +5,10 @@ const { loginLimiter, passwordResetLimiter, registerLimiter, reporteLimiter } = 
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
-const { register, login, employeeLogin, logout, me, forgotPassword, verifyResetCode, resetPassword } = require('../controllers/authController');
+const {
+  register, login, employeeLogin, logout, me,
+  forgotPassword, verifyResetCode, resetPassword, enviarCodigo2FA,
+} = require('../controllers/authController');
 const { validatePasswordBody } = require('../utils/passwordPolicy');
 const productCtrl  = require('../controllers/productController');
 const feriaCtrl    = require('../controllers/feriaController');
@@ -79,6 +82,12 @@ for (const metodo of ['get', 'post', 'put', 'patch', 'delete', 'all']) {
 // ── Auth ──────────────────────────────────────────────────────────
 r.post('/auth/register',              registerLimiter, validatePasswordBody(), register);
 r.post('/auth/login',                 loginLimiter, frenarSiBloqueado('business'), login);
+/*
+ * Pedir el código de segundo factor antes de entrar. Con el limitador de
+ * envíos —manda un mail o un WhatsApp real— y con el bloqueo por fuerza bruta,
+ * porque valida la contraseña y por lo tanto es un lugar donde probarla.
+ */
+r.post('/auth/2fa/enviar',            passwordResetLimiter, frenarSiBloqueado('business'), enviarCodigo2FA);
 r.post('/auth/employee-login',        loginLimiter, frenarSiBloqueado('employee'), employeeLogin);
 r.post('/auth/logout',                logout);
 r.get ('/auth/me',                    requireAuth, me);
@@ -198,6 +207,17 @@ r.post('/account/2fa/iniciar',    requireAuth, requireOwner, loginLimiter, accou
 r.post('/account/2fa/activar',    requireAuth, requireOwner, loginLimiter, accountCtrl.activar2FA);
 r.post('/account/2fa/desactivar', requireAuth, requireOwner, loginLimiter, accountCtrl.desactivar2FA);
 r.post('/account/2fa/codigos',    requireAuth, requireOwner, loginLimiter, accountCtrl.regenerarCodigos2FA);
+
+/*
+ * Canales del segundo factor: código al mail y al WhatsApp.
+ *
+ * El de enviar va con `passwordResetLimiter` y no con el del login: cada
+ * llamada manda un mail o un WhatsApp de verdad, así que el freno tiene que
+ * ser el de los envíos y no el de los intentos.
+ */
+r.post('/account/2fa/canal/enviar',     requireAuth, requireOwner, passwordResetLimiter, accountCtrl.enviarCodigoCanal2FA);
+r.post('/account/2fa/canal/activar',    requireAuth, requireOwner, loginLimiter, accountCtrl.activarCanal2FA);
+r.post('/account/2fa/canal/desactivar', requireAuth, requireOwner, loginLimiter, accountCtrl.desactivarCanal2FA);
 
 /*
  * A partir de acá, todo lo que ESCRIBE exige la cuenta al día.

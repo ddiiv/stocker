@@ -195,6 +195,8 @@ const COLUMNAS_ESPERADAS = {
     totpActivadoEn:   { type: DataTypes.DATE, allowNull: true },
     totpUltimoPaso:   { type: DataTypes.BIGINT, allowNull: true },
     totpRecuperacion: { type: DataTypes.TEXT, allowNull: true },
+    // Canales de segundo factor prendidos. Ver el modelo Business.
+    dobleFactorCanales: { type: DataTypes.TEXT, allowNull: true },
   },
   employees: {
     // Lo mismo por empleado: cambiarle la contraseña cierra SUS sesiones.
