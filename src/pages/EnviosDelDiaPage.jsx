@@ -49,6 +49,29 @@ const hoyISO = () => {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 };
 
+const isoDeHace = (dias) => {
+  const d = new Date();
+  d.setDate(d.getDate() - dias);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+};
+
+/*
+ * Los presets del selector "Alcance".
+ *
+ * No alcanza con un número de días: "Próximos 30" y "Últimos 30" son los
+ * mismos 30 días de ventana pero mirando para lados opuestos, y eso requiere
+ * mover el selector de Día además del de Alcance. Guardarlo como un preset
+ * con nombre evita que, después de elegir "Últimos 30 días", la pantalla
+ * vuelva a mostrar "Próximos 30 días" sólo porque el número de días coincide.
+ */
+const ALCANCES = {
+  hoy:       { texto: "Sólo hoy",          dias: 0,  atras: false },
+  hoy2:      { texto: "Hoy y 2 días",      dias: 2,  atras: false },
+  prox7:     { texto: "Próximos 7 días",   dias: 7,  atras: false },
+  prox30:    { texto: "Próximos 30 días",  dias: 30, atras: false },
+  ultimos30: { texto: "Últimos 30 días",   dias: 30, atras: true },
+};
+
 /*
  * Cuánto falta para el corte.
  *
@@ -277,7 +300,15 @@ export default function EnviosDelDiaPage() {
    * es de otro estado, es de otro día, y hay que poder ir preparándolo.
    */
   const [dias, setDias] = useState(0);
+  const [alcance, setAlcance] = useState("hoy");
   const [filtro, setFiltro] = useState("para_enviar");
+
+  function elegirAlcance(clave) {
+    const preset = ALCANCES[clave] || ALCANCES.hoy;
+    setAlcance(clave);
+    setFecha(preset.atras ? isoDeHace(preset.dias) : hoyISO());
+    setDias(preset.dias);
+  }
 
   const [locales, setLocales] = useState([]);
   const [jornada, setJornada] = useState(null);
@@ -556,11 +587,10 @@ export default function EnviosDelDiaPage() {
           <label className="block">
             <span className="label">Alcance</span>
             <select className="input h-9 w-44 text-sm"
-              value={dias} onChange={(e) => setDias(Number(e.target.value))}>
-              <option value={0}>Sólo hoy</option>
-              <option value={2}>Hoy y 2 días</option>
-              <option value={7}>Próximos 7 días</option>
-              <option value={30}>Próximos 30 días</option>
+              value={alcance} onChange={(e) => elegirAlcance(e.target.value)}>
+              {Object.entries(ALCANCES).map(([clave, p]) => (
+                <option key={clave} value={clave}>{p.texto}</option>
+              ))}
             </select>
           </label>
         </div>
