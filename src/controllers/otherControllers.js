@@ -327,6 +327,29 @@ const normalizarNombre = (nombre, apellido) =>
   `${nombre || ''} ${apellido || ''}`.trim().toLowerCase().replace(/\s+/g, ' ');
 
 /*
+ * La palabra más larga de un nombre, lista para meter en un LIKE.
+ *
+ * Se usa UNA palabra y no el campo entero porque el campo entero rompería la
+ * tolerancia a los espacios: "Ana  Lucía" con dos espacios y "Ana Lucía" con
+ * uno son la misma persona para la comparación final, pero un
+ * `LIKE '%Ana  Lucía%'` no encuentra al segundo. Cualquier palabra suelta, en
+ * cambio, está contenida en las dos formas, así que el LIKE nunca se pierde una
+ * coincidencia real; a lo sumo trae de más, y de eso se encarga la comparación
+ * exacta de JavaScript. Se elige la más larga por ser la más selectiva.
+ *
+ * Los comodines de LIKE (`%`, `_`, `[`) se sacan en vez de escaparse: la
+ * sintaxis del escape cambia entre PostgreSQL y SQL Server, y sacarlos sólo
+ * ensancha la búsqueda —nunca la angosta—, que es el lado seguro para errar.
+ */
+function tokenMasLargo(texto) {
+  return String(texto || '')
+    .split(/\s+/)
+    .map((t) => t.replace(/[%_[\]]/g, ''))
+    .filter(Boolean)
+    .sort((a, b) => b.length - a.length)[0] || '';
+}
+
+/*
  * ¿Ya hay un cliente de este negocio con el mismo nombre y apellido?
  *
  * Sin CUIT no hay un identificador duro para comparar, así que esto es una
@@ -341,8 +364,36 @@ async function clienteConMismoNombre(businessId, nombre, apellido, exceptoId = n
   const where = { businessId };
   if (exceptoId) where.id = { [Op.ne]: exceptoId };
 
+  /*
+   * El filtro grueso lo hace la base y el fino JavaScript.
+   *
+   * La comparación final tiene que ignorar mayúsculas, espacios de más y
+   * espacios al borde, y eso no se escribe igual en PostgreSQL que en SQL
+   * Server. Pero traerse el padrón entero para filtrarlo acá —que era lo que
+   * hacía esto— es el problema que `getClients` ya documenta unas líneas más
+   * abajo: con cuarenta clientes no se nota y con veinte mil son varios
+   * megabytes por cada alta, justo en el mostrador.
+   *
+   * Con un LIKE que contenga el nombre, la base devuelve un puñado de
+   * candidatos —los que podrían llegar a coincidir— y la comparación exacta se
+   * hace sobre ese puñado. Mismo resultado, sin recorrer la tabla.
+   *
+   * El apellido sólo entra al filtro si lo hay: un LIKE nunca hace match
+   * contra NULL, así que filtrar por apellido vacío escondería justamente a
+   * los clientes cargados sin apellido, que son los que más se repiten.
+   */
+  const like = ilikeOperator();
+  const condiciones = [];
+  const nombreToken = tokenMasLargo(nombre);
+  const apellidoToken = tokenMasLargo(apellido);
+  if (nombreToken) condiciones.push({ nombre: { [like]: `%${nombreToken}%` } });
+  if (apellidoToken) condiciones.push({ apellido: { [like]: `%${apellidoToken}%` } });
+  if (condiciones.length) where[Op.and] = condiciones;
+
   const candidatos = await Client.findAll({
-    where, attributes: ['id', 'nombre', 'apellido', 'cuit'],
+    where,
+    attributes: ['id', 'nombre', 'apellido', 'cuit'],
+    limit: 200,
   });
   return candidatos.find((c) => normalizarNombre(c.nombre, c.apellido) === buscado) || null;
 }
@@ -442,7 +493,19 @@ const updateClient = async (req, res, next) => {
         });
       }
     }
-    if (!req.body?.forzar && (req.body?.nombre !== undefined || req.body?.apellido !== undefined)) {
+    /*
+     * En una edición sólo se avisa si el nombre CAMBIA.
+     *
+     * Dos homónimas legítimas conviven —para eso está `forzar` en el alta—, y
+     * a partir de ese momento cualquier edición de cualquiera de las dos
+     * encuentra a la otra. Sin esta condición, guardarle un teléfono nuevo a
+     * "María Gómez" devolvía 409 y la ficha quedaba imposible de editar: el
+     * aviso servía para el alta y se convertía en una traba permanente.
+     */
+    const nombreNuevo = normalizarNombre(req.body?.nombre ?? client.nombre, req.body?.apellido ?? client.apellido);
+    const cambioElNombre = nombreNuevo !== normalizarNombre(client.nombre, client.apellido);
+
+    if (!req.body?.forzar && cambioElNombre) {
       const mismoNombre = await clienteConMismoNombre(
         req.auth.businessId,
         req.body?.nombre ?? client.nombre,

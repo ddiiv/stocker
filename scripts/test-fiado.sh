@@ -70,7 +70,11 @@ stock() { C "$API/products/scan/$SKU" | J .stock; }
 STOCK0=$(stock)
 echo "variante=$VID sku=$SKU precio=$PRECIO stock=$STOCK0"
 
-CID=$(C -X POST $API/clients -d '{"nombre":"Fiado","apellido":"QA"}' | J .id)
+# `forzar` porque el alta ahora avisa si ya hay alguien con el mismo nombre y
+# apellido, y esta prueba crea su propio "Fiado QA" en cada corrida. Sin esto,
+# la segunda vez que se corre el alta devuelve 409, CID queda vacío y fallan
+# las 26 comprobaciones que vienen después por una razón que no es la suya.
+CID=$(C -X POST $API/clients -d '{"nombre":"Fiado","apellido":"QA","forzar":true}' | J .id)
 MEF=$(C "$API/payment-methods?activos=true" | J ".filter(m=>m.esEfectivo)[0].id")
 MTR=$(C "$API/payment-methods?activos=true" | J ".filter(m=>!m.esEfectivo)[0].id")
 echo "cliente=$CID efectivo=$MEF otro=$MTR"

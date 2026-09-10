@@ -148,9 +148,73 @@ const CUIT_B = '27222222228';
     chk('el dígito verificador se comprueba primero', 400, malo.status);
     chk('y se explica', true, /verificador/i.test(malo.json?.message || ''));
 
+    tit('8. MISMO NOMBRE Y APELLIDO, SIN CUIT QUE LOS DISTINGA');
+    /*
+     * Es el caso del mostrador: la ficha ya está cargada sin CUIT y en el
+     * próximo turno la vuelven a cargar, porque no hay forma de darse cuenta.
+     * A diferencia del CUIT esto es una sospecha, no una certeza —dos personas
+     * pueden llamarse igual—, así que avisa y deja seguir con `forzar`.
+     */
+    const maria = await crear({ nombre: 'María', apellido: 'Gómez QA' });
+    chk('la primera María entra', 201, maria.status);
+
+    const repetida = await crear({ nombre: 'María', apellido: 'Gómez QA' });
+    chk('la segunda avisa', 409, repetida.status);
+    chk('con su código', 'NOMBRE_REPETIDO', repetida.json?.codigo);
+    chk('nombrando a la que ya estaba', true, /María Gómez QA/.test(repetida.json?.message || ''));
+    chk('y diciendo que no tiene CUIT', true, /sin CUIT/.test(repetida.json?.message || ''));
+    chk('devolviendo su id para poder elegirla', maria.json.id, repetida.json?.cliente?.id);
+
+    const forzada = await crear({ nombre: 'María', apellido: 'Gómez QA', forzar: true });
+    chk('forzando entra igual, para las homónimas de verdad', 201, forzada.status);
+
+    /*
+     * Las mayúsculas y los espacios de más no hacen a dos personas distintas.
+     * Esto además prueba que el filtro de la base no se pierda la coincidencia:
+     * busca por una palabra suelta, no por el campo entero.
+     */
+    const desprolija = await crear({ nombre: '  mArÍa ', apellido: 'gÓmez  qa' });
+    chk('escrita distinto sigue siendo la misma', 409, desprolija.status);
+    chk('y lo dice igual', 'NOMBRE_REPETIDO', desprolija.json?.codigo);
+
+    tit('9. PARECIDO NO ES IGUAL');
+    /*
+     * El filtro de la base trae de más a propósito —"María" está contenido en
+     * "María Laura"—, y la comparación exacta tiene que descartarlos. Si esto
+     * diera 409, el aviso saltaría con cualquier nombre que se parezca y la
+     * gente aprendería a ignorarlo.
+     */
+    const otraMaria = await crear({ nombre: 'María Laura', apellido: 'Gómez QA' });
+    chk('un nombre que contiene al otro NO es repetido', 201, otraMaria.status);
+
+    const otroApellido = await crear({ nombre: 'María', apellido: 'Gómez QA Segunda' });
+    chk('mismo nombre y otro apellido tampoco', 201, otroApellido.status);
+
+    tit('10. EDITAR SIN TOCAR EL NOMBRE NO CHOCA CONTRA UNO MISMO');
+    const edicion = await api('PUT', `/api/clients/${maria.json.id}`, {
+      nombre: 'María', apellido: 'Gómez QA', telefono: '1122334455',
+    });
+    chk('guardar otro campo no lo toma como duplicado', 200, edicion.status);
+
+    /*
+     * Pero si el nombre SÍ cambia y choca contra otra ficha, ahí el aviso
+     * corresponde: es el mismo error del alta, cometido desde la edición.
+     */
+    const renombrar = await api('PUT', `/api/clients/${otroApellido.json.id}`, {
+      nombre: 'María', apellido: 'Gómez QA',
+    });
+    chk('renombrar encima de otra ficha sí avisa', 409, renombrar.status);
+    chk('con el mismo código', 'NOMBRE_REPETIDO', renombrar.json?.codigo);
+
+    const renombrarForzado = await api('PUT', `/api/clients/${otroApellido.json.id}`, {
+      nombre: 'María', apellido: 'Gómez QA', forzar: true,
+    });
+    chk('y forzando se guarda igual', 200, renombrarForzado.status);
+
   } finally {
     tit('Limpieza');
     await Client.destroy({ where: { id: creados } });
+    await Client.destroy({ where: { apellido: { [Op.like]: '%Gómez QA%' } } });
     await limpiar();
     chk('no quedan clientes de prueba', 0,
       await Client.count({ where: { cuit: { [Op.in]: [CUIT_A, CUIT_B] } } }));
