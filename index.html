@@ -6,15 +6,28 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Stocker — Panel de gestión</title>
     <!--
-      El tema se aplica antes de que React pinte, desde un archivo aparte.
+      El tema se aplica ANTES de que React pinte: sin esto, en modo oscuro cada
+      recarga arranca con un flash blanco a pantalla completa.
 
-      Aparte y no embebido por la Política de Seguridad de Contenido: permitir
-      scripts embebidos obliga a 'unsafe-inline' en script-src, que es el
-      permiso que convierte cualquier inyección de HTML en ejecución de código.
-      Con `src` propio no hace falta. Sigue siendo bloqueante y va en el <head>,
-      así que corre antes del primer pixel.
+      Va embebido y NO en un archivo aparte. Embebido normalmente obligaría a
+      poner 'unsafe-inline' en script-src —el permiso que convierte cualquier
+      inyección de HTML en ejecución de código—, pero el servidor declara el
+      hash sha256 exacto de este bloque: se ejecuta éste y ningún otro, sin
+      abrir la puerta a los inyectados. Y así no queda una ruta pública más
+      publicando cómo funciona la app.
     -->
-    <script src="/tema.js"></script>
+    <script>
+      (function () {
+        try {
+          var g = localStorage.getItem('stocker:tema');
+          var o = g === 'oscuro' || (!g && window.matchMedia('(prefers-color-scheme: dark)').matches);
+          document.documentElement.setAttribute('data-theme', o ? 'dark' : 'light');
+          document.documentElement.style.colorScheme = o ? 'dark' : 'light';
+        } catch (e) {
+          /* Sin localStorage —ventana privada, cookies bloqueadas— se queda en claro. */
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

@@ -13,6 +13,8 @@
  * Ojo con la red privada de Railway: resuelve sólo por IPv6 y el DNS interno
  * tarda unos segundos en levantar cuando arranca el contenedor.
  */
+import fs from 'node:fs';
+import crypto from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
@@ -23,6 +25,47 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const app = express();
 const DIST = path.join(__dirname, 'dist');
+
+/*
+ * El hash de los scripts embebidos del HTML.
+ *
+ * El único que hay es el que aplica el tema antes del primer pixel. Para poder
+ * embeberlo sin abrir 'unsafe-inline' —el permiso que convierte una inyección
+ * de HTML en ejecución de código, o sea renunciar a lo único que la política
+ * aporta— se declara el hash exacto de ese bloque: se ejecuta ése y ningún
+ * otro.
+ *
+ * Se calcula al arrancar leyendo el HTML que se va a servir de verdad, no el
+ * del repo: Vite puede minificar el bloque al compilar, y un hash escrito a
+ * mano en una constante rompe la página en silencio la primera vez que alguien
+ * toque una línea del script.
+ */
+function hashesDeScripts(html) {
+  const hashes = [];
+  // Sólo los <script> SIN src: los que tienen src ya los cubre 'self'.
+  const re = /<script(?![^>]*\ssrc=)[^>]*>([\s\S]*?)<\/script>/gi;
+  let m = re.exec(html);
+  while (m) {
+    if (m[1].trim()) {
+      hashes.push(`'sha256-${crypto.createHash('sha256').update(m[1], 'utf8').digest('base64')}'`);
+    }
+    m = re.exec(html);
+  }
+  return hashes;
+}
+
+let SCRIPT_HASHES = [];
+try {
+  SCRIPT_HASHES = hashesDeScripts(fs.readFileSync(path.join(DIST, 'index.html'), 'utf8'));
+} catch (e) {
+  /*
+   * Sin poder leer el HTML no se inventan permisos: se sirve con la política
+   * estricta y, si algo queda bloqueado, se ve en la consola. La alternativa
+   * —abrir 'unsafe-inline' por las dudas— dejaría la política inservible justo
+   * cuando ya falló algo.
+   */
+  console.warn(`  No se pudo calcular el hash de los scripts embebidos: ${e.message}`);
+}
 
 /*
  * Puerto en el que escucha el front.
@@ -166,7 +209,7 @@ app.use((req, res, next) => {
    */
   res.setHeader('Content-Security-Policy', [
     "default-src 'none'",
-    "script-src 'self' 'wasm-unsafe-eval'",
+    ["script-src 'self' 'wasm-unsafe-eval'", ...SCRIPT_HASHES].join(' '),
     "style-src 'self'",
     "font-src 'self'",
     // `blob:` para las fotos que se sacan con la cámara antes de subirlas.
@@ -249,11 +292,23 @@ app.use(express.static(DIST, {
   },
 }));
 
-// SPA: cualquier ruta que no sea archivo ni API la resuelve React Router.
-// Va como middleware sin patrón porque Express 5 ya no acepta '*' suelto.
+/*
+ * SPA: cualquier ruta que no sea archivo ni API la resuelve React Router.
+ * Va como middleware sin patrón porque Express 5 ya no acepta '*' suelto.
+ *
+ * Pero si el pedido PARECE un archivo —tiene extensión— y no lo sirvió el
+ * estático de arriba, entonces no existe y se contesta 404. Devolver el HTML
+ * de la app con un 200 para `/server.js`, `/.env` o `/package.json` es la
+ * respuesta más confusa posible: quien sondea el sitio ve un 200 y concluye
+ * que el archivo está ahí, y un asset mal tipeado llega al navegador como HTML
+ * y revienta con "unexpected token '<'" en vez de un 404 legible.
+ */
 app.use((req, res) => {
   res.setHeader('Cache-Control', 'no-store');
-  res.sendFile(path.join(DIST, 'index.html'));
+  if (/\.[a-z0-9]{1,8}$/i.test(req.path)) {
+    return res.status(404).type('text/plain').send('No encontrado.');
+  }
+  return res.sendFile(path.join(DIST, 'index.html'));
 });
 
 const server = app.listen(PORT, '::', () => {

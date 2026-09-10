@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useForm, Controller } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { z } from "zod";
+import { z } from "../lib/zod";
 import { Tag, AlertCircle } from "lucide-react";
 import { useAuth } from "../context/AuthContext";
 import PhoneInput from "../components/ui/PhoneInput";

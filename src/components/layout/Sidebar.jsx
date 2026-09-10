@@ -21,6 +21,7 @@ import {
 } from "lucide-react";
 import { useAuth } from "../../context/AuthContext";
 import { canView, esAdministradorTotal } from "../../utils/permissions";
+import { useOverlayKeyboard } from "../../hooks/useOverlayKeyboard";
 
 /*
  * El menú, agrupado y en el orden en que se trabaja.
@@ -126,28 +127,22 @@ export default function Sidebar({ open, onClose }) {
    * final.
    */
   const navRef = useRef(null);
-  const previoRef = useRef(null);
   const [hayMas, setHayMas] = useState(false);
 
   /*
-   * El drawer del teléfono se abre encima del contenido, pero el backdrop
+   * El cajón del teléfono se abre encima del contenido, pero el fondo oscuro
    * sólo cierra al tacto: por teclado no había forma de salir salvo tabular
    * hasta encontrar un link. Escape lo cierra y devuelve el foco a quien lo
    * abrió, igual que un modal.
+   *
+   * Con el hook y no con un efecto propio: escrito acá a mano, `onClose` —una
+   * flecha nueva en cada render de AppLayout— entra en las dependencias y el
+   * efecto se rearma en cada render, robándole el foco a quien esté navegando.
+   * Sin trampa de Tab porque en escritorio este mismo componente no es un
+   * cajón sino una columna fija: encerrar el Tab ahí dejaría el resto de la
+   * página inalcanzable.
    */
-  useEffect(() => {
-    if (!open) return;
-    previoRef.current = document.activeElement;
-    navRef.current?.querySelector("a, button")?.focus();
-    function onKey(e) {
-      if (e.key === "Escape") onClose?.();
-    }
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("keydown", onKey);
-      previoRef.current?.focus?.();
-    };
-  }, [open, onClose]);
+  useOverlayKeyboard(navRef, { activo: open, onCerrar: onClose, trampaDeTab: false });
   const revisar = useCallback(() => {
     const n = navRef.current;
     if (!n) return;
