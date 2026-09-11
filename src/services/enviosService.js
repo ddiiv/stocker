@@ -81,6 +81,32 @@ export async function despacharVarios(pedidoIds) {
   return data;
 }
 
+/**
+ * Pone la jornada al día con lo que dice Mercado Libre.
+ *
+ * Los avisos de ML (webhooks) se pueden perder o llegar tarde, y la pantalla
+ * no tiene cómo saberlo: sin esta reconciliación al abrir, un envío que ML ya
+ * despachó sigue apareciendo en "Para enviar" y uno que el comprador canceló
+ * no aparece nunca como cancelado — y alguien arma una caja que no tiene que
+ * salir.
+ *
+ * El servidor decide si vale la pena: si se sincronizó hace menos de un
+ * minuto contesta `omitido: true` sin tocar nada, así que abrir y cerrar la
+ * pantalla diez veces no son diez rondas contra la API de ML.
+ *
+ * @returns {Promise<{ sincronizadoEn?: string, omitido: boolean,
+ *   motivo?: "reciente" | "sin_cuenta",
+ *   cambios?: { actualizados: number, cancelados: number, despachados: number, nuevos: number } }>}
+ */
+export async function sincronizarConMl({ forzar = false } = {}) {
+  // `forzar` es el botón: baja el freno del servidor de un minuto a diez
+  // segundos. Sin esto, apretarlo recién abierta la pantalla no hacía nada.
+  const { data } = await http.post("/envios/sincronizar", null, {
+    params: forzar ? { forzar: 1 } : {},
+  });
+  return data;
+}
+
 /** El paquete salió: la reserva se convierte en egreso. */
 export async function despacharPaquete(id) {
   const { data } = await http.post(`/envios/${id}/despachar`);

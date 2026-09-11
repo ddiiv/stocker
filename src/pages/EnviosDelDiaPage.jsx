@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Truck, Printer, RefreshCw, PackageCheck, PackageX, Clock,
   AlertTriangle, Check, MapPin, Loader2,
@@ -7,7 +7,7 @@ import { PageHeader, Card } from "../components/ui/Layout";
 import AvisoError from "../components/ui/AvisoError";
 import {
   fetchJornada, abrirPdfJornada, despacharPaquete, marcarFaltante, reprocesarPedido,
-  abrirEtiquetas, despacharVarios,
+  abrirEtiquetas, despacharVarios, sincronizarConMl,
 } from "../services/enviosService";
 import { fetchLocalesDeVenta } from "../services/employeeService";
 import { useAuth } from "../context/AuthContext";
@@ -91,6 +91,17 @@ function enPalabras(minutos) {
   const h = Math.floor(m / 60);
   const resto = m % 60;
   return resto ? `${h} h ${resto} min` : `${h} h`;
+}
+
+/*
+ * Hace cuánto se habló con Mercado Libre por última vez.
+ *
+ * Menos de un minuto es "recién" y no "hace 0 min": un cero se lee como que
+ * algo no anda.
+ */
+function haceCuanto(desde, ahora) {
+  const min = Math.floor(Math.max(0, ahora - desde) / 60000);
+  return min < 1 ? "recién" : `hace ${enPalabras(min)}`;
 }
 
 function Corte({ cuando, minutos, atrasado }) {
@@ -366,6 +377,98 @@ export default function EnviosDelDiaPage() {
   useEffect(() => { setElegidos(new Set()); }, [fecha, locationId, soloFlex, dias, filtro]);
   useEffect(() => { fetchLocalesDeVenta().then(setLocales).catch(() => setLocales([])); }, []);
 
+  /*
+   * ── La reconciliación con Mercado Libre ───────────────────────────
+   *
+   * Los webhooks de ML se pierden o llegan tarde, y confiando sólo en ellos la
+   * jornada puede tener en "Para enviar" algo que ML ya despachó, o no mostrar
+   * nunca una cancelación. Por eso cada vez que se abre la pantalla se le
+   * pregunta a ML.
+   *
+   * Corre en paralelo a `cargar()` y no antes: la sincronización habla con la
+   * API de ML y puede tardar varios segundos, y quien abre la pantalla para
+   * despachar necesita ver ya lo guardado, no un "cargando" hasta que ML
+   * conteste. Si ML trajo novedades, se recarga.
+   *
+   * Y un fallo acá NUNCA toca `error` ni `jornada`: lo guardado sigue sirviendo
+   * para trabajar, y tapar la jornada porque venció el token de ML dejaría al
+   * depósito sin nada que despachar.
+   */
+  const [sincro, setSincro] = useState({ estado: null, en: null, mensaje: null });
+  const [ahora, setAhora] = useState(() => Date.now());
+  const yaSincronizo = useRef(false);
+  /*
+   * La última versión de `cargar`, para llamarla cuando ML contesta. Si
+   * mientras tanto se cambió de día o de filtro, hay que recargar lo que se
+   * está mirando AHORA, no lo que se miraba al abrir.
+   */
+  const cargarActual = useRef(cargar);
+  useEffect(() => { cargarActual.current = cargar; }, [cargar]);
+
+  const sincronizar = useCallback(async ({ recargarSiempre = false, forzar = false } = {}) => {
+    setSincro((s) => ({ ...s, estado: "sincronizando", mensaje: null }));
+    try {
+      const r = await sincronizarConMl({ forzar });
+      if (r?.motivo === "sin_cuenta") {
+        setSincro({ estado: "sin_cuenta", en: null, mensaje: null });
+        return;
+      }
+      /*
+       * La hora sale del reloj de este navegador al recibir la respuesta, no
+       * de `sincronizadoEn`: restar la hora del servidor al reloj local hace
+       * que una máquina con la hora corrida diga "hace 12 min" de algo que
+       * pasó recién —lo mismo que con el corte de Flex—. Cuando el servidor
+       * la omitió por reciente, lo que se pierde es menos de un minuto.
+       */
+      const recibido = Date.now();
+      setAhora(recibido);
+      setSincro({ estado: "ok", en: recibido, mensaje: null });
+      /*
+       * Sin cambios no se recarga: sería volver a pedir lo mismo que ya está
+       * en pantalla. El botón manual sí recarga siempre, porque quien lo toca
+       * espera ver la lista recién traída.
+       */
+      const huboCambios = Object.values(r?.cambios || {}).some((n) => Number(n) > 0);
+      if (huboCambios || recargarSiempre) await cargarActual.current();
+    } catch (e) {
+      /*
+       * Si falló no se recarga, tampoco desde el botón: lo guardado no cambió,
+       * y si lo que se cayó es la red, `cargar()` fallaría y vaciaría la
+       * jornada, que es justo lo que esta sincronización no puede hacer.
+       *
+       * El mensaje del servidor va tal cual cuando lo hay: "venció el token
+       * de Mercado Libre" dice qué hacer, y el genérico de `analizarError`
+       * para un 5xx no. Sin respuesta —sin red— sí sirve el de `analizarError`.
+       */
+      const motivo = (e?.response?.data?.message
+        || analizarError(e, "error desconocido").titulo).replace(/[.\s]+$/, "");
+      setSincro((s) => ({ ...s, estado: "error", mensaje: motivo }));
+    }
+  }, []);
+
+  /*
+   * Una sola vez por apertura, no con cada cambio de filtro: filtrar cambia qué
+   * se mira, no lo que sabe ML. La marca va en un ref por el StrictMode de
+   * desarrollo, que corre los efectos dos veces y dispararía dos
+   * sincronizaciones seguidas contra ML.
+   */
+  useEffect(() => {
+    if (yaSincronizo.current) return;
+    yaSincronizo.current = true;
+    sincronizar();
+  }, [sincronizar]);
+
+  /*
+   * El "hace X min" se refresca cada 30 segundos y sólo si hay una hora que
+   * mostrar: más seguido es re-renderizar la jornada entera para cambiar una
+   * palabra que cambia, como mucho, una vez por minuto.
+   */
+  useEffect(() => {
+    if (!sincro.en) return undefined;
+    const t = setInterval(() => setAhora(Date.now()), 30000);
+    return () => clearInterval(t);
+  }, [sincro.en]);
+
   async function despachar(p) {
     setTrabajando(p.id); setError(null); setAviso("");
     try {
@@ -594,6 +697,49 @@ export default function EnviosDelDiaPage() {
             </select>
           </label>
         </div>
+
+        {/*
+          * Cómo está la jornada respecto de Mercado Libre, en una línea chica
+          * abajo de los filtros: es contexto para saber cuánto confiar en lo
+          * que se ve, no una tarea. Sin cuenta de ML conectada no hay nada que
+          * decir, y una línea que dijera "no sincroniza" todos los días sería
+          * ruido para quien vende sólo por otro canal.
+          *
+          * El fallo va en brass y no en rojo: la jornada sigue siendo usable
+          * con lo guardado, y el rojo en esta pantalla es para lo que frena un
+          * despacho.
+          */}
+        {sincro.estado && sincro.estado !== "sin_cuenta" && (
+          <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1.5 border-t border-line pt-2.5">
+            <p
+              role="status"
+              className={`flex items-start gap-1.5 text-xs ${
+                sincro.estado === "error" ? "text-brass-700" : "text-ink-500"
+              }`}
+            >
+              {sincro.estado === "sincronizando" && (
+                <><Loader2 size={12} className="mt-0.5 shrink-0 animate-spin" /> Sincronizando con Mercado Libre…</>
+              )}
+              {sincro.estado === "ok" && (
+                <><Check size={12} className="mt-0.5 shrink-0" /> Sincronizado con Mercado Libre {haceCuanto(sincro.en, ahora)}</>
+              )}
+              {sincro.estado === "error" && (
+                <>
+                  <AlertTriangle size={12} className="mt-0.5 shrink-0" />
+                  No se pudo sincronizar con Mercado Libre: {sincro.mensaje}. Se muestra lo último guardado.
+                </>
+              )}
+            </p>
+            <button
+              type="button"
+              className="btn-ghost gap-1 px-2 py-1 text-xs"
+              onClick={() => sincronizar({ recargarSiempre: true, forzar: true })}
+              disabled={sincro.estado === "sincronizando"}
+            >
+              <RefreshCw size={12} /> Sincronizar ahora
+            </button>
+          </div>
+        )}
       </Card>
 
       {/*
