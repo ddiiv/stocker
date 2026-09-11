@@ -35,6 +35,7 @@ const {
 } = require('../models');
 const stockService = require('./stockService');
 const packService = require('./packService');
+const { partesDeItem } = require('../utils/repartoItem');
 const { log } = require('../utils/logger');
 
 const error = (mensaje, status = 400, extra = {}) =>
@@ -139,7 +140,10 @@ const FILTROS = {
  * ¿llegó?, ¿se canceló?
  */
 const esEntregado = (p) => p.estadoEnvioMl === 'delivered';
-const esCancelado = (p) => ['cancelled', 'not_delivered'].includes(p.estadoEnvioMl);
+// Cancelada por la plataforma —la venta— o por el envío. Antes sólo miraba el
+// envío, y una orden cancelada cuyo envío todavía decía `ready_to_ship` se
+// seguía mostrando en "Para enviar".
+const esCancelado = (p) => p.estado === 'cancelado' || ['cancelled', 'not_delivered'].includes(p.estadoEnvioMl);
 
 /** Cuántos días hacia adelante mira la vista. 0 = sólo hoy. */
 function limitesDelRango(fecha, diasAdelante) {
@@ -237,10 +241,35 @@ async function delDia(businessId, {
     ],
   };
 
+  /*
+   * ── Las canceladas también ────────────────────────────────────────
+   *
+   * La consulta pedía `estado IN ('aceptado','parcial')`, y una venta que la
+   * plataforma cancela deja de estar en ese estado. Resultado: la pestaña
+   * Cancelados filtraba en memoria sobre un conjunto que ya venía sin ninguna
+   * cancelada, y quedaba vacía siempre — ni siquiera "Todos" las contaba.
+   *
+   * Una cancelada se ubica en la jornada por el día en que Stocker se enteró
+   * de la cancelación, o por el día en que había que despacharla. El primero
+   * es el que importa para el depósito: "hoy se cancelaron dos" es lo que hay
+   * que saber para no armar esos paquetes, aunque la venta haya entrado hace
+   * tres días. Es también lo que muestra Mercado Libre en "Envíos de hoy" como
+   * "Canceladas. No despachar".
+   */
+  const canceladaEnElRango = {
+    estado: 'cancelado',
+    [Op.or]: [
+      { canceladoEn: { [Op.between]: [desde, hasta] } },
+      { despacharAntesDe: { [Op.between]: [desde, hasta] } },
+    ],
+  };
+
   const where = {
     businessId,
-    estado: { [Op.in]: DESPACHABLES },
-    [Op.and]: [delDiaOEntradoHoy],
+    [Op.or]: [
+      { estado: { [Op.in]: DESPACHABLES }, [Op.and]: [delDiaOEntradoHoy] },
+      canceladaEnElRango,
+    ],
   };
   if (envioTipo) where.envioTipo = String(envioTipo);
 
@@ -272,7 +301,19 @@ async function delDia(businessId, {
   });
 
   if (!pedidos.length) {
-    return { fecha: desde, hasta, dias, filtro: cual, pedidos: [], paquetes: [], consolidado: [], resumen: vacio() };
+    /*
+     * Con `porEstado` en cero y no ausente. Sin él, una jornada vacía dejaba
+     * las pestañas sin número —la pantalla lo lee de acá—, que es justo lo que
+     * el conteo de más abajo existe para evitar: una pestaña sin número obliga
+     * a entrar para descubrir que está vacía.
+     */
+    return {
+      fecha: desde, hasta, dias, filtro: cual,
+      porEstado: {
+        para_enviar: 0, en_camino: 0, entregado: 0, cancelado: 0, con_faltante: 0, historial: 0, todos: 0,
+      },
+      pedidos: [], paquetes: [], consolidado: [], resumen: vacio(),
+    };
   }
 
   /*
@@ -952,7 +993,16 @@ async function despachar({ pedidoId, businessId, employeeId = null }) {
       // Las líneas sin variante nunca apartaron nada, y acabamos de comprobar
       // que su SKU tampoco existe: no hay reserva que consumir ni stock que
       // mover.
-      if (!i.productVariantId || !i.locationId) continue;
+      if (!i.productVariantId) continue;
+
+      /*
+       * Por parte del reparto, no por ítem. Si la reserva se partió entre
+       * locales —2 en Palermo, 1 en Belgrano— hay que consumir 2 de uno y 1 del
+       * otro. Consumir las 3 del primero fallaba con "la reserva ya no está"
+       * aunque la mercadería estuviera apartada, sólo que en dos lugares.
+       */
+      const partes = partesDeItem(i);
+      if (!partes.length) continue;
 
       /*
        * Una sola llamada baja el stock, suelta la reserva y deja el renglón en
@@ -970,34 +1020,36 @@ async function despachar({ pedidoId, businessId, employeeId = null }) {
       const motivo = `Despacho ${pedido.plataforma} ${pedido.pedidoExterno}`
         + (esPack ? ` (pack ${i.sku})` : '');
 
-      const pudo = esPack
-        ? await packService.consumirPack(
-          i.productVariantId, i.locationId, businessId, i.cantidad, t,
-          { motivo, employeeId },
-        )
-        : await stockService.consumirReserva(
-          i.productVariantId, i.locationId, businessId, i.cantidad, t,
-          { motivo, employeeId },
-        );
-      if (!pudo) {
-        await t.rollback();
-        throw error(
-          `No se pudo despachar ${i.sku}: la reserva ya no está. `
-          + 'Puede que el pedido se haya cancelado o que alguien ajustara el stock.',
-          409,
-          /*
-           * Plano y adentro de `detalles`: el manejador de errores arma el
-           * cuerpo de la respuesta desde `detalles` —es lo que llega a la
-           * pantalla—, pero varios lugares del servidor leen `error.codigo`
-           * directo. Mandando uno solo, la pantalla recibe un 409 sin saber
-           * cuál es y muestra el cartel genérico.
-           */
-          {
-            codigo: 'RESERVA_PERDIDA',
-            sku: i.sku,
-            detalles: { codigo: 'RESERVA_PERDIDA', sku: i.sku },
-          },
-        );
+      for (const parte of partes) {
+        const pudo = esPack
+          ? await packService.consumirPack(
+            i.productVariantId, parte.locationId, businessId, parte.unidades, t,
+            { motivo, employeeId },
+          )
+          : await stockService.consumirReserva(
+            i.productVariantId, parte.locationId, businessId, parte.unidades, t,
+            { motivo, employeeId },
+          );
+        if (!pudo) {
+          await t.rollback();
+          throw error(
+            `No se pudo despachar ${i.sku}: la reserva ya no está. `
+            + 'Puede que el pedido se haya cancelado o que alguien ajustara el stock.',
+            409,
+            /*
+             * Plano y adentro de `detalles`: el manejador de errores arma el
+             * cuerpo de la respuesta desde `detalles` —es lo que llega a la
+             * pantalla—, pero varios lugares del servidor leen `error.codigo`
+             * directo. Mandando uno solo, la pantalla recibe un 409 sin saber
+             * cuál es y muestra el cartel genérico.
+             */
+            {
+              codigo: 'RESERVA_PERDIDA',
+              sku: i.sku,
+              detalles: { codigo: 'RESERVA_PERDIDA', sku: i.sku },
+            },
+          );
+        }
       }
 
       /*

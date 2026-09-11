@@ -28,6 +28,7 @@
 
 const ml = require('./mercadolibreService');
 const postventa = require('./mercadolibrePostventaService');
+const mlPedidos = require('./mercadolibrePedidosService');
 const { MercadoLibreAccount } = require('../models');
 const { log } = require('../utils/logger');
 
@@ -72,6 +73,7 @@ async function barrerStockMl() {
   let fallaron = 0;
   let mensajesNuevos = 0;
   let reclamosNuevos = 0;
+  let enviosCambiados = 0;
 
   for (const cuenta of conectadas) {
     /*
@@ -97,6 +99,25 @@ async function barrerStockMl() {
         await cuenta.update({ ultimoError: e.message.slice(0, 400) }).catch(() => {});
       }
       log.warn('ml-postventa', 'el barrido de posventa falló', {
+        businessId: cuenta.businessId, motivo: e.message?.slice(0, 200),
+      });
+    }
+
+    /*
+     * Los envíos, contra Mercado Libre. En su propio try por lo mismo que la
+     * posventa: que falle esto no puede frenar el stock publicado.
+     *
+     * Es lo que hace que un aviso perdido se corrija solo. Sin esto, un envío
+     * que ML despachó o canceló y cuyo aviso no llegó quedaba como estaba
+     * hasta que alguien abriera Envíos del Día.
+     */
+    try {
+      const envios = await mlPedidos.reconciliarEnvios(cuenta.businessId);
+      if (!envios.omitido) {
+        enviosCambiados += Object.values(envios.cambios || {}).reduce((n, x) => n + (Number(x) || 0), 0);
+      }
+    } catch (e) {
+      log.warn('ml-reconciliacion', 'el barrido de envíos falló', {
         businessId: cuenta.businessId, motivo: e.message?.slice(0, 200),
       });
     }
@@ -128,7 +149,7 @@ async function barrerStockMl() {
     }
   }
 
-  return { cuentas: conectadas.length, actualizados, fallaron, mensajesNuevos, reclamosNuevos };
+  return { cuentas: conectadas.length, actualizados, fallaron, mensajesNuevos, reclamosNuevos, enviosCambiados };
 }
 
 /*

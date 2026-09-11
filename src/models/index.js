@@ -484,6 +484,12 @@ const PedidoPlataforma = db.define('PedidoPlataforma', {
    * jornada.
    */
   estadoEnvioMl:  { type: DataTypes.STRING(30), allowNull: true },
+  /*
+   * Cuándo lo canceló la plataforma. Es la fecha que ubica una cancelación en
+   * una jornada: "hoy se cancelaron dos" es lo que el depósito tiene que saber
+   * para no armar esos paquetes, aunque la venta haya entrado hace tres días.
+   */
+  canceladoEn:    { type: DataTypes.DATE, allowNull: true },
   despachadoEn:   { type: DataTypes.DATE, allowNull: true },
   despachadoPorEmployeeId: { type: DataTypes.INTEGER, allowNull: true },
   compradorNombre:    { type: DataTypes.STRING(150), allowNull: true },
@@ -522,6 +528,17 @@ const PedidoPlataformaItem = db.define('PedidoPlataformaItem', {
   precioUnitario:   { type: DataTypes.DECIMAL(12, 2), allowNull: true },
   // De qué local salió cada unidad, para poder rastrearlo después.
   locationId:       { type: DataTypes.INTEGER, allowNull: true },
+  /*
+   * De qué locales se apartó, y cuánto de cada uno. JSON: [{locationId, unidades}].
+   *
+   * `locationId` guarda sólo el PRIMERO. Cuando ningún local tiene la cantidad
+   * entera, la reserva se reparte —2 en Palermo, 1 en Belgrano— y con sólo el
+   * primero, despachar intentaba consumir las 3 de Palermo, donde había 2
+   * apartadas: el despacho fallaba con "la reserva ya no está". Devolver una
+   * reserva por cancelación tendría el mismo error al revés. Nulo en los ítems
+   * viejos: ahí vale `locationId` con la cantidad entera, que es lo que pasaba.
+   */
+  reparto:          { type: DataTypes.TEXT, allowNull: true },
 }, { tableName: 'plataforma_pedido_items' });
 
 PedidoPlataforma.hasMany(PedidoPlataformaItem, { as: 'items', foreignKey: 'pedidoId' });
@@ -555,6 +572,13 @@ const MercadoLibreAccount = db.define('MercadoLibreAccount', {
   locationId:      { type: DataTypes.INTEGER, allowNull: true },
   ultimaSync:      { type: DataTypes.DATE },
   ultimoError:     { type: DataTypes.STRING(500) },
+  /*
+   * La última vez que se compararon los envíos con Mercado Libre. Aparte de
+   * `ultimaSync`, que es la del stock: son dos procesos con frecuencias y
+   * fallas distintas, y mezclarlos haría que un stock recién sincronizado
+   * tape unos envíos que hace horas que no se revisan.
+   */
+  ultimaSyncEnvios: { type: DataTypes.DATE, allowNull: true },
 }, { tableName: 'mercadolibre_accounts' });
 
 // ─── MercadoLibreLink (vínculo SKU Stocker ↔ publicación ML) ─────

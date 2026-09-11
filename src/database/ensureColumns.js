@@ -59,6 +59,13 @@ const COLUMNAS_ESPERADAS = {
     // De qué lugar sale el stock que se publica. Nulo hasta que el negocio lo
     // elija; ahí se resuelve al primero de tipo `online`.
     locationId: { type: DataTypes.INTEGER, allowNull: true },
+    // La última reconciliación de envíos con ML. Ver el modelo.
+    ultimaSyncEnvios: { type: DataTypes.DATE, allowNull: true },
+  },
+  plataforma_pedido_items: {
+    // El reparto de la reserva entre locales. Ver el modelo: sin esto, un
+    // pedido repartido no se podía despachar ni devolver.
+    reparto: { type: DataTypes.TEXT, allowNull: true },
   },
   sale_items: {
     /*
@@ -118,6 +125,8 @@ const COLUMNAS_ESPERADAS = {
     estadoEnvioMl:    { type: DataTypes.STRING(30), allowNull: true },
     despachadoEn:     { type: DataTypes.DATE, allowNull: true },
     despachadoPorEmployeeId: { type: DataTypes.INTEGER, allowNull: true },
+    // Cuándo la canceló la plataforma. Ver el modelo.
+    canceladoEn: { type: DataTypes.DATE, allowNull: true },
   },
   variant_stocks: {
     /*

@@ -216,6 +216,31 @@ const getEtiquetas = async (req, res, next) => {
   }
 };
 
-module.exports = {
-  getDelDia, getPdf, postDespachar, postDespacharVarios, postFaltante, getEtiquetas,
+
+/*
+ * POST /api/envios/sincronizar
+ *
+ * Reconcilia los envíos con Mercado Libre. La pantalla lo pide cada vez que se
+ * abre, y el servidor decide si vale la pena: si se hizo hace menos de un
+ * minuto contesta `omitido` sin tocar nada. `forzar` —el botón— baja ese freno
+ * a diez segundos, sin sacarlo: apretarlo diez veces seguidas no son diez
+ * rondas contra la API de ML.
+ *
+ * Un error de ML vuelve con su mensaje y un 502, no como 500: "venció el acceso
+ * a Mercado Libre, reconectá la cuenta" dice qué hacer, y la pantalla lo
+ * muestra tal cual sin tapar la jornada.
+ */
+const postSincronizar = async (req, res, next) => {
+  try {
+    const r = await mlPedidos.reconciliarEnvios(req.auth.businessId, {
+      forzar: req.query.forzar === '1' || req.body?.forzar === true,
+    });
+    res.json(r);
+  } catch (e) {
+    if (e.status) return res.status(e.status).json({ message: e.message });
+    next(e);
+  }
 };
+
+module.exports = {
+  getDelDia, getPdf, postDespachar, postDespacharVarios, postFaltante, getEtiquetas, postSincronizar };

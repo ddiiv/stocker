@@ -278,6 +278,14 @@ r.get ('/envios/del-dia/pdf',   requireAuth, requireAnyPermission(['stock', 'ven
  * "etiquetas" no caiga adentro de :id, que es lo primero que matchea.
  */
 r.get ('/envios/etiquetas',     requireAuth, requireAnyPermission(['stock', 'ventas'], 'ver'), enviosCtrl.getEtiquetas);
+/*
+ * Reconciliar con Mercado Libre. Con el MISMO permiso que ver la jornada, a
+ * propósito: la pantalla lo pide sola al abrirse, y con un permiso más alto un
+ * empleado que puede ver Envíos se comería un 403 —y el cartel de permisos—
+ * cada vez que entra. Leer el estado de ML no cambia nada que ese empleado no
+ * pudiera ver.
+ */
+r.post('/envios/sincronizar',      requireAuth, requireAnyPermission(['stock', 'ventas'], 'ver'), enviosCtrl.postSincronizar);
 r.post('/envios/despachar-varios', requireAuth, requirePermission('stock', 'editar'), enviosCtrl.postDespacharVarios);
 r.post('/envios/:id/despachar', requireAuth, requirePermission('stock', 'editar'), enviosCtrl.postDespachar);
 r.post('/envios/:id/faltante',  requireAuth, requirePermission('stock', 'editar'), enviosCtrl.postFaltante);

@@ -203,7 +203,7 @@ const ML_USER = '999000111';
       topic: 'shipments', resource: '/shipments/4400002', userId: ML_USER,
     });
     chk('se ignora sin romper', 'ignorada', r3.accion);
-    chk('diciendo por qué', true, /todavía no llegó la orden/.test(r3.motivo || ''));
+    chk('diciendo por qué', true, /ningún pedido de Stocker viaja en ese envío/.test(r3.motivo || ''));
 
     RESPUESTAS.set('/orders/77000002', orden(77000002, {
       shipping: { id: 4400002 },
@@ -237,8 +237,18 @@ const ML_USER = '999000111';
     const r6 = await mlPedidos.procesarNotificacion({
       topic: 'orders_v2', resource: '/orders/77000003', userId: ML_USER,
     });
-    chk('se ignora', 'ignorada', r6.accion);
-    chk('diciendo que está cancelada', true, /cancelada/.test(r6.motivo || ''));
+    /*
+     * Antes esto esperaba 'ignorada': la cancelada se descartaba sin rastro.
+     * Es exactamente el bug que se reportó —"cuando tengo envíos cancelados no
+     * aparecen, ni siquiera aparecen"—. Ahora se registra, ya cancelada y sin
+     * apartar nada: es lo que ML muestra como "Canceladas. No despachar".
+     */
+    chk('se registra como cancelada', 'cancelada', r6.accion);
+    chk('diciendo que está cancelada', true, /cancelada/i.test(r6.motivo || ''));
+    const registrada = await PedidoPlataforma.findOne({ where: { pedidoExterno: '77000003' } });
+    chk('queda en Stocker', true, Boolean(registrada));
+    chk('en estado cancelado', 'cancelado', registrada?.estado);
+    chk('con fecha de cancelación', true, Boolean(registrada?.canceladoEn));
     chk('sin apartar nada', apartadoAntes, await apartado());
 
     tit('6. UNA LÍNEA SIN SKU NO SE ESCONDE');
@@ -347,11 +357,11 @@ const ML_USER = '999000111';
 
     chk('encuentra las cuatro', 4, imp.encontrados);
     /*
-     * Dos: la que está lista para despachar y la que tiene la etiqueta
-     * impresa. `shipped` NO es "ya salió": en Flex, ML lo pone apenas se
-     * imprime la etiqueta y la mercadería puede seguir en el estante.
-     * Salteándola, esa venta no entraba nunca a Stocker y su stock no se
-     * descontaba jamás.
+     * Dos: la que está lista para despachar y la que ML ya dio por `shipped`.
+     * `shipped` sí es "ya salió" —en Flex llega con el escaneo del cadete, no
+     * al imprimir—, pero el stock de Stocker todavía no lo sabe: entra, aparta,
+     * y queda marcada para confirmar el despacho a mano. La importación manual
+     * no despacha sola a propósito (ver `autoDespacharSiCorresponde`).
      */
     chk('importa las dos que todavía hay que despachar', 2, imp.importados);
     chk('saltea sólo la entregada', 1, imp.yaDespachados);
@@ -370,8 +380,14 @@ const ML_USER = '999000111';
     });
     chk('la importada queda lista para despachar', 'aceptado', importada.estado);
     chk('con su envío', 'flex', importada.envioTipo);
-    chk('la entregada y la cancelada no se cargaron', 0,
-      await PedidoPlataforma.count({ where: { pedidoExterno: ['77000011', '77000013'] } }));
+    chk('la entregada no se cargó', 0,
+      await PedidoPlataforma.count({ where: { pedidoExterno: '77000011' } }));
+    /*
+     * La cancelada sí: registrada, cancelada, sin apartar. Antes no se cargaba,
+     * y por eso una cancelación nunca aparecía en Envíos del Día.
+     */
+    chk('la cancelada se registró como cancelada', 'cancelado',
+      (await PedidoPlataforma.findOne({ where: { pedidoExterno: '77000013' } }))?.estado);
 
     /*
      * La de la etiqueta impresa sí entra, y queda para despachar. Es el caso
@@ -413,9 +429,11 @@ const ML_USER = '999000111';
       await PedidoPlataforma.findOne({ where: { pedidoExterno } })
     ).estadoEnvio;
 
-    // 12a: Flex + `shipped` — todavía NO. Es el momento en que ML imprime la
-    // etiqueta, no cuando el cadete la levanta: despachar acá restaría stock
-    // de mercadería que puede seguir en el estante.
+    // 12a: Flex con la etiqueta impresa — todavía NO. Imprimir deja el envío
+    // en `ready_to_ship` con subestado `printed`: la mercadería puede seguir
+    // en el estante, y es justo lo que Envíos del Día tiene que seguir
+    // mostrando. (Antes esta prueba usaba `shipped` para este caso, con la
+    // premisa falsa de que en Flex ML lo pone al imprimir.)
     RESPUESTAS.set('/orders/77000030', orden(77000030, { shipping: { id: 4400030 } }));
     RESPUESTAS.set('/shipments/4400030', envio({ id: 4400030, order_id: 77000030 }));
     await mlPedidos.procesarNotificacion({
@@ -423,11 +441,13 @@ const ML_USER = '999000111';
     });
     const apartadoFlexAntes = await apartado();
     const estanteFlexAntes = await estante();
-    RESPUESTAS.set('/shipments/4400030', envio({ id: 4400030, order_id: 77000030, status: 'shipped' }));
+    RESPUESTAS.set('/shipments/4400030', envio({
+      id: 4400030, order_id: 77000030, status: 'ready_to_ship', substatus: 'printed',
+    }));
     await mlPedidos.procesarNotificacion({
       topic: 'shipments', resource: '/shipments/4400030', userId: ML_USER,
     });
-    chk('Flex con `shipped`: no despacha solo', null, await despachadoDe('77000030'));
+    chk('Flex con etiqueta impresa: no despacha solo', null, await despachadoDe('77000030'));
     chk('y no toca el estante', apartadoFlexAntes, await apartado());
 
     // 12b: el handshake —el cadete escaneando el paquete— sí despacha.
@@ -496,6 +516,25 @@ const ML_USER = '999000111';
       topic: 'shipments', resource: '/shipments/4400032', userId: ML_USER,
     });
     chk('Flex sin handshake pero `delivered`: despacha igual', 'despachado', await despachadoDe('77000032'));
+
+    // 12g: Flex + `shipped` SÍ despacha. `shipped` en Flex llega con el primer
+    // escaneo del cadete en la app de Flex, no al imprimir (fuente:
+    // developers.mercadolibre.com.ar, Envíos Flex y el tópico flex-handshakes).
+    // Con la premisa vieja, un Flex ya despachado se quedaba en "Para enviar"
+    // si el aviso del handshake se perdía — que es el caso reportado.
+    RESPUESTAS.set('/orders/77000033', orden(77000033, {
+      shipping: { id: 4400033 },
+      order_items: [{ quantity: 1, unit_price: 5000, item: { id: 'MLA9', seller_sku: 'QA-ML-1' } }],
+    }));
+    RESPUESTAS.set('/shipments/4400033', envio({ id: 4400033, order_id: 77000033 }));
+    await mlPedidos.procesarNotificacion({
+      topic: 'orders_v2', resource: '/orders/77000033', userId: ML_USER,
+    });
+    RESPUESTAS.set('/shipments/4400033', envio({ id: 4400033, order_id: 77000033, status: 'shipped' }));
+    await mlPedidos.procesarNotificacion({
+      topic: 'shipments', resource: '/shipments/4400033', userId: ML_USER,
+    });
+    chk('Flex con `shipped`: despacha solo', 'despachado', await despachadoDe('77000033'));
 
   } finally {
     tit('13. UNA VENTA DE UN PACK POR MERCADO LIBRE');

@@ -37,6 +37,7 @@ const {
 } = require('../models');
 const stockService = require('./stockService');
 const packService = require('./packService');
+const { partesDeItem } = require('../utils/repartoItem');
 const { log } = require('../utils/logger');
 
 const PLATAFORMAS = ['mercadolibre', 'jumpseller'];
@@ -291,10 +292,14 @@ async function resolverYApartar(pedido, items, t) {
       }
       apartadas.push({ variante, parte });
     }
-    // De qué local sale, para poder pickearlo sin recalcular nada.
+    // De qué local sale, para poder pickearlo sin recalcular nada. Y el
+    // reparto entero: si la reserva se partió entre locales, despachar y
+    // devolver necesitan saber cuánto se apartó en cada uno, no sólo dónde
+    // empezó.
     await item.update({
       productVariantId: variante.id,
       locationId: reparto[0]?.locationId || null,
+      reparto: JSON.stringify(reparto.map((p) => ({ locationId: p.locationId, unidades: p.unidades }))),
     }, { transaction: t });
   }
 
@@ -457,6 +462,81 @@ async function reprocesar(pedidoId) {
   }
 }
 
+/**
+ * La plataforma canceló el pedido: se devuelve lo apartado y queda anotado.
+ *
+ * Antes una cancelación de Mercado Libre se descartaba sin tocar nada: el
+ * pedido quedaba "aceptado" y su mercadería APARTADA PARA SIEMPRE, sin venta
+ * detrás. No se veía en ninguna pestaña y el stock disponible —el que se
+ * publica— quedaba más bajo de lo real hasta que alguien lo encontrara a mano.
+ *
+ * Todo en una transacción con el pedido trabado: la notificación de la orden,
+ * la del envío y la reconciliación periódica pueden traer la MISMA cancelación
+ * a la vez, y devolver dos veces la reserva liberaría mercadería de otro
+ * pedido. El segundo que llega encuentra `cancelado` y no hace nada.
+ *
+ * Si ya se había despachado, no se toca el stock: la mercadería ya salió, y si
+ * vuelve, vuelve por devolución —con su reclamo— y no por acá.
+ */
+async function cancelarPorPlataforma(pedidoId, motivo = 'Cancelado en la plataforma') {
+  const t = await db.transaction();
+  try {
+    const pedido = await PedidoPlataforma.findByPk(pedidoId, { transaction: t, lock: t.LOCK.UPDATE });
+    if (!pedido) { await t.rollback(); return { accion: 'no_existe' }; }
+    if (pedido.estado === 'cancelado') { await t.rollback(); return { accion: 'ya_cancelado', pedidoId }; }
+
+    const yaSalio = pedido.estadoEnvio === 'despachado';
+    const habiaApartado = ['aceptado', 'parcial'].includes(pedido.estado) && !yaSalio;
+    let liberadas = 0;
+
+    if (habiaApartado) {
+      const items = await PedidoPlataformaItem.findAll({ where: { pedidoId }, transaction: t });
+      const ids = items.map((i) => i.productVariantId).filter(Boolean);
+      const packs = new Set((ids.length
+        ? await ProductVariant.findAll({ where: { id: ids, esPack: true }, attributes: ['id'], transaction: t })
+        : []).map((v) => v.id));
+
+      for (const item of items) {
+        if (!item.productVariantId) continue;
+        for (const parte of partesDeItem(item)) {
+          const pudo = packs.has(item.productVariantId)
+            ? await packService.liberarPack(item.productVariantId, parte.locationId, pedido.businessId, parte.unidades, t)
+            : await stockService.liberarReserva(item.productVariantId, parte.locationId, pedido.businessId, parte.unidades, t);
+          /*
+           * Que no se pueda liberar no frena la cancelación: la venta ya no
+           * existe y marcarla cancelada es lo correcto igual. Pero se anota,
+           * porque significa que lo apartado no coincidía con lo que dice el
+           * pedido y alguien tiene que mirarlo.
+           */
+          if (pudo) liberadas += parte.unidades;
+          else {
+            log.warn('cola-online', 'cancelación: una reserva no estaba para devolver', {
+              pedido: pedidoId, sku: item.sku, local: parte.locationId, unidades: parte.unidades,
+            });
+          }
+        }
+      }
+    }
+
+    await pedido.update({
+      estado: 'cancelado',
+      motivo: String(yaSalio
+        ? `${motivo}. Ya se había despachado: si vuelve, entra por devolución.`
+        : motivo).slice(0, 500),
+      canceladoEn: new Date(),
+    }, { transaction: t });
+    await t.commit();
+
+    log.info('cola-online', 'pedido cancelado por la plataforma', {
+      pedido: pedidoId, liberadas, yaSalio,
+    });
+    return { accion: 'cancelado', pedidoId, liberadas, yaSalio };
+  } catch (e) {
+    await t.rollback().catch(() => {});
+    throw e;
+  }
+}
+
 /*
  * Marca un pedido como rechazado, en su propia transacción.
  */
@@ -527,4 +607,5 @@ async function encolarYProcesar(datos) {
 
 module.exports = {
   encolar, procesarUno, procesarCola, encolarYProcesar, reprocesar, PLATAFORMAS,
+  partesDeItem, cancelarPorPlataforma,
 };
