@@ -33,7 +33,9 @@ const CAMPOS_PRODUCTO = ['sku', 'skuAgrupador', 'titulo', 'descripcion', 'precio
 const CAMPOS_VARIANTE = ['sku', 'codigoBarras', 'variante1Nombre', 'variante1Valor',
   'variante2Nombre', 'variante2Valor', 'stock', 'stockMinimo', 'activo',
   // Precios propios: null vuelve a heredar el del producto.
-  'precioMinorista', 'precioMayorista', 'costo'];
+  'precioMinorista', 'precioMayorista', 'costo',
+  // Unidades que no se publican en Mercado Libre.
+  'margenMl'];
 
 
 // ── Helpers ────────────────────────────────────────────────────────
@@ -1084,6 +1086,20 @@ const updateVariant = async (req, res, next) => {
               ? ` (${[ocupada.variante1Valor, ocupada.variante2Valor].filter(Boolean).join(' · ')})` : ''}.`,
         });
       }
+    }
+
+    /*
+     * El margen de ML es una cantidad de unidades: entero y no negativo. Un
+     * negativo publicaría MÁS de lo que hay, lo contrario de para qué existe.
+     */
+    if (req.body?.margenMl !== undefined) {
+      const margen = Number(req.body.margenMl ?? 0);
+      if (!Number.isInteger(margen) || margen < 0 || margen > 100000) {
+        return res.status(400).json({
+          message: 'El margen de Mercado Libre tiene que ser un número entero, de 0 en adelante.',
+        });
+      }
+      req.body.margenMl = margen;
     }
 
     await variant.update(soloCampos(req.body, CAMPOS_VARIANTE));

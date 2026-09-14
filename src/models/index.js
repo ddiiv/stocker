@@ -991,6 +991,15 @@ const ProductVariant = db.define('ProductVariant', {
   stock:           { type: DataTypes.INTEGER, defaultValue: 0 },
   stockMinimo:     { type: DataTypes.INTEGER, defaultValue: 5 },
   /*
+   * Margen de seguridad para Mercado Libre: unidades que no se publican.
+   *
+   * A ML va lo disponible menos este número. Es para lo que se vende rápido en
+   * el mostrador: entre una venta en el local y la próxima sincronización, ML
+   * puede vender la misma prenda dos veces. En un pack son packs enteros.
+   * Nulo o cero, que es lo normal: se publica todo lo disponible.
+   */
+  margenMl: { type: DataTypes.INTEGER, allowNull: true, defaultValue: 0 },
+  /*
    * Un pack no lleva stock propio: lo lleva lo que tiene adentro.
    *
    * Un "pack de 3 remeras" es una forma de vender, no mercadería aparte. Las

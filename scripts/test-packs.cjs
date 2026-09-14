@@ -1007,11 +1007,19 @@ function sesion() {
         chk('pero no la remera blanca', 0, await apartado(remV['Blanco-M']));
         await packs.liberarPack(comboM.id, local.id, negocio.id, 1);
 
+        const ruta = `/api/products/variants/${comboM.id}`;
+        chk('el margen de ML se guarda por SKU', 200, (await api('PUT', ruta, { margenMl: 2 })).status);
+        chk('un margen negativo se rechaza', 400, (await api('PUT', ruta, { margenMl: -1 })).status);
+        chk('y uno con decimales también', 400, (await api('PUT', ruta, { margenMl: 2.5 })).status);
+        chk('lo rechazado no pisa lo guardado', 2, Number((await ProductVariant.findByPk(comboM.id)).margenMl));
+
         let lista = await api('GET', '/api/packs');
         let grupo = (lista.json || []).find((g) => g.productId === comboProd.id);
         chk('la lista lo marca como combo', 'combo', grupo?.tipo);
         chk('nombra las dos prendas', ['Pantalón QA', 'Remera QA'], (grupo?.piezas || []).map((x) => x.titulo).sort());
         chk('sin talles faltantes', 0, grupo?.faltanVariantes);
+        chk('la lista de packs trae el margen', 2,
+          (grupo?.variantes || []).find((x) => x.variantId === comboM.id)?.margenMl);
 
         // El pantalón suma el talle S: la remera ya lo tenía.
         await variante(pan, 'QA-CB-PAN-S', [['Color', 'Negro'], ['Talle', 'S']]);

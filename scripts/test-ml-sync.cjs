@@ -295,6 +295,29 @@ const CUANTAS = 204;   // el número exacto que disparó el aviso
     await stock.mover({ variantId: variantes[0].id, businessId: negocio.id,
       locationId: local.id, fijar: 10, tipo: 'ajuste', motivo: 'QA sync pack' });
 
+    tit('8b. EL MARGEN DE SEGURIDAD NO SE PUBLICA');
+    /*
+     * Lo que se vende rápido en el mostrador puede guardar unidades fuera de
+     * ML: entre una venta en el local y la próxima sincronización, ML podría
+     * vender la misma prenda dos veces.
+     */
+    await ProductVariant.update({ margenMl: 2 }, { where: { id: variantes[0].id } });
+    const conMargen = await ml.sincronizarStock(negocio.id, { simular: true, skus: ['QA-SYNC-0'] });
+    chk('con 10 disponibles y margen 2, se publican 8', 8, conMargen.resultados[0]?.stockStocker);
+    chk('y la fila dice el margen', 2, conMargen.resultados[0]?.margenMl);
+    await ProductVariant.update({ margenMl: 50 }, { where: { id: variantes[0].id } });
+    const margenGrande = await ml.sincronizarStock(negocio.id, { simular: true, skus: ['QA-SYNC-0'] });
+    chk('un margen mayor a lo que hay publica cero, no negativo', 0, margenGrande.resultados[0]?.stockStocker);
+    await ProductVariant.update({ margenMl: 0 }, { where: { id: variantes[0].id } });
+
+    await ProductVariant.update({ margenMl: 1 }, { where: { id: pack.id } });
+    const packMargen = await ml.sincronizarStock(negocio.id, { simular: true, skus: [pack.sku] });
+    chk('en un pack el margen son packs: 3 armables, margen 1, se publican 2', 2,
+      (packMargen.resultados || []).find((d) => d.sku === pack.sku)?.stockStocker);
+    const suelta = await ml.sincronizarStock(negocio.id, { simular: true, skus: ['QA-SYNC-0'] });
+    chk('y el margen del pack no le quita nada a la prenda suelta', 10, suelta.resultados[0]?.stockStocker);
+    await ProductVariant.update({ margenMl: 0 }, { where: { id: pack.id } });
+
     tit('9. LO QUE SE APARTA TAMBIÉN AVISA');
     /*
      * Lo publicado es `stock - reservado`, así que apartar unidades lo baja

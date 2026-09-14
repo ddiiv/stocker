@@ -569,9 +569,16 @@ async function sincronizarStock(businessId, { simular = false, skus = null } = {
      * venderse sin cargar no tiene nada para despachar, y mandar el negativo
      * a ML sería pedirle que ofrezca deuda.
      */
-    const cantidad = Math.max(0, stockPorVariante.get(v.id) || 0);
+    /*
+     * Y el margen de seguridad se descuenta al final, sobre lo disponible:
+     * son unidades que el negocio prefiere no ofrecer online. Nunca baja de
+     * cero. En un pack el margen son packs enteros, porque lo disponible de un
+     * pack ya viene contado en packs.
+     */
+    const margenMl = Math.max(0, Math.trunc(Number(v.margenMl) || 0));
+    const cantidad = Math.max(0, (stockPorVariante.get(v.id) || 0) - margenMl);
     const fila = {
-      sku: v.sku, titulo: v.producto.titulo,
+      sku: v.sku, titulo: v.producto.titulo, margenMl,
       mlItemId: destino.mlItemId, mlVariationId: destino.mlVariationId,
       stockStocker: cantidad, stockMl: destino.stockActual ?? null,
       lugar: locales.map((l) => l.nombre).join(', '),

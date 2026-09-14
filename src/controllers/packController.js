@@ -140,7 +140,7 @@ const listar = async (req, res, next) => {
       where: { businessId, esPack: true, activo: true },
       attributes: ['id', 'productId', 'sku', 'variante1Nombre', 'variante1Valor',
         'variante2Nombre', 'variante2Valor', 'activo',
-        'precioMinorista', 'precioMayorista', 'costo'],
+        'precioMinorista', 'precioMayorista', 'costo', 'margenMl'],
       include: [{
         model: Product, as: 'producto',
         attributes: ['id', 'sku', 'titulo', 'precioMinorista', 'precioMayorista', 'costo', 'definicionCombo'],
@@ -223,6 +223,7 @@ const listar = async (req, res, next) => {
         sku: v.sku,
         etiqueta: [v.variante1Valor, v.variante2Valor].filter(Boolean).join(' / '),
         activo: v.activo,
+        margenMl: Number(v.margenMl) || 0,
         componentes: comps,
         armables: arm.total,
         porLocal: arm.porLocal,

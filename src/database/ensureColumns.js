@@ -83,6 +83,8 @@ const COLUMNAS_ESPERADAS = {
   },
   product_variants: {
     codigoBarras: { type: DataTypes.STRING(60), allowNull: true },
+    // Unidades que no se publican en Mercado Libre. Ver el modelo ProductVariant.
+    margenMl: { type: DataTypes.INTEGER, allowNull: true },
     /*
      * El negocio dueño de la variante, copiado del producto.
      *
