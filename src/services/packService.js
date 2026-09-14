@@ -88,3 +88,20 @@ export async function packsQueUsan(variantId) {
   const { data } = await http.get(`/packs/usan/${variantId}`);
   return data;
 }
+
+/*
+ * Combos: productos distintos en un mismo pack (remera + pantalón).
+ *
+ * Se genera un combo por cada talle que las prendas tienen en común, con el
+ * color de cada una fijado al crearlo. La previa va por POST porque lleva la
+ * lista de prendas, que en una URL no entra con comodidad.
+ */
+export async function fetchSugerenciaCombo(datos) {
+  const { data } = await http.post("/packs/combo/sugerencia", datos);
+  return data;
+}
+
+export async function crearCombo(datos) {
+  const { data } = await http.post("/packs/combo", datos);
+  return data;
+}

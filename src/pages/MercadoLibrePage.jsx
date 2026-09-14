@@ -470,7 +470,14 @@ export default function MercadoLibrePage() {
                               </a>
                             </td>
                             <td className="px-4 py-2 text-ink-600">{r.stockMl ?? "—"}</td>
-                            <td className="px-4 py-2 font-medium text-ink-900">{r.stockStocker}</td>
+                            <td className="px-4 py-2 font-medium text-ink-900">
+                              {r.stockStocker}
+                              {r.margenMl > 0 && (
+                                <span className="ml-1 text-[11px] font-normal text-ink-500" title="Margen de seguridad: esas unidades no se publican">
+                                  (margen −{r.margenMl})
+                                </span>
+                              )}
+                            </td>
                             <td className="px-4 py-2">
                               <EstadoChip estado={r.estado} error={r.error} />
                             </td>

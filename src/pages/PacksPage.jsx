@@ -5,11 +5,13 @@ import StockTabs from "../components/stock/StockTabs";
 import { http } from "../lib/http";
 import {
   fetchPacks, fetchSugerencia, crearPack, completarPack, eliminarPack,
+  fetchSugerenciaCombo, crearCombo,
 } from "../services/packService";
 import { formatCurrency } from "../utils/formatters";
 import { mensajeDeError } from "../utils/errores";
 import { useAuth } from "../context/AuthContext";
 import { canEdit } from "../utils/permissions";
+import CeldaMargenMl from "../components/products/CeldaMargenMl";
 
 /*
  * Packs (combos).
@@ -24,6 +26,11 @@ import { canEdit } from "../utils/permissions";
  * padre, con sus mismos atributos: el pack x3 de la remera negra M es distinto
  * del de la beige L, igual que lo son las remeras. Los SKU salen de la regla
  * del negocio, la misma que usan los productos normales.
+ *
+ * Un combo junta productos DISTINTOS —remera + pantalón— y se genera uno por
+ * cada talle que tienen en común, con el color de cada prenda fijado al
+ * crearlo. Por debajo es un pack más: sin stock propio, se cuenta, se publica
+ * y se vende igual.
  *
  * "Se arman" nunca es un campo editable, en ningún lado. Es el mínimo de lo que
  * dan sus componentes, y aparece siempre junto al desglose por local, porque un
@@ -82,11 +89,16 @@ export default function PacksPage() {
     <div>
       <PageHeader
         title="Packs"
-        subtitle="Vender de a N unidades de un producto. No llevan stock propio: se cuentan los packs ENTEROS que se pueden armar con lo que haya."
+        subtitle="Vender de a N unidades de un producto, o varios productos juntos en un combo. No llevan stock propio: se cuentan los ENTEROS que se pueden armar con lo que haya."
         actions={puedeEditar && (
-          <button className="btn-primary" onClick={() => setCreando(true)}>
-            <Plus size={16} /> Nuevo pack
-          </button>
+          <div className="flex flex-wrap gap-2">
+            <button className="btn-ghost border border-line" onClick={() => setCreando("combo")}>
+              <Plus size={16} /> Nuevo combo
+            </button>
+            <button className="btn-primary" onClick={() => setCreando("pack")}>
+              <Plus size={16} /> Nuevo pack
+            </button>
+          </div>
         )}
       />
       <StockTabs />
@@ -104,8 +116,14 @@ export default function PacksPage() {
         </div>
       )}
 
-      {creando && (
+      {creando === "pack" && (
         <NuevoPack
+          onCerrar={() => setCreando(false)}
+          onCreado={async (msg) => { setCreando(false); setAviso(msg); await cargar(); }}
+        />
+      )}
+      {creando === "combo" && (
+        <NuevoCombo
           onCerrar={() => setCreando(false)}
           onCreado={async (msg) => { setCreando(false); setAviso(msg); await cargar(); }}
         />
@@ -120,7 +138,7 @@ export default function PacksPage() {
             title="Todavía no hay packs"
             description="Elegí un producto y cuántas unidades entran por pack. Se genera un pack por cada color y talle, con su SKU, y al venderlo el stock sale del producto."
             action={puedeEditar && (
-              <button className="btn-primary" onClick={() => setCreando(true)}>
+              <button className="btn-primary" onClick={() => setCreando("pack")}>
                 <Plus size={16} /> Crear el primero
               </button>
             )}
@@ -128,7 +146,7 @@ export default function PacksPage() {
         )}
 
         {!cargando && packs.map((p) => (
-          <TarjetaPack
+          <TarjetaPack onGuardado={cargar}
             key={p.productId}
             pack={p}
             puedeEditar={puedeEditar}
@@ -141,7 +159,7 @@ export default function PacksPage() {
   );
 }
 
-function TarjetaPack({ pack, puedeEditar, onEliminar, onCompletar }) {
+function TarjetaPack({ pack, puedeEditar, onEliminar, onCompletar, onGuardado }) {
   const [abierto, setAbierto] = useState(false);
   const caidos = pack.variantes.filter((v) => v.componentes.some((c) => c.activo === false));
 
@@ -159,6 +177,18 @@ function TarjetaPack({ pack, puedeEditar, onEliminar, onCompletar }) {
             <p className="mt-0.5 text-xs text-ink-500">
               Sale de <span className="text-ink-700">{pack.padre.titulo}</span>{" "}
               (<span className="font-mono">{pack.padre.sku}</span>)
+            </p>
+          )}
+          {pack.tipo === "combo" && pack.piezas?.length > 0 && (
+            <p className="mt-0.5 text-xs text-ink-500">
+              Combo:{" "}
+              {pack.piezas.map((pz, i) => (
+                <span key={pz.productId}>
+                  {i > 0 && " + "}
+                  <span className="text-ink-700">{pz.titulo}</span>
+                  {pz.cantidad > 1 ? ` ×${pz.cantidad}` : ""}
+                </span>
+              ))}
             </p>
           )}
         </div>
@@ -183,8 +213,10 @@ function TarjetaPack({ pack, puedeEditar, onEliminar, onCompletar }) {
       {pack.faltanVariantes > 0 && (
         <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-md border border-line bg-paper-100 px-3 py-2">
           <p className="text-xs text-ink-700">
-            El producto tiene {pack.faltanVariantes} variante{pack.faltanVariantes === 1 ? "" : "s"}{" "}
-            sin pack: no se pueden vender de a {pack.unidades}.
+            {pack.tipo === "combo"
+              ? <>Las prendas tienen {pack.faltanVariantes} talle{pack.faltanVariantes === 1 ? "" : "s"} en común sin combo: no se venden.</>
+              : <>El producto tiene {pack.faltanVariantes} variante{pack.faltanVariantes === 1 ? "" : "s"}{" "}
+                sin pack: no se pueden vender de a {pack.unidades}.</>}
           </p>
           {puedeEditar && (
             <button className="btn-ghost px-2 py-1 text-xs" onClick={onCompletar}>
@@ -219,6 +251,7 @@ function TarjetaPack({ pack, puedeEditar, onEliminar, onCompletar }) {
                   <th className="py-1.5 font-medium">SKU del pack</th>
                   <th className="py-1.5 font-medium">Sale de</th>
                   <th className="py-1.5 text-right font-medium">Packs enteros</th>
+                  <th className="py-1.5 pl-3 text-right font-medium" title="Packs que no se publican en Mercado Libre">Margen ML</th>
                 </tr>
               </thead>
               <tbody>
@@ -262,6 +295,9 @@ function TarjetaPack({ pack, puedeEditar, onEliminar, onCompletar }) {
                           {v.porLocal.map((l) => `${l.local}: ${l.armables}`).join(" · ")}
                         </span>
                       )}
+                    </td>
+                    <td className="py-1.5 pl-3 text-right">
+                      <CeldaMargenMl variantId={v.variantId} margen={v.margenMl} onSaved={onGuardado} soloLectura={!puedeEditar} />
                     </td>
                   </tr>
                 ))}
@@ -481,6 +517,256 @@ function NuevoPack({ onCerrar, onCreado }) {
         <button className="btn-ghost" onClick={onCerrar} disabled={guardando}>Cancelar</button>
         <button className="btn-primary" onClick={guardar} disabled={guardando || !previa}>
           {guardando ? "Creando…" : `Crear ${incluidas.length || ""} pack${incluidas.length === 1 ? "" : "s"}`}
+        </button>
+      </div>
+    </Card>
+  );
+}
+
+const nuevaPieza = () => ({ producto: null, cantidad: 1, fijos: {} });
+
+/*
+ * El alta de un combo.
+ *
+ * Se eligen las prendas, cuántas de cada una y su color, y la pantalla muestra
+ * ANTES de guardar qué talles salen y con qué SKU. El talle es compartido: el
+ * "Conjunto M" lleva la remera M y el pantalón M. Si las prendas no comparten
+ * ningún talle —una remera S/M/L con un pantalón 38/40— no sale ningún combo,
+ * y la pantalla lo dice en vez de quedar vacía.
+ */
+function NuevoCombo({ onCerrar, onCreado }) {
+  const eje = "Talle";
+  const [piezas, setPiezas] = useState(() => [nuevaPieza(), nuevaPieza()]);
+  const [sku, setSku] = useState("");
+  const [skuTocado, setSkuTocado] = useState(false);
+  const [titulo, setTitulo] = useState("");
+  const [tituloTocado, setTituloTocado] = useState(false);
+  const [precio, setPrecio] = useState("");
+  const [precioTocado, setPrecioTocado] = useState(false);
+  const [previa, setPrevia] = useState(null);
+  const [excluidos, setExcluidos] = useState(() => new Set());
+  const [guardando, setGuardando] = useState(false);
+  const [error, setError] = useState("");
+
+  const completas = piezas.length >= 2 && piezas.every((p) => p.producto);
+  const cuerpo = () => piezas.map((p) => ({
+    productId: p.producto.id, cantidad: p.cantidad, fijos: p.fijos,
+  }));
+  const cambiarPieza = (i, cambio) => setPiezas((prev) => prev.map((p, j) => (j === i ? { ...p, ...cambio } : p)));
+
+  /*
+   * La previa se recalcula al cambiar prendas, cantidades, colores o el SKU.
+   * Como en el pack, lo que la persona ya tocó no se pisa.
+   */
+  useEffect(() => {
+    if (!completas) { setPrevia(null); return undefined; }
+    let vigente = true;
+    const t = setTimeout(async () => {
+      try {
+        const s = await fetchSugerenciaCombo({
+          eje, sku: skuTocado ? sku : undefined, piezas: cuerpo(),
+        });
+        if (!vigente) return;
+        setPrevia(s);
+        setError("");
+        if (!skuTocado) setSku(s.sku);
+        if (!tituloTocado) setTitulo(s.titulo);
+        if (!precioTocado) setPrecio(String(s.precioMinorista ?? ""));
+      } catch (e) {
+        if (vigente) { setPrevia(null); setError(mensajeDeError(e, "No se pudo calcular la previa.")); }
+      }
+    }, 300);
+    return () => { vigente = false; clearTimeout(t); };
+    // `cuerpo` sale de `piezas`, que ya está en la lista.
+  }, [piezas, completas, sku, skuTocado, tituloTocado, precioTocado]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const incluidos = (previa?.variantes || []).filter((v) => !excluidos.has(v.talle));
+
+  async function guardar() {
+    setError("");
+    if (!completas) { setError("Elegí el producto de cada prenda."); return; }
+    if (!incluidos.length) { setError("No hay ningún talle para crear."); return; }
+    setGuardando(true);
+    try {
+      const r = await crearCombo({
+        sku: sku.trim(),
+        titulo: titulo.trim(),
+        precioMinorista: Number(precio),
+        eje,
+        piezas: cuerpo(),
+        talles: incluidos.length === previa.variantes.length ? undefined : incluidos.map((v) => v.talle),
+      });
+      await onCreado(r.mensaje);
+    } catch (e) {
+      setError(mensajeDeError(e, "No se pudo crear el combo."));
+    }
+    setGuardando(false);
+  }
+
+  return (
+    <Card className="mt-4">
+      <div className="mb-4 flex items-start justify-between gap-3">
+        <div>
+          <p className="font-display text-base font-semibold text-ink-900">Nuevo combo</p>
+          <p className="mt-0.5 text-sm text-ink-600">
+            Elegí las prendas, cuántas de cada una y su color. Se genera un combo por cada talle
+            que tienen en común, con su propio SKU, y al venderlo sale del estante cada prenda.
+          </p>
+        </div>
+        <button className="btn-ghost px-2 py-1" onClick={onCerrar} aria-label="Cerrar"><X size={16} /></button>
+      </div>
+
+      <div className="space-y-3">
+        {piezas.map((p, i) => {
+          const info = previa?.piezas?.[i];
+          // Los otros ejes de la prenda con más de un valor: hay que fijarlos.
+          const aFijar = Object.entries(info?.ejes || {}).filter(([nombre, valores]) => nombre !== eje && valores.length > 1);
+          return (
+            <div key={i} className="rounded-md border border-line p-3">
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <p className="text-xs font-medium uppercase tracking-wide text-ink-600">Prenda {i + 1}</p>
+                {piezas.length > 2 && (
+                  <button type="button" className="btn-ghost px-2 py-1 text-xs"
+                    onClick={() => setPiezas((prev) => prev.filter((_, j) => j !== i))}>
+                    Quitar
+                  </button>
+                )}
+              </div>
+              <BuscadorProducto valor={p.producto}
+                onElegir={(prod) => { cambiarPieza(i, { producto: prod, fijos: {} }); setExcluidos(new Set()); }} />
+              {p.producto && (
+                <div className="mt-2 grid gap-3 sm:grid-cols-4">
+                  <label className="block">
+                    <span className="mb-1 block text-xs font-medium text-ink-700">Cantidad</span>
+                    <input className="input" type="number" min="1" max="1000" value={p.cantidad}
+                      onChange={(e) => cambiarPieza(i, { cantidad: Math.max(1, Number(e.target.value) || 1) })} />
+                  </label>
+                  {aFijar.map(([nombre, valores]) => (
+                    <label key={nombre} className="block">
+                      <span className="mb-1 block text-xs font-medium text-ink-700">{nombre}</span>
+                      <select className="input" value={p.fijos[nombre] || ""}
+                        onChange={(e) => cambiarPieza(i, { fijos: { ...p.fijos, [nombre]: e.target.value } })}>
+                        <option value="">Elegí…</option>
+                        {valores.map((v) => <option key={v} value={v}>{v}</option>)}
+                      </select>
+                    </label>
+                  ))}
+                  {info && (
+                    <p className="self-end pb-2 text-xs text-ink-500 sm:col-span-2">
+                      Talles: {info.talles?.length ? info.talles.join(", ") : "ninguno todavía"}
+                    </p>
+                  )}
+                </div>
+              )}
+              {info?.problema && (
+                <p className="mt-2 flex items-start gap-1.5 text-xs text-brick-700">
+                  <AlertTriangle size={13} className="mt-0.5 shrink-0" />{info.problema}
+                </p>
+              )}
+            </div>
+          );
+        })}
+        {piezas.length < 10 && (
+          <button type="button" className="btn-ghost border border-line text-xs"
+            onClick={() => setPiezas((prev) => [...prev, nuevaPieza()])}>
+            <Plus size={14} /> Agregar prenda
+          </button>
+        )}
+      </div>
+
+      {completas && (
+        <>
+          <div className="mt-4 grid gap-3 sm:grid-cols-4">
+            <label className="block">
+              <span className="mb-1 block text-xs font-medium text-ink-700">SKU del combo</span>
+              <input className="input font-mono" value={sku} maxLength={80}
+                onChange={(e) => { setSku(e.target.value); setSkuTocado(true); }} />
+            </label>
+            <label className="block sm:col-span-2">
+              <span className="mb-1 block text-xs font-medium text-ink-700">Nombre</span>
+              <input className="input" value={titulo} maxLength={120}
+                onChange={(e) => { setTitulo(e.target.value); setTituloTocado(true); }} />
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-xs font-medium text-ink-700">Precio del combo</span>
+              <input className="input" type="number" min="0" step="0.01" value={precio}
+                onChange={(e) => { setPrecio(e.target.value); setPrecioTocado(true); }} />
+            </label>
+          </div>
+          {previa && (
+            <p className="mt-2 text-xs text-ink-500">
+              Sugerido: la suma de las prendas, {formatCurrency(previa.precioMinorista)}. Es una sugerencia:
+              la mayoría de los combos se venden con descuento.
+            </p>
+          )}
+
+          {previa?.avisos?.map((a) => (
+            <p key={a} className="mt-2 flex items-start gap-1.5 text-xs text-ink-600">
+              <AlertTriangle size={13} className="mt-0.5 shrink-0" />{a}
+            </p>
+          ))}
+
+          {previa && previa.variantes.length > 0 && (
+            <div className="mt-4">
+              <p className="mb-1.5 text-xs font-medium text-ink-700">
+                Se van a crear {incluidos.length} combo{incluidos.length === 1 ? "" : "s"}
+              </p>
+              <div className="max-h-64 overflow-y-auto rounded-md border border-line">
+                <table className="w-full min-w-[420px] text-sm">
+                  <thead className="sticky top-0 bg-paper-100">
+                    <tr className="border-b border-line text-left text-xs uppercase tracking-wide text-ink-600">
+                      <th className="px-2 py-1.5 font-medium"><span className="sr-only">Incluir</span></th>
+                      <th className="px-2 py-1.5 font-medium">Talle</th>
+                      <th className="px-2 py-1.5 font-medium">Lleva</th>
+                      <th className="px-2 py-1.5 font-medium">SKU del combo</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {previa.variantes.map((v) => {
+                      const dentro = !excluidos.has(v.talle);
+                      return (
+                        <tr key={v.talle} className="border-b border-line last:border-0">
+                          <td className="px-2 py-1.5">
+                            <input type="checkbox" checked={dentro} aria-label={`Incluir talle ${v.talle}`}
+                              onChange={() => setExcluidos((prev) => {
+                                const n = new Set(prev);
+                                if (n.has(v.talle)) n.delete(v.talle); else n.add(v.talle);
+                                return n;
+                              })} />
+                          </td>
+                          <td className={`px-2 py-1.5 ${dentro ? "text-ink-800" : "text-ink-400 line-through"}`}>{v.talle}</td>
+                          <td className="px-2 py-1.5 font-mono text-xs text-ink-500">
+                            {v.componentes.map((c) => `${c.cantidad}× ${c.skuPadre}`).join(" + ")}
+                          </td>
+                          <td className="px-2 py-1.5 font-mono text-xs text-ink-600">
+                            {v.sku}
+                            {v.repetido && (
+                              <span className="ml-1 rounded bg-paper-200 px-1 py-0.5 text-[10px] text-ink-600">
+                                se le agrega un sufijo
+                              </span>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </>
+      )}
+
+      {error && (
+        <p className="mt-3 flex items-start gap-1.5 text-sm text-brick-700">
+          <AlertTriangle size={15} className="mt-0.5 shrink-0" />{error}
+        </p>
+      )}
+
+      <div className="mt-4 flex justify-end gap-2 border-t border-line pt-3">
+        <button className="btn-ghost" onClick={onCerrar} disabled={guardando}>Cancelar</button>
+        <button className="btn-primary" onClick={guardar} disabled={guardando || !previa || !incluidos.length}>
+          {guardando ? "Creando…" : `Crear ${incluidos.length || ""} combo${incluidos.length === 1 ? "" : "s"}`}
         </button>
       </div>
     </Card>

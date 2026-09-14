@@ -14,6 +14,7 @@ import BulkVariantsModal from "../components/products/BulkVariantsModal";
 import EditProductModal from "../components/products/EditProductModal";
 import CargaRapidaStock from "../components/products/CargaRapidaStock";
 import CeldaPrecio from "../components/products/CeldaPrecio";
+import CeldaMargenMl from "../components/products/CeldaMargenMl";
 import { formatCurrency } from "../utils/formatters";
 import { Boxes, PencilLine, Check, X, Wand2, Loader2, Tag, ListPlus, Store, MapPin, LayoutGrid } from "lucide-react";
 
@@ -283,6 +284,7 @@ export default function ProductDetailPage() {
                 {locales.length > 1 ? "Total" : "Stock"}
               </th>
               <th className="px-4 py-3 font-medium">Stock mín.</th>
+              <th className="px-3 py-3 text-right font-medium" title="Unidades que no se publican en Mercado Libre">Margen ML</th>
               {/* El precio por variante: en gris cuando lo hereda del producto,
                   en negro cuando es propio. Sin esa distinción no hay forma de
                   saber por qué dos talles valen distinto. */}
@@ -475,6 +477,7 @@ function VariantEditRow({ variant, onAdjust, onDelete, agrupador, onSaved, local
       })}
       <td className="px-4 py-3 text-right"><span className={`badge ${status}`}>{variant.stock} un.</span></td>
       <td className="px-4 py-3 text-ink-600">{variant.stockMinimo}</td>
+      <td className="px-3 py-3 text-right"><CeldaMargenMl variantId={variant.id} margen={variant.margenMl} onSaved={onSaved} soloLectura={!puedeEditar} /></td>
       <td className="px-3 py-3"><CeldaPrecio variant={variant} campo="precioMinorista" onSaved={onSaved} soloLectura={!puedeEditar} /></td>
       <td className="px-3 py-3"><CeldaPrecio variant={variant} campo="precioMayorista" onSaved={onSaved} soloLectura={!puedeEditar} /></td>
       <td className="px-4 py-3">
