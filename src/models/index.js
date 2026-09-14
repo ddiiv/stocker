@@ -954,6 +954,17 @@ const Product = db.define('Product', {
    * distinto a propósito.
    */
   origenProductId: { type: DataTypes.INTEGER, allowNull: true },
+  /*
+   * Qué lleva un combo, cuando este producto lo es. JSON:
+   *   { eje: 'Talle', piezas: [{ productId, cantidad, fijos: { Color: 'Negro' } }] }
+   *
+   * Un combo junta productos DISTINTOS (remera + pantalón) y se genera una
+   * variante por cada talle que tienen en común. Las variantes y sus
+   * componentes ya dicen qué descuenta cada una; esto guarda la regla con la
+   * que se generaron, que es lo único que permite agregar solo un talle nuevo
+   * el día que las prendas lo sumen. Nulo en todo lo que no es combo.
+   */
+  definicionCombo: { type: DataTypes.TEXT, allowNull: true },
 }, { tableName: 'products' });
 
 // ─── ProductVariant ───────────────────────────────────────────────

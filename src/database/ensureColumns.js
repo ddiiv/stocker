@@ -215,6 +215,8 @@ const COLUMNAS_ESPERADAS = {
     // Producto de feria: se vende sin llevar inventario. Ver el modelo.
     esFeria:         { type: DataTypes.BOOLEAN, allowNull: true, defaultValue: false },
     origenProductId: { type: DataTypes.INTEGER, allowNull: true },
+    // Qué lleva un combo de productos distintos. Ver el modelo Product.
+    definicionCombo: { type: DataTypes.TEXT, allowNull: true },
   },
 
   sales: {

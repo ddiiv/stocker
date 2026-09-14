@@ -31,6 +31,7 @@
 const { Op } = require('sequelize');
 const { ProductVariant, Product, PackComponente, VariantStock } = require('../models');
 const stockService = require('./stockService');
+const skuService = require('./skuService');
 
 const error = (mensaje, status = 400, extra = {}) =>
   Object.assign(new Error(mensaje), { status, ...extra });
@@ -446,8 +447,182 @@ async function packsQueUsan(componenteVariantId, businessId, t = null) {
     .map((f) => ({ variantId: f.pack.id, sku: f.pack.sku, lleva: Number(f.cantidad) }));
 }
 
+/*
+ * ══ Combos: productos distintos, un combo por talle en común ═══════
+ *
+ * Los talles se ordenan como en una góndola, no alfabéticamente: "L, M, S"
+ * no es ningún orden. Es la misma escala que usa la pantalla.
+ */
+const ESCALA_TALLES = [
+  'XXXS', '3XS', 'XXS', '2XS', 'XS', 'S', 'M', 'L',
+  'XL', 'XXL', '2XL', 'XXXL', '3XL', 'XXXXL', '4XL', 'XXXXXL', '5XL',
+  'ÚNICO', 'UNICO', 'U',
+];
+const normTalle = (v) => String(v ?? '').trim().toUpperCase();
+
+function compararTalles(a, b) {
+  const pa = ESCALA_TALLES.indexOf(normTalle(a));
+  const pb = ESCALA_TALLES.indexOf(normTalle(b));
+  if (pa !== -1 && pb !== -1) return pa - pb;
+  if (pa !== -1) return -1;
+  if (pb !== -1) return 1;
+  const na = Number(String(a).replace(',', '.'));
+  const nb = Number(String(b).replace(',', '.'));
+  if (Number.isFinite(na) && Number.isFinite(nb)) return na - nb;
+  if (Number.isFinite(na)) return -1;
+  if (Number.isFinite(nb)) return 1;
+  return normTalle(a).localeCompare(normTalle(b), 'es');
+}
+
+const paresDe = (v) => [
+  [v.variante1Nombre, v.variante1Valor],
+  [v.variante2Nombre, v.variante2Valor],
+].filter(([n, val]) => n && val !== null && val !== undefined && String(val).trim() !== '');
+
+/**
+ * Qué combos salen de un grupo de prendas, sin crear nada.
+ *
+ * Cada prenda aporta, para cada talle, UNA variante: la de ese talle con los
+ * valores fijados (el color). Si para un talle quedan varias —la remera M
+ * existe en negro y en blanco y no se eligió—, no se adivina: se devuelve el
+ * problema para que la persona elija. Una prenda sin talles (una gorra) entra
+ * igual en todos los combos, siempre que quede una sola variante.
+ *
+ * Salen combos sólo para los talles que están en TODAS las prendas con talle.
+ * Una remera S/M/L con un pantalón 38/40 no comparte ninguno: no hay combos, y
+ * se avisa por qué.
+ *
+ * @returns {{ piezas, talles, filas, avisos }} `filas` trae por talle el SKU
+ *   propuesto y los componentes `{ componenteVariantId, cantidad, skuPadre }`.
+ */
+async function proyectarCombo({ businessId, eje = 'Talle', piezas = [], agrupador, t = null }) {
+  const nombreEje = normTalle(eje);
+  const ids = piezas.map((p) => Number(p.productId));
+  // En serie: con SQL Server, dos consultas a la vez sobre la misma
+  // transacción chocan.
+  const productos = await Product.findAll({
+    where: { id: ids, businessId }, attributes: ['id', 'sku', 'skuAgrupador', 'titulo'], transaction: t,
+  });
+  const variantes = await ProductVariant.findAll({
+    where: { productId: ids, businessId, activo: true, esPack: false },
+    attributes: ['id', 'productId', 'sku', 'variante1Nombre', 'variante1Valor', 'variante2Nombre', 'variante2Valor'],
+    order: [['id', 'ASC']],
+    transaction: t,
+  });
+  const regla = await skuService.reglaDe(businessId);
+  const porId = new Map(productos.map((p) => [Number(p.id), p]));
+
+  const salida = [];
+  const porPieza = [];
+  for (const p of piezas) {
+    const prod = porId.get(Number(p.productId));
+    const info = {
+      productId: Number(p.productId),
+      sku: prod?.skuAgrupador || prod?.sku || '',
+      titulo: prod?.titulo || '',
+      cantidad: Number(p.cantidad) || 1,
+      talles: [],
+      ejes: {},
+      problema: null,
+    };
+    salida.push(info);
+    porPieza.push({ conTalle: false, grupos: new Map() });
+    if (!prod) { info.problema = 'Uno de los productos elegidos no existe en este negocio.'; continue; }
+
+    const suyas = variantes.filter((v) => Number(v.productId) === prod.id);
+    if (!suyas.length) { info.problema = `${prod.titulo} no tiene variantes activas para vender.`; continue; }
+
+    const ejes = new Map();
+    for (const v of suyas) {
+      for (const [n, val] of paresDe(v)) {
+        if (!ejes.has(n)) ejes.set(n, new Map());
+        ejes.get(n).set(normTalle(val), String(val).trim());
+      }
+    }
+    for (const [n, valores] of ejes) {
+      const lista = [...valores.values()];
+      info.ejes[n] = normTalle(n) === nombreEje ? lista.sort(compararTalles) : lista.sort((a, b) => a.localeCompare(b, 'es'));
+    }
+
+    const fijos = Object.entries(p.fijos || {}).filter(([n]) => normTalle(n) !== nombreEje);
+    const noExiste = fijos.find(([n, val]) => {
+      const eje = [...ejes.keys()].find((x) => normTalle(x) === normTalle(n));
+      return !eje || !ejes.get(eje).has(normTalle(val));
+    });
+    if (noExiste) { info.problema = `${prod.titulo} no tiene ${noExiste[0]} ${noExiste[1]}.`; continue; }
+
+    const elegibles = suyas.filter((v) => {
+      const mapa = new Map(paresDe(v).map(([n, val]) => [normTalle(n), normTalle(val)]));
+      return fijos.every(([n, val]) => mapa.get(normTalle(n)) === normTalle(val));
+    });
+    const conTalle = elegibles.some((v) => paresDe(v).some(([n]) => normTalle(n) === nombreEje));
+    const grupos = new Map();
+    for (const v of elegibles) {
+      const par = paresDe(v).find(([n]) => normTalle(n) === nombreEje);
+      if (conTalle && !par) continue;
+      const clave = par ? normTalle(par[1]) : '';
+      if (!grupos.has(clave)) grupos.set(clave, { valor: par ? String(par[1]).trim() : null, variantes: [] });
+      grupos.get(clave).variantes.push(v);
+    }
+    porPieza[porPieza.length - 1] = { conTalle, grupos };
+    info.talles = conTalle ? [...grupos.values()].map((g) => g.valor).sort(compararTalles) : [];
+
+    if ([...grupos.values()].some((g) => g.variantes.length > 1)) {
+      const sinFijar = [...ejes.entries()]
+        .filter(([n, valores]) => normTalle(n) !== nombreEje && valores.size > 1
+          && !fijos.some(([f]) => normTalle(f) === normTalle(n)))
+        .map(([n]) => n);
+      info.problema = sinFijar.length
+        ? `Elegí ${sinFijar.join(' y ')} de ${prod.titulo}: hay más de una variante por talle.`
+        : `${prod.titulo} tiene variantes repetidas para un mismo talle: corregilas antes de armar el combo.`;
+    }
+  }
+
+  const avisos = [];
+  if (salida.some((x) => x.problema)) return { piezas: salida, talles: [], filas: [], avisos };
+
+  const conTalle = porPieza.filter((x) => x.conTalle);
+  let comunes;
+  if (!conTalle.length) {
+    // Ninguna prenda tiene talle: sale un único combo.
+    comunes = [{ clave: '', valor: 'Único' }];
+  } else {
+    comunes = [...conTalle[0].grupos.entries()]
+      .filter(([clave]) => conTalle.every((x) => x.grupos.has(clave)))
+      .map(([clave, g]) => ({ clave, valor: g.valor }))
+      .sort((a, b) => compararTalles(a.valor, b.valor));
+    const todos = new Map();
+    for (const x of conTalle) for (const [clave, g] of x.grupos) if (!todos.has(clave)) todos.set(clave, g.valor);
+    const afuera = [...todos.entries()]
+      .filter(([clave]) => !comunes.some((c) => c.clave === clave))
+      .map(([, valor]) => valor)
+      .sort(compararTalles);
+    if (!comunes.length) {
+      avisos.push('Las prendas no tienen ningún talle en común (por ejemplo, una va de S a XL y la otra '
+        + 'de 38 a 44), así que no sale ningún combo.');
+    } else if (afuera.length) {
+      avisos.push(`Quedan afuera los talles que no están en todas las prendas: ${afuera.join(', ')}.`);
+    }
+  }
+
+  const vistos = new Set();
+  const filas = comunes.map(({ clave, valor }) => {
+    const componentes = piezas.map((p, i) => {
+      const v = porPieza[i].grupos.get(porPieza[i].conTalle ? clave : '').variantes[0];
+      return { componenteVariantId: v.id, cantidad: Number(p.cantidad) || 1, skuPadre: v.sku };
+    });
+    const sku = skuService.componer({ agrupador, valores: [{ eje, valor }], regla });
+    const repetido = vistos.has(sku);
+    vistos.add(sku);
+    return { talle: valor, sku, componentes, repetido };
+  });
+
+  return { piezas: salida, talles: filas.map((f) => f.talle), filas, avisos };
+}
+
 module.exports = {
   componentesDe, disponibleDePack, disponibleDePacksEnLocales, repartirPackOnline,
   reservarPack, liberarPack, consumirPack,
   definirComponentes, desarmar, packsQueUsan,
+  proyectarCombo, compararTalles,
 };
