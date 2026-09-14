@@ -95,7 +95,14 @@ async function disponibleDePack(packVariantId, locationId, t = null) {
  *
  * @param {number[]} packVariantIds
  * @param {number[]} locationIds  los locales que abastecen
- * @returns {Map<number, number>} packs armables sumando todos esos locales
+ * @returns {Map<number, number>} packs armables EN CADA local, sumados
+ *
+ * Por local y después sumado, no al revés. Juntar primero el stock de cada
+ * prenda entre locales y recién ahí dividir publicaba packs que no se pueden
+ * armar: 2 remeras en Palermo y 1 en Belgrano daban "1 Pack x3" en Mercado
+ * Libre, pero la venta aparta el pack ENTERO en un local (`repartirPackOnline`)
+ * y la rechazaba por falta de stock. Lo publicado tiene que ser exactamente lo
+ * que la venta puede apartar.
  */
 async function disponibleDePacksEnLocales(packVariantIds, locationIds, businessId, t = null) {
   const resultado = new Map();
@@ -114,27 +121,34 @@ async function disponibleDePacksEnLocales(packVariantIds, locationIds, businessI
   // Todo el stock de todos los componentes, de una.
   const filas = await VariantStock.findAll({
     where: { businessId, locationId: locationIds, productVariantId: idsComponentes },
-    attributes: ['productVariantId', 'stock', 'reservado'],
+    attributes: ['productVariantId', 'locationId', 'stock', 'reservado'],
     transaction: t,
   });
-  const librePorComponente = new Map();
+
+  // Libre por prenda Y por local: sumarlo entre locales es justamente el error.
+  const libre = new Map();
   for (const f of filas) {
-    const libre = Math.max(0, (Number(f.stock) || 0) - (Number(f.reservado) || 0));
-    librePorComponente.set(
-      f.productVariantId,
-      (librePorComponente.get(f.productVariantId) || 0) + libre,
-    );
+    const clave = `${Number(f.productVariantId)}:${Number(f.locationId)}`;
+    const disponible = Math.max(0, (Number(f.stock) || 0) - (Number(f.reservado) || 0));
+    libre.set(clave, (libre.get(clave) || 0) + disponible);
   }
 
+  const locales = [...new Set(locationIds.map(Number))];
   for (const id of ids) {
     const componentes = porPack.get(id) || [];
     if (!componentes.length) { resultado.set(id, 0); continue; }
-    let posibles = Infinity;
-    for (const c of componentes) {
-      const hay = librePorComponente.get(c.componenteVariantId) || 0;
-      posibles = Math.min(posibles, Math.floor(hay / c.cantidad));
+
+    let total = 0;
+    for (const local of locales) {
+      let enEsteLocal = Infinity;
+      for (const c of componentes) {
+        const hay = libre.get(`${Number(c.componenteVariantId)}:${local}`) || 0;
+        enEsteLocal = Math.min(enEsteLocal, Math.floor(hay / c.cantidad));
+        if (enEsteLocal <= 0) break;   // en este local ya no se arma ninguno
+      }
+      if (enEsteLocal !== Infinity && enEsteLocal > 0) total += enEsteLocal;
     }
-    resultado.set(id, posibles === Infinity ? 0 : posibles);
+    resultado.set(id, total);
   }
   return resultado;
 }

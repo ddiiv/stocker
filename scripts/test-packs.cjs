@@ -655,6 +655,64 @@ function sesion() {
     chk('y el disponible lo refleja', 8, filaReserva?.componentes?.[0]?.disponible);
     await stock.liberarReserva(remera.id, local.id, negocio.id, 2);
 
+    tit('12e. LO PUBLICADO ES LO QUE LA VENTA PUEDE APARTAR, LOCAL POR LOCAL');
+    /*
+     * El bug: lo que se publica en Mercado Libre juntaba el stock de cada
+     * prenda entre locales y recién ahí dividía. 2 remeras en un local y 1 en
+     * otro daban "1 Pack x3" publicado — pero la venta aparta el pack ENTERO
+     * en un local, así que entraba y se rechazaba por falta de stock.
+     *
+     * No alcanza con que el número dé bien: se compara contra lo que
+     * `repartirPackOnline` —la venta— puede apartar de verdad. Si esos dos no
+     * coinciden, se vuelve a publicar algo que no se puede vender.
+     */
+    const otroLocal = await BusinessLocation.create({
+      businessId: negocio.id, nombre: 'QA Packs segundo local', direccion: 'QA',
+      tipo: 'local', abasteceOnline: true, activo: true,
+    });
+    try {
+      const publicado = async () => (await packs.disponibleDePacksEnLocales(
+        [pack.id], [local.id, otroLocal.id], negocio.id,
+      )).get(pack.id);
+      const enOtro = async (n) => {
+        await stock.mover({ variantId: remera.id, businessId: negocio.id, locationId: otroLocal.id,
+          fijar: n, tipo: 'ajuste', motivo: 'QA packs segundo local' });
+      };
+
+      // 2 + 1: juntas son 3, pero en ningún local se arma un pack de 3.
+      await fijar(remera, 2);
+      await enOtro(1);
+      chk('2 en un local y 1 en otro: no se publica ningún pack', 0, await publicado());
+      chk('y la venta tampoco podría apartar uno', false,
+        (await packs.repartirPackOnline(pack.id, negocio.id, 1)).alcanza);
+
+      // 3 + 1: uno entero en el primer local; la que sobra en el otro no suma.
+      await fijar(remera, 3);
+      chk('3 en un local y 1 en otro: se publica uno', 1, await publicado());
+      chk('y la venta puede apartar ése', true,
+        (await packs.repartirPackOnline(pack.id, negocio.id, 1)).alcanza);
+
+      // 3 + 3: uno entero en cada local, sumados.
+      await enOtro(3);
+      chk('3 y 3: se publican dos, uno por local', 2, await publicado());
+      const dos = await packs.repartirPackOnline(pack.id, negocio.id, 2);
+      chk('la venta puede apartar los dos', true, dos.alcanza);
+      chk('uno de cada local', 2, dos.reparto.length);
+
+      /*
+       * La invariante, dicha directo: pedir uno más de lo publicado no
+       * alcanza. Si alcanzara, se estaría publicando de menos; si lo publicado
+       * no alcanzara, de más — que es el caso que rechazaba ventas.
+       */
+      chk('uno más de lo publicado ya no alcanza', false,
+        (await packs.repartirPackOnline(pack.id, negocio.id, (await publicado()) + 1)).alcanza);
+    } finally {
+      await StockMovement.destroy({ where: { productVariantId: remera.id, locationId: otroLocal.id } });
+      await VariantStock.destroy({ where: { productVariantId: remera.id, locationId: otroLocal.id } });
+      await otroLocal.destroy();
+      await fijar(remera, 10);
+    }
+
     tit('13. ARMAR EL PACK DESDE EL PRODUCTO PADRE');
     /*
      * Un pack no es un artículo suelto: es el mismo producto vendido de a N.
