@@ -27,6 +27,13 @@ const LLAMADAS = [];
 let concurrentes = 0, picoConcurrencia = 0;
 let publicaciones = [];
 let fallar = new Set();
+// Lo que simula el resto de ML: bulk, etiquetas de la cuenta, stock de user products y 409.
+let bulkDisponible = true;
+let etiquetasUsuario = [];
+const stockUp = new Map();
+const conflictos = new Map();
+// Los reintentos por 409 esperan de verdad: acá, poco.
+process.env.ML_ESPERA_CONFLICTO_MS = '20';
 
 const originalLoad = Module._load;
 Module._load = function (pedido) {
@@ -37,7 +44,7 @@ Module._load = function (pedido) {
      * vacías sin que se notara.
      */
     const responder = async (metodo, url, cfg, cuerpo) => {
-      LLAMADAS.push({ url, metodo });
+      LLAMADAS.push({ url, metodo, cuerpo, params: cfg?.params || {}, headers: cfg?.headers || {} });
       concurrentes += 1;
       picoConcurrencia = Math.max(picoConcurrencia, concurrentes);
       // Un poco de latencia: sin ella todo se resuelve en el mismo tick y la
@@ -46,34 +53,95 @@ Module._load = function (pedido) {
       concurrentes -= 1;
 
       const params = cfg?.params || {};
+      const error = (status, message) => {
+        const e = new Error(message);
+        e.response = { status, data: { message } };
+        return e;
+      };
+      // Como ML: los atributos de las variaciones sólo vienen con include_attributes=all.
+      const comoLoDevuelveMl = (p) => (params.include_attributes === 'all' ? p : {
+        ...p, variations: (p.variations || []).map(({ attributes, ...resto }) => resto),
+      });
 
       if (url.includes('/items/search')) {
+        // Como ML: filtra por estado, y en modo scan pagina con scroll_id.
+        const delEstado = publicaciones.filter((p) => !params.status || (p.status || 'active') === params.status);
+        if (params.search_type === 'scan') {
+          const desde = params.scroll_id ? Number(String(params.scroll_id).split(':')[1]) : 0;
+          const tam = Math.min(Number(params.limit) || 50, 100);
+          return { data: {
+            results: delEstado.slice(desde, desde + tam).map((p) => p.id),
+            scroll_id: `scroll:${desde + tam}`, paging: { total: delEstado.length },
+          } };
+        }
         const off = Number(params.offset) || 0;
-        return { data: { results: publicaciones.slice(off, off + 50).map((p) => p.id),
-          paging: { total: publicaciones.length } } };
+        return { data: { results: delEstado.slice(off, off + 50).map((p) => p.id),
+          paging: { total: delEstado.length } } };
+      }
+      if (/\/items\/bulk$/.test(url) && params.ids) {
+        if (!bulkDisponible) throw error(404, 'resource not found');
+        return { data: String(params.ids).split(',').map((id) => {
+          const p = publicaciones.find((x) => x.id === id);
+          return p ? { id, status_code: 200, body: comoLoDevuelveMl(p) } : { id, status_code: 404 };
+        }) };
       }
       if (/\/items$/.test(url) && params.ids) {
-        const ids = String(params.ids).split(',');
-        return { data: ids.map((id) => ({ code: 200, body: publicaciones.find((p) => p.id === id) })) };
+        return { data: String(params.ids).split(',').map((id) => {
+          const p = publicaciones.find((x) => x.id === id);
+          return p ? { code: 200, body: comoLoDevuelveMl(p) } : { code: 404, body: null };
+        }) };
       }
+      if (url.includes('/user-products/')) {
+        const up = (url.match(/\/user-products\/([^/]+)/) || [])[1];
+        const reg = stockUp.get(up);
+        if (metodo === 'get') {
+          return { data: { locations: reg ? reg.locations : [] }, headers: { 'x-version': String(reg?.version ?? 1) } };
+        }
+        if (!reg || String(cfg?.headers?.['x-version']) !== String(reg.version)) throw error(409, 'Version mismatch');
+        const loc = reg.locations.find((l) => l.type === 'selling_address');
+        if (loc) loc.quantity = cuerpo.quantity;
+        reg.version += 1;
+        return { data: {} };
+      }
+      if (/\/users\/[^/]+$/.test(url)) return { data: { id: ML_USER, tags: etiquetasUsuario } };
+
       const item = (url.match(/\/items\/([^/?]+)/) || [])[1];
       if (item && fallar.has(item)) {
         const e = new Error('límite de peticiones');
         e.response = { status: 429, data: { message: 'too many requests' } };
         throw e;
       }
+      if (item && metodo === 'put' && (conflictos.get(item) || 0) > 0) {
+        conflictos.set(item, conflictos.get(item) - 1);
+        throw error(409, 'item optimistic locking error: conflict');
+      }
       /*
        * Un PUT que anda deja la publicación con el número nuevo.
        *
        * Sin esto el mock miente: por más que se mandara la corrección, la
-       * siguiente lectura seguía devolviendo el valor viejo, y una prueba de
-       * "ya está todo al día, no mandes nada" no podía pasar nunca. Peor: una
-       * que dijera lo contrario pasaría siempre sin medir nada.
+       * siguiente lectura seguía devolviendo el valor viejo. Y como ML: con
+       * stock, una pausada por falta de stock vuelve a activa; en cero, se pausa.
        */
-      if (metodo === 'put' && item && cuerpo
-          && cuerpo.available_quantity !== undefined) {
+      if (metodo === 'put' && item && cuerpo) {
         const pub = publicaciones.find((p) => p.id === item);
-        if (pub) pub.available_quantity = cuerpo.available_quantity;
+        if (pub) {
+          if (cuerpo.available_quantity !== undefined) pub.available_quantity = cuerpo.available_quantity;
+          for (const cv of cuerpo.variations || []) {
+            const pv = (pub.variations || []).find((x) => String(x.id) === String(cv.id));
+            if (pv && cv.available_quantity !== undefined) pv.available_quantity = cv.available_quantity;
+          }
+          const total = pub.variations?.length
+            ? pub.variations.reduce((t, x) => t + (Number(x.available_quantity) || 0), 0)
+            : Number(pub.available_quantity) || 0;
+          const subs = pub.sub_status || [];
+          if (pub.status === 'paused' && subs.includes('out_of_stock') && !subs.includes('paused_by_seller') && total > 0) {
+            pub.status = 'active';
+            pub.sub_status = [];
+          } else if ((pub.status || 'active') === 'active' && total === 0) {
+            pub.status = 'paused';
+            pub.sub_status = ['out_of_stock'];
+          }
+        }
       }
       return { data: {} };
     };
@@ -384,6 +452,129 @@ const CUANTAS = 204;   // el número exacto que disparó el aviso
     const r2 = await tareas.barrerStockMl();
     chk('un segundo barrido no manda nada', 0, r2.actualizados);
     chk('y no hace ni una petición de escritura', 0, puts());
+
+    tit('12. PAUSADAS, UNA PUBLICACIÓN POR SKU, VARIACIONES, FULL Y LINKS');
+    try {
+      const extras = [];
+      const original = ml.marcarParaSync;
+      // Cargar el stock de prueba no dispara sincronizaciones sueltas en el medio.
+      ml.marcarParaSync = () => {};
+      try {
+        for (const sku of ['QA-SYNC-P1', 'QA-SYNC-DUP', 'QA-SYNC-VA', 'QA-SYNC-VB', 'QA-SYNC-FULL',
+          'QA-SYNC-FLEX', 'QA-SYNC-409', 'QA-SYNC-ATTR']) {
+          const v = await ProductVariant.create({
+            productId: prod.id, businessId: negocio.id, sku,
+            variante1Nombre: 'N', variante1Valor: sku, stock: 0, stockMinimo: 0,
+          });
+          await stock.mover({ variantId: v.id, businessId: negocio.id, locationId: local.id,
+            delta: 10, tipo: 'ingreso', motivo: 'QA sync' });
+          variantes.push(v);   // la limpieza de abajo las borra
+          extras.push(sku);
+        }
+      } finally {
+        ml.marcarParaSync = original;
+      }
+
+      const conSku = (valor) => [{ id: 'SELLER_SKU', value_name: valor }];
+      publicaciones.push(
+        { id: 'MLA9001', title: 'Pausada sin stock', status: 'paused', sub_status: ['out_of_stock'],
+          listing_type_id: 'gold_special', available_quantity: 0, attributes: conSku('QA-SYNC-P1'), variations: [],
+          permalink: 'https://articulo.mercadolibre.com.ar/MLA-9001-pausada-sin-stock-_JM' },
+        { id: 'MLA9101', title: 'Repetida clásica', status: 'active', listing_type_id: 'gold_special',
+          available_quantity: 0, attributes: conSku('QA-SYNC-DUP'), variations: [], sold_quantity: 50 },
+        { id: 'MLA9102', title: 'Repetida premium', status: 'paused', sub_status: ['out_of_stock'],
+          listing_type_id: 'gold_pro', available_quantity: 0, attributes: conSku('QA-SYNC-DUP'), variations: [] },
+        { id: 'MLA9103', title: 'Repetida premium pausada por el vendedor', status: 'paused', sub_status: ['paused_by_seller'],
+          listing_type_id: 'gold_pro', available_quantity: 0, attributes: conSku('QA-SYNC-DUP'), variations: [] },
+        { id: 'MLA9201', title: 'Con variaciones', status: 'active', listing_type_id: 'gold_special',
+          available_quantity: 3, attributes: [], variations: [
+            { id: 11, available_quantity: 0, attributes: conSku('QA-SYNC-VA') },
+            { id: 12, available_quantity: 0, attributes: conSku('QA-SYNC-VB') },
+            { id: 13, available_quantity: 3, attributes: conSku('SKU-DE-OTRO-SISTEMA') },
+          ] },
+        { id: 'MLA9301', title: 'Full', status: 'active', listing_type_id: 'gold_pro', available_quantity: 7,
+          attributes: conSku('QA-SYNC-FULL'), variations: [], shipping: { logistic_type: 'fulfillment' } },
+        { id: 'MLA9401', title: 'Full y Flex', status: 'active', listing_type_id: 'gold_pro', available_quantity: 12,
+          attributes: conSku('QA-SYNC-FLEX'), variations: [], user_product_id: 'MLAU777',
+          shipping: { logistic_type: 'fulfillment', tags: ['self_service_in'] } },
+        { id: 'MLA9501', title: 'Con conflicto', status: 'active', listing_type_id: 'gold_special',
+          available_quantity: 0, attributes: conSku('QA-SYNC-409'), variations: [] },
+        { id: 'MLA9601', title: 'SKU en el atributo', status: 'active', listing_type_id: 'gold_special',
+          available_quantity: 0, seller_custom_field: 'dato-interno', attributes: conSku('QA-SYNC-ATTR'), variations: [] },
+        { id: 'MLA9701', title: 'Finalizada', status: 'closed', listing_type_id: 'gold_pro', available_quantity: 0,
+          attributes: conSku('QA-SYNC-P1'), variations: [] },
+      );
+      stockUp.set('MLAU777', { version: 7, locations: [{ type: 'selling_address', quantity: 2 }, { type: 'meli_facility', quantity: 10 }] });
+      conflictos.set('MLA9501', 1);
+      const putsA = (id) => LLAMADAS.filter((l) => l.metodo === 'put' && l.url.endsWith(`/items/${id}`)).length;
+      const busquedas = () => LLAMADAS.filter((l) => l.url.includes('/items/search'));
+
+      reset();
+      const previa = await ml.sincronizarStock(negocio.id, { simular: true, skus: extras });
+      const fila = (sku) => (previa.resultados || []).find((r) => r.sku === sku);
+      chk('trae activas y pausadas, sin las finalizadas', publicaciones.filter((p) => p.status !== 'closed').length,
+        previa.publicacionesEncontradas);
+      chk('busca por estado: activas y pausadas', ['active', 'paused'], [...new Set(busquedas().map((l) => l.params.status))]);
+      chk('con scan, no con offset', true, busquedas().every((l) => l.params.search_type === 'scan' && l.params.offset === undefined));
+      chk('y pagina con scroll: más de 100 activas no entran en una página', true,
+        busquedas().filter((l) => l.params.scroll_id).length >= 2);
+      chk('pide los atributos de las variaciones', true,
+        LLAMADAS.filter((l) => /\/items(\/bulk)?$/.test(l.url)).every((l) => l.params.include_attributes === 'all'));
+      chk('una pausada sin stock entra en la sincronización', 'pendiente', fila('QA-SYNC-P1')?.estado);
+      chk('y avisa que ML la reactiva', true, /reactiva/.test(fila('QA-SYNC-P1')?.aviso || ''));
+      chk('el link es el permalink de ML', 'https://articulo.mercadolibre.com.ar/MLA-9001-pausada-sin-stock-_JM',
+        fila('QA-SYNC-P1')?.permalink);
+      const dup = fila('QA-SYNC-DUP');
+      chk('con SKU repetido se asigna la de mejor exposición (Premium)', 'MLA9102', dup?.mlItemId);
+      chk('las otras quedan a la vista, la pausada por el vendedor al final', ['MLA9101', 'MLA9103'],
+        (dup?.otras || []).map((o) => o.mlItemId));
+      chk('sin permalink, el link lleva el guión que ML necesita', 'https://articulo.mercadolibre.com.ar/MLA-9101',
+        dup?.otras?.[0]?.permalink);
+      chk('el tipo de publicación se muestra con su nombre', 'Premium', dup?.tipoNombre);
+      chk('el SKU de cada variación se lee de sus atributos', ['MLA9201', '11', 'MLA9201', '12'],
+        [fila('QA-SYNC-VA')?.mlItemId, fila('QA-SYNC-VA')?.mlVariationId, fila('QA-SYNC-VB')?.mlItemId, fila('QA-SYNC-VB')?.mlVariationId]);
+      chk('Full no se sincroniza y dice por qué', ['no-sincronizable', true],
+        [fila('QA-SYNC-FULL')?.estado, /Full/.test(fila('QA-SYNC-FULL')?.motivo || '')]);
+      chk('SELLER_SKU manda sobre seller_custom_field', 'MLA9601', fila('QA-SYNC-ATTR')?.mlItemId);
+      chk('el resumen cuenta lo que no se puede sincronizar', 1, previa.resumen?.noSincronizables);
+      chk('la simulación no escribe nada', 0, puts());
+
+      reset();
+      const envio = await ml.sincronizarStock(negocio.id, { simular: false, skus: extras });
+      const filaE = (sku) => (envio.resultados || []).find((r) => r.sku === sku);
+      chk('la pausada sin stock se actualiza', 'actualizado', filaE('QA-SYNC-P1')?.estado);
+      chk('y ML la reactiva', 'active', publicaciones.find((p) => p.id === 'MLA9001').status);
+      chk('la finalizada con el mismo SKU no se toca', 0, putsA('MLA9701'));
+      chk('con SKU repetido sólo se escribe la asignada', [1, 0, 0], ['MLA9102', 'MLA9101', 'MLA9103'].map(putsA));
+      const putVariaciones = LLAMADAS.filter((l) => l.metodo === 'put' && l.url.endsWith('/items/MLA9201'));
+      chk('dos variaciones de la misma publicación van en un solo PUT', 1, putVariaciones.length);
+      chk('con el id de todas, y stock sólo en las que cambian',
+        [{ id: 11, available_quantity: 10 }, { id: 12, available_quantity: 10 }, { id: 13 }],
+        putVariaciones[0]?.cuerpo?.variations);
+      chk('Full no recibe ningún PUT', 0, putsA('MLA9301'));
+      chk('Full + Flex escribe el stock de Flex con x-version', [10, 8],
+        [stockUp.get('MLAU777').locations[0].quantity, stockUp.get('MLAU777').version]);
+      chk('y no lo pisa por /items', 0, putsA('MLA9401'));
+      chk('un 409 de ML se reintenta y termina bien', ['actualizado', 2], [filaE('QA-SYNC-409')?.estado, putsA('MLA9501')]);
+
+      etiquetasUsuario = ['warehouse_management'];
+      publicaciones.find((p) => p.id === 'MLA9601').available_quantity = 0;
+      reset();
+      const multi = await ml.sincronizarStock(negocio.id, { simular: false, skus: ['QA-SYNC-ATTR'] });
+      chk('con multi-origen no se escribe por /items y se explica', ['no-sincronizable', 0, true],
+        [multi.resultados[0]?.estado, puts(), /multi-origen/.test(multi.resultados[0]?.motivo || '')]);
+      etiquetasUsuario = [];
+
+      bulkDisponible = false;
+      reset();
+      const sinBulk = await ml.sincronizarStock(negocio.id, { simular: true, skus: ['QA-SYNC-DUP'] });
+      chk('si /items/bulk no está, usa el multiget de siempre', 'MLA9102', sinBulk.resultados[0]?.mlItemId);
+      bulkDisponible = true;
+    } catch (e) {
+      chk('la sección 12 no revienta', null, String(e?.stack || e));
+    } finally {
+      publicaciones = publicaciones.filter((p) => !/^MLA9\d{3}$/.test(p.id));
+    }
 
     tit('Limpieza');
     const ids = variantes.map((v) => v.id);

@@ -350,85 +350,391 @@ async function renovarToken(cuenta) {
 
 // ── Publicaciones ─────────────────────────────────────────────────
 
-/** Trae todas las publicaciones activas del vendedor, con su SKU. */
+/*
+ * Qué publicaciones se traen: activas Y pausadas.
+ *
+ * Una publicación que se quedó sin stock no desaparece: Mercado Libre la pausa
+ * con el sub estado out_of_stock, y cuando se le vuelve a mandar stock la
+ * reactiva sola. Buscando sólo las activas, justo las que había que reponer
+ * nunca entraban en la sincronización: quedaban pausadas para siempre aunque
+ * en el local hubiera mercadería. Las finalizadas no se traen: no aceptan
+ * cambios.
+ */
+const ESTADOS_A_TRAER = ['active', 'paused'];
+const TAM_PAGINA_SCAN = 100;
+const ESPERA_CONFLICTO_MS = Number(process.env.ML_ESPERA_CONFLICTO_MS) || 1500;
+
+/*
+ * Todos los ids del vendedor en un estado.
+ *
+ * Con offset, ML corta en 1000: un catálogo más grande quedaba a medias sin
+ * ningún aviso. El modo scan no tiene tope; su scroll_id vence a los 5
+ * minutos, así que primero se juntan los ids y recién después se piden los
+ * detalles. Si la cuenta no acepta scan, se vuelve al offset de antes.
+ */
+async function idsDelVendedor(cuenta, headers, status) {
+  const url = `${ML_API}/users/${cuenta.mlUserId}/items/search`;
+  const ids = [];
+  try {
+    let scrollId = null;
+    for (let vuelta = 0; vuelta < 5000; vuelta++) {
+      const params = { search_type: 'scan', limit: TAM_PAGINA_SCAN, status };
+      if (scrollId) params.scroll_id = scrollId;
+      const { data } = await httpML.get(url, { headers, params });
+      const lote = Array.isArray(data?.results) ? data.results : [];
+      if (!lote.length) break;
+      ids.push(...lote);
+      if (!data.scroll_id) break;
+      scrollId = data.scroll_id;
+    }
+    return ids;
+  } catch (err) {
+    const st = err.response?.status;
+    if (ids.length || !st || st === 429 || st >= 500) throw err;
+  }
+  for (let offset = 0; offset < 1000; offset += 50) {
+    const { data } = await httpML.get(url, { headers, params: { status, limit: 50, offset } });
+    const lote = Array.isArray(data?.results) ? data.results : [];
+    ids.push(...lote);
+    if (!lote.length || ids.length >= (data.paging?.total || 0)) break;
+  }
+  return ids;
+}
+
+/*
+ * El detalle de las publicaciones, de a 20.
+ *
+ * `include_attributes=all` es lo que trae los atributos de cada variación, y
+ * ahí está su SKU (SELLER_SKU). Sin él las variaciones llegaban sin SKU y esas
+ * publicaciones nunca se sincronizaban.
+ *
+ * ML reemplaza /items?ids= por /items/bulk (hay que migrar antes del
+ * 25/10/2026). Se usa bulk y, si la cuenta todavía no lo tiene o responde algo
+ * que no se entiende, el multiget de siempre: las dos respuestas se leen igual.
+ */
+async function traerItems(ids, headers) {
+  const items = [];
+  let usarBulk = true;
+  const leer = (data) => (Array.isArray(data) ? data : [])
+    .filter((e) => Number(e?.status_code ?? e?.code) === 200 && e.body)
+    .map((e) => e.body);
+  for (let i = 0; i < ids.length; i += 20) {
+    const params = { ids: ids.slice(i, i + 20).join(','), include_attributes: 'all' };
+    let leidos = null;
+    if (usarBulk) {
+      try {
+        const { data } = await httpML.get(`${ML_API}/items/bulk`, { headers, params });
+        leidos = leer(data);
+        if (!leidos.length) { leidos = null; usarBulk = false; }
+      } catch (err) {
+        const st = err.response?.status;
+        if (!st || st === 429 || st >= 500) throw err;
+        usarBulk = false;
+      }
+    }
+    if (!leidos) {
+      const { data } = await httpML.get(`${ML_API}/items`, { headers, params });
+      leidos = leer(data);
+    }
+    items.push(...leidos);
+  }
+
+  // Si igual faltan los atributos de las variaciones, se piden de a una.
+  const incompletas = items.filter((it) => it.variations?.length
+    && it.variations.every((v) => !Array.isArray(v.attributes)));
+  const completas = await enParalelo(incompletas, CONCURRENCIA, async (it) => {
+    try {
+      const { data } = await httpML.get(`${ML_API}/items/${it.id}`, { headers, params: { include_attributes: 'all' } });
+      return data;
+    } catch { return null; }
+  });
+  incompletas.forEach((it, k) => {
+    if (Array.isArray(completas[k]?.variations)) it.variations = completas[k].variations;
+  });
+  return items;
+}
+
+/** Trae todas las publicaciones activas y pausadas del vendedor, con su SKU. */
 async function listarPublicaciones(cuenta) {
   const token = await tokenValido(cuenta);
   const headers = { Authorization: `Bearer ${token}` };
-
-  // El search de items pagina de a 50 y tiene tope de 1000 con offset.
-  // Para catálogos grandes ML recomienda scan, pero para el volumen típico
-  // de un negocio chico el offset alcanza.
-  const ids = [];
-  let offset = 0;
-  for (;;) {
-    const { data } = await httpML.get(`${ML_API}/users/${cuenta.mlUserId}/items/search`, {
-      headers, params: { status: 'active', limit: 50, offset },
-    });
-    ids.push(...(data.results || []));
-    offset += 50;
-    if (ids.length >= (data.paging?.total || 0) || offset >= 1000 || !data.results?.length) break;
+  const ids = new Set();
+  for (const status of ESTADOS_A_TRAER) {
+    for (const id of await idsDelVendedor(cuenta, headers, status)) ids.add(String(id));
   }
-  if (!ids.length) return [];
-
-  // El endpoint multiget acepta hasta 20 ids por llamada.
-  const publicaciones = [];
-  for (let i = 0; i < ids.length; i += 20) {
-    const lote = ids.slice(i, i + 20);
-    const { data } = await httpML.get(`${ML_API}/items`, {
-      headers,
-      params: { ids: lote.join(','), attributes: 'id,title,available_quantity,seller_custom_field,variations,attributes,permalink,status' },
-    });
-    for (const entrada of data) {
-      if (entrada.code !== 200 || !entrada.body) continue;
-      publicaciones.push(entrada.body);
-    }
-  }
-  return publicaciones;
-}
-
-/** Extrae el SKU de una publicación o de una de sus variaciones. */
-function skuDe(objeto) {
-  if (!objeto) return null;
-  if (objeto.seller_custom_field) return String(objeto.seller_custom_field).trim();
-  const attr = (objeto.attributes || []).find((a) => a.id === 'SELLER_SKU');
-  if (attr?.value_name) return String(attr.value_name).trim();
-  return null;
+  if (!ids.size) return [];
+  return traerItems([...ids], headers);
 }
 
 /**
- * Arma el mapa SKU → destino en ML a partir de las publicaciones.
- * Una publicación con variaciones expone un SKU por variación.
+ * El SKU de una publicación o de una variación.
+ *
+ * Primero SELLER_SKU: ML lo define como el SKU y deja seller_custom_field "para
+ * uso interno del vendedor", sin relación entre los dos. Leído al revés, un
+ * dato interno pisaba el SKU real.
+ */
+function skuDe(objeto) {
+  if (!objeto) return null;
+  const attr = (objeto.attributes || []).find((a) => a?.id === 'SELLER_SKU');
+  const valor = attr?.value_name ?? attr?.values?.[0]?.name;
+  if (valor && String(valor).trim()) return String(valor).trim();
+  if (objeto.seller_custom_field && String(objeto.seller_custom_field).trim()) {
+    return String(objeto.seller_custom_field).trim();
+  }
+  return null;
+}
+
+/*
+ * El link público. Se usa el permalink de ML, que ya viene armado —en las
+ * publicaciones nuevas lleva a la página del producto—. Sólo si falta se arma,
+ * con guión (MLA-123): articulo.mercadolibre.com.ar/MLA123 no abre nada.
+ */
+function enlaceDe(id) {
+  return `https://articulo.mercadolibre.com.ar/${String(id || '').replace(/^([A-Z]{3})(\d+)$/, '$1-$2')}`;
+}
+
+// Exposición por tipo de publicación en MLA: Premium ≥ Clásica ("highest") > el resto.
+const EXPOSICION_TIPO = { gold_pro: 0, gold_special: 1, gold_premium: 2, gold: 3, silver: 4, bronze: 5, free: 6 };
+const NOMBRE_TIPO = {
+  gold_pro: 'Premium', gold_special: 'Clásica', gold_premium: 'Oro Premium',
+  gold: 'Oro', silver: 'Plata', bronze: 'Bronce', free: 'Gratuita',
+};
+const ESTADOS_NO_EDITABLES = {
+  closed: 'finalizada', under_review: 'en revisión', inactive: 'inactiva',
+  pending: 'inactiva por una deuda o una infracción', payment_required: 'esperando un pago',
+};
+const MOTIVO_MULTIORIGEN = 'Tu cuenta de Mercado Libre usa varios depósitos (multi-origen): ese stock se '
+  + 'maneja por depósito y Stocker todavía no lo escribe. Actualizalo desde Mercado Libre.';
+
+const listaDe = (x) => (Array.isArray(x) ? x : (x ? [x] : []));
+
+/** Cómo se escribe el stock de una publicación, o por qué no se puede. */
+function modoDeStock(item, userProductId) {
+  const nombreEstado = ESTADOS_NO_EDITABLES[item.status];
+  if (nombreEstado) {
+    return { editable: false, motivo: `La publicación está ${nombreEstado} en Mercado Libre: no acepta cambios de stock.` };
+  }
+  if (item.shipping?.logistic_type !== 'fulfillment') return { editable: true, via: 'items' };
+  const flex = [...listaDe(item.tags), ...listaDe(item.shipping?.tags)].includes('self_service_in');
+  if (flex && userProductId) return { editable: true, full: true, via: 'selling_address' };
+  return {
+    editable: false, full: true,
+    motivo: 'Está en Full: el stock lo maneja Mercado Libre con lo que hay en sus depósitos.',
+  };
+}
+
+/** Una candidata por variación (o una por publicación sin variaciones), con su SKU si lo tiene. */
+function candidatasDeItem(item) {
+  const subEstados = listaDe(item.sub_status);
+  const base = {
+    mlItemId: String(item.id),
+    titulo: item.title,
+    permalink: item.permalink || enlaceDe(item.id),
+    status: item.status || null,
+    subEstados,
+    pausadaPorVendedor: item.status === 'paused' && subEstados.includes('paused_by_seller'),
+    tipo: item.listing_type_id || null,
+    catalogo: Boolean(item.catalog_listing),
+    relacionados: listaDe(item.item_relations).map((r) => String(r?.id)),
+  };
+  const armar = (extra, userProductId) => {
+    const modo = modoDeStock(item, userProductId);
+    return {
+      ...base, ...extra, userProductId: userProductId || null,
+      editable: modo.editable, via: modo.via || null, full: Boolean(modo.full),
+      motivoNoEditable: modo.motivo || null,
+    };
+  };
+  if (item.variations?.length) {
+    const idsVariaciones = item.variations.map((v) => String(v.id));
+    return item.variations.map((v) => armar({
+      sku: skuDe(v), mlVariationId: String(v.id), idsVariaciones,
+      stockActual: v.available_quantity, vendidas: v.sold_quantity ?? 0,
+    }, v.user_product_id || item.user_product_id));
+  }
+  return [armar({
+    sku: skuDe(item), mlVariationId: null, idsVariaciones: [],
+    stockActual: item.available_quantity, vendidas: item.sold_quantity ?? 0,
+  }, item.user_product_id)];
+}
+
+/*
+ * El orden entre publicaciones con el mismo SKU, la mejor primero:
+ *
+ * 1. Que se pueda escribir (Full o finalizada, al final).
+ * 2. Que no la haya pausado el vendedor: si la pausó a mano no la quiere
+ *    vendiendo, y mandarle stock no la reactiva.
+ * 3. La exposición del tipo de publicación: Premium, Clásica, el resto.
+ * 4. Activa antes que pausada por falta de stock.
+ * 5. La que más vendió.
+ * Y el id, para que el resultado no cambie de una corrida a otra.
+ */
+function compararCandidatas(a, b) {
+  const clave = (c) => [
+    c.editable ? 0 : 1,
+    c.pausadaPorVendedor ? 1 : 0,
+    EXPOSICION_TIPO[c.tipo] ?? 9,
+    c.status === 'active' ? 0 : 1,
+    -(Number(c.vendidas) || 0),
+  ];
+  const ka = clave(a);
+  const kb = clave(b);
+  for (let i = 0; i < ka.length; i++) if (ka[i] !== kb[i]) return ka[i] - kb[i];
+  return `${a.mlItemId}:${a.mlVariationId || ''}`.localeCompare(`${b.mlItemId}:${b.mlVariationId || ''}`);
+}
+
+/** SKU → todas las publicaciones con ese SKU, la mejor primero. */
+function candidatasPorSku(publicaciones) {
+  const mapa = new Map();
+  for (const item of publicaciones) {
+    for (const c of candidatasDeItem(item)) {
+      if (!c.sku) continue;
+      if (!mapa.has(c.sku)) mapa.set(c.sku, []);
+      mapa.get(c.sku).push(c);
+    }
+  }
+  for (const lista of mapa.values()) lista.sort(compararCandidatas);
+  return mapa;
+}
+
+/**
+ * SKU → la publicación asignada: UNA por SKU, la de mejor exposición. Las
+ * demás van en `otras`, para mostrarlas; a ellas no se les escribe stock.
  */
 function mapearPorSku(publicaciones) {
   const mapa = new Map();
-  for (const item of publicaciones) {
-    if (item.variations?.length) {
-      for (const v of item.variations) {
-        const sku = skuDe(v);
-        if (sku) mapa.set(sku, { mlItemId: item.id, mlVariationId: String(v.id), titulo: item.title, stockActual: v.available_quantity });
-      }
-      // Una publicación con variaciones puede además tener SKU a nivel item;
-      // no lo usamos porque el stock se maneja por variación.
-      continue;
-    }
-    const sku = skuDe(item);
-    if (sku) mapa.set(sku, { mlItemId: item.id, mlVariationId: null, titulo: item.title, stockActual: item.available_quantity });
+  for (const [sku, lista] of candidatasPorSku(publicaciones)) {
+    mapa.set(sku, { ...lista[0], otras: lista.slice(1) });
   }
   return mapa;
 }
 
+/** Cómo se muestra una publicación con el mismo SKU que no es la elegida. */
+function resumenDeOtra(o, elegida) {
+  const comparteStock = Boolean(o.userProductId && o.userProductId === elegida.userProductId)
+    || (o.relacionados || []).includes(elegida.mlItemId)
+    || (elegida.relacionados || []).includes(o.mlItemId);
+  return {
+    mlItemId: o.mlItemId, mlVariationId: o.mlVariationId, titulo: o.titulo,
+    permalink: o.permalink, estadoMl: o.status, subEstadosMl: o.subEstados,
+    tipoNombre: NOMBRE_TIPO[o.tipo] || null, catalogo: o.catalogo, full: o.full,
+    stockMl: o.stockActual ?? null, comparteStock,
+  };
+}
+
+/** Lo que conviene saber del estado de la publicación al mandarle stock. */
+function avisoDeEstado(d, cantidad) {
+  const subs = d.subEstados || [];
+  if (d.status === 'paused' && subs.includes('paused_by_seller')) {
+    return 'Pausada por vos en Mercado Libre: se actualiza el stock, pero no se reactiva sola.';
+  }
+  if (d.status === 'paused' && subs.includes('out_of_stock')) {
+    return cantidad > 0
+      ? 'Pausada por falta de stock: al mandarle stock, Mercado Libre la reactiva.'
+      : 'Pausada por falta de stock: sigue así hasta que haya.';
+  }
+  if (d.status === 'active' && cantidad === 0) {
+    return 'Con stock cero, Mercado Libre la pausa hasta que vuelva a haber.';
+  }
+  return null;
+}
+
+/** Las etiquetas de la cuenta de ML: `warehouse_management` es multi-origen. */
+async function etiquetasDelVendedor(cuenta, headers) {
+  try {
+    const { data } = await httpML.get(`${ML_API}/users/${cuenta.mlUserId}`, { headers });
+    return Array.isArray(data?.tags) ? data.tags : [];
+  } catch {
+    return [];
+  }
+}
+
 // ── Sincronización de stock ───────────────────────────────────────
 
-/** Envía la cantidad disponible a una publicación (o variación). */
-async function actualizarStock(token, { mlItemId, mlVariationId, cantidad }) {
-  const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
-  if (mlVariationId) {
-    await httpML.put(`${ML_API}/items/${mlItemId}`, {
-      variations: [{ id: Number(mlVariationId), available_quantity: cantidad }],
-    }, { headers });
-  } else {
-    await httpML.put(`${ML_API}/items/${mlItemId}`, { available_quantity: cantidad }, { headers });
+/*
+ * Un 409 de ML ("optimistic locking") es un cambio anterior que todavía no
+ * terminó de aplicarse: se espera un poco y se reintenta. Cualquier otro error
+ * sube tal cual.
+ */
+async function conReintento(fn, intentos = 3) {
+  for (let i = 1; ; i++) {
+    try {
+      return await fn();
+    } catch (err) {
+      if (err.response?.status !== 409 || i >= intentos) throw err;
+      await new Promise((listo) => setTimeout(listo, ESPERA_CONFLICTO_MS * i));
+    }
   }
+}
+
+function detalleDeError(err) {
+  const d = err.response?.data;
+  return d?.message || d?.cause?.[0]?.message || d?.error || err.message;
+}
+
+/*
+ * Lo que se manda junto.
+ *
+ * Todas las variaciones de una misma publicación van en UN PUT: mandadas por
+ * separado, la segunda choca con la primera (409) mientras ML aplica el
+ * cambio. Una publicación Full + Flex se escribe por su user product.
+ */
+function agruparEnvios(aMandar) {
+  const grupos = new Map();
+  for (const e of aMandar) {
+    const d = e.destino;
+    const clave = d.via === 'selling_address' ? `up:${d.userProductId}`
+      : (d.mlVariationId ? `item:${d.mlItemId}` : `sku:${e.v.sku}`);
+    if (!grupos.has(clave)) grupos.set(clave, []);
+    grupos.get(clave).push(e);
+  }
+  return [...grupos.values()];
+}
+
+/** Envía un grupo a ML. Devuelve `{ sinCambios }`. */
+async function enviarGrupo(token, grupo) {
+  const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+  const d = grupo[0].destino;
+
+  /*
+   * Full + Flex: el stock de Flex vive en el user product, en la ubicación
+   * selling_address, y se escribe con la versión que devuelve la lectura. Por
+   * /items se pisaría el total, que incluye lo que está en Full.
+   */
+  if (d.via === 'selling_address') {
+    return conReintento(async () => {
+      const lectura = await httpML.get(`${ML_API}/user-products/${d.userProductId}/stock`, { headers });
+      const version = lectura.headers?.['x-version'];
+      const actual = (lectura.data?.locations || []).find((l) => l.type === 'selling_address');
+      const cantidad = grupo[0].cantidad;
+      if (actual && Number(actual.quantity) === cantidad) return { sinCambios: true };
+      await httpML.put(
+        `${ML_API}/user-products/${d.userProductId}/stock/type/selling_address`,
+        { quantity: cantidad },
+        { headers: { ...headers, 'x-version': version } },
+      );
+      return { sinCambios: false };
+    });
+  }
+
+  if (d.mlVariationId) {
+    /*
+     * Cada variación va con su id: una sin id, ML la borra y crea otra, y se
+     * pierden sus ventas. Las que no cambian van sólo con el id.
+     */
+    const cambios = new Map(grupo.map((e) => [String(e.destino.mlVariationId), e.cantidad]));
+    const ids = [...new Set([...(d.idsVariaciones || []), ...cambios.keys()])];
+    const variations = ids.map((id) => (cambios.has(id)
+      ? { id: Number(id), available_quantity: cambios.get(id) }
+      : { id: Number(id) }));
+    await conReintento(() => httpML.put(`${ML_API}/items/${d.mlItemId}`, { variations }, { headers }));
+    return { sinCambios: false };
+  }
+
+  await conReintento(() => httpML.put(
+    `${ML_API}/items/${d.mlItemId}`, { available_quantity: grupo[0].cantidad }, { headers },
+  ));
+  return { sinCambios: false };
 }
 
 /**
@@ -469,14 +775,36 @@ async function sincronizarStock(businessId, { simular = false, skus = null } = {
   }
 
   const token = await tokenValido(cuenta);
+  const headersMl = { Authorization: `Bearer ${token}` };
   const publicaciones = await listarPublicaciones(cuenta);
-  const porSku = mapearPorSku(publicaciones);
 
-  // Vínculos manuales: pisan lo que se detecte automáticamente.
+  /*
+   * Vínculos manuales: pisan lo que se detecte automáticamente. Si apuntan a
+   * una publicación que la búsqueda no trajo (por ejemplo, finalizada), se la
+   * pide aparte para saber su estado y su link.
+   */
   const manuales = await MercadoLibreLink.findAll({ where: { businessId } });
+  const traidas = new Set(publicaciones.map((p) => String(p.id)));
+  const faltantes = [...new Set(manuales.map((l) => String(l.mlItemId)).filter((id) => !traidas.has(id)))];
+  if (faltantes.length) publicaciones.push(...await traerItems(faltantes, headersMl));
+
+  const candidatas = candidatasPorSku(publicaciones);
+  const porSku = mapearPorSku(publicaciones);
+  const todasLasCandidatas = publicaciones.flatMap(candidatasDeItem);
   for (const l of manuales) {
-    porSku.set(l.sku, { mlItemId: l.mlItemId, mlVariationId: l.mlVariationId, titulo: l.titulo, manual: true });
+    const encontrada = todasLasCandidatas.find((c) => c.mlItemId === String(l.mlItemId)
+      && String(c.mlVariationId || '') === String(l.mlVariationId || ''));
+    const otras = (candidatas.get(l.sku) || []).filter((c) => !encontrada
+      || c.mlItemId !== encontrada.mlItemId || c.mlVariationId !== encontrada.mlVariationId);
+    porSku.set(l.sku, encontrada
+      ? { ...encontrada, manual: true, otras }
+      : {
+        mlItemId: String(l.mlItemId), mlVariationId: l.mlVariationId ? String(l.mlVariationId) : null,
+        titulo: l.titulo, permalink: enlaceDe(l.mlItemId), editable: true, via: 'items',
+        idsVariaciones: [], subEstados: [], relacionados: [], manual: true, otras,
+      });
   }
+  const multiOrigen = (await etiquetasDelVendedor(cuenta, headersMl)).includes('warehouse_management');
 
   // Stock actual en Stocker
   const variantes = await ProductVariant.findAll({
@@ -583,7 +911,24 @@ async function sincronizarStock(businessId, { simular = false, skus = null } = {
       stockStocker: cantidad, stockMl: destino.stockActual ?? null,
       lugar: locales.map((l) => l.nombre).join(', '),
       manual: Boolean(destino.manual),
+      permalink: destino.permalink || enlaceDe(destino.mlItemId),
+      estadoMl: destino.status || null,
+      subEstadosMl: destino.subEstados || [],
+      tipo: destino.tipo || null,
+      tipoNombre: NOMBRE_TIPO[destino.tipo] || null,
+      catalogo: Boolean(destino.catalogo),
+      full: Boolean(destino.full),
+      otras: (destino.otras || []).map((o) => resumenDeOtra(o, destino)),
     };
+
+    // Lo que ML no deja escribir se muestra con su motivo, sin pedir nada.
+    const motivo = !destino.editable ? destino.motivoNoEditable
+      : (multiOrigen && destino.via === 'items' ? MOTIVO_MULTIORIGEN : null);
+    if (motivo) {
+      resultados.push({ ...fila, estado: 'no-sincronizable', motivo });
+      continue;
+    }
+    fila.aviso = avisoDeEstado(destino, cantidad);
 
     /*
      * Lo que ya coincide no se toca. Es el ahorro más grande de todos: en una
@@ -591,7 +936,8 @@ async function sincronizarStock(businessId, { simular = false, skus = null } = {
      * peticiones para escribir el mismo número es gastar el límite de la API
      * en no hacer nada.
      */
-    if (destino.stockActual === cantidad) {
+    // El stock de Flex se compara al mandar: el de la publicación suma lo que está en Full.
+    if (destino.via !== 'selling_address' && destino.stockActual === cantidad) {
       sincronizados.push(v.id);
       resultados.push({ ...fila, estado: 'sin-cambios' });
       continue;
@@ -607,24 +953,30 @@ async function sincronizarStock(businessId, { simular = false, skus = null } = {
 
   // De a cuatro y no de a doscientas: ver `enParalelo`. El orden del resultado
   // se conserva, así que la pantalla muestra lo mismo que antes.
-  const enviados = await enParalelo(aMandar, CONCURRENCIA, async ({ v, destino, cantidad, fila }) => {
+  const enviados = await enParalelo(agruparEnvios(aMandar), CONCURRENCIA, async (grupo) => {
     try {
-      await actualizarStock(token, { ...destino, cantidad });
-      await MercadoLibreLink.update(
-        { ultimoStockEnviado: cantidad, ultimaSync: new Date(), ultimoError: null },
-        { where: { businessId, sku: v.sku } },
-      );
-      return { variantId: v.id, fila: { ...fila, estado: 'actualizado' } };
+      const { sinCambios } = await enviarGrupo(token, grupo);
+      const salida = [];
+      for (const { v, cantidad, fila } of grupo) {
+        await MercadoLibreLink.update(
+          { ultimoStockEnviado: cantidad, ultimaSync: new Date(), ultimoError: null },
+          { where: { businessId, sku: v.sku } },
+        );
+        salida.push({ variantId: v.id, fila: { ...fila, estado: sinCambios ? 'sin-cambios' : 'actualizado' } });
+      }
+      return salida;
     } catch (err) {
-      const detalle = err.response?.data?.message || err.message;
-      await MercadoLibreLink.update(
-        { ultimoError: detalle }, { where: { businessId, sku: v.sku } },
-      );
-      return { variantId: null, fila: { ...fila, estado: 'error', error: detalle } };
+      const detalle = detalleDeError(err);
+      const salida = [];
+      for (const { v, fila } of grupo) {
+        await MercadoLibreLink.update({ ultimoError: detalle }, { where: { businessId, sku: v.sku } });
+        salida.push({ variantId: null, fila: { ...fila, estado: 'error', error: detalle } });
+      }
+      return salida;
     }
   });
 
-  for (const e of enviados) {
+  for (const e of enviados.flat()) {
     if (e.variantId) sincronizados.push(e.variantId);
     resultados.push(e.fila);
   }
@@ -634,7 +986,7 @@ async function sincronizarStock(businessId, { simular = false, skus = null } = {
   const skusStocker = new Set(variantes.map((v) => v.sku));
   const huerfanosMl = [...porSku.entries()]
     .filter(([sku]) => !skusStocker.has(sku))
-    .map(([sku, d]) => ({ sku, mlItemId: d.mlItemId, titulo: d.titulo }));
+    .map(([sku, d]) => ({ sku, mlItemId: d.mlItemId, titulo: d.titulo, permalink: d.permalink || enlaceDe(d.mlItemId) }));
 
   if (!simular) {
     await cuenta.update({ ultimaSync: new Date(), ultimoError: null });
@@ -680,6 +1032,7 @@ async function sincronizarStock(businessId, { simular = false, skus = null } = {
       pendientes:   resultados.filter((r) => r.estado === 'pendiente').length,
       sinCambios:   resultados.filter((r) => r.estado === 'sin-cambios').length,
       errores:      resultados.filter((r) => r.estado === 'error').length,
+      noSincronizables: resultados.filter((r) => r.estado === 'no-sincronizable').length,
     },
   };
 }
