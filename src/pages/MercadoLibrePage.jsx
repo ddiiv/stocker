@@ -414,6 +414,13 @@ export default function MercadoLibrePage() {
                 <Card><p className="text-xs uppercase tracking-wide text-ink-600">Errores</p><p className={`mt-2 font-display text-xl font-semibold ${preview.resumen.errores ? "text-brick-500" : ""}`}>{preview.resumen.errores}</p></Card>
               </div>
 
+              {preview.resumen.noSincronizables > 0 && (
+                <p className="-mt-2 mb-5 text-xs text-ink-600">
+                  {preview.resumen.noSincronizables} publicación(es) no se pueden sincronizar desde Stocker
+                  (Full, finalizadas, en revisión o multi-origen). El motivo está en cada fila.
+                </p>
+              )}
+
               {preview.resultados.length > 0 ? (
                 <Card className="mb-5 p-0">
                   <p className="border-b border-line px-4 py-3 font-display text-sm font-semibold text-ink-950">Detalle por SKU</p>
@@ -465,9 +472,7 @@ export default function MercadoLibrePage() {
                             <td className="px-4 py-2"><span className="tag-chip">{r.sku}</span></td>
                             <td className="px-4 py-2 text-ink-900">{r.titulo}</td>
                             <td className="px-4 py-2">
-                              <a className="text-xs text-teal-600 underline" href={`https://articulo.mercadolibre.com.ar/${r.mlItemId}`} target="_blank" rel="noreferrer">
-                                {r.mlItemId}{r.mlVariationId ? ` · var ${r.mlVariationId}` : ""}
-                              </a>
+                              <DetallePublicacion r={r} />
                             </td>
                             <td className="px-4 py-2 text-ink-600">{r.stockMl ?? "—"}</td>
                             <td className="px-4 py-2 font-medium text-ink-900">
@@ -479,7 +484,7 @@ export default function MercadoLibrePage() {
                               )}
                             </td>
                             <td className="px-4 py-2">
-                              <EstadoChip estado={r.estado} error={r.error} />
+                              <EstadoChip estado={r.estado} error={r.error || r.motivo} />
                             </td>
                           </tr>
                         ))}
@@ -503,7 +508,7 @@ export default function MercadoLibrePage() {
                   <ul className="divide-y divide-line text-sm">
                     {preview.huerfanosMl.slice(0, 15).map((h) => (
                       <li key={h.mlItemId + h.sku} className="flex items-center justify-between py-2">
-                        <span className="text-ink-700">{h.titulo}</span>
+                        <a className="text-ink-700 underline decoration-line hover:text-teal-600" href={h.permalink || enlaceMl(h.mlItemId)} target="_blank" rel="noreferrer">{h.titulo}</a>
                         <span className="tag-chip">{h.sku}</span>
                       </li>
                     ))}
@@ -530,7 +535,7 @@ export default function MercadoLibrePage() {
                     <tr key={l.id} className="border-b border-line last:border-0">
                       <td className="px-4 py-2"><span className="tag-chip">{l.sku}</span></td>
                       <td className="px-4 py-2 text-ink-700">{l.titulo || "—"}</td>
-                      <td className="px-4 py-2 font-mono text-xs text-ink-600">{l.mlItemId}{l.mlVariationId ? ` · ${l.mlVariationId}` : ""}</td>
+                      <td className="px-4 py-2 font-mono text-xs text-ink-600"><a className="text-teal-600 underline" href={enlaceMl(l.mlItemId)} target="_blank" rel="noreferrer">{l.mlItemId}</a>{l.mlVariationId ? ` · ${l.mlVariationId}` : ""}</td>
                       <td className="px-4 py-2 text-right">
                         <button className="btn-ghost px-2 py-1 text-brick-500" onClick={() => borrarLink(l)}><Trash2 size={13} /></button>
                       </td>
@@ -554,6 +559,7 @@ function EstadoChip({ estado, error }) {
     "pendiente":   { txt: "Se actualizará", cls: "bg-brass-50 text-brass-700" },
     "sin-cambios": { txt: "Sin cambios", cls: "bg-paper-200 text-ink-600" },
     "error":       { txt: "Error", cls: "bg-brick-50 text-brick-500" },
+    "no-sincronizable": { txt: "No se sincroniza", cls: "bg-paper-200 text-ink-600" },
   };
   const m = mapa[estado] || mapa["sin-cambios"];
   return <span className={`rounded px-2 py-0.5 text-xs ${m.cls}`} title={error || ""}>{m.txt}</span>;
@@ -604,5 +610,81 @@ function LinkModal({ open, onClose, onSaved }) {
         </div>
       </form>
     </Modal>
+  );
+}
+
+/*
+ * El link de una publicación.
+ *
+ * Se usa el permalink que devuelve Mercado Libre. Armado a mano como
+ * articulo.mercadolibre.com.ar/MLA123 no abre nada: ML espera el guión
+ * (MLA-123), y las publicaciones nuevas redirigen a la página del producto.
+ */
+function enlaceMl(id) {
+  return `https://articulo.mercadolibre.com.ar/${String(id || "").replace(/^([A-Z]{3})(\d+)$/, "$1-$2")}`;
+}
+
+function estadoMlTexto(estado, subEstados = []) {
+  if (!estado || estado === "active") return null;
+  if (estado === "paused") {
+    if (subEstados.includes("paused_by_seller")) return "Pausada por vos";
+    if (subEstados.includes("out_of_stock")) return "Pausada sin stock";
+    return "Pausada";
+  }
+  return { closed: "Finalizada", under_review: "En revisión", inactive: "Inactiva" }[estado] || estado;
+}
+
+function Etiqueta({ children }) {
+  return <span className="rounded bg-paper-200 px-1.5 py-0.5 text-[10px] text-ink-600">{children}</span>;
+}
+
+/*
+ * La publicación asignada a un SKU: su link, su tipo y estado en ML, y las
+ * demás publicaciones con el mismo SKU.
+ *
+ * Por SKU se escribe UNA sola, la de mejor exposición. Las otras se muestran
+ * para que se entienda por qué no cambian, y cuáles comparten stock con la
+ * elegida (Mercado Libre las actualiza juntas).
+ */
+function DetallePublicacion({ r }) {
+  const [verOtras, setVerOtras] = useState(false);
+  const estado = estadoMlTexto(r.estadoMl, r.subEstadosMl);
+  const otras = r.otras || [];
+  return (
+    <div className="min-w-[12rem]">
+      <a className="text-xs text-teal-600 underline" href={r.permalink || enlaceMl(r.mlItemId)} target="_blank" rel="noreferrer">
+        {r.mlItemId}{r.mlVariationId ? ` · var ${r.mlVariationId}` : ""}
+      </a>
+      <div className="mt-1 flex flex-wrap gap-1">
+        {r.tipoNombre && <Etiqueta>{r.tipoNombre}</Etiqueta>}
+        {estado && <Etiqueta>{estado}</Etiqueta>}
+        {r.catalogo && <Etiqueta>Catálogo</Etiqueta>}
+        {r.full && <Etiqueta>Full</Etiqueta>}
+        {r.manual && <Etiqueta>Vínculo manual</Etiqueta>}
+      </div>
+      {r.aviso && <p className="mt-1 text-[11px] text-ink-500">{r.aviso}</p>}
+      {otras.length > 0 && (
+        <div className="mt-1">
+          <button type="button" className="text-[11px] text-ink-600 underline" onClick={() => setVerOtras((x) => !x)}>
+            {verOtras ? "Ocultar" : `${otras.length} publicación${otras.length === 1 ? "" : "es"} más con este SKU`}
+          </button>
+          {verOtras && (
+            <ul className="mt-1 space-y-1">
+              {otras.map((o) => (
+                <li key={`${o.mlItemId}-${o.mlVariationId || ""}`} className="text-[11px] text-ink-500">
+                  <a className="text-teal-600 underline" href={o.permalink || enlaceMl(o.mlItemId)} target="_blank" rel="noreferrer">
+                    {o.mlItemId}
+                  </a>
+                  {[o.tipoNombre, estadoMlTexto(o.estadoMl, o.subEstadosMl), o.full ? "Full" : null]
+                    .filter(Boolean).map((t) => ` · ${t}`).join("")}
+                  {" — "}
+                  {o.comparteStock ? "comparte stock con la asignada" : "no se sincroniza: se usa la de mejor exposición"}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
