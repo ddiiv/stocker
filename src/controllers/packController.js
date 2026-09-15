@@ -242,20 +242,21 @@ const listar = async (req, res, next) => {
     for (const grupo of porProducto.values()) {
       if (grupo.tipo === 'combo') {
         /*
-         * Los talles en común que todavía no tienen combo. Pasa cuando una de
-         * las prendas suma un talle después de crear el combo: sin avisarlo,
-         * ese talle simplemente no se vende.
+         * Las combinaciones elegidas que las prendas ya permiten y todavía no
+         * tienen combo. Pasa cuando una prenda suma la variante que faltaba:
+         * sin avisarlo, esa combinación simplemente no se vende.
          */
         grupo.faltanVariantes = 0;
         try {
-          const def = JSON.parse(grupo.definicionCombo || 'null');
-          if (def?.piezas?.length) {
+          const def = packs.leerDefinicionCombo(grupo.definicionCombo);
+          if (def) {
+            grupo.legado = def.legado;
             const proy = await packs.proyectarCombo({
-              businessId, eje: def.eje, piezas: def.piezas, agrupador: grupo.sku,
+              businessId, piezas: def.piezas, ejes: def.ejes, legado: def.legado,
+              colores: def.colores, talles: def.talles, excluidas: def.excluidas, agrupador: grupo.sku,
             });
-            const hechos = new Set(grupo.variantes.map((x) => String(x.etiqueta).trim().toUpperCase()));
-            grupo.faltanVariantes = proy.filas
-              .filter((f) => !hechos.has(String(f.talle).trim().toUpperCase())).length;
+            const hechas = await clavesExistentes(grupo.productId, businessId, def.ejes);
+            grupo.faltanVariantes = proy.filas.filter((f) => !f.excluida && !hechas.has(f.clave)).length;
           }
         } catch {
           // Una definición ilegible no tira la lista: el combo se ve igual.
@@ -556,7 +557,7 @@ const crear = async (req, res, next) => {
      * control, llegaba al insert y moría con un error de índice que hablaba de
      * una restricción de base de datos en vez de decir que el SKU está tomado.
      */
-    const libreEnVariantes = await skuService.estaLibre(businessId, sku);
+    const libreEnVariantes = await skuService.estaLibre(businessId, sku, null, t);
     const productoTomado = await Product.count({ where: { businessId, sku }, transaction: t });
     if (!libreEnVariantes || productoTomado) {
       await t.rollback();
@@ -591,6 +592,10 @@ const crear = async (req, res, next) => {
     }, { transaction: t });
 
     const creadas = [];
+
+    // Los SKU ya repartidos en este lote.
+
+    const usados = new Set();
     for (const f of filas) {
       /*
        * `liberar` resuelve el choque agregando -2, -3.
@@ -600,7 +605,8 @@ const crear = async (req, res, next) => {
        * con un error de índice único que nombraba una restricción de base de
        * datos. Es la misma salida que usa el alta de productos.
        */
-      const libre = await skuService.liberar(businessId, f.sku);
+      const libre = await skuService.liberar(businessId, f.sku, null, t, usados);
+      if (libre) usados.add(libre);
       if (!libre) {
         await t.rollback();
         return res.status(409).json({
@@ -657,56 +663,138 @@ const crear = async (req, res, next) => {
 /*
  * ══ Combos: productos distintos en un mismo pack ═══════════════════
  *
- * Un pack vende de a N unidades de UN producto. Un combo junta productos
- * distintos —remera + pantalón— y se genera una variante por cada talle que
- * tienen en común: "Conjunto M" lleva la remera M y el pantalón M. El color de
- * cada prenda se fija al crearlo.
- *
- * Talle compartido y no todas las combinaciones: una remera de 12 variantes y
- * un pantalón de 8 dan 96 combinaciones, 96 SKU para publicar y mantener. Con
- * el talle compartido, el combo tiene tantas variantes como talles en común.
+ * Un pack vende de a N unidades de UN producto. Un combo junta prendas
+ * distintas —remera + pantalón— y cada variante es una combinación de color y
+ * talle: "Negro / M" lleva la remera negra M y el pantalón negro M. Quien lo
+ * arma elige qué colores y qué talles, entre los que existen en todas las
+ * prendas, y puede combinar colores distintos en una misma variante
+ * ("Blanco + Negro / M"). El talle es el mismo para todas.
  *
  * Por debajo es un pack como cualquier otro: sin stock propio, con sus
- * componentes en `PackComponente`. Por eso la cantidad que se arma, la
- * publicación en Mercado Libre, la venta, el despacho y la cancelación ya
- * funcionan sin tocar nada.
+ * componentes en `PackComponente`. Por eso lo que se arma, la publicación en
+ * Mercado Libre, la venta, el despacho y la cancelación ya funcionan sin tocar
+ * nada. `Product.definicionCombo` guarda lo elegido, que es lo que permite
+ * completarlo y ampliarlo después.
  */
+const EJES_COMBO = { color: 'Color', talle: 'Talle' };
+// `variante1Valor` es STRING(80): una mezcla de muchos colores largos no entra.
+const LARGO_VALOR_VARIANTE = 80;
+// Más combinaciones que esto no es un combo: es un error de elección, y armar
+// la previa costaría miles de filas.
+const MAX_COMBINACIONES = 400;
+// `Product.sku` es corto, y a cada variante se le suman color y talle.
+const LARGO_SKU_COMBO = 60;
 
-/** Valida y normaliza lo que manda la pantalla. Devuelve `{ error }` o `{ eje, piezas }`. */
-function leerPiezasCombo(cuerpo) {
-  const crudas = Array.isArray(cuerpo?.piezas) ? cuerpo.piezas : [];
-  if (crudas.length < 2) {
-    return { error: 'Un combo lleva al menos dos productos distintos. Para vender de a N del mismo producto, creá un pack.' };
+/** Los SKU de la lista que ya usa el negocio, en consultas por tandas. */
+async function skusTomados(businessId, skus, t = null) {
+  const unicos = [...new Set(skus.map((x) => String(x).trim()))];
+  const tomados = new Set();
+  for (let i = 0; i < unicos.length; i += 500) {
+    const filas = await ProductVariant.findAll({
+      where: { businessId, sku: unicos.slice(i, i + 500) }, attributes: ['sku'], transaction: t,
+    });
+    for (const v of filas) tomados.add(String(v.sku).trim());
   }
-  if (crudas.length > 10) return { error: 'Un combo no puede llevar más de 10 productos.' };
+  return tomados;
+}
 
-  const piezas = [];
-  const vistos = new Set();
-  for (const p of crudas) {
-    const productId = Math.trunc(Number(p?.productId));
-    const cantidad = Math.trunc(Number(p?.cantidad ?? 1));
-    if (!Number.isFinite(productId) || productId <= 0) {
-      return { error: 'Cada prenda del combo tiene que indicar qué producto es.' };
+const demasiadas = (proy) => proy.filas.length + proy.imposibles.length > MAX_COMBINACIONES;
+const MENSAJE_DEMASIADAS = `Son demasiadas combinaciones para un combo (más de ${MAX_COMBINACIONES}). Elegí menos colores o talles.`;
+const DEFINICION_DANADA = 'La definición de este combo está dañada: no se puede saber qué prendas lleva.';
+
+/** Valida lo que manda la pantalla. Devuelve `{ error }` o la elección normalizada. */
+function leerEleccionCombo(cuerpo, { exigirPiezas = true } = {}) {
+  let piezas = null;
+  if (exigirPiezas) {
+    const crudas = Array.isArray(cuerpo?.piezas) ? cuerpo.piezas : [];
+    if (crudas.length < 2) {
+      return { error: 'Un combo lleva al menos dos productos distintos. Para vender de a N del mismo producto, creá un pack.' };
     }
-    if (vistos.has(productId)) {
-      return { error: 'Un producto aparece dos veces: poné la cantidad total en una sola prenda.' };
-    }
-    vistos.add(productId);
-    if (!Number.isFinite(cantidad) || cantidad < 1 || cantidad > 1000) {
-      return { error: 'La cantidad de cada prenda tiene que ser un entero entre 1 y 1000.' };
-    }
-    const fijos = {};
-    if (p?.fijos && typeof p.fijos === 'object') {
-      for (const [k, v] of Object.entries(p.fijos)) {
-        const nombre = String(k).trim().slice(0, 40);
-        const valor = String(v ?? '').trim().slice(0, 60);
-        if (nombre && valor) fijos[nombre] = valor;
+    if (crudas.length > 10) return { error: 'Un combo no puede llevar más de 10 productos.' };
+    piezas = [];
+    const vistos = new Set();
+    for (const p of crudas) {
+      const productId = Math.trunc(Number(p?.productId));
+      const cantidad = Math.trunc(Number(p?.cantidad ?? 1));
+      if (!Number.isFinite(productId) || productId <= 0) {
+        return { error: 'Cada prenda del combo tiene que indicar qué producto es.' };
       }
+      if (vistos.has(productId)) {
+        return { error: 'Un producto aparece dos veces: poné la cantidad total en una sola prenda.' };
+      }
+      vistos.add(productId);
+      if (!Number.isFinite(cantidad) || cantidad < 1 || cantidad > 1000) {
+        return { error: 'La cantidad de cada prenda tiene que ser un entero entre 1 y 1000.' };
+      }
+      piezas.push({ productId, cantidad });
     }
-    piezas.push({ productId, cantidad, fijos });
   }
-  const eje = String(cuerpo?.eje || 'Talle').trim().slice(0, 40) || 'Talle';
-  return { eje, piezas };
+
+  const esTexto = (v) => typeof v === 'string' || typeof v === 'number';
+  const colores = cuerpo?.colores ?? null;
+  const talles = cuerpo?.talles ?? null;
+  const excluidas = cuerpo?.excluidas ?? null;
+  if (colores !== null) {
+    const valida = Array.isArray(colores) && colores.length <= 100 && colores.every((op) => {
+      const valores = Array.isArray(op) ? op : (esTexto(op) ? [op] : op?.valores);
+      return Array.isArray(valores) && valores.length <= 10
+        && valores.every((v) => v === null || (esTexto(v) && String(v).length <= 60));
+    });
+    if (!valida) return { error: 'La lista de colores del combo no es válida.' };
+  }
+  if (talles !== null
+    && !(Array.isArray(talles) && talles.length <= 100 && talles.every((x) => esTexto(x) && String(x).length <= 40))) {
+    return { error: 'La lista de talles del combo no es válida.' };
+  }
+  if (excluidas !== null
+    && !(Array.isArray(excluidas) && excluidas.length <= 2000
+      && excluidas.every((x) => typeof x === 'string' && x.length <= 300))) {
+    return { error: 'La lista de combinaciones excluidas no es válida.' };
+  }
+  return {
+    piezas,
+    colores,
+    talles: talles === null ? null : talles.map(String),
+    excluidas: excluidas || [],
+  };
+}
+
+/** Une listas de opciones de color sin repetir (sin distinguir mayúsculas). */
+function unirOpciones(...listas) {
+  const vistas = new Set();
+  const salida = [];
+  for (const lista of listas) {
+    for (const op of lista || []) {
+      const valores = Array.isArray(op) ? op : op?.valores;
+      if (!Array.isArray(valores)) continue;
+      const clave = valores.map((v) => String(v ?? '').trim().toUpperCase()).join('|');
+      if (!vistas.has(clave)) { vistas.add(clave); salida.push(valores); }
+    }
+  }
+  return salida;
+}
+
+function unirTalles(...listas) {
+  const vistos = new Set();
+  const salida = [];
+  for (const lista of listas) {
+    for (const tl of lista || []) {
+      const clave = String(tl).trim().toUpperCase();
+      if (!vistos.has(clave)) { vistos.add(clave); salida.push(String(tl).trim()); }
+    }
+  }
+  return salida;
+}
+
+function definicionDeCombo({ piezas, ejes = EJES_COMBO, opciones, talles, excluidas }) {
+  return JSON.stringify({
+    version: 2,
+    ejes,
+    piezas: piezas.map((p) => ({ productId: p.productId, cantidad: p.cantidad })),
+    colores: opciones,
+    talles,
+    excluidas,
+  });
 }
 
 /** Precio sugerido: la suma de las prendas por su cantidad. */
@@ -723,20 +811,39 @@ function sumaDePrecios(piezas, porId) {
   return total;
 }
 
-/** Crea una variante de combo por talle, con sus componentes. */
-async function crearVariantesCombo({ producto, eje, filas, businessId, t }) {
+/*
+ * Las claves de las variantes que el combo ya tiene, activas o no. Una dada de
+ * baja cuenta como existente: si alguien la sacó, no se vuelve a crear sola.
+ */
+async function clavesExistentes(productId, businessId, ejes, t = null) {
+  const variantes = await ProductVariant.findAll({
+    where: { productId, businessId, esPack: true },
+    attributes: ['id', 'variante1Nombre', 'variante1Valor', 'variante2Nombre', 'variante2Valor'],
+    transaction: t,
+  });
+  return new Set(variantes.map((v) => packs.claveDeVariante(v, ejes)));
+}
+
+/** Crea una variante de combo por combinación, con sus componentes. */
+async function crearVariantesCombo({ producto, ejes = EJES_COMBO, filas, businessId, t }) {
   const lista = [];
+  // Los SKU ya repartidos en este lote.
+  const usados = new Set();
   for (const f of filas) {
-    const libre = await skuService.liberar(businessId, f.sku);
+    const libre = await skuService.liberar(businessId, f.sku, null, t, usados);
+    if (libre) usados.add(libre);
     if (!libre) {
-      return { error: `No se pudo generar un SKU libre para el talle ${f.talle}. Probá con otro SKU de combo.` };
+      return { error: `No se pudo generar un SKU libre para ${f.etiqueta || 'el combo'}. Probá con otro SKU de combo.` };
     }
+    const pares = [];
+    if (f.color) pares.push([ejes.color, f.color]);
+    if (f.talle) pares.push([ejes.talle, f.talle]);
     const variante = await ProductVariant.create({
       productId: producto.id,
       businessId,
       sku: libre,
-      variante1Nombre: eje, variante1Valor: f.talle,
-      variante2Nombre: null, variante2Valor: null,
+      variante1Nombre: pares[0]?.[0] ?? null, variante1Valor: pares[0]?.[1] ?? null,
+      variante2Nombre: pares[1]?.[0] ?? null, variante2Valor: pares[1]?.[1] ?? null,
       esPack: true,
       stock: 0,
       stockMinimo: 0,
@@ -744,57 +851,102 @@ async function crearVariantesCombo({ producto, eje, filas, businessId, t }) {
     await packs.definirComponentes(variante.id, businessId, f.componentes.map((c) => ({
       componenteVariantId: c.componenteVariantId, cantidad: c.cantidad,
     })), t);
-    lista.push({ variantId: variante.id, sku: libre, etiqueta: f.talle });
+    lista.push({ variantId: variante.id, sku: libre, etiqueta: f.etiqueta });
   }
   return { lista };
 }
 
-// POST /api/packs/combo/sugerencia  { sku?, eje?, piezas }
+const nombreLargo = (filas) => filas.find((f) => (f.color || '').length > LARGO_VALOR_VARIANTE);
+
+/*
+ * POST /api/packs/combo/sugerencia
+ *   { piezas, colores?, talles?, excluidas?, sku? }  → un combo nuevo
+ *   { productId, colores?, talles? }                 → un combo existente
+ *
+ * Con `productId`, las prendas y lo ya elegido salen de la definición guardada
+ * y cada fila dice si ya `existe`.
+ */
 const sugerenciaCombo = async (req, res, next) => {
   try {
     const { businessId } = req.auth;
-    const leidas = leerPiezasCombo(req.body);
-    if (leidas.error) return res.status(400).json({ message: leidas.error });
+    let combo = null;
+    let def = null;
+    if (req.body?.productId !== undefined && req.body?.productId !== null) {
+      combo = await Product.findOne({
+        where: { id: Number(req.body.productId) || 0, businessId },
+        attributes: ['id', 'sku', 'skuAgrupador', 'titulo', 'definicionCombo'],
+      });
+      if (!combo?.definicionCombo) return res.status(404).json({ message: 'Ese combo no existe en este negocio.' });
+      def = packs.leerDefinicionCombo(combo.definicionCombo);
+      if (!def) return res.status(400).json({ message: DEFINICION_DANADA });
+    }
+    const eleccion = leerEleccionCombo(req.body, { exigirPiezas: !def });
+    if (eleccion.error) return res.status(400).json({ message: eleccion.error });
+    const piezas = def ? def.piezas : eleccion.piezas;
 
     const productos = await Product.findAll({
-      where: { id: leidas.piezas.map((p) => p.productId), businessId },
+      where: { id: piezas.map((p) => p.productId), businessId },
       attributes: ['id', 'sku', 'skuAgrupador', 'titulo', 'precioMinorista', 'precioMayorista', 'costo'],
     });
     const porId = new Map(productos.map((p) => [p.id, p]));
 
-    const agrupadorDefecto = `COMBO-${leidas.piezas
+    const agrupadorDefecto = `COMBO-${piezas
       .map((p) => porId.get(p.productId)?.skuAgrupador || porId.get(p.productId)?.sku || p.productId)
       .join('-')}`.slice(0, 60);
-    const agrupador = String(req.body?.sku || '').trim() || agrupadorDefecto;
+    const agrupador = combo
+      ? (combo.skuAgrupador || combo.sku)
+      : (String(req.body?.sku || '').trim() || agrupadorDefecto);
 
     const proy = await packs.proyectarCombo({
-      businessId, eje: leidas.eje, piezas: leidas.piezas, agrupador,
+      businessId,
+      piezas,
+      ejes: def?.ejes,
+      legado: Boolean(def?.legado),
+      colores: def?.legado ? def.colores : (eleccion.colores ?? def?.colores ?? null),
+      talles: eleccion.talles ?? def?.talles ?? null,
+      excluidas: req.body?.excluidas !== undefined ? eleccion.excluidas : (def?.excluidas || []),
+      agrupador,
     });
 
+    if (demasiadas(proy)) return res.status(400).json({ message: MENSAJE_DEMASIADAS });
+    const hechas = combo ? await clavesExistentes(combo.id, businessId, def.ejes) : new Set();
+    for (const f of proy.filas) f.existe = hechas.has(f.clave);
+    // Una sola consulta para todos los SKU, no una por fila.
+    const tomados = await skusTomados(businessId, proy.filas.filter((f) => !f.existe).map((f) => f.sku));
     for (const f of proy.filas) {
-      if (!await skuService.estaLibre(businessId, f.sku)) f.repetido = true;
+      if (!f.existe && tomados.has(String(f.sku).trim())) f.repetido = true;
     }
     const avisos = [...proy.avisos];
-    if (proy.filas.some((f) => f.repetido)) {
+    if (proy.filas.some((f) => f.repetido && !f.existe)) {
       avisos.push('Hay SKU repetidos. Al guardar se les agrega un sufijo (-2, -3) para que '
         + 'no choquen, o podés cambiar el SKU del combo.');
     }
+    if (nombreLargo(proy.filas)) {
+      avisos.push(`Hay combinaciones de colores con un nombre de más de ${LARGO_VALOR_VARIANTE} letras: `
+        + 'no se pueden guardar. Combiná menos prendas o colores con nombres más cortos.');
+    }
 
-    const precios = sumaDePrecios(leidas.piezas, porId);
     return res.json({
-      eje: leidas.eje,
+      productId: combo?.id || null,
+      legado: Boolean(def?.legado),
       sku: agrupador,
-      titulo: `Conjunto ${proy.piezas.map((p) => p.titulo).filter(Boolean).join(' + ')}`.slice(0, 120),
-      ...precios,
+      titulo: combo?.titulo
+        || `Conjunto ${proy.piezas.map((p) => p.titulo).filter(Boolean).join(' + ')}`.slice(0, 120),
+      ...sumaDePrecios(piezas, porId),
       piezas: proy.piezas,
+      coloresComunes: proy.coloresComunes,
+      tallesComunes: proy.tallesComunes,
+      opciones: proy.opciones,
       talles: proy.talles,
       variantes: proy.filas,
+      imposibles: proy.imposibles,
+      invalidas: proy.invalidas,
       avisos,
     });
   } catch (e) { return next(e); }
 };
 
-// POST /api/packs/combo  { sku, titulo, precioMinorista, eje, piezas, talles? }
+// POST /api/packs/combo  { sku, titulo, precioMinorista, piezas, colores?, talles?, excluidas? }
 const crearCombo = async (req, res, next) => {
   const t = await sequelize.transaction();
   try {
@@ -804,39 +956,55 @@ const crearCombo = async (req, res, next) => {
       await t.rollback();
       return res.status(400).json({ message: 'El combo necesita un SKU.' });
     }
-    const leidas = leerPiezasCombo(req.body);
-    if (leidas.error) {
+    if (sku.length > LARGO_SKU_COMBO) {
       await t.rollback();
-      return res.status(400).json({ message: leidas.error });
+      return res.status(400).json({
+        message: `El SKU del combo puede tener hasta ${LARGO_SKU_COMBO} caracteres: a cada variante se le suman el color y el talle.`,
+      });
+    }
+    const eleccion = leerEleccionCombo(req.body);
+    if (eleccion.error) {
+      await t.rollback();
+      return res.status(400).json({ message: eleccion.error });
     }
 
     const proy = await packs.proyectarCombo({
-      businessId, eje: leidas.eje, piezas: leidas.piezas, agrupador: sku, t,
+      businessId, piezas: eleccion.piezas, colores: eleccion.colores, talles: eleccion.talles,
+      excluidas: eleccion.excluidas, agrupador: sku, t,
     });
-    const conProblema = proy.piezas.find((p) => p.problema);
-    if (conProblema) {
+    const falla = proy.piezas.find((p) => p.problema)?.problema || proy.invalidas[0];
+    if (falla) {
       await t.rollback();
-      return res.status(400).json({ message: conProblema.problema });
+      return res.status(400).json({ message: falla });
     }
 
-    // Los talles que la persona dejó tildados; sin lista, todos.
-    let filas = proy.filas;
-    if (Array.isArray(req.body?.talles) && req.body.talles.length) {
-      const pedidos = new Set(req.body.talles.map((x) => String(x).trim().toUpperCase()));
-      filas = filas.filter((f) => pedidos.has(String(f.talle).trim().toUpperCase()));
+    if (demasiadas(proy)) {
+      await t.rollback();
+      return res.status(400).json({ message: MENSAJE_DEMASIADAS });
     }
+    const filas = proy.filas.filter((f) => !f.excluida);
     if (!filas.length) {
       await t.rollback();
       return res.status(400).json({
         message: proy.avisos[0]
-          || 'Las prendas elegidas no tienen ningún talle en común, así que no hay combos para crear.',
+          || (proy.imposibles.length
+            ? 'Ninguna de las combinaciones elegidas existe en todas las prendas, así que no hay combos para crear.'
+            : 'No hay ninguna combinación de color y talle para crear.'),
         avisos: proy.avisos,
+      });
+    }
+    const larga = nombreLargo(filas);
+    if (larga) {
+      await t.rollback();
+      return res.status(400).json({
+        message: `"${larga.color}" tiene más de ${LARGO_VALOR_VARIANTE} letras y no entra como color de la variante. `
+          + 'Combiná menos prendas o colores con nombres más cortos.',
       });
     }
 
     await exigirCupo(businessId, 'skus', filas.length);
 
-    const libreEnVariantes = await skuService.estaLibre(businessId, sku);
+    const libreEnVariantes = await skuService.estaLibre(businessId, sku, null, t);
     const productoTomado = await Product.count({ where: { businessId, sku }, transaction: t });
     if (!libreEnVariantes || productoTomado) {
       await t.rollback();
@@ -844,12 +1012,12 @@ const crearCombo = async (req, res, next) => {
     }
 
     const productos = await Product.findAll({
-      where: { id: leidas.piezas.map((p) => p.productId), businessId },
+      where: { id: eleccion.piezas.map((p) => p.productId), businessId },
       attributes: ['id', 'titulo', 'precioMinorista', 'precioMayorista', 'costo'],
       transaction: t,
     });
     const porId = new Map(productos.map((p) => [p.id, p]));
-    const sugerido = sumaDePrecios(leidas.piezas, porId);
+    const sugerido = sumaDePrecios(eleccion.piezas, porId);
     const pedido = (valor, porDefecto) => (
       Number.isFinite(Number(valor)) && Number(valor) > 0 ? Number(valor) : porDefecto
     );
@@ -873,10 +1041,15 @@ const crearCombo = async (req, res, next) => {
       costo: pedido(req.body?.costo, sugerido.costo) || 0,
       activo: true,
       fechaActualizacion: new Date(),
-      definicionCombo: JSON.stringify({ eje: leidas.eje, piezas: leidas.piezas }),
+      definicionCombo: definicionDeCombo({
+        piezas: eleccion.piezas,
+        opciones: proy.opciones,
+        talles: proy.talles,
+        excluidas: proy.filas.filter((f) => f.excluida).map((f) => f.clave),
+      }),
     }, { transaction: t });
 
-    const r = await crearVariantesCombo({ producto, eje: leidas.eje, filas, businessId, t });
+    const r = await crearVariantesCombo({ producto, filas, businessId, t });
     if (r.error) {
       await t.rollback();
       return res.status(409).json({ message: r.error });
@@ -888,8 +1061,133 @@ const crearCombo = async (req, res, next) => {
       productId: producto.id,
       sku,
       variantes: r.lista,
-      mensaje: `Se crearon ${r.lista.length} combo${r.lista.length === 1 ? '' : 's'}, uno por talle. `
+      mensaje: `Se crearon ${r.lista.length} combo${r.lista.length === 1 ? '' : 's'}, uno por color y talle. `
         + 'No llevan stock propio: cada uno saca del estante las prendas que lleva.',
+    });
+  } catch (e) {
+    await t.rollback().catch(() => {});
+    return next(e);
+  }
+};
+
+/*
+ * POST /api/packs/combo/:productId/ampliar  { colores?, talles?, excluidas? }
+ *
+ * Suma colores, talles o combinaciones de colores a un combo que ya existe.
+ * Lo elegido antes queda: se une con lo nuevo y se crean sólo las variantes que
+ * faltan. `excluidas` es la lista completa de lo que la persona dejó
+ * destildado en la pantalla; sin ella, se mantiene lo excluido antes.
+ */
+const ampliarCombo = async (req, res, next) => {
+  const t = await sequelize.transaction();
+  try {
+    const { businessId } = req.auth;
+    const producto = await Product.findOne({
+      where: { id: Number(req.params.productId) || 0, businessId },
+      attributes: ['id', 'sku', 'skuAgrupador', 'titulo', 'definicionCombo'],
+      transaction: t,
+    });
+    if (!producto?.definicionCombo) {
+      await t.rollback();
+      return res.status(404).json({ message: 'Ese combo no existe en este negocio.' });
+    }
+    const def = packs.leerDefinicionCombo(producto.definicionCombo);
+    if (!def) {
+      await t.rollback();
+      return res.status(400).json({ message: DEFINICION_DANADA });
+    }
+    const eleccion = leerEleccionCombo(req.body, { exigirPiezas: false });
+    if (eleccion.error) {
+      await t.rollback();
+      return res.status(400).json({ message: eleccion.error });
+    }
+    /*
+     * Un combo de la versión anterior no se amplía: sus variantes no dicen el
+     * color, así que sumarle colores duplicaría todo, y su definición no guarda
+     * exclusiones. Los talles nuevos se agregan con "Generar las que faltan".
+     */
+    if (def.legado) {
+      await t.rollback();
+      return res.status(400).json({
+        message: 'Este combo se creó con la versión anterior, con un color fijo por prenda: no se le pueden '
+          + 'sumar colores ni talles a mano. Los talles nuevos se agregan con "Generar las que faltan"; '
+          + 'para otros colores, creá un combo nuevo.',
+      });
+    }
+    const agrupador = producto.skuAgrupador || producto.sku;
+
+    // Lo pedido se valida solo: una opción vieja que hoy no existe no lo frena.
+    let nuevasOpciones = [];
+    let nuevosTalles = [];
+    if (eleccion.colores || eleccion.talles) {
+      const pedido = await packs.proyectarCombo({
+        businessId, piezas: def.piezas, ejes: def.ejes,
+        colores: eleccion.colores ?? [], talles: eleccion.talles ?? [], agrupador, t,
+      });
+      const falla = pedido.piezas.find((p) => p.problema)?.problema || pedido.invalidas[0];
+      if (falla) {
+        await t.rollback();
+        return res.status(400).json({ message: falla });
+      }
+      nuevasOpciones = eleccion.colores ? pedido.opciones : [];
+      nuevosTalles = eleccion.talles ? pedido.talles : [];
+    }
+
+    const colores = unirOpciones(def.colores, nuevasOpciones);
+    const talles = def.talles === null ? null : unirTalles(def.talles, nuevosTalles);
+    const proy = await packs.proyectarCombo({
+      businessId, piezas: def.piezas, ejes: def.ejes, colores, talles, agrupador, t,
+    });
+    const problema = proy.piezas.find((p) => p.problema)?.problema;
+    if (problema) {
+      await t.rollback();
+      return res.status(400).json({ message: problema });
+    }
+    if (demasiadas(proy)) {
+      await t.rollback();
+      return res.status(400).json({ message: MENSAJE_DEMASIADAS });
+    }
+
+    const visibles = new Set(proy.filas.map((f) => f.clave));
+    const excluidasAntes = def.excluidas.map(packs.normalizarClave);
+    const excluidas = req.body?.excluidas === undefined
+      ? excluidasAntes
+      : [...new Set([
+        ...excluidasAntes.filter((c) => !visibles.has(c)),
+        ...eleccion.excluidas.map(packs.normalizarClave).filter((c) => visibles.has(c)),
+      ])];
+    const fuera = new Set(excluidas);
+    const hechas = await clavesExistentes(producto.id, businessId, def.ejes, t);
+    const aCrear = proy.filas.filter((f) => !hechas.has(f.clave) && !fuera.has(f.clave));
+
+    const larga = nombreLargo(aCrear);
+    if (larga) {
+      await t.rollback();
+      return res.status(400).json({
+        message: `"${larga.color}" tiene más de ${LARGO_VALOR_VARIANTE} letras y no entra como color de la variante.`,
+      });
+    }
+
+    let creadas = [];
+    if (aCrear.length) {
+      await exigirCupo(businessId, 'skus', aCrear.length);
+      const r = await crearVariantesCombo({ producto, ejes: def.ejes, filas: aCrear, businessId, t });
+      if (r.error) {
+        await t.rollback();
+        return res.status(409).json({ message: r.error });
+      }
+      creadas = r.lista;
+    }
+    await producto.update({
+      definicionCombo: definicionDeCombo({ piezas: def.piezas, ejes: def.ejes, opciones: colores, talles, excluidas }),
+    }, { transaction: t });
+    await t.commit();
+    return res.json({
+      ok: true,
+      creadas,
+      mensaje: creadas.length
+        ? `Se agregaron ${creadas.length} combinaci${creadas.length === 1 ? 'ón' : 'ones'} al combo.`
+        : 'No había combinaciones nuevas para crear. La elección quedó guardada.',
     });
   } catch (e) {
     await t.rollback().catch(() => {});
@@ -914,42 +1212,41 @@ const completar = async (req, res, next) => {
     }
 
     /*
-     * Un combo se completa desde su definición, no desde un producto padre:
-     * agrega los talles que las prendas tienen en común y todavía no tienen
-     * combo. Un talle que ya existe —aunque esté dado de baja— no se vuelve a
-     * crear: si alguien lo sacó, lo sacó a propósito.
+     * Un combo se completa desde lo que se eligió al crearlo: agrega las
+     * combinaciones de color y talle elegidas que las prendas ya permiten y
+     * todavía no existen. Una que ya existe —aunque esté dada de baja— no se
+     * vuelve a crear: si alguien la sacó, la sacó a propósito. Lo excluido a
+     * mano tampoco.
      */
     if (producto.definicionCombo) {
-      let def = null;
-      try { def = JSON.parse(producto.definicionCombo); } catch { def = null; }
-      if (!def?.piezas?.length) {
+      const def = packs.leerDefinicionCombo(producto.definicionCombo);
+      if (!def) {
         await t.rollback();
-        return res.status(400).json({
-          message: 'La definición de este combo está dañada: no se puede saber qué prendas lleva.',
-        });
+        return res.status(400).json({ message: DEFINICION_DANADA });
       }
-      const agrupadorCombo = producto.skuAgrupador || producto.sku;
       const proy = await packs.proyectarCombo({
-        businessId, eje: def.eje, piezas: def.piezas, agrupador: agrupadorCombo, t,
+        businessId, piezas: def.piezas, ejes: def.ejes, legado: def.legado,
+        colores: def.colores, talles: def.talles, excluidas: def.excluidas,
+        agrupador: producto.skuAgrupador || producto.sku, t,
       });
-      const existentes = await ProductVariant.findAll({
-        where: { productId: producto.id, businessId, esPack: true },
-        attributes: ['variante1Valor'],
-        transaction: t,
-      });
-      const hechos = new Set(existentes.map((x) => String(x.variante1Valor).trim().toUpperCase()));
-      const faltanTalles = proy.filas.filter((f) => !hechos.has(String(f.talle).trim().toUpperCase()));
-      if (!faltanTalles.length) {
+      const hechas = await clavesExistentes(producto.id, businessId, def.ejes, t);
+      const faltan = proy.filas.filter((f) => !f.excluida && !hechas.has(f.clave));
+      if (!faltan.length) {
         await t.rollback();
         return res.json({
           ok: true, creadas: [],
-          mensaje: 'El combo ya tiene todos los talles que sus prendas tienen en común.',
+          mensaje: 'El combo ya tiene todas las combinaciones elegidas que sus prendas permiten.',
         });
       }
-      await exigirCupo(businessId, 'skus', faltanTalles.length);
-      const r = await crearVariantesCombo({
-        producto, eje: def.eje, filas: faltanTalles, businessId, t,
-      });
+      const larga = nombreLargo(faltan);
+      if (larga) {
+        await t.rollback();
+        return res.status(400).json({
+          message: `"${larga.color}" tiene más de ${LARGO_VALOR_VARIANTE} letras y no entra como color de la variante.`,
+        });
+      }
+      await exigirCupo(businessId, 'skus', faltan.length);
+      const r = await crearVariantesCombo({ producto, ejes: def.ejes, filas: faltan, businessId, t });
       if (r.error) {
         await t.rollback();
         return res.status(409).json({ message: r.error });
@@ -958,7 +1255,7 @@ const completar = async (req, res, next) => {
       return res.json({
         ok: true,
         creadas: r.lista,
-        mensaje: `Se agregaron ${r.lista.length} talle${r.lista.length === 1 ? '' : 's'} al combo.`,
+        mensaje: `Se agregaron ${r.lista.length} combinaci${r.lista.length === 1 ? 'ón' : 'ones'} al combo.`,
       });
     }
 
@@ -996,8 +1293,13 @@ const completar = async (req, res, next) => {
     await exigirCupo(businessId, 'skus', faltan.length);
 
     const creadas = [];
+
+    // Los SKU ya repartidos en este lote.
+
+    const usados = new Set();
     for (const f of faltan) {
-      const libre = await skuService.liberar(businessId, f.sku);
+      const libre = await skuService.liberar(businessId, f.sku, null, t, usados);
+      if (libre) usados.add(libre);
       if (!libre) {
         await t.rollback();
         return res.status(409).json({
@@ -1183,4 +1485,4 @@ const usan = async (req, res, next) => {
 };
 
 module.exports = {
-  listar, detalle, sugerencia, crear, completar, definir, desarmar, eliminar, usan, padreDe, sugerenciaCombo, crearCombo };
+  listar, detalle, sugerencia, crear, completar, definir, desarmar, eliminar, usan, padreDe, sugerenciaCombo, crearCombo, ampliarCombo };

@@ -133,10 +133,10 @@ async function guardarRegla(businessId, regla) {
  * `exceptoVariantId` es para la edición: al guardar sin cambiar el SKU, la
  * propia variante no puede contarse como su propio conflicto.
  */
-async function estaLibre(businessId, sku, exceptoVariantId = null) {
+async function estaLibre(businessId, sku, exceptoVariantId = null, t = null) {
   const where = { businessId, sku: String(sku).trim() };
   if (exceptoVariantId) where.id = { [Op.ne]: exceptoVariantId };
-  return (await ProductVariant.count({ where })) === 0;
+  return (await ProductVariant.count({ where, transaction: t })) === 0;
 }
 
 /**
@@ -146,12 +146,20 @@ async function estaLibre(businessId, sku, exceptoVariantId = null) {
  * null: llegar ahí significa que la regla produce choques en masa y hay que
  * arreglar la regla, no seguir numerando.
  */
-async function liberar(businessId, base, exceptoVariantId = null) {
+async function liberar(businessId, base, exceptoVariantId = null, t = null, usados = null) {
+  /*
+   * `t`: dentro de un alta en lote, la consulta tiene que ver lo que el mismo
+   * lote ya insertó. `usados`: los SKU que el lote ya repartió, por si la base
+   * todavía no los muestra. Sin esto, dos filas con el mismo SKU propuesto
+   * ("Azul Marino" y "Azul Claro" dan las dos AZU) chocaban en vez de llevarse
+   * -2.
+   */
+  const libre = async (sku) => !(usados && usados.has(sku)) && estaLibre(businessId, sku, exceptoVariantId, t);
   const raiz = String(base).trim().slice(0, 90);
-  if (await estaLibre(businessId, raiz, exceptoVariantId)) return raiz;
+  if (await libre(raiz)) return raiz;
   for (let i = 2; i <= 50; i++) {
     const intento = `${raiz}-${i}`;
-    if (await estaLibre(businessId, intento, exceptoVariantId)) return intento;
+    if (await libre(intento)) return intento;
   }
   return null;
 }

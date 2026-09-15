@@ -448,10 +448,17 @@ async function packsQueUsan(componenteVariantId, businessId, t = null) {
 }
 
 /*
- * ══ Combos: productos distintos, un combo por talle en común ═══════
+ * ══ Combos: productos distintos, uno por color y talle ═════════════
  *
- * Los talles se ordenan como en una góndola, no alfabéticamente: "L, M, S"
- * no es ningún orden. Es la misma escala que usa la pantalla.
+ * Un combo junta prendas distintas —remera + pantalón— y cada variante es una
+ * combinación de color y talle: "Negro / M" lleva la remera negra M y el
+ * pantalón negro M. Quien lo arma elige qué colores y qué talles, entre los que
+ * existen en TODAS las prendas. También puede combinar colores distintos en una
+ * misma variante: "Blanco + Negro / M" lleva la remera blanca y el pantalón
+ * negro. El talle es siempre el mismo para todas las prendas.
+ *
+ * Los talles se ordenan como en una góndola, no alfabéticamente: "L, M, S" no
+ * es ningún orden. Es la misma escala que usa la pantalla.
  */
 const ESCALA_TALLES = [
   'XXXS', '3XS', 'XXS', '2XS', 'XS', 'S', 'M', 'L',
@@ -473,30 +480,97 @@ function compararTalles(a, b) {
   if (Number.isFinite(nb)) return 1;
   return normTalle(a).localeCompare(normTalle(b), 'es');
 }
+const compararTexto = (a, b) => normTalle(a).localeCompare(normTalle(b), 'es');
 
 const paresDe = (v) => [
   [v.variante1Nombre, v.variante1Valor],
   [v.variante2Nombre, v.variante2Valor],
 ].filter(([n, val]) => n && val !== null && val !== undefined && String(val).trim() !== '');
 
+/** La clave de una combinación: color y talle, sin mayúsculas ni espacios de más. */
+const claveCombo = (color, talle) => `${normTalle(color)}|${normTalle(talle)}`;
+const normalizarClave = (clave) => String(clave ?? '').split('|').map(normTalle).join('|');
+
+/** La clave de una variante de combo ya creada, leída de sus ejes. */
+function claveDeVariante(v, ejes = {}) {
+  const nColor = normTalle(ejes.color || 'Color');
+  const nTalle = normTalle(ejes.talle || 'Talle');
+  const pares = paresDe(v);
+  const color = pares.find(([n]) => normTalle(n) === nColor)?.[1] || '';
+  const talle = pares.find(([n]) => normTalle(n) === nTalle)?.[1] || '';
+  return claveCombo(color, talle);
+}
+
 /**
- * Qué combos salen de un grupo de prendas, sin crear nada.
+ * Lee la definición guardada de un combo. Devuelve null si está dañada.
  *
- * Cada prenda aporta, para cada talle, UNA variante: la de ese talle con los
- * valores fijados (el color). Si para un talle quedan varias —la remera M
- * existe en negro y en blanco y no se eligió—, no se adivina: se devuelve el
- * problema para que la persona elija. Una prenda sin talles (una gorra) entra
- * igual en todos los combos, siempre que quede una sola variante.
- *
- * Salen combos sólo para los talles que están en TODAS las prendas con talle.
- * Una remera S/M/L con un pantalón 38/40 no comparte ninguno: no hay combos, y
- * se avisa por qué.
- *
- * @returns {{ piezas, talles, filas, avisos }} `filas` trae por talle el SKU
- *   propuesto y los componentes `{ componenteVariantId, cantidad, skuPadre }`.
+ * Entiende también la primera versión ({ eje, piezas: [{ fijos }] }), donde el
+ * color se fijaba por prenda y las variantes sólo decían el talle. Esas se leen
+ * con `legado`: sus etiquetas no llevan color, así completar no duplica lo que
+ * ya existe con otro nombre.
  */
-async function proyectarCombo({ businessId, eje = 'Talle', piezas = [], agrupador, t = null }) {
-  const nombreEje = normTalle(eje);
+function leerDefinicionCombo(texto) {
+  let def = texto;
+  if (typeof texto === 'string') {
+    try { def = JSON.parse(texto); } catch { return null; }
+  }
+  if (!def || typeof def !== 'object' || !Array.isArray(def.piezas) || !def.piezas.length) return null;
+  if (def.piezas.some((p) => !p || typeof p !== 'object' || !(Number(p.productId) > 0))) return null;
+  const piezas = def.piezas.map((p) => ({
+    productId: Number(p.productId),
+    cantidad: Math.max(1, Math.trunc(Number(p.cantidad) || 1)),
+  }));
+  if (Number(def.version) >= 2) {
+    return {
+      version: 2,
+      legado: false,
+      ejes: { color: def.ejes?.color || 'Color', talle: def.ejes?.talle || 'Talle' },
+      piezas,
+      colores: Array.isArray(def.colores) ? def.colores : null,
+      talles: Array.isArray(def.talles) ? def.talles : null,
+      excluidas: Array.isArray(def.excluidas) ? def.excluidas : [],
+    };
+  }
+  const colorFijo = (p) => {
+    const fijos = p?.fijos && typeof p.fijos === 'object' ? p.fijos : {};
+    const nombre = Object.keys(fijos).find((k) => normTalle(k) === 'COLOR');
+    return nombre ? fijos[nombre] : null;
+  };
+  return {
+    version: 1,
+    legado: true,
+    ejes: { color: 'Color', talle: def.eje || 'Talle' },
+    piezas,
+    colores: [def.piezas.map(colorFijo)],
+    talles: null,
+    excluidas: [],
+  };
+}
+
+/**
+ * Qué combinaciones salen de un grupo de prendas, sin crear nada.
+ *
+ * `colores` es la lista de opciones elegidas: cada una dice el color de cada
+ * prenda, en orden (`['Blanco', 'Negro']`), o es un texto para el mismo color
+ * en todas. Sin lista, se ofrece cada color que tienen todas las prendas.
+ * `talles` es la lista de talles elegidos; sin lista, todos los que tienen
+ * todas. Una prenda sin colores o sin talles (una gorra) entra igual en todas.
+ *
+ * Cada opción de color por cada talle da una fila, pero sólo si TODAS las
+ * prendas tienen esa variante: lo que no existe va a `imposibles`, con lo que
+ * falta, en vez de desaparecer sin explicación.
+ *
+ * Nunca tira: lo pedido que no existe va a `invalidas`, y el que crea decide
+ * si eso es un error.
+ */
+async function proyectarCombo({
+  businessId, piezas = [], ejes = {}, colores = null, talles = null,
+  excluidas = [], legado = false, agrupador, t = null,
+}) {
+  const ejeColor = ejes.color || 'Color';
+  const ejeTalle = ejes.talle || 'Talle';
+  const nColor = normTalle(ejeColor);
+  const nTalle = normTalle(ejeTalle);
   const ids = piezas.map((p) => Number(p.productId));
   // En serie: con SQL Server, dos consultas a la vez sobre la misma
   // transacción chocan.
@@ -513,7 +587,7 @@ async function proyectarCombo({ businessId, eje = 'Talle', piezas = [], agrupado
   const porId = new Map(productos.map((p) => [Number(p.id), p]));
 
   const salida = [];
-  const porPieza = [];
+  const indices = [];
   for (const p of piezas) {
     const prod = porId.get(Number(p.productId));
     const info = {
@@ -521,108 +595,191 @@ async function proyectarCombo({ businessId, eje = 'Talle', piezas = [], agrupado
       sku: prod?.skuAgrupador || prod?.sku || '',
       titulo: prod?.titulo || '',
       cantidad: Number(p.cantidad) || 1,
+      colores: [],
       talles: [],
-      ejes: {},
       problema: null,
     };
+    const idx = { conColor: false, conTalle: false, porClave: new Map(), colores: new Map(), talles: new Map() };
     salida.push(info);
-    porPieza.push({ conTalle: false, grupos: new Map() });
+    indices.push(idx);
     if (!prod) { info.problema = 'Uno de los productos elegidos no existe en este negocio.'; continue; }
 
     const suyas = variantes.filter((v) => Number(v.productId) === prod.id);
     if (!suyas.length) { info.problema = `${prod.titulo} no tiene variantes activas para vender.`; continue; }
 
-    const ejes = new Map();
     for (const v of suyas) {
-      for (const [n, val] of paresDe(v)) {
-        if (!ejes.has(n)) ejes.set(n, new Map());
-        ejes.get(n).set(normTalle(val), String(val).trim());
+      const pares = paresDe(v);
+      const otro = pares.find(([n]) => normTalle(n) !== nColor && normTalle(n) !== nTalle);
+      if (otro) {
+        info.problema = `${prod.titulo} tiene variantes por ${otro[0]}: un combo sólo combina ${ejeColor} y ${ejeTalle}.`;
+        break;
+      }
+      const color = pares.find(([n]) => normTalle(n) === nColor)?.[1];
+      const talle = pares.find(([n]) => normTalle(n) === nTalle)?.[1];
+      if (color) {
+        idx.conColor = true;
+        if (!idx.colores.has(normTalle(color))) idx.colores.set(normTalle(color), String(color).trim());
+      }
+      if (talle) {
+        idx.conTalle = true;
+        if (!idx.talles.has(normTalle(talle))) idx.talles.set(normTalle(talle), String(talle).trim());
+      }
+      const clave = claveCombo(color, talle);
+      if (idx.porClave.has(clave)) {
+        info.problema = `${prod.titulo} tiene dos variantes ${[color, talle].filter(Boolean).join(' / ') || 'sin color ni talle'}: `
+          + 'corregilas antes de armar el combo.';
+        break;
+      }
+      idx.porClave.set(clave, v);
+    }
+    if (!info.problema) {
+      for (const v of suyas) {
+        const nombres = paresDe(v).map(([n]) => normTalle(n));
+        const falta = idx.conColor && !nombres.includes(nColor) ? ejeColor
+          : (idx.conTalle && !nombres.includes(nTalle) ? ejeTalle : null);
+        if (falta) {
+          info.problema = `${prod.titulo} tiene variantes con y sin ${falta} (${v.sku}): completalas antes de armar el combo.`;
+          break;
+        }
       }
     }
-    for (const [n, valores] of ejes) {
-      const lista = [...valores.values()];
-      info.ejes[n] = normTalle(n) === nombreEje ? lista.sort(compararTalles) : lista.sort((a, b) => a.localeCompare(b, 'es'));
-    }
-
-    const fijos = Object.entries(p.fijos || {}).filter(([n]) => normTalle(n) !== nombreEje);
-    const noExiste = fijos.find(([n, val]) => {
-      const eje = [...ejes.keys()].find((x) => normTalle(x) === normTalle(n));
-      return !eje || !ejes.get(eje).has(normTalle(val));
-    });
-    if (noExiste) { info.problema = `${prod.titulo} no tiene ${noExiste[0]} ${noExiste[1]}.`; continue; }
-
-    const elegibles = suyas.filter((v) => {
-      const mapa = new Map(paresDe(v).map(([n, val]) => [normTalle(n), normTalle(val)]));
-      return fijos.every(([n, val]) => mapa.get(normTalle(n)) === normTalle(val));
-    });
-    const conTalle = elegibles.some((v) => paresDe(v).some(([n]) => normTalle(n) === nombreEje));
-    const grupos = new Map();
-    for (const v of elegibles) {
-      const par = paresDe(v).find(([n]) => normTalle(n) === nombreEje);
-      if (conTalle && !par) continue;
-      const clave = par ? normTalle(par[1]) : '';
-      if (!grupos.has(clave)) grupos.set(clave, { valor: par ? String(par[1]).trim() : null, variantes: [] });
-      grupos.get(clave).variantes.push(v);
-    }
-    porPieza[porPieza.length - 1] = { conTalle, grupos };
-    info.talles = conTalle ? [...grupos.values()].map((g) => g.valor).sort(compararTalles) : [];
-
-    if ([...grupos.values()].some((g) => g.variantes.length > 1)) {
-      const sinFijar = [...ejes.entries()]
-        .filter(([n, valores]) => normTalle(n) !== nombreEje && valores.size > 1
-          && !fijos.some(([f]) => normTalle(f) === normTalle(n)))
-        .map(([n]) => n);
-      info.problema = sinFijar.length
-        ? `Elegí ${sinFijar.join(' y ')} de ${prod.titulo}: hay más de una variante por talle.`
-        : `${prod.titulo} tiene variantes repetidas para un mismo talle: corregilas antes de armar el combo.`;
-    }
+    info.colores = [...idx.colores.values()].sort(compararTexto);
+    info.talles = [...idx.talles.values()].sort(compararTalles);
   }
 
   const avisos = [];
-  if (salida.some((x) => x.problema)) return { piezas: salida, talles: [], filas: [], avisos };
+  const invalidas = [];
+  const resultado = {
+    piezas: salida, coloresComunes: [], tallesComunes: [], opciones: [], talles: [],
+    filas: [], imposibles: [], invalidas, avisos,
+  };
+  if (salida.some((x) => x.problema)) return resultado;
 
-  const conTalle = porPieza.filter((x) => x.conTalle);
-  let comunes;
-  if (!conTalle.length) {
-    // Ninguna prenda tiene talle: sale un único combo.
-    comunes = [{ clave: '', valor: 'Único' }];
-  } else {
-    comunes = [...conTalle[0].grupos.entries()]
-      .filter(([clave]) => conTalle.every((x) => x.grupos.has(clave)))
-      .map(([clave, g]) => ({ clave, valor: g.valor }))
-      .sort((a, b) => compararTalles(a.valor, b.valor));
-    const todos = new Map();
-    for (const x of conTalle) for (const [clave, g] of x.grupos) if (!todos.has(clave)) todos.set(clave, g.valor);
-    const afuera = [...todos.entries()]
-      .filter(([clave]) => !comunes.some((c) => c.clave === clave))
-      .map(([, valor]) => valor)
-      .sort(compararTalles);
-    if (!comunes.length) {
-      avisos.push('Las prendas no tienen ningún talle en común (por ejemplo, una va de S a XL y la otra '
-        + 'de 38 a 44), así que no sale ningún combo.');
-    } else if (afuera.length) {
-      avisos.push(`Quedan afuera los talles que no están en todas las prendas: ${afuera.join(', ')}.`);
-    }
+  const conColor = indices.filter((x) => x.conColor);
+  const conTalle = indices.filter((x) => x.conTalle);
+  const enTodas = (lista, campo) => (lista.length
+    ? [...lista[0][campo].entries()].filter(([k]) => lista.every((x) => x[campo].has(k))).map(([, v]) => v)
+    : []);
+  resultado.coloresComunes = enTodas(conColor, 'colores').sort(compararTexto);
+  resultado.tallesComunes = enTodas(conTalle, 'talles').sort(compararTalles);
+
+  if (conTalle.length && !resultado.tallesComunes.length) {
+    avisos.push('Las prendas no tienen ningún talle en común (por ejemplo, una va de S a XL y la otra '
+      + 'de 38 a 44), así que no sale ningún combo.');
+    return resultado;
   }
 
-  const vistos = new Set();
-  const filas = comunes.map(({ clave, valor }) => {
-    const componentes = piezas.map((p, i) => {
-      const v = porPieza[i].grupos.get(porPieza[i].conTalle ? clave : '').variantes[0];
-      return { componenteVariantId: v.id, cantidad: Number(p.cantidad) || 1, skuPadre: v.sku };
-    });
-    const sku = skuService.componer({ agrupador, valores: [{ eje, valor }], regla });
-    const repetido = vistos.has(sku);
-    vistos.add(sku);
-    return { talle: valor, sku, componentes, repetido };
-  });
+  // ── Colores: lo elegido o, sin elección, cada color que tienen todas ──
+  const opciones = [];
+  const vistasOpcion = new Set();
+  const agregarOpcion = (valores) => {
+    const clave = valores.map((v) => normTalle(v)).join('|');
+    if (!vistasOpcion.has(clave)) { vistasOpcion.add(clave); opciones.push(valores); }
+  };
+  if (!conColor.length) {
+    agregarOpcion(piezas.map(() => null));
+  } else if (colores === null || colores === undefined) {
+    for (const c of resultado.coloresComunes) agregarOpcion(indices.map((x) => (x.conColor ? c : null)));
+    if (!resultado.coloresComunes.length) {
+      avisos.push('Las prendas no tienen ningún color en común. Podés armar el combo combinando colores '
+        + 'distintos: elegí uno por prenda.');
+    }
+  } else {
+    for (const pedida of colores) {
+      const valores = typeof pedida === 'string'
+        ? indices.map((x) => (x.conColor ? pedida : null))
+        : (Array.isArray(pedida) ? pedida : pedida?.valores);
+      if (!Array.isArray(valores) || valores.length !== piezas.length) {
+        invalidas.push('Una de las combinaciones de colores no indica un color por prenda.');
+        continue;
+      }
+      let mala = null;
+      const normal = valores.map((val, i) => {
+        const x = indices[i];
+        if (!x.conColor) return null;
+        const texto = val === null || val === undefined ? '' : String(val).trim();
+        if (!texto) {
+          if (x.colores.size === 1) return [...x.colores.values()][0];
+          mala = mala || `Falta elegir el color de ${salida[i].titulo}.`;
+          return null;
+        }
+        const existente = x.colores.get(normTalle(texto));
+        if (!existente) mala = mala || `${salida[i].titulo} no tiene el color ${texto}.`;
+        return existente || null;
+      });
+      if (mala) { invalidas.push(mala); continue; }
+      agregarOpcion(normal);
+    }
+  }
+  resultado.opciones = opciones;
 
-  return { piezas: salida, talles: filas.map((f) => f.talle), filas, avisos };
+  // ── Talles: lo elegido o, sin elección, todos los que tienen todas ────
+  let tallesElegidos;
+  if (!conTalle.length) {
+    // La primera versión llamaba "Único" a la variante de un combo sin talles.
+    tallesElegidos = [legado ? 'Único' : ''];
+  } else if (talles === null || talles === undefined) {
+    tallesElegidos = [...resultado.tallesComunes];
+  } else {
+    tallesElegidos = [];
+    for (const pedido of talles) {
+      const valor = resultado.tallesComunes.find((x) => normTalle(x) === normTalle(pedido));
+      if (!valor) { invalidas.push(`El talle ${pedido} no está en todas las prendas.`); continue; }
+      if (!tallesElegidos.includes(valor)) tallesElegidos.push(valor);
+    }
+    tallesElegidos.sort(compararTalles);
+  }
+  resultado.talles = tallesElegidos.filter(Boolean);
+
+  // ── Una fila por color y talle, si todas las prendas la tienen ────────
+  const fuera = new Set((excluidas || []).map(normalizarClave));
+  const vistos = new Set();
+  for (const valores of opciones) {
+    const presentes = valores.filter(Boolean);
+    const unColor = presentes.length > 0 && presentes.every((c) => normTalle(c) === normTalle(presentes[0]));
+    const coloresEtiqueta = unColor ? [presentes[0]] : presentes;
+    const color = legado ? '' : coloresEtiqueta.join(' + ');
+    for (const talle of tallesElegidos) {
+      const clave = claveCombo(color, talle);
+      const etiqueta = [color, talle].filter(Boolean).join(' / ');
+      const componentes = [];
+      const faltan = [];
+      valores.forEach((c, i) => {
+        const x = indices[i];
+        const talleDeEsta = x.conTalle ? talle : '';
+        const v = x.porClave.get(claveCombo(c, talleDeEsta));
+        if (v) {
+          componentes.push({ componenteVariantId: v.id, cantidad: salida[i].cantidad, skuPadre: v.sku });
+        } else {
+          faltan.push([salida[i].titulo, c, talleDeEsta].filter(Boolean).join(' '));
+        }
+      });
+      if (faltan.length) {
+        resultado.imposibles.push({ clave, etiqueta, color, talle, faltan });
+        continue;
+      }
+      const sku = skuService.componer({
+        agrupador,
+        valores: [
+          ...(legado ? [] : coloresEtiqueta.map((c) => ({ eje: ejeColor, valor: c }))),
+          ...(talle ? [{ eje: ejeTalle, valor: talle }] : []),
+        ],
+        regla,
+      });
+      const repetido = vistos.has(sku);
+      vistos.add(sku);
+      resultado.filas.push({
+        clave, etiqueta, color, colores: valores, talle, sku, componentes, repetido,
+        excluida: fuera.has(clave),
+      });
+    }
+  }
+  return resultado;
 }
 
 module.exports = {
   componentesDe, disponibleDePack, disponibleDePacksEnLocales, repartirPackOnline,
   reservarPack, liberarPack, consumirPack,
   definirComponentes, desarmar, packsQueUsan,
-  proyectarCombo, compararTalles,
+  proyectarCombo, compararTalles, leerDefinicionCombo, claveDeVariante, normalizarClave,
 };

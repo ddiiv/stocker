@@ -39,14 +39,49 @@ const chk = (t, e, o) => {
   else { console.log(`  \x1b[31m✗\x1b[0m ${t}\n      esperado ${a}\n      obtuvo   ${b}`); ko++; }
 };
 const tit = (t) => console.log(`\n\x1b[1m${t}\x1b[0m`);
+// Si GET /api/packs no devuelve la lista, se dice qué devolvió en vez de romper con un TypeError.
+const listaDe = (r) => {
+  if (Array.isArray(r?.json)) return r.json;
+  console.log(`      GET /api/packs devolvió ${r?.status}: ${JSON.stringify(r?.json)?.slice(0, 300)}`);
+  return [];
+};
 const fallo = async (fn) => { try { await fn(); return null; } catch (e) { return e; } };
 
 function sesion() {
   let cookie = '';
+  /*
+   * Una IP propia por corrida y un ritmo por debajo de los límites de la API.
+   *
+   * Los límites son por IP: 60 pedidos cada 2 segundos y 600 por minuto. En la
+   * regresión esta suite corre justo después de otras que también pegan desde
+   * 127.0.0.1, y los combos disparan decenas de pedidos seguidos: las últimas
+   * comprobaciones recibían 429 en vez de la respuesta que se estaba probando.
+   * No se esquiva el límite rotando IPs: se lo respeta, como lo haría la
+   * pantalla.
+   */
+  const ip = `10.77.${process.pid % 250}.${1 + Math.floor(Math.random() * 250)}`;
+  const ventanas = [{ ms: 2100, tope: 50, pedidos: [] }, { ms: 61000, tope: 550, pedidos: [] }];
+  const aTiempo = async () => {
+    for (;;) {
+      const ahora = Date.now();
+      let espera = 0;
+      for (const v of ventanas) {
+        while (v.pedidos.length && ahora - v.pedidos[0] > v.ms) v.pedidos.shift();
+        if (v.pedidos.length >= v.tope) espera = Math.max(espera, v.ms - (ahora - v.pedidos[0]) + 10);
+      }
+      if (!espera) { for (const v of ventanas) v.pedidos.push(ahora); return; }
+      await new Promise((listo) => setTimeout(listo, espera));
+    }
+  };
   return async (m, ruta, cuerpo) => {
+    await aTiempo();
     const r = await fetch(`${API}${ruta}`, {
       method: m,
-      headers: { 'Content-Type': 'application/json', ...(cookie ? { Cookie: cookie } : {}) },
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Forwarded-For': ip,
+        ...(cookie ? { Cookie: cookie } : {}),
+      },
       body: cuerpo ? JSON.stringify(cuerpo) : undefined,
     });
     const set = r.headers.getSetCookie?.() || [];
@@ -390,7 +425,7 @@ function sesion() {
      * un pack sobre un producto de nueve combinaciones son nueve variantes, y
      * sueltas la pantalla es una pared de tarjetas casi idénticas.
      */
-    const grupoMio = (lista.json || []).find((g) => g.productId === pack.productId);
+    const grupoMio = listaDe(lista).find((g) => g.productId === pack.productId);
     const mio = grupoMio?.variantes?.find((v) => v.sku === 'QA-PK-PACK3');
     chk('el pack aparece en la lista', true, !!mio);
     chk('y trae su composición', 1, mio?.componentes?.length);
@@ -888,7 +923,7 @@ function sesion() {
     chk('y no le quedan componentes', 0,
       await PackComponente.count({ where: { packVariantId: pack.id } }));
 
-    tit('14. COMBOS: PRODUCTOS DISTINTOS, UNO POR TALLE EN COMÚN');
+    tit('14. COMBOS: PRODUCTOS DISTINTOS, UNO POR COLOR Y TALLE');
     {
       const limpiarCombos = async () => {
         const vs = await ProductVariant.findAll({ where: { businessId: negocio.id, sku: { [Op.like]: 'QA-CB%' } } });
@@ -902,16 +937,18 @@ function sesion() {
         await Product.destroy({ where: { businessId: negocio.id, sku: { [Op.like]: 'QA-CB%' } } });
       };
       await limpiarCombos();
-      const producto = (sku, titulo, precio) => Product.create({
+      const producto = (sku, titulo, precio, extra = {}) => Product.create({
         businessId: negocio.id, sku, skuAgrupador: sku, titulo,
-        precioMinorista: precio, precioMayorista: precio, costo: precio / 2, activo: true,
+        precioMinorista: precio, precioMayorista: precio, costo: precio / 2, activo: true, ...extra,
       });
-      const variante = (prod, sku, pares) => ProductVariant.create({
+      const variante = (prod, sku, pares, extra = {}) => ProductVariant.create({
         productId: prod.id, businessId: negocio.id, sku, stock: 0, stockMinimo: 0,
         variante1Nombre: pares[0]?.[0] || null, variante1Valor: pares[0]?.[1] || null,
         variante2Nombre: pares[1]?.[0] || null, variante2Valor: pares[1]?.[1] || null,
+        ...extra,
       });
       try {
+        // Remera: negra y blanca en S, M y L.
         const rem = await producto('QA-CB-REM', 'Remera QA', 8000);
         const remV = {};
         for (const c of ['Negro', 'Blanco']) {
@@ -919,91 +956,155 @@ function sesion() {
             remV[`${c}-${tl}`] = await variante(rem, `QA-CB-REM-${c.slice(0, 3)}-${tl}`, [['Color', c], ['Talle', tl]]);
           }
         }
+        // Pantalón: negro en M, L y XL; blanco sólo en M.
         const pan = await producto('QA-CB-PAN', 'Pantalón QA', 12000);
         const panV = {};
-        for (const tl of ['XL', 'M', 'L']) {
-          panV[tl] = await variante(pan, `QA-CB-PAN-${tl}`, [['Color', 'Negro'], ['Talle', tl]]);
+        for (const [c, tl] of [['Negro', 'XL'], ['Negro', 'M'], ['Negro', 'L'], ['Blanco', 'M']]) {
+          panV[`${c}-${tl}`] = await variante(pan, `QA-CB-PAN-${c.slice(0, 3)}-${tl}`, [['Color', c], ['Talle', tl]]);
         }
         const jean = await producto('QA-CB-JEAN', 'Jean QA', 15000);
         for (const tl of ['38', '40']) await variante(jean, `QA-CB-JEAN-${tl}`, [['Talle', tl]]);
         const gorra = await producto('QA-CB-GOR', 'Gorra QA', 5000);
         const gorraV = await variante(gorra, 'QA-CB-GOR-ROJ', [['Color', 'Rojo']]);
 
-        const negro = { Color: 'Negro' };
-        const sug = (piezas, extra = {}) => api('POST', '/api/packs/combo/sugerencia', { piezas, ...extra });
+        const sug = (cuerpo) => api('POST', '/api/packs/combo/sugerencia', cuerpo);
+        const P = (...prods) => prods.map((x) => ({ productId: x.id }));
+        const etiquetas = (r) => (r.json?.variantes || []).map((v) => v.etiqueta);
+        const ids = (fila) => (fila?.componentes || []).map((c) => c.componenteVariantId).sort();
 
-        const uno = await sug([{ productId: rem.id }]);
-        chk('un combo de un solo producto se rechaza', 400, uno.status);
-        const dosVeces = await sug([{ productId: rem.id }, { productId: rem.id }]);
-        chk('el mismo producto dos veces se rechaza', 400, dosVeces.status);
+        chk('un combo de un solo producto se rechaza', 400, (await sug({ piezas: P(rem) })).status);
+        chk('el mismo producto dos veces se rechaza', 400, (await sug({ piezas: P(rem, rem) })).status);
+        chk('una lista de colores que no es lista se rechaza', 400,
+          (await sug({ piezas: P(rem, pan), colores: 'Negro' })).status);
 
-        const sinColor = await sug([{ productId: rem.id }, { productId: pan.id }]);
-        chk('sin elegir el color de la remera, pide elegirlo', true,
-          /Elegí Color de Remera QA/.test(sinColor.json?.piezas?.[0]?.problema || ''));
-        chk('y no inventa combos', 0, sinColor.json?.variantes?.length);
-        chk('ofrece los colores de la remera', ['Blanco', 'Negro'], sinColor.json?.piezas?.[0]?.ejes?.Color);
-        chk('y sus talles ordenados como en la góndola', ['S', 'M', 'L'], sinColor.json?.piezas?.[0]?.talles);
-
-        const violeta = await sug([{ productId: rem.id, fijos: { Color: 'Violeta' } }, { productId: pan.id }]);
-        chk('un color que la prenda no tiene se avisa', true,
-          /no tiene Color Violeta/.test(violeta.json?.piezas?.[0]?.problema || ''));
-
-        const conj = await sug([{ productId: rem.id, fijos: negro }, { productId: pan.id }], { sku: 'QA-CB-CONJ' });
-        chk('sugerencia: 200', 200, conj.status);
-        chk('salen sólo los talles en común, en orden', ['M', 'L'], (conj.json?.variantes || []).map((v) => v.talle));
-        chk('y avisa qué talles quedan afuera', true,
-          (conj.json?.avisos || []).some((a) => /S, XL/.test(a)));
-        const filaM = (conj.json?.variantes || []).find((v) => v.talle === 'M');
-        chk('el combo M lleva la remera negra M y el pantalón M',
-          [remV['Negro-M'].id, panV.M.id].sort(), (filaM?.componentes || []).map((c) => c.componenteVariantId).sort());
-        chk('precio sugerido: la suma de las prendas', 20000, conj.json?.precioMinorista);
+        const base = await sug({ piezas: P(rem, pan), sku: 'QA-CB-CONJ' });
+        chk('sugerencia: 200', 200, base.status);
+        chk('ofrece sólo los colores que tienen las dos prendas', ['Blanco', 'Negro'], base.json?.coloresComunes);
+        chk('y sólo los talles que tienen las dos, en orden de góndola', ['M', 'L'], base.json?.tallesComunes);
+        chk('cada prenda muestra sus propios colores', ['Blanco', 'Negro'], base.json?.piezas?.[1]?.colores);
+        chk('por defecto: mismo color y mismo talle en las dos prendas',
+          ['Blanco / M', 'Negro / M', 'Negro / L'], etiquetas(base));
+        chk('lo que no existe en alguna prenda no se ofrece', ['Blanco / L'],
+          (base.json?.imposibles || []).map((x) => x.etiqueta));
+        chk('y dice qué falta', true, /Pantalón QA Blanco L/.test((base.json?.imposibles?.[0]?.faltan || []).join(' ')));
+        const negroM = (base.json?.variantes || []).find((v) => v.etiqueta === 'Negro / M');
+        chk('Negro / M lleva la remera negra M y el pantalón negro M',
+          [remV['Negro-M'].id, panV['Negro-M'].id].sort(), ids(negroM));
+        chk('precio sugerido: la suma de las prendas', 20000, base.json?.precioMinorista);
         chk('los SKU salen del SKU del combo', true,
-          (conj.json?.variantes || []).every((v) => v.sku.startsWith('QA-CB-CONJ')));
+          (base.json?.variantes || []).every((v) => v.sku.startsWith('QA-CB-CONJ')));
+        chk('cada combinación tiene su propio SKU', 3, new Set((base.json?.variantes || []).map((v) => v.sku)).size);
 
-        const conGorra = await sug([{ productId: rem.id, fijos: negro }, { productId: gorra.id }]);
-        chk('una prenda sin talle entra en todos los combos', ['S', 'M', 'L'],
-          (conGorra.json?.variantes || []).map((v) => v.talle));
-        chk('con la misma gorra en cada uno', true, (conGorra.json?.variantes || [])
+        const soloNegroL = await sug({ piezas: P(rem, pan), colores: [['Negro', 'Negro']], talles: ['L'] });
+        chk('elegir un color y un talle deja sólo esa combinación', ['Negro / L'], etiquetas(soloNegroL));
+
+        const mezcla = await sug({ piezas: P(rem, pan), colores: [['Blanco', 'Negro']], talles: ['M', 'L'] });
+        chk('se pueden combinar colores distintos en una variante',
+          ['Blanco + Negro / M', 'Blanco + Negro / L'], etiquetas(mezcla));
+        chk('Blanco + Negro / M lleva la remera blanca y el pantalón negro',
+          [remV['Blanco-M'].id, panV['Negro-M'].id].sort(), ids(mezcla.json?.variantes?.[0]));
+        chk('y su SKU no choca con el de un solo color', true,
+          Boolean(mezcla.json?.variantes?.[0]?.sku) && mezcla.json.variantes[0].sku !== negroM?.sku);
+        chk('elegir el mismo color en las dos es lo mismo que el color solo', ['Negro / M'],
+          etiquetas(await sug({ piezas: P(rem, pan), colores: [['Negro', 'Negro'], 'Negro'], talles: ['M'] })));
+
+        const violeta = await sug({ piezas: P(rem, pan), colores: [['Violeta', 'Negro']] });
+        chk('un color que la prenda no tiene se avisa', true,
+          (violeta.json?.invalidas || []).some((m) => /no tiene el color Violeta/.test(m)));
+        const talleRaro = await sug({ piezas: P(rem, pan), talles: ['XL'] });
+        chk('un talle que no está en todas las prendas se avisa', true,
+          (talleRaro.json?.invalidas || []).some((m) => /El talle XL no está en todas las prendas/.test(m)));
+        chk('y crear con ese talle da 400', 400, (await api('POST', '/api/packs/combo', {
+          sku: 'QA-CB-NADA', piezas: P(rem, pan), talles: ['XL'],
+        })).status);
+
+        const conGorra = await sug({ piezas: P(rem, gorra) });
+        chk('sin colores en común no inventa combos', 0, conGorra.json?.variantes?.length);
+        chk('y propone combinar colores distintos', true,
+          (conGorra.json?.avisos || []).some((a) => /combinando colores/.test(a)));
+        const gorraMezcla = await sug({ piezas: P(rem, gorra), colores: [['Negro', 'Rojo']] });
+        chk('remera negra + gorra roja (sin talle): uno por talle de la remera',
+          ['Negro + Rojo / S', 'Negro + Rojo / M', 'Negro + Rojo / L'], etiquetas(gorraMezcla));
+        chk('con la misma gorra en cada uno', true, (gorraMezcla.json?.variantes || [])
           .every((v) => v.componentes.some((c) => c.componenteVariantId === gorraV.id)));
 
-        const conJean = await sug([{ productId: rem.id, fijos: negro }, { productId: jean.id }]);
+        // Un short con talles pero sin color: entra en todos los colores de la remera, con su mismo talle.
+        const short = await producto('QA-CB-SHORT', 'Short QA', 6000);
+        const shortV = {};
+        for (const tl of ['M', 'L']) shortV[tl] = await variante(short, `QA-CB-SHORT-${tl}`, [['Talle', tl]]);
+        const conShort = await sug({ piezas: P(rem, short) });
+        chk('una prenda sin colores no limita los colores de la otra', ['Blanco', 'Negro'], conShort.json?.coloresComunes);
+        chk('pero sí los talles', ['Blanco / M', 'Blanco / L', 'Negro / M', 'Negro / L'], etiquetas(conShort));
+        chk('Negro / L lleva la remera negra L y el short L', [remV['Negro-L'].id, shortV.L.id].sort(),
+          ids((conShort.json?.variantes || []).find((v) => v.etiqueta === 'Negro / L')));
+
+        // Una prenda con variantes con color y otras sin: no se adivina.
+        const rara = await producto('QA-CB-RARA', 'Prenda rara QA', 1000);
+        await variante(rara, 'QA-CB-RARA-NEG-M', [['Color', 'Negro'], ['Talle', 'M']]);
+        await variante(rara, 'QA-CB-RARA-L', [['Talle', 'L']]);
+        const conRara = await sug({ piezas: P(rem, rara) });
+        chk('variantes con y sin color en la misma prenda se avisan', true,
+          /con y sin Color/.test(conRara.json?.piezas?.[1]?.problema || ''));
+        chk('y no se puede crear el combo', 400,
+          (await api('POST', '/api/packs/combo', { sku: 'QA-CB-NADA', piezas: P(rem, rara) })).status);
+
+        const conJean = await sug({ piezas: P(rem, jean) });
         chk('letras con números: no hay talles en común', 0, conJean.json?.variantes?.length);
         chk('y lo dice', true, (conJean.json?.avisos || []).some((a) => /ningún talle en común/.test(a)));
-        const creaJean = await api('POST', '/api/packs/combo', {
-          sku: 'QA-CB-NADA', piezas: [{ productId: rem.id, fijos: negro }, { productId: jean.id }],
-        });
+        const creaJean = await api('POST', '/api/packs/combo', { sku: 'QA-CB-NADA', piezas: P(rem, jean) });
         chk('crear un combo sin talles en común da 400', 400, creaJean.status);
         chk('y no deja nada creado', 0, await Product.count({ where: { sku: 'QA-CB-NADA' } }));
+        chk('crear con un color inexistente da 400', 400, (await api('POST', '/api/packs/combo', {
+          sku: 'QA-CB-NADA', piezas: P(rem, pan), colores: [['Violeta', 'Negro']],
+        })).status);
 
+        chk('un SKU de combo demasiado largo da 400', 400, (await api('POST', '/api/packs/combo', {
+          sku: `QA-CB-${'X'.repeat(70)}`, piezas: P(rem, pan),
+        })).status);
+
+        // "Azul Marino" y "Azul Claro" dan el mismo código: en el mismo lote, uno se lleva -2.
+        const azr = await producto('QA-CB-AZR', 'Remera azul QA', 1000);
+        const azp = await producto('QA-CB-AZP', 'Pantalón azul QA', 1000);
+        for (const c of ['Azul Marino', 'Azul Claro']) {
+          await variante(azr, `QA-CB-AZR-${c.replace(' ', '')}`, [['Color', c], ['Talle', 'M']]);
+          await variante(azp, `QA-CB-AZP-${c.replace(' ', '')}`, [['Color', c], ['Talle', 'M']]);
+        }
+        const azules = await api('POST', '/api/packs/combo', { sku: 'QA-CB-AZUL', piezas: P(azr, azp) });
+        chk('dos combinaciones con el mismo SKU propuesto se crean igual: 201', 201, azules.status);
+        chk('cada una con su propio SKU', 2, new Set((azules.json?.variantes || []).map((v) => v.sku)).size);
+
+        const claveNegroL = (base.json?.variantes || []).find((v) => v.etiqueta === 'Negro / L')?.clave;
         const alta = await api('POST', '/api/packs/combo', {
-          sku: 'QA-CB-CONJ', titulo: 'Conjunto QA',
-          piezas: [{ productId: rem.id, fijos: negro }, { productId: pan.id }],
+          sku: 'QA-CB-CONJ', titulo: 'Conjunto QA', piezas: P(rem, pan),
+          colores: [['Negro', 'Negro'], ['Blanco', 'Blanco']], talles: ['M', 'L'], excluidas: [claveNegroL],
         });
         chk('crear el combo: 201', 201, alta.status);
-        chk('crea uno por talle en común', 2, alta.json?.variantes?.length);
+        chk('crea lo elegido que existe, menos lo destildado', ['Blanco / M', 'Negro / M'],
+          (alta.json?.variantes || []).map((v) => v.etiqueta).sort());
         const comboProd = await Product.findByPk(alta.json?.productId);
         chk('toma el precio sugerido si no se escribe otro', 20000, Number(comboProd?.precioMinorista));
-        chk('guarda la definición del combo', 2, JSON.parse(comboProd?.definicionCombo || '{}').piezas?.length);
-        const comboM = await ProductVariant.findOne({ where: { productId: comboProd.id, variante1Valor: 'M' } });
-        const comboL = await ProductVariant.findOne({ where: { productId: comboProd.id, variante1Valor: 'L' } });
-        chk('las variantes son packs', true, !!comboM?.esPack && !!comboL?.esPack);
-        chk('el combo M lleva dos componentes', 2, await PackComponente.count({ where: { packVariantId: comboM.id } }));
+        const def = JSON.parse(comboProd?.definicionCombo || '{}');
+        chk('guarda la elección: versión, colores, talles y lo destildado',
+          [2, 2, ['M', 'L'], 1], [def.version, def.colores?.length, def.talles, def.excluidas?.length]);
+        const comboM = await ProductVariant.findOne({ where: { productId: comboProd.id, variante1Valor: 'Negro', variante2Valor: 'M' } });
+        const comboBM = await ProductVariant.findOne({ where: { productId: comboProd.id, variante1Valor: 'Blanco', variante2Valor: 'M' } });
+        chk('la variante del combo dice color y talle', ['Color', 'Talle'], [comboM?.variante1Nombre, comboM?.variante2Nombre]);
+        chk('las variantes son packs', true, !!comboM?.esPack && !!comboBM?.esPack);
+        chk('Negro / M lleva dos componentes', 2, await PackComponente.count({ where: { packVariantId: comboM.id } }));
 
-        const repetido = await api('POST', '/api/packs/combo', {
-          sku: 'QA-CB-CONJ', piezas: [{ productId: rem.id, fijos: negro }, { productId: pan.id }],
-        });
-        chk('el mismo SKU de combo dos veces da 409', 409, repetido.status);
+        chk('el mismo SKU de combo dos veces da 409', 409,
+          (await api('POST', '/api/packs/combo', { sku: 'QA-CB-CONJ', piezas: P(rem, pan) })).status);
 
         await fijar(remV['Negro-M'], 3);
-        await fijar(panV.M, 2);
-        await fijar(remV['Negro-L'], 5);
-        const arm = await packs.disponibleDePacksEnLocales([comboM.id, comboL.id], [local.id], negocio.id);
-        chk('se arman tantos combos M como la prenda que menos hay', 2, arm.get(comboM.id));
-        chk('sin pantalón L no hay combo L, aunque sobren remeras', 0, arm.get(comboL.id));
+        await fijar(panV['Negro-M'], 2);
+        await fijar(remV['Blanco-M'], 5);
+        const arm = await packs.disponibleDePacksEnLocales([comboM.id, comboBM.id], [local.id], negocio.id);
+        chk('se arman tantos Negro / M como la prenda que menos hay', 2, arm.get(comboM.id));
+        chk('sin pantalón blanco no hay Blanco / M, aunque sobren remeras blancas', 0, arm.get(comboBM.id));
 
         await packs.reservarPack(comboM.id, local.id, negocio.id, 1);
-        chk('vender un combo aparta la remera', 1, await apartado(remV['Negro-M']));
-        chk('y el pantalón', 1, await apartado(panV.M));
+        chk('vender un Negro / M aparta la remera negra', 1, await apartado(remV['Negro-M']));
+        chk('y el pantalón negro', 1, await apartado(panV['Negro-M']));
         chk('pero no la remera blanca', 0, await apartado(remV['Blanco-M']));
         await packs.liberarPack(comboM.id, local.id, negocio.id, 1);
 
@@ -1014,23 +1115,123 @@ function sesion() {
         chk('lo rechazado no pisa lo guardado', 2, Number((await ProductVariant.findByPk(comboM.id)).margenMl));
 
         let lista = await api('GET', '/api/packs');
-        let grupo = (lista.json || []).find((g) => g.productId === comboProd.id);
+        let grupo = listaDe(lista).find((g) => g.productId === comboProd.id);
         chk('la lista lo marca como combo', 'combo', grupo?.tipo);
         chk('nombra las dos prendas', ['Pantalón QA', 'Remera QA'], (grupo?.piezas || []).map((x) => x.titulo).sort());
-        chk('sin talles faltantes', 0, grupo?.faltanVariantes);
         chk('la lista de packs trae el margen', 2,
           (grupo?.variantes || []).find((x) => x.variantId === comboM.id)?.margenMl);
+        chk('lo destildado y lo imposible no cuentan como faltantes', 0, grupo?.faltanVariantes);
 
-        // El pantalón suma el talle S: la remera ya lo tenía.
-        await variante(pan, 'QA-CB-PAN-S', [['Color', 'Negro'], ['Talle', 'S']]);
+        // El pantalón suma el blanco L: Blanco / L estaba elegido y ahora se puede armar.
+        await variante(pan, 'QA-CB-PAN-BLA-L', [['Color', 'Blanco'], ['Talle', 'L']]);
         lista = await api('GET', '/api/packs');
-        grupo = (lista.json || []).find((g) => g.productId === comboProd.id);
-        chk('un talle nuevo en común se cuenta como faltante', 1, grupo?.faltanVariantes);
+        grupo = listaDe(lista).find((g) => g.productId === comboProd.id);
+        chk('una combinación elegida que ahora existe cuenta como faltante', 1, grupo?.faltanVariantes);
         const comp = await api('POST', `/api/packs/${comboProd.id}/completar`);
         chk('completar el combo: 200', 200, comp.status);
-        chk('agrega sólo el talle S', ['S'], (comp.json?.creadas || []).map((x) => x.etiqueta));
-        const otraVez = await api('POST', `/api/packs/${comboProd.id}/completar`);
-        chk('completar de nuevo no duplica', 0, otraVez.json?.creadas?.length);
+        chk('agrega sólo Blanco / L', ['Blanco / L'], (comp.json?.creadas || []).map((x) => x.etiqueta));
+        chk('completar de nuevo no duplica', 0,
+          (await api('POST', `/api/packs/${comboProd.id}/completar`)).json?.creadas?.length);
+
+        const previaAmpliar = await sug({ productId: comboProd.id });
+        chk('la previa de un combo existente marca lo que ya existe', ['Blanco / L', 'Blanco / M', 'Negro / M'],
+          (previaAmpliar.json?.variantes || []).filter((v) => v.existe).map((v) => v.etiqueta).sort());
+        chk('y recuerda lo destildado', ['Negro / L'],
+          (previaAmpliar.json?.variantes || []).filter((v) => v.excluida).map((v) => v.etiqueta));
+        chk('la previa de un combo de otro negocio (o inexistente) da 404', 404,
+          (await sug({ productId: 999999999 })).status);
+
+        const amplia = await api('POST', `/api/packs/combo/${comboProd.id}/ampliar`, { colores: [['Blanco', 'Negro']] });
+        chk('ampliar con una mezcla de colores: 200', 200, amplia.status);
+        chk('la mezcla se agrega en los talles del combo', ['Blanco + Negro / L', 'Blanco + Negro / M'],
+          (amplia.json?.creadas || []).map((x) => x.etiqueta).sort());
+        chk('lo destildado sigue afuera', 0,
+          await ProductVariant.count({ where: { productId: comboProd.id, variante1Valor: 'Negro', variante2Valor: 'L' } }));
+        chk('la elección ampliada queda guardada', 3,
+          JSON.parse((await Product.findByPk(comboProd.id)).definicionCombo).colores.length);
+        chk('ampliar de nuevo con lo mismo no duplica', 0, (await api('POST',
+          `/api/packs/combo/${comboProd.id}/ampliar`, { colores: [['Blanco', 'Negro']] })).json?.creadas?.length);
+        chk('ampliar con un color que no existe da 400', 400, (await api('POST',
+          `/api/packs/combo/${comboProd.id}/ampliar`, { colores: [['Violeta', 'Negro']] })).status);
+        // Como lo manda la pantalla: la elección completa y lo destildado, viejo y nuevo.
+        const todas = [['Negro', 'Negro'], ['Blanco', 'Blanco'], ['Blanco', 'Negro'], ['Negro', 'Blanco']];
+        const previaMix = await sug({ productId: comboProd.id, colores: todas });
+        const claveMixL = (previaMix.json?.variantes || []).find((v) => v.etiqueta === 'Negro + Blanco / L')?.clave;
+        const ampMix = await api('POST', `/api/packs/combo/${comboProd.id}/ampliar`, {
+          colores: todas, talles: ['M', 'L'], excluidas: [claveNegroL, claveMixL],
+        });
+        chk('ampliar como la pantalla crea sólo lo tildado', ['Negro + Blanco / M'],
+          (ampMix.json?.creadas || []).map((x) => x.etiqueta));
+        const defMix = JSON.parse((await Product.findByPk(comboProd.id)).definicionCombo);
+        chk('y guarda lo destildado, viejo y nuevo', true,
+          [claveNegroL, claveMixL].every((k) => defMix.excluidas.includes(packs.normalizarClave(k))));
+        chk('completar no crea después lo destildado', 0,
+          (await api('POST', `/api/packs/${comboProd.id}/completar`)).json?.creadas?.length);
+
+        const reincluir = await api('POST', `/api/packs/combo/${comboProd.id}/ampliar`, { excluidas: [] });
+        chk('volver a tildar lo destildado lo crea', ['Negro + Blanco / L', 'Negro / L'],
+          (reincluir.json?.creadas || []).map((x) => x.etiqueta).sort());
+
+        // Ampliar con un talle nuevo: sale para cada opción de color guardada, mezcla incluida.
+        const talleUno = await api('POST', '/api/packs/combo', {
+          sku: 'QA-CB-TAL', titulo: 'Conjunto talles QA', piezas: P(rem, pan),
+          colores: [['Negro', 'Negro'], ['Blanco', 'Negro']], talles: ['M'],
+        });
+        chk('combo con un solo talle: 201', 201, talleUno.status);
+        const idTal = talleUno.json?.productId;
+        chk('ampliar con un talle que no está en las dos prendas da 400', 400,
+          (await api('POST', `/api/packs/combo/${idTal}/ampliar`, { talles: ['XL'] })).status);
+        const masTalle = await api('POST', `/api/packs/combo/${idTal}/ampliar`, { talles: ['l'] });
+        chk('ampliar con un talle nuevo: 200', 200, masTalle.status);
+        chk('el talle nuevo sale para cada color guardado', ['Blanco + Negro / L', 'Negro / L'],
+          (masTalle.json?.creadas || []).map((x) => x.etiqueta).sort());
+        chk('los talles guardados son la unión, sin duplicar', ['M', 'L'],
+          JSON.parse((await Product.findByPk(idTal)).definicionCombo).talles);
+        chk('ampliar de nuevo con el mismo talle no duplica', 0,
+          (await api('POST', `/api/packs/combo/${idTal}/ampliar`, { talles: ['L'] })).json?.creadas?.length);
+
+        // Un combo guardado con la versión anterior: color fijo por prenda y variantes sólo por talle.
+        const viejo = await producto('QA-CB-VIEJO', 'Combo viejo QA', 1, {
+          definicionCombo: JSON.stringify({
+            eje: 'Talle',
+            piezas: [
+              { productId: rem.id, cantidad: 1, fijos: { Color: 'Negro' } },
+              { productId: pan.id, cantidad: 1, fijos: { Color: 'Negro' } },
+            ],
+          }),
+        });
+        const viejoM = await variante(viejo, 'QA-CB-VIEJO-M', [['Talle', 'M']], { esPack: true });
+        await packs.definirComponentes(viejoM.id, negocio.id, [
+          { componenteVariantId: remV['Negro-M'].id, cantidad: 1 },
+          { componenteVariantId: panV['Negro-M'].id, cantidad: 1 },
+        ]);
+        lista = await api('GET', '/api/packs');
+        grupo = listaDe(lista).find((g) => g.productId === viejo.id);
+        chk('un combo de la versión anterior se lista sin romperse', 1, grupo?.faltanVariantes);
+        const compViejo = await api('POST', `/api/packs/${viejo.id}/completar`);
+        chk('y se completa sin duplicar el talle que ya tiene', ['L'], (compViejo.json?.creadas || []).map((x) => x.etiqueta));
+        chk('no se amplía a mano: sólo se completa', 400, (await api('POST',
+          `/api/packs/combo/${viejo.id}/ampliar`, { talles: ['L'] })).status);
+
+        // Versión anterior sin talles: su variante se llamaba "Único" y no se tiene que duplicar.
+        const bolso = await producto('QA-CB-BOLSO', 'Bolso QA', 1000);
+        const bolsoV = await variante(bolso, 'QA-CB-BOLSO-NEG', [['Color', 'Negro']]);
+        const viejoSinTalle = await producto('QA-CB-VIEJO2', 'Combo viejo sin talle QA', 1, {
+          definicionCombo: JSON.stringify({
+            eje: 'Talle',
+            piezas: [
+              { productId: gorra.id, cantidad: 1, fijos: { Color: 'Rojo' } },
+              { productId: bolso.id, cantidad: 1, fijos: { Color: 'Negro' } },
+            ],
+          }),
+        });
+        const unico = await variante(viejoSinTalle, 'QA-CB-VIEJO2-UNI', [['Talle', 'Único']], { esPack: true });
+        await packs.definirComponentes(unico.id, negocio.id, [
+          { componenteVariantId: gorraV.id, cantidad: 1 },
+          { componenteVariantId: bolsoV.id, cantidad: 1 },
+        ]);
+        chk('un combo viejo sin talles no se duplica al completar', 0,
+          (await api('POST', `/api/packs/${viejoSinTalle.id}/completar`)).json?.creadas?.length);
       } finally {
         await limpiarCombos();
         chk('no queda nada de los combos de prueba', 0,

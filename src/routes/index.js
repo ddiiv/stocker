@@ -517,6 +517,7 @@ r.get   ('/packs',                                        requireAuth, requirePe
 // Combos de productos distintos. Antes de `/packs/:variantId`, por orden de rutas.
 r.post  ('/packs/combo/sugerencia',                       requireAuth, requirePermission('stock','ver'),    packCtrl.sugerenciaCombo);
 r.post  ('/packs/combo',                                  requireAuth, requirePermission('stock','editar'), packCtrl.crearCombo);
+r.post  ('/packs/combo/:productId/ampliar',              requireAuth, requirePermission('stock','editar'), packCtrl.ampliarCombo);
 r.post  ('/packs',                                        requireAuth, requirePermission('stock','editar'), packCtrl.crear);
 r.get   ('/packs/sugerencia',                             requireAuth, requirePermission('stock','ver'),    packCtrl.sugerencia);
 r.get   ('/packs/usan/:variantId',                        requireAuth, requirePermission('stock','ver'),    packCtrl.usan);
