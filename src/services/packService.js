@@ -105,3 +105,12 @@ export async function crearCombo(datos) {
   const { data } = await http.post("/packs/combo", datos);
   return data;
 }
+
+/*
+ * Suma colores, talles o combinaciones de colores a un combo existente. Lo
+ * que ya tenía queda; se crean sólo las variantes nuevas.
+ */
+export async function ampliarCombo(productId, datos) {
+  const { data } = await http.post(`/packs/combo/${productId}/ampliar`, datos);
+  return data;
+}

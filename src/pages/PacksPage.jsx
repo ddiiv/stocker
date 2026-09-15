@@ -1,11 +1,11 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Boxes, Plus, Trash2, AlertTriangle, X, Search, Check } from "lucide-react";
 import { PageHeader, Card, EmptyState } from "../components/ui/Layout";
 import StockTabs from "../components/stock/StockTabs";
 import { http } from "../lib/http";
 import {
   fetchPacks, fetchSugerencia, crearPack, completarPack, eliminarPack,
-  fetchSugerenciaCombo, crearCombo,
+  fetchSugerenciaCombo, crearCombo, ampliarCombo,
 } from "../services/packService";
 import { formatCurrency } from "../utils/formatters";
 import { mensajeDeError } from "../utils/errores";
@@ -27,9 +27,9 @@ import CeldaMargenMl from "../components/products/CeldaMargenMl";
  * del de la beige L, igual que lo son las remeras. Los SKU salen de la regla
  * del negocio, la misma que usan los productos normales.
  *
- * Un combo junta productos DISTINTOS —remera + pantalón— y se genera uno por
- * cada talle que tienen en común, con el color de cada prenda fijado al
- * crearlo. Por debajo es un pack más: sin stock propio, se cuenta, se publica
+ * Un combo junta productos DISTINTOS —remera + pantalón— y cada variante es un
+ * color y un talle que tienen todas las prendas ("Negro / M"), o una mezcla de
+ * colores elegida a mano ("Blanco + Negro / M"). Por debajo es un pack más: sin stock propio, se cuenta, se publica
  * y se vende igual.
  *
  * "Se arman" nunca es un campo editable, en ningún lado. Es el mínimo de lo que
@@ -46,6 +46,8 @@ export default function PacksPage() {
   const [error, setError] = useState("");
   const [aviso, setAviso] = useState("");
   const [creando, setCreando] = useState(false);
+  // El combo al que se le están sumando colores o talles.
+  const [ampliando, setAmpliando] = useState(null);
 
   async function cargar() {
     setCargando(true); setError("");
@@ -92,10 +94,10 @@ export default function PacksPage() {
         subtitle="Vender de a N unidades de un producto, o varios productos juntos en un combo. No llevan stock propio: se cuentan los ENTEROS que se pueden armar con lo que haya."
         actions={puedeEditar && (
           <div className="flex flex-wrap gap-2">
-            <button className="btn-ghost border border-line" onClick={() => setCreando("combo")}>
+            <button className="btn-ghost border border-line" onClick={() => { setAmpliando(null); setCreando("combo"); }}>
               <Plus size={16} /> Nuevo combo
             </button>
-            <button className="btn-primary" onClick={() => setCreando("pack")}>
+            <button className="btn-primary" onClick={() => { setAmpliando(null); setCreando("pack"); }}>
               <Plus size={16} /> Nuevo pack
             </button>
           </div>
@@ -128,6 +130,14 @@ export default function PacksPage() {
           onCreado={async (msg) => { setCreando(false); setAviso(msg); await cargar(); }}
         />
       )}
+      {ampliando && (
+        <NuevoCombo
+          key={`ampliar-${ampliando.productId}`}
+          existente={ampliando}
+          onCerrar={() => setAmpliando(null)}
+          onCreado={async (msg) => { setAmpliando(null); setAviso(msg); await cargar(); }}
+        />
+      )}
 
       <div className="mt-4 space-y-3">
         {cargando && <p className="text-sm text-ink-500">Cargando…</p>}
@@ -152,6 +162,7 @@ export default function PacksPage() {
             puedeEditar={puedeEditar}
             onEliminar={() => eliminar(p)}
             onCompletar={() => completar(p)}
+            onAmpliar={() => { setCreando(false); setAmpliando(p); window.scrollTo({ top: 0, behavior: "smooth" }); }}
           />
         ))}
       </div>
@@ -159,7 +170,7 @@ export default function PacksPage() {
   );
 }
 
-function TarjetaPack({ pack, puedeEditar, onEliminar, onCompletar, onGuardado }) {
+function TarjetaPack({ pack, puedeEditar, onEliminar, onCompletar, onGuardado, onAmpliar }) {
   const [abierto, setAbierto] = useState(false);
   const caidos = pack.variantes.filter((v) => v.componentes.some((c) => c.activo === false));
 
@@ -198,6 +209,11 @@ function TarjetaPack({ pack, puedeEditar, onEliminar, onCompletar, onGuardado })
             <p className="font-display text-xl font-semibold text-ink-950">{pack.armables}</p>
             <p className="text-[11px] uppercase tracking-wide text-ink-500">se arman</p>
           </div>
+          {puedeEditar && pack.tipo === "combo" && !pack.legado && (
+            <button className="btn-ghost border border-line px-2 py-1 text-xs" onClick={onAmpliar}>
+              <Plus size={13} /> Colores o talles
+            </button>
+          )}
           {puedeEditar && (
             <button className="btn-ghost px-2 py-1 text-brick-500" onClick={onEliminar} title="Dar de baja">
               <Trash2 size={15} />
@@ -214,7 +230,9 @@ function TarjetaPack({ pack, puedeEditar, onEliminar, onCompletar, onGuardado })
         <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-md border border-line bg-paper-100 px-3 py-2">
           <p className="text-xs text-ink-700">
             {pack.tipo === "combo"
-              ? <>Las prendas tienen {pack.faltanVariantes} talle{pack.faltanVariantes === 1 ? "" : "s"} en común sin combo: no se venden.</>
+              ? <>{pack.faltanVariantes === 1
+                ? "Hay 1 combinación elegida que las prendas ya permiten y todavía no existe: no se vende."
+                : `Hay ${pack.faltanVariantes} combinaciones elegidas que las prendas ya permiten y todavía no existen: no se venden.`}</>
               : <>El producto tiene {pack.faltanVariantes} variante{pack.faltanVariantes === 1 ? "" : "s"}{" "}
                 sin pack: no se pueden vender de a {pack.unidades}.</>}
           </p>
@@ -523,20 +541,60 @@ function NuevoPack({ onCerrar, onCreado }) {
   );
 }
 
-const nuevaPieza = () => ({ producto: null, cantidad: 1, fijos: {} });
+// `uid` identifica la tarjeta: con el índice, quitar una prenda le pasaba la búsqueda a la de al lado.
+let siguientePieza = 0;
+const nuevaPieza = () => ({ uid: `p${++siguientePieza}`, producto: null, cantidad: 1 });
+const normTexto = (v) => String(v ?? "").trim().toUpperCase();
+const claveOpcion = (valores) => valores.map(normTexto).join("|");
+const nombreOpcion = (valores) => {
+  const presentes = valores.filter(Boolean);
+  const unColor = presentes.length > 0 && presentes.every((c) => normTexto(c) === normTexto(presentes[0]));
+  return unColor ? presentes[0] : presentes.join(" + ");
+};
+
+function Chip({ activo, bloqueado = false, onClick, titulo, children }) {
+  return (
+    <button
+      type="button"
+      aria-pressed={activo}
+      disabled={bloqueado}
+      title={titulo}
+      onClick={onClick}
+      className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs transition-colors ${
+        activo ? "border-ink-800 bg-paper-200 font-medium text-ink-900" : "border-line text-ink-600 hover:border-ink-400"
+      } ${bloqueado ? "cursor-default opacity-80" : ""}`}
+    >
+      {activo && <Check size={12} className="mr-1" />}
+      {children}
+    </button>
+  );
+}
 
 /*
- * El alta de un combo.
+ * El alta de un combo, y la ampliación de uno que ya existe.
  *
- * Se eligen las prendas, cuántas de cada una y su color, y la pantalla muestra
- * ANTES de guardar qué talles salen y con qué SKU. El talle es compartido: el
- * "Conjunto M" lleva la remera M y el pantalón M. Si las prendas no comparten
- * ningún talle —una remera S/M/L con un pantalón 38/40— no sale ningún combo,
- * y la pantalla lo dice en vez de quedar vacía.
+ * Cada variante del combo es un color y un talle: "Negro / M" lleva la remera
+ * negra M y el pantalón negro M. Los colores y talles se eligen entre los que
+ * tienen TODAS las prendas; la pantalla muestra antes de guardar qué
+ * combinaciones salen, cuáles no se pueden armar porque a alguna prenda le
+ * falta esa variante, y con qué SKU. También se pueden combinar colores
+ * distintos en una variante ("Blanco + Negro / M"). El talle es siempre el
+ * mismo para todas las prendas.
+ *
+ * Al ampliar, las prendas y lo ya elegido quedan fijos: sólo se suma.
  */
-function NuevoCombo({ onCerrar, onCreado }) {
-  const eje = "Talle";
-  const [piezas, setPiezas] = useState(() => [nuevaPieza(), nuevaPieza()]);
+function NuevoCombo({ onCerrar, onCreado, existente = null }) {
+  const [piezas, setPiezas] = useState(() => (existente
+    ? existente.piezas.map((p) => ({ uid: `e${p.productId}`, producto: { id: p.productId, titulo: p.titulo, sku: p.sku }, cantidad: p.cantidad }))
+    : [nuevaPieza(), nuevaPieza()]));
+  // null: lo que propone el servidor (todos los colores y talles en común).
+  const [colores, setColores] = useState(null);
+  const [talles, setTalles] = useState(null);
+  const [excluidos, setExcluidos] = useState(() => new Set());
+  const [mezcla, setMezcla] = useState({});
+  // Al ampliar: lo que el combo ya tenía elegido, que no se puede sacar.
+  const [bloqueadas, setBloqueadas] = useState(null);
+  const inicializado = useRef(false);
   const [sku, setSku] = useState("");
   const [skuTocado, setSkuTocado] = useState(false);
   const [titulo, setTitulo] = useState("");
@@ -544,61 +602,149 @@ function NuevoCombo({ onCerrar, onCreado }) {
   const [precio, setPrecio] = useState("");
   const [precioTocado, setPrecioTocado] = useState(false);
   const [previa, setPrevia] = useState(null);
-  const [excluidos, setExcluidos] = useState(() => new Set());
+  // La previa está vieja: hay un cambio que todavía no volvió del servidor.
+  const [pendiente, setPendiente] = useState(false);
+  const errorDePrevia = useRef(false);
   const [guardando, setGuardando] = useState(false);
   const [error, setError] = useState("");
 
   const completas = piezas.length >= 2 && piezas.every((p) => p.producto);
-  const cuerpo = () => piezas.map((p) => ({
-    productId: p.producto.id, cantidad: p.cantidad, fijos: p.fijos,
-  }));
-  const cambiarPieza = (i, cambio) => setPiezas((prev) => prev.map((p, j) => (j === i ? { ...p, ...cambio } : p)));
+
+  // Cambiar una prenda invalida lo elegido: los colores y talles eran de otra.
+  function cambiarPiezas(cambio) {
+    setPiezas(cambio);
+    // La previa de las prendas anteriores no sirve: sus colores tendrían otro largo.
+    setPrevia(null);
+    setColores(null); setTalles(null); setExcluidos(new Set()); setMezcla({});
+  }
+
+  // El SKU sólo cuenta si lo escribió la persona: el sugerido no dispara otra previa.
+  const skuManual = skuTocado ? sku : null;
 
   /*
-   * La previa se recalcula al cambiar prendas, cantidades, colores o el SKU.
-   * Como en el pack, lo que la persona ya tocó no se pisa.
+   * La previa se recalcula con cada cambio. Como en el pack, el SKU, el nombre
+   * y el precio que la persona ya tocó no se pisan.
    */
   useEffect(() => {
-    if (!completas) { setPrevia(null); return undefined; }
+    if (!completas) { setPrevia(null); setPendiente(false); return undefined; }
+    setPendiente(true);
     let vigente = true;
     const t = setTimeout(async () => {
       try {
         const s = await fetchSugerenciaCombo({
-          eje, sku: skuTocado ? sku : undefined, piezas: cuerpo(),
+          ...(existente
+            ? { productId: existente.productId }
+            : {
+              sku: skuManual ?? undefined,
+              piezas: piezas.map((p) => ({ productId: p.producto.id, cantidad: p.cantidad })),
+            }),
+          colores: colores ?? undefined,
+          talles: talles ?? undefined,
         });
         if (!vigente) return;
         setPrevia(s);
-        setError("");
-        if (!skuTocado) setSku(s.sku);
-        if (!tituloTocado) setTitulo(s.titulo);
-        if (!precioTocado) setPrecio(String(s.precioMinorista ?? ""));
+        setPendiente(false);
+        // Sólo se borra el error de una previa anterior: el de guardar tiene que quedar a la vista.
+        if (errorDePrevia.current) { errorDePrevia.current = false; setError(""); }
+        if (existente && !inicializado.current) {
+          inicializado.current = true;
+          setBloqueadas({ opciones: new Set(s.opciones.map(claveOpcion)), talles: new Set(s.talles.map(normTexto)) });
+          setExcluidos(new Set(s.variantes.filter((v) => v.excluida && !v.existe).map((v) => v.clave)));
+        }
+        if (!existente) {
+          if (!skuTocado) setSku(s.sku);
+          if (!tituloTocado) setTitulo(s.titulo);
+          if (!precioTocado) setPrecio(String(s.precioMinorista ?? ""));
+        }
       } catch (e) {
-        if (vigente) { setPrevia(null); setError(mensajeDeError(e, "No se pudo calcular la previa.")); }
+        if (vigente) {
+          setPrevia(null);
+          setPendiente(false);
+          errorDePrevia.current = true;
+          setError(mensajeDeError(e, "No se pudo calcular la previa."));
+        }
       }
     }, 300);
     return () => { vigente = false; clearTimeout(t); };
-    // `cuerpo` sale de `piezas`, que ya está en la lista.
-  }, [piezas, completas, sku, skuTocado, tituloTocado, precioTocado]); // eslint-disable-line react-hooks/exhaustive-deps
+    // `existente` no cambia mientras el formulario está abierto: se monta con otra key.
+  }, [piezas, completas, colores, talles, skuManual, tituloTocado, precioTocado]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const incluidos = (previa?.variantes || []).filter((v) => !excluidos.has(v.talle));
+  const info = previa?.piezas || [];
+  const problema = info.find((p) => p.problema)?.problema;
+  const conColor = info.some((p) => p.colores.length > 0);
+  const conTalle = info.some((p) => p.talles.length > 0);
+  const opciones = colores ?? previa?.opciones ?? [];
+  const tallesElegidos = talles ?? previa?.talles ?? [];
+  const elegidas = new Set(opciones.map(claveOpcion));
+  const opcionDeColor = (c) => info.map((p) => (p.colores.length ? c : null));
+  const mezcladas = opciones.filter((op) => {
+    const presentes = op.filter(Boolean);
+    return presentes.some((c) => normTexto(c) !== normTexto(presentes[0]));
+  });
+  const filas = previa?.variantes || [];
+  const nuevas = filas.filter((f) => !f.existe);
+  const aCrear = nuevas.filter((f) => !excluidos.has(f.clave));
+  /*
+   * Se guarda sólo lo que se ve: con una previa en camino, la tabla todavía
+   * muestra la elección anterior y se crearía algo que nadie revisó.
+   */
+  const puedeGuardar = Boolean(previa) && !pendiente && !problema && !previa?.invalidas?.length
+    && aCrear.length > 0 && !guardando && (Boolean(existente) || sku.trim() !== "");
+
+  function alternarOpcion(op) {
+    const clave = claveOpcion(op);
+    if (bloqueadas?.opciones.has(clave)) return;
+    setColores(elegidas.has(clave) ? opciones.filter((o) => claveOpcion(o) !== clave) : [...opciones, op]);
+  }
+
+  function agregarMezcla() {
+    const valores = info.map((p, i) => (p.colores.length ? (mezcla[i] || "") : null));
+    if (valores.some((v, i) => info[i].colores.length && !v)) {
+      setError("Para combinar colores, elegí un color para cada prenda.");
+      return;
+    }
+    if (!elegidas.has(claveOpcion(valores))) setColores([...opciones, valores]);
+    setMezcla({});
+    setError("");
+  }
+
+  function alternarTalle(tl) {
+    const clave = normTexto(tl);
+    if (bloqueadas?.talles.has(clave)) return;
+    const elegido = tallesElegidos.some((x) => normTexto(x) === clave);
+    setTalles(elegido ? tallesElegidos.filter((x) => normTexto(x) !== clave) : [...tallesElegidos, tl]);
+  }
+
+  function alternarFila(clave) {
+    setExcluidos((prev) => {
+      const n = new Set(prev);
+      if (n.has(clave)) n.delete(clave); else n.add(clave);
+      return n;
+    });
+  }
 
   async function guardar() {
     setError("");
-    if (!completas) { setError("Elegí el producto de cada prenda."); return; }
-    if (!incluidos.length) { setError("No hay ningún talle para crear."); return; }
+    if (!puedeGuardar) return;
     setGuardando(true);
+    const eleccion = {
+      ...(previa.legado ? {} : { colores: opciones }),
+      talles: tallesElegidos,
+      excluidas: nuevas.filter((f) => excluidos.has(f.clave)).map((f) => f.clave),
+    };
     try {
-      const r = await crearCombo({
-        sku: sku.trim(),
-        titulo: titulo.trim(),
-        precioMinorista: Number(precio),
-        eje,
-        piezas: cuerpo(),
-        talles: incluidos.length === previa.variantes.length ? undefined : incluidos.map((v) => v.talle),
-      });
+      const r = existente
+        ? await ampliarCombo(existente.productId, eleccion)
+        : await crearCombo({
+          sku: sku.trim(),
+          titulo: titulo.trim(),
+          precioMinorista: Number(precio),
+          piezas: piezas.map((p) => ({ productId: p.producto.id, cantidad: p.cantidad })),
+          ...eleccion,
+        });
       await onCreado(r.mensaje);
     } catch (e) {
-      setError(mensajeDeError(e, "No se pudo crear el combo."));
+      setError(mensajeDeError(e, existente ? "No se pudo ampliar el combo." : "No se pudo crear el combo."));
     }
     setGuardando(false);
   }
@@ -607,140 +753,241 @@ function NuevoCombo({ onCerrar, onCreado }) {
     <Card className="mt-4">
       <div className="mb-4 flex items-start justify-between gap-3">
         <div>
-          <p className="font-display text-base font-semibold text-ink-900">Nuevo combo</p>
+          <p className="font-display text-base font-semibold text-ink-900">
+            {existente ? `Colores o talles para ${existente.titulo}` : "Nuevo combo"}
+          </p>
           <p className="mt-0.5 text-sm text-ink-600">
-            Elegí las prendas, cuántas de cada una y su color. Se genera un combo por cada talle
-            que tienen en común, con su propio SKU, y al venderlo sale del estante cada prenda.
+            {existente
+              ? "Lo que el combo ya tiene queda como está. Sumá colores, talles o combinaciones de colores: se crean sólo las variantes nuevas."
+              : "Elegí las prendas y cuántas de cada una. Después, los colores y talles: cada variante del combo lleva todas las prendas en ese color y ese talle."}
           </p>
         </div>
         <button className="btn-ghost px-2 py-1" onClick={onCerrar} aria-label="Cerrar"><X size={16} /></button>
       </div>
 
-      <div className="space-y-3">
-        {piezas.map((p, i) => {
-          const info = previa?.piezas?.[i];
-          // Los otros ejes de la prenda con más de un valor: hay que fijarlos.
-          const aFijar = Object.entries(info?.ejes || {}).filter(([nombre, valores]) => nombre !== eje && valores.length > 1);
-          return (
-            <div key={i} className="rounded-md border border-line p-3">
-              <div className="mb-2 flex items-center justify-between gap-2">
-                <p className="text-xs font-medium uppercase tracking-wide text-ink-600">Prenda {i + 1}</p>
-                {piezas.length > 2 && (
-                  <button type="button" className="btn-ghost px-2 py-1 text-xs"
-                    onClick={() => setPiezas((prev) => prev.filter((_, j) => j !== i))}>
-                    Quitar
-                  </button>
-                )}
-              </div>
-              <BuscadorProducto valor={p.producto}
-                onElegir={(prod) => { cambiarPieza(i, { producto: prod, fijos: {} }); setExcluidos(new Set()); }} />
-              {p.producto && (
-                <div className="mt-2 grid gap-3 sm:grid-cols-4">
-                  <label className="block">
-                    <span className="mb-1 block text-xs font-medium text-ink-700">Cantidad</span>
-                    <input className="input" type="number" min="1" max="1000" value={p.cantidad}
-                      onChange={(e) => cambiarPieza(i, { cantidad: Math.max(1, Number(e.target.value) || 1) })} />
-                  </label>
-                  {aFijar.map(([nombre, valores]) => (
-                    <label key={nombre} className="block">
-                      <span className="mb-1 block text-xs font-medium text-ink-700">{nombre}</span>
-                      <select className="input" value={p.fijos[nombre] || ""}
-                        onChange={(e) => cambiarPieza(i, { fijos: { ...p.fijos, [nombre]: e.target.value } })}>
-                        <option value="">Elegí…</option>
-                        {valores.map((v) => <option key={v} value={v}>{v}</option>)}
-                      </select>
-                    </label>
-                  ))}
-                  {info && (
-                    <p className="self-end pb-2 text-xs text-ink-500 sm:col-span-2">
-                      Talles: {info.talles?.length ? info.talles.join(", ") : "ninguno todavía"}
-                    </p>
+      {existente ? (
+        <p className="text-sm text-ink-700">
+          {existente.piezas.map((p, i) => (
+            <span key={p.productId}>
+              {i > 0 && " + "}{p.titulo}{p.cantidad > 1 ? ` ×${p.cantidad}` : ""}
+            </span>
+          ))}
+        </p>
+      ) : (
+        <div className="space-y-3">
+          {piezas.map((p, i) => {
+            const pz = info[i];
+            return (
+              <div key={p.uid} className="rounded-md border border-line p-3">
+                <div className="mb-2 flex items-center justify-between gap-2">
+                  <p className="text-xs font-medium uppercase tracking-wide text-ink-600">Prenda {i + 1}</p>
+                  {piezas.length > 2 && (
+                    <button type="button" className="btn-ghost px-2 py-1 text-xs"
+                      onClick={() => cambiarPiezas((prev) => prev.filter((_, j) => j !== i))}>
+                      Quitar
+                    </button>
                   )}
                 </div>
-              )}
-              {info?.problema && (
-                <p className="mt-2 flex items-start gap-1.5 text-xs text-brick-700">
-                  <AlertTriangle size={13} className="mt-0.5 shrink-0" />{info.problema}
-                </p>
-              )}
-            </div>
-          );
-        })}
-        {piezas.length < 10 && (
-          <button type="button" className="btn-ghost border border-line text-xs"
-            onClick={() => setPiezas((prev) => [...prev, nuevaPieza()])}>
-            <Plus size={14} /> Agregar prenda
-          </button>
-        )}
-      </div>
+                <BuscadorProducto valor={p.producto}
+                  onElegir={(prod) => cambiarPiezas((prev) => prev.map((x, j) => (j === i ? { ...x, producto: prod } : x)))} />
+                {p.producto && (
+                  <div className="mt-2 grid gap-3 sm:grid-cols-4">
+                    <label className="block">
+                      <span className="mb-1 block text-xs font-medium text-ink-700">Cantidad</span>
+                      <input className="input" type="number" min="1" max="1000" value={p.cantidad}
+                        onChange={(e) => {
+                          const cantidad = Math.max(1, Math.min(1000, Math.trunc(Number(e.target.value)) || 1));
+                          setPiezas((prev) => prev.map((x, j) => (j === i ? { ...x, cantidad } : x)));
+                        }} />
+                    </label>
+                    {pz && !pz.problema && (
+                      <p className="self-end pb-2 text-xs text-ink-500 sm:col-span-3">
+                        {pz.colores.length > 0 && <>Colores: {pz.colores.join(", ")}. </>}
+                        {pz.talles.length > 0 && <>Talles: {pz.talles.join(", ")}.</>}
+                        {!pz.colores.length && !pz.talles.length && "Sin colores ni talles: entra igual en todas las variantes."}
+                      </p>
+                    )}
+                  </div>
+                )}
+                {pz?.problema && (
+                  <p className="mt-2 flex items-start gap-1.5 text-xs text-brick-700">
+                    <AlertTriangle size={13} className="mt-0.5 shrink-0" />{pz.problema}
+                  </p>
+                )}
+              </div>
+            );
+          })}
+          {piezas.length < 10 && (
+            <button type="button" className="btn-ghost border border-line text-xs"
+              onClick={() => cambiarPiezas((prev) => [...prev, nuevaPieza()])}>
+              <Plus size={14} /> Agregar prenda
+            </button>
+          )}
+        </div>
+      )}
 
-      {completas && (
-        <>
-          <div className="mt-4 grid gap-3 sm:grid-cols-4">
-            <label className="block">
-              <span className="mb-1 block text-xs font-medium text-ink-700">SKU del combo</span>
-              <input className="input font-mono" value={sku} maxLength={80}
-                onChange={(e) => { setSku(e.target.value); setSkuTocado(true); }} />
-            </label>
-            <label className="block sm:col-span-2">
-              <span className="mb-1 block text-xs font-medium text-ink-700">Nombre</span>
-              <input className="input" value={titulo} maxLength={120}
-                onChange={(e) => { setTitulo(e.target.value); setTituloTocado(true); }} />
-            </label>
-            <label className="block">
-              <span className="mb-1 block text-xs font-medium text-ink-700">Precio del combo</span>
-              <input className="input" type="number" min="0" step="0.01" value={precio}
-                onChange={(e) => { setPrecio(e.target.value); setPrecioTocado(true); }} />
-            </label>
-          </div>
-          {previa && (
-            <p className="mt-2 text-xs text-ink-500">
-              Sugerido: la suma de las prendas, {formatCurrency(previa.precioMinorista)}. Es una sugerencia:
-              la mayoría de los combos se venden con descuento.
+      {previa && !problema && (
+        <div className="mt-4 space-y-4">
+          {previa.legado && (
+            <p className="text-xs text-ink-600">
+              Este combo se creó con la versión anterior, con un color fijo por prenda: sólo se le pueden sumar talles.
             </p>
           )}
 
-          {previa?.avisos?.map((a) => (
-            <p key={a} className="mt-2 flex items-start gap-1.5 text-xs text-ink-600">
+          {conColor && !previa.legado && (
+            <div>
+              <p className="text-xs font-medium uppercase tracking-wide text-ink-600">Colores</p>
+              <p className="mt-0.5 text-xs text-ink-500">
+                Mismo color en todas las prendas. Sólo aparecen los que tienen todas.
+              </p>
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {previa.coloresComunes.map((c) => {
+                  const op = opcionDeColor(c);
+                  const fija = Boolean(bloqueadas?.opciones.has(claveOpcion(op)));
+                  return (
+                    <Chip key={c} activo={elegidas.has(claveOpcion(op))} bloqueado={fija}
+                      titulo={fija ? "Ya es parte del combo" : undefined} onClick={() => alternarOpcion(op)}>
+                      {c}
+                    </Chip>
+                  );
+                })}
+                {!previa.coloresComunes.length && (
+                  <span className="text-xs text-ink-500">Las prendas no comparten ningún color.</span>
+                )}
+              </div>
+
+              {mezcladas.length > 0 && (
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {mezcladas.map((op) => {
+                    const fija = Boolean(bloqueadas?.opciones.has(claveOpcion(op)));
+                    return (
+                      <Chip key={claveOpcion(op)} activo bloqueado={fija}
+                        titulo={fija ? "Ya es parte del combo" : "Quitar esta combinación de colores"}
+                        onClick={() => alternarOpcion(op)}>
+                        {nombreOpcion(op)}
+                        {!fija && <X size={11} className="ml-1" />}
+                      </Chip>
+                    );
+                  })}
+                </div>
+              )}
+
+              <div className="mt-3 rounded-md border border-dashed border-line p-3">
+                <p className="text-xs font-medium text-ink-700">Combinar colores distintos</p>
+                <p className="mt-0.5 text-xs text-ink-500">
+                  Por ejemplo, remera blanca con pantalón negro. Elegí un color por prenda.
+                </p>
+                <div className="mt-2 flex flex-wrap items-end gap-2">
+                  {info.map((pz, i) => pz.colores.length > 0 && (
+                    <label key={pz.productId} className="block">
+                      <span className="mb-1 block text-xs text-ink-600">{pz.titulo}</span>
+                      <select className="input" value={mezcla[i] || ""}
+                        onChange={(e) => setMezcla((prev) => ({ ...prev, [i]: e.target.value }))}>
+                        <option value="">Elegí…</option>
+                        {pz.colores.map((c) => <option key={c} value={c}>{c}</option>)}
+                      </select>
+                    </label>
+                  ))}
+                  <button type="button" className="btn-ghost border border-line text-xs" onClick={agregarMezcla}>
+                    <Plus size={14} /> Agregar
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {conTalle && (
+            <div>
+              <p className="text-xs font-medium uppercase tracking-wide text-ink-600">Talles</p>
+              <p className="mt-0.5 text-xs text-ink-500">
+                El mismo talle en todas las prendas. Sólo aparecen los que tienen todas.
+              </p>
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {previa.tallesComunes.map((tl) => {
+                  const fija = Boolean(bloqueadas?.talles.has(normTexto(tl)));
+                  return (
+                    <Chip key={tl} activo={tallesElegidos.some((x) => normTexto(x) === normTexto(tl))}
+                      bloqueado={fija} titulo={fija ? "Ya es parte del combo" : undefined}
+                      onClick={() => alternarTalle(tl)}>
+                      {tl}
+                    </Chip>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {[...(previa.avisos || []), ...(previa.invalidas || [])].map((a, i) => (
+            <p key={`${i}-${a}`} className="flex items-start gap-1.5 text-xs text-ink-600">
               <AlertTriangle size={13} className="mt-0.5 shrink-0" />{a}
             </p>
           ))}
 
-          {previa && previa.variantes.length > 0 && (
-            <div className="mt-4">
-              <p className="mb-1.5 text-xs font-medium text-ink-700">
-                Se van a crear {incluidos.length} combo{incluidos.length === 1 ? "" : "s"}
+          {!existente && (
+            <div>
+              <div className="grid gap-3 sm:grid-cols-4">
+                <label className="block">
+                  <span className="mb-1 block text-xs font-medium text-ink-700">SKU del combo</span>
+                  <input className="input font-mono" value={sku} maxLength={80}
+                    onChange={(e) => { setSku(e.target.value); setSkuTocado(e.target.value.trim() !== ""); }} />
+                </label>
+                <label className="block sm:col-span-2">
+                  <span className="mb-1 block text-xs font-medium text-ink-700">Nombre</span>
+                  <input className="input" value={titulo} maxLength={120}
+                    onChange={(e) => { setTitulo(e.target.value); setTituloTocado(true); }} />
+                </label>
+                <label className="block">
+                  <span className="mb-1 block text-xs font-medium text-ink-700">Precio del combo</span>
+                  <input className="input" type="number" min="0" step="0.01" value={precio}
+                    onChange={(e) => { setPrecio(e.target.value); setPrecioTocado(true); }} />
+                </label>
+              </div>
+              <p className="mt-2 text-xs text-ink-500">
+                Sugerido: la suma de las prendas, {formatCurrency(previa.precioMinorista)}. Es una sugerencia:
+                la mayoría de los combos se venden con descuento.
               </p>
-              <div className="max-h-64 overflow-y-auto rounded-md border border-line">
-                <table className="w-full min-w-[420px] text-sm">
+            </div>
+          )}
+
+          {filas.length > 0 && (
+            <div>
+              <p className="mb-1.5 text-xs font-medium text-ink-700">
+                {existente
+                  ? `Se van a agregar ${aCrear.length} combinaci${aCrear.length === 1 ? "ón" : "ones"}`
+                  : `Se van a crear ${aCrear.length} combo${aCrear.length === 1 ? "" : "s"}`}
+              </p>
+              <div className="max-h-72 overflow-auto rounded-md border border-line">
+                <table className="w-full min-w-[480px] text-sm">
                   <thead className="sticky top-0 bg-paper-100">
                     <tr className="border-b border-line text-left text-xs uppercase tracking-wide text-ink-600">
                       <th className="px-2 py-1.5 font-medium"><span className="sr-only">Incluir</span></th>
-                      <th className="px-2 py-1.5 font-medium">Talle</th>
+                      <th className="px-2 py-1.5 font-medium">Combinación</th>
                       <th className="px-2 py-1.5 font-medium">Lleva</th>
-                      <th className="px-2 py-1.5 font-medium">SKU del combo</th>
+                      <th className="px-2 py-1.5 font-medium">SKU</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {previa.variantes.map((v) => {
-                      const dentro = !excluidos.has(v.talle);
+                    {filas.map((v) => {
+                      const dentro = v.existe || !excluidos.has(v.clave);
                       return (
-                        <tr key={v.talle} className="border-b border-line last:border-0">
+                        <tr key={v.clave} className="border-b border-line last:border-0">
                           <td className="px-2 py-1.5">
-                            <input type="checkbox" checked={dentro} aria-label={`Incluir talle ${v.talle}`}
-                              onChange={() => setExcluidos((prev) => {
-                                const n = new Set(prev);
-                                if (n.has(v.talle)) n.delete(v.talle); else n.add(v.talle);
-                                return n;
-                              })} />
+                            <input type="checkbox" checked={dentro} disabled={v.existe}
+                              aria-label={`Incluir ${v.etiqueta || "el combo"}`}
+                              onChange={() => alternarFila(v.clave)} />
                           </td>
-                          <td className={`px-2 py-1.5 ${dentro ? "text-ink-800" : "text-ink-400 line-through"}`}>{v.talle}</td>
+                          <td className={`px-2 py-1.5 ${dentro ? "text-ink-800" : "text-ink-400 line-through"}`}>
+                            {v.etiqueta || "Único"}
+                          </td>
                           <td className="px-2 py-1.5 font-mono text-xs text-ink-500">
                             {v.componentes.map((c) => `${c.cantidad}× ${c.skuPadre}`).join(" + ")}
                           </td>
                           <td className="px-2 py-1.5 font-mono text-xs text-ink-600">
                             {v.sku}
-                            {v.repetido && (
+                            {v.existe && (
+                              <span className="ml-1 rounded bg-paper-200 px-1 py-0.5 text-[10px] text-ink-600">ya existe</span>
+                            )}
+                            {!v.existe && v.repetido && (
                               <span className="ml-1 rounded bg-paper-200 px-1 py-0.5 text-[10px] text-ink-600">
                                 se le agrega un sufijo
                               </span>
@@ -754,7 +1001,21 @@ function NuevoCombo({ onCerrar, onCreado }) {
               </div>
             </div>
           )}
-        </>
+
+          {previa.imposibles?.length > 0 && (
+            <div className="rounded-md bg-paper-100 px-3 py-2">
+              <p className="text-xs font-medium text-ink-700">
+                No se pueden armar ({previa.imposibles.length}): a alguna prenda le falta esa variante
+              </p>
+              <ul className="mt-1 space-y-0.5 text-xs text-ink-500">
+                {previa.imposibles.slice(0, 12).map((x) => (
+                  <li key={x.clave}>{x.etiqueta || "Único"}: falta {x.faltan.join(", ")}.</li>
+                ))}
+                {previa.imposibles.length > 12 && <li>Y {previa.imposibles.length - 12} más.</li>}
+              </ul>
+            </div>
+          )}
+        </div>
       )}
 
       {error && (
@@ -765,8 +1026,12 @@ function NuevoCombo({ onCerrar, onCreado }) {
 
       <div className="mt-4 flex justify-end gap-2 border-t border-line pt-3">
         <button className="btn-ghost" onClick={onCerrar} disabled={guardando}>Cancelar</button>
-        <button className="btn-primary" onClick={guardar} disabled={guardando || !previa || !incluidos.length}>
-          {guardando ? "Creando…" : `Crear ${incluidos.length || ""} combo${incluidos.length === 1 ? "" : "s"}`}
+        <button className="btn-primary" onClick={guardar} disabled={!puedeGuardar}>
+          {guardando
+            ? "Guardando…"
+            : existente
+              ? `Agregar ${aCrear.length || ""} combinaci${aCrear.length === 1 ? "ón" : "ones"}`
+              : `Crear ${aCrear.length || ""} combo${aCrear.length === 1 ? "" : "s"}`}
         </button>
       </div>
     </Card>
