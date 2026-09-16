@@ -141,6 +141,12 @@ Module._load = function (pedido) {
        */
       if (metodo === 'put' && item && cuerpo) {
         const pub = publicaciones.find((p) => p.id === item);
+        if (pub && cuerpo.status) {
+          // Como ML: el vendedor cambia el estado a mano con un PUT de status.
+          pub.status = cuerpo.status;
+          pub.sub_status = [];
+          return { data: pub };
+        }
         if (pub) {
           if (cuerpo.available_quantity !== undefined) pub.available_quantity = cuerpo.available_quantity;
           for (const cv of cuerpo.variations || []) {
@@ -729,6 +735,61 @@ const CUANTAS = 204;   // el número exacto que disparó el aviso
       chk('la sección 14 no revienta', null, String(e?.stack || e));
     } finally {
       publicaciones = publicaciones.filter((p) => !/^MLA700\d/.test(p.id));
+    }
+
+    tit('15. REACTIVAR LO QUE EL VENDEDOR PAUSÓ A MANO');
+    try {
+      const atributoSku = (valor) => [{ id: 'SELLER_SKU', value_name: valor }];
+      publicaciones.push(
+        { id: 'MLA6001', title: 'Pausada por el vendedor', status: 'paused', sub_status: ['paused_by_seller'],
+          listing_type_id: 'gold_special', available_quantity: 4, seller_id: ML_USER,
+          attributes: atributoSku('QA-SYNC-RE'), variations: [] },
+        { id: 'MLA6002', title: 'Ya activa', status: 'active', listing_type_id: 'gold_special',
+          available_quantity: 4, seller_id: ML_USER, attributes: atributoSku('QA-SYNC-RE'), variations: [] },
+        { id: 'MLA6003', title: 'Finalizada', status: 'closed', listing_type_id: 'gold_special',
+          available_quantity: 0, seller_id: ML_USER, attributes: atributoSku('QA-SYNC-RE'), variations: [] },
+        { id: 'MLA6004', title: 'Pausada y sin stock', status: 'paused', sub_status: ['paused_by_seller'],
+          listing_type_id: 'gold_special', available_quantity: 0, seller_id: ML_USER,
+          attributes: atributoSku('QA-SYNC-RE0'), variations: [] },
+        { id: 'MLA6005', title: 'De otro vendedor', status: 'paused', sub_status: ['paused_by_seller'],
+          listing_type_id: 'gold_special', available_quantity: 4, seller_id: '999999',
+          attributes: atributoSku('QA-SYNC-RE'), variations: [] },
+        { id: 'MLA6006', title: 'Pausada en Full', status: 'paused', sub_status: ['paused_by_seller'],
+          listing_type_id: 'gold_special', available_quantity: 0, seller_id: ML_USER,
+          attributes: atributoSku('QA-SYNC-RE0'), variations: [], shipping: { logistic_type: 'fulfillment' } },
+      );
+
+      reset();
+      const r = await ml.reactivar(negocio.id, {
+        mlItemIds: ['MLA6001', 'MLA6002', 'MLA6003', 'MLA6004', 'MLA6005', 'MLA6006'],
+      });
+      const porId = new Map((r.resultados || []).map((x) => [x.mlItemId, x]));
+      chk('la pausada por el vendedor vuelve a estar activa', 'active',
+        publicaciones.find((p) => p.id === 'MLA6001').status);
+      chk('y se le manda sólo el estado', [{ status: 'active' }],
+        LLAMADAS.filter((l) => l.metodo === 'put' && l.url.endsWith('/items/MLA6001')).map((l) => l.cuerpo));
+      chk('la que ya estaba activa no se toca', [true, true, 0],
+        [porId.get('MLA6002')?.ok, porId.get('MLA6002')?.yaEstaba,
+          LLAMADAS.filter((l) => l.metodo === 'put' && l.url.endsWith('/items/MLA6002')).length]);
+      chk('la finalizada manda a republicar', true, /republica/.test(porId.get('MLA6003')?.error || ''));
+      chk('sin stock no se reactiva: ML la pausaría de nuevo', true,
+        /stock/.test(porId.get('MLA6004')?.error || ''));
+      chk('la de otro vendedor se rechaza', true, /no es de tu cuenta/.test(porId.get('MLA6005')?.error || ''));
+      chk('en Full se reactiva igual: el stock lo tiene ML', ['active', true],
+        [publicaciones.find((p) => p.id === 'MLA6006').status, porId.get('MLA6006')?.ok]);
+      chk('cuenta cuántas reactivó', 2, r.reactivadas);
+      const vacio = async () => { try { await ml.reactivar(negocio.id, { mlItemIds: [] }); return null; } catch (e) { return e.status; } };
+      chk('sin publicaciones da 400', 400, await vacio());
+      chk('la sincronización sigue sin despausar nada sola', 'paused', await (async () => {
+        publicaciones.find((p) => p.id === 'MLA6001').status = 'paused';
+        publicaciones.find((p) => p.id === 'MLA6001').sub_status = ['paused_by_seller'];
+        await ml.sincronizarStock(negocio.id, { simular: false, skus: ['QA-SYNC-RE'] });
+        return publicaciones.find((p) => p.id === 'MLA6001').status;
+      })());
+    } catch (e) {
+      chk('la sección 15 no revienta', null, String(e?.stack || e));
+    } finally {
+      publicaciones = publicaciones.filter((p) => !/^MLA600\d/.test(p.id));
     }
 
     tit('Limpieza');

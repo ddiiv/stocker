@@ -863,6 +863,73 @@ async function cantidadesPublicables(businessId, locales, variantes) {
 }
 
 /**
+ * Reactiva publicaciones que el vendedor pausó a mano.
+ *
+ * Mercado Libre reactiva sola la que se pausó por falta de stock, pero NO la
+ * que pausó el vendedor: pausarla fue una decisión suya y hace falta decirlo
+ * con un PUT de status. Por eso Stocker tampoco lo hace por su cuenta: la
+ * sincronización les manda el stock y avisa que siguen pausadas, y despausarlas
+ * es este pedido explícito.
+ *
+ * Sin stock no tiene sentido: ML la vuelve a pausar en el acto. La excepción es
+ * Full, donde el stock lo tiene ML en sus depósitos.
+ */
+async function reactivar(businessId, { mlItemIds }) {
+  const cuenta = await MercadoLibreAccount.findOne({ where: { businessId } });
+  if (!cuenta) throw Object.assign(new Error('No hay una cuenta de MercadoLibre conectada.'), { status: 400 });
+  const ids = [...new Set((mlItemIds || []).map((x) => String(x || '').trim()).filter(Boolean))].slice(0, 50);
+  if (!ids.length) throw Object.assign(new Error('No hay publicaciones para reactivar.'), { status: 400 });
+
+  const token = await tokenValido(cuenta);
+  const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+  const items = await traerItems(ids, headers);
+
+  const locales = await stockService.localesQueAbastecenOnline(businessId);
+  const variantes = await variantesPublicables(businessId, { soloActivas: true });
+  const cantidades = locales.length ? await cantidadesPublicables(businessId, locales, variantes) : new Map();
+  const porSkuStocker = new Map(variantes.map((v) => [v.sku, v]));
+  const cantidadDe = (sku) => {
+    const v = sku ? porSkuStocker.get(sku) : null;
+    return v ? (cantidades.get(v.id)?.cantidad || 0) : 0;
+  };
+
+  const resultados = await enParalelo(items, CONCURRENCIA, async (item) => {
+    const base = { mlItemId: String(item.id), titulo: item.title };
+    const rechazar = (mensaje) => ({ ...base, ok: false, error: mensaje });
+    if (item.seller_id && String(item.seller_id) !== String(cuenta.mlUserId)) {
+      return rechazar('Esa publicación no es de tu cuenta de Mercado Libre.');
+    }
+    if (item.status === 'active') return { ...base, ok: true, status: 'active', yaEstaba: true };
+    if (item.status === 'closed') {
+      return rechazar('Está finalizada: no se reactiva, se republica.');
+    }
+    if (item.status !== 'paused') {
+      return rechazar(`No se puede reactivar: Mercado Libre la tiene ${ESTADOS_NO_EDITABLES[item.status] || item.status}.`);
+    }
+    const enFull = item.shipping?.logistic_type === 'fulfillment';
+    const conStock = item.variations?.length
+      ? item.variations.some((v) => cantidadDe(skuDe(v)) > 0)
+      : cantidadDe(skuDe(item)) > 0;
+    if (!conStock && !enFull) {
+      return rechazar('No tiene stock en Stocker: Mercado Libre la volvería a pausar enseguida.');
+    }
+    try {
+      await conReintento(() => httpML.put(`${ML_API}/items/${item.id}`, { status: 'active' }, { headers }));
+      return { ...base, ok: true, status: 'active' };
+    } catch (err) {
+      return rechazar(detalleDeError(err));
+    }
+  });
+
+  const salida = resultados.filter(Boolean);
+  const faltaron = ids.filter((id) => !salida.some((r) => r.mlItemId === id));
+  for (const id of faltaron) {
+    salida.push({ mlItemId: id, ok: false, error: 'No se pudo leer esa publicación en Mercado Libre.' });
+  }
+  return { resultados: salida, reactivadas: salida.filter((r) => r.ok && !r.yaEstaba).length };
+}
+
+/**
  * Republica una publicación finalizada, con el stock que hay hoy en Stocker.
  *
  * Una finalizada no acepta stock: ML sólo deja republicarla, y eso crea una
@@ -1430,6 +1497,7 @@ module.exports = {
   sincronizarStock,
   coberturaMl,
   republicar,
+  reactivar,
   // Expuesto para las pruebas: es la regla que hace que un pack publicado no
   // se quede con el stock viejo cuando se mueve una de sus prendas.
   __conLosPacksQueLosUsan: conLosPacksQueLosUsan,

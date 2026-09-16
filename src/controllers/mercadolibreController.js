@@ -118,6 +118,21 @@ const republicar = async (req, res, next) => {
   } catch (e) { return next(e); }
 };
 
+/*
+ * POST /api/mercadolibre/reactivar  { mlItemIds }
+ *
+ * Despausar lo que el vendedor pausó a mano. Va a pedido: la sincronización
+ * manda stock, no cambia decisiones de la cuenta.
+ */
+const reactivar = async (req, res, next) => {
+  try {
+    const cuerpo = req.body || {};
+    const ids = Array.isArray(cuerpo.mlItemIds) ? cuerpo.mlItemIds : [cuerpo.mlItemId].filter(Boolean);
+    if (!ids.length) return res.status(400).json({ message: 'Falta la publicación a reactivar.' });
+    return res.json(await ml.reactivar(req.auth.businessId, { mlItemIds: ids }));
+  } catch (e) { return next(e); }
+};
+
 const sync = async (req, res, next) => {
   try {
     const { skus } = req.body || {};
@@ -342,4 +357,4 @@ const notificacion = async (req, res) => {
   }
 };
 
-module.exports = { status, authUrl, callback, disconnect, preview, sync, importarPedidos, getLocales, setLocales, listLinks, upsertLink, deleteLink, notificacion, cobertura, republicar };
+module.exports = { status, authUrl, callback, disconnect, preview, sync, importarPedidos, getLocales, setLocales, listLinks, upsertLink, deleteLink, notificacion, cobertura, republicar, reactivar };

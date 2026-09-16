@@ -398,6 +398,7 @@ r.delete('/mercadolibre/disconnect',  requireAuth, requirePermission('integracio
 r.get   ('/mercadolibre/preview',     requireAuth, requirePermission('integraciones','ver'),    mlCtrl.preview);
 r.get   ('/mercadolibre/cobertura',   requireAuth, requirePermission('integraciones','ver'),    mlCtrl.cobertura);
 r.post  ('/mercadolibre/republicar',  requireAuth, requirePermission('integraciones','editar'), requireFeature(FEATURES.ECOMMERCE), mlCtrl.republicar);
+r.post  ('/mercadolibre/reactivar',   requireAuth, requirePermission('integraciones','editar'), requireFeature(FEATURES.ECOMMERCE), mlCtrl.reactivar);
 // Qué locales abastecen las ventas online. Se configura desde acá además de
 // Empleados → Locales: es donde se lo mira cuando el número publicado no cierra.
 /*
