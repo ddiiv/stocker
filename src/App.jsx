@@ -43,6 +43,7 @@ const ClientsPage = lazy(() => import("./pages/ClientsPage"));
 const ClientAccountsPage = lazy(() => import("./pages/ClientAccountsPage"));
 const VariantTypesPage = lazy(() => import("./pages/VariantTypesPage"));
 const MercadoLibrePage = lazy(() => import("./pages/MercadoLibrePage"));
+const JumpsellerPage = lazy(() => import("./pages/JumpsellerPage"));
 const SalesTimelinePage = lazy(() => import("./pages/SalesTimelinePage"));
 const ProductMetricsPage = lazy(() => import("./pages/ProductMetricsPage"));
 const StockMovementsPage = lazy(() => import("./pages/StockMovementsPage"));
@@ -124,6 +125,7 @@ export default function App() {
             <Route path="/caja"                         element={<PermissionRoute permission="caja"><CashPage /></PermissionRoute>} />
             <Route path="/empleados"                    element={<PermissionRoute permission="empleados"><EmployeesPage /></PermissionRoute>} />
             <Route path="/integraciones/mercadolibre"   element={<PermissionRoute permission="integraciones"><MercadoLibrePage /></PermissionRoute>} />
+            <Route path="/integraciones/jumpseller"     element={<PermissionRoute permission="integraciones"><JumpsellerPage /></PermissionRoute>} />
 
             {/*
               Dirección que no existe.

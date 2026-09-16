@@ -77,6 +77,7 @@ const GRUPOS = [
       { to: "/empleados", label: "Empleados",       icon: Users,      permission: "empleados" },
       { to: "/pagos",     label: "Métodos de pago", icon: CreditCard, permission: "pagos" },
       { to: "/integraciones/mercadolibre", label: "Mercado Libre", icon: Store, permission: "integraciones" },
+      { to: "/integraciones/jumpseller", label: "Jumpseller", icon: Store, permission: "integraciones" },
     ],
   },
   {
