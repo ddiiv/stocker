@@ -7,6 +7,9 @@
  */
 
 const jumpseller = require('../services/jumpsellerService');
+const trabajos = require('../services/trabajosService');
+
+const claveDe = (businessId) => `jumpseller:${businessId}`;
 
 const status = async (req, res, next) => {
   try {
@@ -33,13 +36,32 @@ const preview = async (req, res, next) => {
   } catch (e) { next(e); }
 };
 
+/*
+ * Sincronizar no contesta la sincronización: contesta que arrancó.
+ *
+ * Con novecientos productos y sus variantes son miles de escrituras, minutos
+ * de trabajo. Adentro del pedido, el proxy lo corta a la mitad —"la aplicación
+ * no respondió"— y nadie sabe qué alcanzó a mandarse. Ahora corre en el
+ * servidor y la pantalla pregunta cómo viene.
+ */
 const sync = async (req, res, next) => {
   try {
+    const { businessId } = req.auth;
     const skus = Array.isArray(req.body?.skus) && req.body.skus.length
       ? req.body.skus.map(String)
       : null;
-    res.json(await jumpseller.sincronizarStock(req.auth.businessId, { simular: false, skus }));
+    const trabajo = trabajos.iniciar(claveDe(businessId), (avisar) => jumpseller.sincronizarStock(
+      businessId, { simular: false, skus, onProgreso: avisar },
+    ));
+    res.status(202).json(trabajo);
   } catch (e) { next(e); }
 };
 
-module.exports = { status, conectar, desconectar, preview, sync };
+/** Cómo viene la sincronización que está corriendo, o cómo terminó la última. */
+const syncEstado = async (req, res, next) => {
+  try {
+    res.json(trabajos.estado(claveDe(req.auth.businessId)));
+  } catch (e) { next(e); }
+};
+
+module.exports = { status, conectar, desconectar, preview, sync, syncEstado };

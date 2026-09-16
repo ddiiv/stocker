@@ -17,9 +17,20 @@ const LLAMADAS = [];
 let productos = [];
 let fallar429 = new Set();
 let claveValida = { login: 'LLAVE-QA', token: 'TOKEN-QA' };
+// Como Jumpseller: más de `topeMock` pedidos en un segundo son 429.
+let topeMock = 0;
+const pegados = [];
+let excedidos = 0;
 process.env.JUMPSELLER_ESPERA_429_MS = '20';
 // La demora del aviso por venta se lee al cargar el servicio: acá, casi nada.
-process.env.ML_SYNC_DEMORA_MS = '30';
+process.env.ML_SYNC_DEMORA_MS = '120';
+/*
+ * Sin freno de ritmo salvo donde se lo prueba (sección 10): si no, cada
+ * sección esperaría de verdad el segundo que el freno impone y la suite
+ * tardaría minutos en medir cosas que no tienen que ver con el ritmo.
+ */
+process.env.JUMPSELLER_POR_SEGUNDO = '1000';
+process.env.JUMPSELLER_POR_MINUTO = '100000';
 
 const originalLoad = Module._load;
 Module._load = function (pedido) {
@@ -27,6 +38,17 @@ Module._load = function (pedido) {
     const responder = async (metodo, url, cfg, cuerpo) => {
       const params = cfg?.params || {};
       LLAMADAS.push({ url, metodo, params, cuerpo, auth: cfg?.auth });
+      if (topeMock) {
+        const ahora = Date.now();
+        while (pegados.length && ahora - pegados[0] > 1000) pegados.shift();
+        pegados.push(ahora);
+        if (pegados.length > topeMock) {
+          excedidos += 1;
+          const e = new Error('Rate Limit Exceeded');
+          e.response = { status: 429, data: { message: 'Rate Limit Exceeded' }, headers: {} };
+          throw e;
+        }
+      }
       await new Promise((r) => setTimeout(r, 4));
 
       const error = (status, data) => {
@@ -104,6 +126,7 @@ const stock = require('../src/services/stockService');
 const jumpseller = require('../src/services/jumpsellerService');
 const tareas = require('../src/services/tareasPeriodicasService');
 const aviso = require('../src/services/avisoStockService');
+const trabajos = require('../src/services/trabajosService');
 const ml = require('../src/services/mercadolibreService');
 
 let ok = 0, ko = 0;
@@ -303,7 +326,7 @@ const falla = async (fn) => { try { await fn(); return null; } catch (e) { retur
     reset();
     await stock.mover({ variantId: variantes[2].id, businessId: negocio.id, locationId: local.id,
       delta: 2, tipo: 'ingreso', motivo: 'QA venta' });
-    await esperar(200);
+    await esperar(500);
     chk('un movimiento de stock llega solo a la tienda', 7, enLaTienda('QA-JS-3'));
     chk('y no hace falta volver a listar el catálogo', 0, listados());
 
@@ -314,7 +337,7 @@ const falla = async (fn) => { try { await fn(); return null; } catch (e) { retur
       delta: 1, tipo: 'ingreso', motivo: 'QA venta' });
     await stock.mover({ variantId: variantes[2].id, businessId: negocio.id, locationId: local.id,
       delta: 1, tipo: 'ingreso', motivo: 'QA venta' });
-    await esperar(200);
+    await esperar(500);
     chk('los dos SKU van en la misma tanda', [11, 8], [enLaTienda('QA-JS-1'), enLaTienda('QA-JS-3')]);
     chk('en UNA sola sincronización, no una por artículo', [1, [['QA-JS-1', 'QA-JS-3']]],
       [corridas.length, corridas.map((c) => c.slice().sort())]);
@@ -329,7 +352,7 @@ const falla = async (fn) => { try { await fn(); return null; } catch (e) { retur
       stock: 0, stock_unlimited: false, variants: [] });
     await stock.mover({ variantId: nuevaVariante.id, businessId: negocio.id, locationId: local.id,
       delta: 4, tipo: 'ingreso', motivo: 'QA venta' });
-    await esperar(200);
+    await esperar(500);
     chk('un SKU que no estaba en el mapa lo vuelve a pedir', [1, 4], [listados(), enLaTienda('QA-JS-6')]);
 
     // El dueño cambia el precio en su panel: la venta no se lo puede pisar.
@@ -337,7 +360,7 @@ const falla = async (fn) => { try { await fn(); return null; } catch (e) { retur
     productos.find((p) => p.id === 502).price = 150;
     await stock.mover({ variantId: variantes[2].id, businessId: negocio.id, locationId: local.id,
       delta: 1, tipo: 'ingreso', motivo: 'QA venta' });
-    await esperar(200);
+    await esperar(500);
     chk('el precio que puso el dueño queda como está', 150, productos.find((p) => p.id === 502).price);
     chk('y el stock igual se actualiza', 9, enLaTienda('QA-JS-3'));
 
@@ -348,11 +371,11 @@ const falla = async (fn) => { try { await fn(); return null; } catch (e) { retur
     });
     await stock.mover({ variantId: soloLocal.id, businessId: negocio.id, locationId: local.id,
       delta: 1, tipo: 'ingreso', motivo: 'QA venta' });
-    await esperar(200);
+    await esperar(500);
     reset();
     await stock.mover({ variantId: soloLocal.id, businessId: negocio.id, locationId: local.id,
       delta: 1, tipo: 'ingreso', motivo: 'QA venta' });
-    await esperar(200);
+    await esperar(500);
     chk('un artículo que no está en la tienda no vuelve a pedir el catálogo', 0, listados());
 
     // Dos tandas a la vez no pueden pisarse: la segunda espera a la primera.
@@ -384,7 +407,7 @@ const falla = async (fn) => { try { await fn(); return null; } catch (e) { retur
     reset();
     await stock.mover({ variantId: variantes[2].id, businessId: negocio.id, locationId: local.id,
       delta: 1, tipo: 'ingreso', motivo: 'QA venta' });
-    await esperar(200);
+    await esperar(500);
     chk('con la sincronización apagada no se le manda nada', 0, puts());
     await guardada.update({ syncActiva: true });
 
@@ -398,7 +421,94 @@ const falla = async (fn) => { try { await fn(); return null; } catch (e) { retur
     const segundo = await tareas.barrerStockJumpseller();
     chk('y en la segunda pasada ya no hay nada que mandar', 0, segundo.actualizados);
 
-    tit('9. SIN TIENDA CONECTADA, NO SE SINCRONIZA');
+    tit('9. UNA SINCRONIZACIÓN GRANDE CORRE EN SEGUNDO PLANO');
+    productos = tienda();
+    // Con muchos productos, mandar todo adentro del pedido HTTP lo hacía caer.
+    for (let i = 0; i < 120; i++) {
+      productos.push({ id: 900 + i, name: `Grande ${i}`, price: 10, status: 'available',
+        sku: `QA-JS-G-${i}`, stock: 0, stock_unlimited: false, variants: [] });
+    }
+    const grandes = [];
+    // Cargar 120 artículos no tiene que ir avisando de a uno: lo que se mide
+    // acá es la sincronización grande, no el aviso por venta.
+    const avisoDeAntes = ml.marcarParaSync;
+    ml.marcarParaSync = () => {};
+    for (let i = 0; i < 120; i++) {
+      const v = await ProductVariant.create({
+        productId: prod.id, businessId: negocio.id, sku: `QA-JS-G-${i}`,
+        variante1Nombre: 'Talle', variante1Valor: `G${i}`, stock: 0, stockMinimo: 0,
+      });
+      await stock.mover({ variantId: v.id, businessId: negocio.id, locationId: local.id,
+        delta: 2, tipo: 'ingreso', motivo: 'QA grande' });
+      grandes.push(v);
+    }
+    ml.marcarParaSync = avisoDeAntes;
+
+    const clave = `jumpseller:${negocio.id}`;
+    const avances = [];
+    reset();
+    const arranque = trabajos.iniciar(clave, (avisar) => jumpseller.sincronizarStock(negocio.id, {
+      simular: false,
+      onProgreso: (a) => { avances.push(a); avisar(a); },
+    }));
+    chk('el pedido contesta en el acto que arrancó', 'corriendo', arranque.estado);
+    const otro = trabajos.iniciar(clave, () => { throw new Error('no debería arrancar otro'); });
+    chk('y un segundo pedido no arranca otra igual', arranque.id, otro.id);
+
+    const terminado = await trabajos.esperar(clave, { tope: 120000 });
+    chk('termina bien', 'listo', terminado.estado);
+    chk('y mandó todo lo que había que mandar', 123, terminado.resultado?.resumen?.actualizados);
+    chk('fue contando el avance', true,
+      avances.length > 1 && avances[avances.length - 1].hechos === avances[avances.length - 1].total);
+    chk('la pantalla puede leer cómo viene', ['listo', 123],
+      [trabajos.estado(clave).estado, trabajos.estado(clave).resultado?.resumen?.actualizados]);
+
+    productos = tienda();
+    const cortado = await jumpseller.sincronizarStock(negocio.id, { simular: true, maxFilas: 2 });
+    chk('el detalle no vuelve entero: sería una respuesta impresentable', [2, true],
+      [cortado.resultados.length, cortado.truncado]);
+    chk('pero las cuentas son de todo', 5,
+      Object.values(cortado.resumen).reduce((t, n) => t + n, 0));
+
+    await ProductVariant.destroy({ where: { id: grandes.map((v) => v.id) } });
+
+    tit('10. NO SE LE PEGA A LA TIENDA MÁS RÁPIDO DE LO QUE ACEPTA');
+    productos = tienda();
+    for (let i = 0; i < 20; i++) {
+      productos.push({ id: 800 + i, name: `Ritmo ${i}`, price: 10, status: 'available',
+        sku: `QA-JS-R-${i}`, stock: 0, stock_unlimited: false, variants: [] });
+    }
+    const delRitmo = [];
+    const avisoDeAntes2 = ml.marcarParaSync;
+    ml.marcarParaSync = () => {};
+    for (let i = 0; i < 20; i++) {
+      const v = await ProductVariant.create({
+        productId: prod.id, businessId: negocio.id, sku: `QA-JS-R-${i}`,
+        variante1Nombre: 'Talle', variante1Valor: `R${i}`, stock: 0, stockMinimo: 0,
+      });
+      await stock.mover({ variantId: v.id, businessId: negocio.id, locationId: local.id,
+        delta: 3, tipo: 'ingreso', motivo: 'QA ritmo' });
+      delRitmo.push(v);
+    }
+    ml.marcarParaSync = avisoDeAntes2;
+
+    // La tienda acepta 6 por segundo; Stocker se queda en 4.
+    topeMock = 6;
+    excedidos = 0;
+    pegados.length = 0;
+    process.env.JUMPSELLER_POR_SEGUNDO = '4';
+    reset();
+    const desde = Date.now();
+    const conRitmo = await jumpseller.sincronizarStock(negocio.id, { simular: false });
+    const tardo = Date.now() - desde;
+    chk('la tienda nunca contesta que se pasó del límite', 0, excedidos);
+    chk('y se mandó todo igual', 23, conRitmo.resumen.actualizados);
+    chk('tardando lo que tiene que tardar', true, tardo >= 3000);
+    process.env.JUMPSELLER_POR_SEGUNDO = '1000';
+    topeMock = 0;
+    await ProductVariant.destroy({ where: { id: delRitmo.map((v) => v.id) } });
+
+    tit('11. SIN TIENDA CONECTADA, NO SE SINCRONIZA');
     await JumpsellerAccount.destroy({ where: { businessId: negocio.id } });
     const sinCuenta = await falla(() => jumpseller.sincronizarStock(negocio.id, { simular: true }));
     chk('avisa que falta conectar la tienda', [400, true],

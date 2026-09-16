@@ -28,6 +28,37 @@ const TIMEOUT_MS = Number(process.env.JUMPSELLER_TIMEOUT_MS) || 20000;
  */
 const CONCURRENCIA = Number(process.env.JUMPSELLER_CONCURRENCIA) || 4;
 const ESPERA_429_MS = Number(process.env.JUMPSELLER_ESPERA_429_MS) || 1500;
+/*
+ * El ritmo, por tienda.
+ *
+ * Jumpseller admite 20 pedidos por segundo y 800 por minuto. Con cuatro en
+ * vuelo y respuestas rápidas se pasa del límite por minuto —16 por segundo son
+ * 960— y la tienda empieza a contestar "Rate Limit Exceeded" a mitad de una
+ * sincronización larga. Se va por debajo a propósito: llegar tarde es un
+ * problema mucho más chico que quedar a medio sincronizar.
+ */
+// Se leen en cada pedido: así se pueden apretar sin reiniciar, y las pruebas
+// pueden probar el freno de verdad.
+const topePorSegundo = () => Number(process.env.JUMPSELLER_POR_SEGUNDO) || 10;
+const topePorMinuto = () => Number(process.env.JUMPSELLER_POR_MINUTO) || 700;
+// businessId → marcas de tiempo de los últimos pedidos
+const ritmo = new Map();
+
+/** Espera lo necesario para no pasarse del ritmo de esta tienda. */
+async function aTiempo(clave) {
+  if (!ritmo.has(clave)) ritmo.set(clave, []);
+  const marcas = ritmo.get(clave);
+  for (;;) {
+    const ahora = Date.now();
+    while (marcas.length && ahora - marcas[0] > 60000) marcas.shift();
+    const enElSegundo = marcas.filter((t) => ahora - t < 1000).length;
+    let espera = 0;
+    if (enElSegundo >= topePorSegundo()) espera = 1000 - (ahora - marcas[marcas.length - enElSegundo]) + 5;
+    if (marcas.length >= topePorMinuto()) espera = Math.max(espera, 60000 - (ahora - marcas[0]) + 10);
+    if (espera <= 0) { marcas.push(ahora); return; }
+    await new Promise((listo) => setTimeout(listo, espera));
+  }
+}
 // El máximo por página que acepta la API.
 const TAM_PAGINA = 100;
 /*
@@ -47,6 +78,8 @@ const cacheTiendas = new Map();
 
 // Sólo lo que hace falta para cruzar por SKU y escribir stock.
 const CAMPOS = 'id,name,sku,price,stock,stock_unlimited,status,permalink,variants';
+// Cuántas filas de detalle vuelven: las cuentas son de todo, el detalle es una muestra.
+const MAX_FILAS = Number(process.env.JUMPSELLER_MAX_FILAS) || 500;
 
 const agente = new https.Agent({ keepAlive: true, maxSockets: CONCURRENCIA, timeout: TIMEOUT_MS });
 const http = axios.create({ timeout: TIMEOUT_MS, httpsAgent: agente });
@@ -75,6 +108,7 @@ async function pedir(cuenta, metodo, ruta, { params = null, cuerpo = null, inten
     ...(params ? { params } : {}),
   };
   for (let i = 1; ; i++) {
+    await aTiempo(cuenta.businessId ?? cuenta.loginKey);
     try {
       const { data } = metodo === 'get'
         ? await http.get(`${API}${ruta}`, config)
@@ -82,9 +116,14 @@ async function pedir(cuenta, metodo, ruta, { params = null, cuerpo = null, inten
       return data;
     } catch (err) {
       const status = err.response?.status;
-      // 429: el límite es por tienda y se libera solo; sólo hay que esperar.
+      /*
+       * 429: el límite es por tienda y se libera solo. Si Jumpseller dice
+       * cuándo, se espera eso; si no, se va agrandando la espera.
+       */
       if (status === 429 && i < intentos) {
-        await new Promise((listo) => setTimeout(listo, ESPERA_429_MS * i));
+        const reset = Number(err.response?.headers?.['jumpseller-bannedbyratelimit-reset']) || 0;
+        const hasta = reset ? Math.min(30000, Math.max(0, reset * 1000 - Date.now())) : 0;
+        await new Promise((listo) => setTimeout(listo, hasta || ESPERA_429_MS * i));
         continue;
       }
       if (status === 401 || status === 403) {
@@ -306,10 +345,14 @@ async function enviarStock(cuenta, destino, cantidad) {
  *
  * @param {number} businessId
  * @param {object} opts
- * @param {boolean} opts.simular  Calcula los cambios y no manda nada.
- * @param {string[]} opts.skus    Sólo esos SKU.
+ * @param {boolean} opts.simular      Calcula los cambios y no manda nada.
+ * @param {string[]} opts.skus        Sólo esos SKU.
+ * @param {Function} opts.onProgreso  Se llama con el avance mientras manda.
+ * @param {number} opts.maxFilas      Cuántas filas de detalle devolver.
  */
-async function sincronizarStock(businessId, { simular = false, skus = null } = {}) {
+async function sincronizarStock(businessId, {
+  simular = false, skus = null, onProgreso = null, maxFilas = MAX_FILAS,
+} = {}) {
   const cuenta = await cuentaDe(businessId);
   if (!cuenta) throw error('No hay una tienda de Jumpseller conectada.', 400);
 
@@ -326,12 +369,31 @@ async function sincronizarStock(businessId, { simular = false, skus = null } = {
   const variantes = await variantesPublicables(businessId);
   const cantidades = await cantidadesPublicables(businessId, locales, variantes);
 
+  /*
+   * El detalle se corta: con novecientos productos y sus variantes son miles
+   * de filas, y esa respuesta no la puede dibujar ninguna pantalla. Las cuentas
+   * son de todo; las filas, una muestra —con los errores primero, que son los
+   * que hay que mirar—.
+   */
   const resultados = [];
+  const conteo = { actualizado: 0, pendiente: 0, 'sin-cambios': 0, error: 0, 'no-sincronizable': 0 };
+  const anotar = (fila) => {
+    conteo[fila.estado] = (conteo[fila.estado] || 0) + 1;
+    if (resultados.length < maxFilas) resultados.push(fila);
+    else if (fila.estado === 'error') {
+      const i = resultados.findIndex((x) => x.estado !== 'error');
+      if (i !== -1) resultados[i] = fila;
+    }
+  };
   const aMandar = [];
   const sinPublicacion = [];
 
+  // Un Set y no un `includes`: con miles de SKU, buscar en una lista por cada
+  // variante es recorrer la lista entera miles de veces.
+  const pedidos = skus ? new Set(skus) : null;
+
   for (const v of variantes) {
-    if (skus && !skus.includes(v.sku)) continue;
+    if (pedidos && !pedidos.has(v.sku)) continue;
     const destino = porSku.get(v.sku);
     if (!destino) { sinPublicacion.push(v.id); continue; }
 
@@ -360,7 +422,7 @@ async function sincronizarStock(businessId, { simular = false, skus = null } = {
      * avisar.
      */
     if (destino.ilimitado) {
-      resultados.push({
+      anotar({
         ...fila, estado: 'no-sincronizable',
         motivo: 'Tiene stock ilimitado en Jumpseller: no lleva la cuenta de las unidades.',
       });
@@ -370,37 +432,44 @@ async function sincronizarStock(businessId, { simular = false, skus = null } = {
       fila.aviso = 'Está deshabilitada en Jumpseller: se le actualiza el stock, pero no se ve en la tienda.';
     }
     if (destino.stockActual === cantidad) {
-      resultados.push({ ...fila, estado: 'sin-cambios' });
+      anotar({ ...fila, estado: 'sin-cambios' });
       continue;
     }
     if (simular) {
-      resultados.push({ ...fila, estado: 'pendiente' });
+      anotar({ ...fila, estado: 'pendiente' });
       continue;
     }
     aMandar.push({ v, destino, cantidad, fila });
   }
 
   if (!simular && aMandar.length) {
-    const enviados = await enParalelo(aMandar, CONCURRENCIA, async ({ destino, cantidad, fila }) => {
+    let hechos = 0;
+    const avisar = () => onProgreso?.({
+      total: aMandar.length, hechos, actualizados: conteo.actualizado, errores: conteo.error,
+    });
+    avisar();
+    await enParalelo(aMandar, CONCURRENCIA, async ({ destino, cantidad, fila }) => {
       try {
         await enviarStock(cuenta, destino, cantidad);
         // El mapa guardado queda al día: si no, la próxima venta creería que
         // la tienda sigue teniendo el número viejo.
         destino.stockActual = cantidad;
-        return { ...fila, estado: 'actualizado' };
+        anotar({ ...fila, estado: 'actualizado' });
       } catch (err) {
-        return { ...fila, estado: 'error', error: detalleDeError(err) };
+        anotar({ ...fila, estado: 'error', error: detalleDeError(err) });
       }
+      hechos += 1;
+      // Cada tanto, no en cada una: la pantalla pregunta cada un par de segundos.
+      if (hechos % 10 === 0 || hechos === aMandar.length) avisar();
     });
-    resultados.push(...enviados);
   }
 
   const resumen = {
-    actualizados: resultados.filter((r) => r.estado === 'actualizado').length,
-    pendientes: resultados.filter((r) => r.estado === 'pendiente').length,
-    sinCambios: resultados.filter((r) => r.estado === 'sin-cambios').length,
-    errores: resultados.filter((r) => r.estado === 'error').length,
-    noSincronizables: resultados.filter((r) => r.estado === 'no-sincronizable').length,
+    actualizados: conteo.actualizado,
+    pendientes: conteo.pendiente,
+    sinCambios: conteo['sin-cambios'],
+    errores: conteo.error,
+    noSincronizables: conteo['no-sincronizable'],
   };
 
   if (!simular) {
@@ -428,6 +497,8 @@ async function sincronizarStock(businessId, { simular = false, skus = null } = {
     skusEnTienda: porSku.size,
     sinPublicacion: sinPublicacion.length,
     resultados,
+    truncado: resultados.length < (resumen.actualizados + resumen.pendientes + resumen.sinCambios
+      + resumen.errores + resumen.noSincronizables),
     resumen,
   };
 }
