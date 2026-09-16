@@ -29,8 +29,16 @@ const { log } = require('../utils/logger');
 // El nombre de la variable es el de siempre: ya estaba puesta en los deploys.
 const DEMORA_MS = Number(process.env.ML_SYNC_DEMORA_MS) || 6000;
 
-// businessId → { skus: Set, timer }
+/*
+ * Un tope para la demora. Con movimientos entrando todo el tiempo —una feria,
+ * una importación— cada uno reinicia la espera y la tanda no sale nunca.
+ */
+const MAX_ESPERA_MS = Number(process.env.AVISO_STOCK_MAX_ESPERA_MS) || 60000;
+
+// businessId → { skus: Set, timer, desde }
 const pendientes = new Map();
+// businessId → la promesa del vaciado en curso.
+const enCurso = new Map();
 
 /*
  * A la lista de SKU que cambiaron se le agregan los packs que los llevan.
@@ -97,8 +105,8 @@ async function canalesDe(businessId) {
   return salida;
 }
 
-/** Vacía la tanda de un negocio: le manda los SKU marcados a cada canal. */
-async function correrPendiente(businessId) {
+/** El vaciado propiamente dicho. Se entra por `correrPendiente`. */
+async function vaciar(businessId) {
   const entrada = pendientes.get(businessId);
   if (!entrada) return;
   pendientes.delete(businessId);
@@ -133,19 +141,42 @@ async function correrPendiente(businessId) {
   }
 }
 
+/*
+ * Una tanda por negocio a la vez.
+ *
+ * Dos tandas del mismo negocio corriendo juntas leen el stock en dos momentos
+ * distintos y después corren carrera al escribir: la que leyó primero puede
+ * escribir última y dejar publicado el número viejo. Además le piden el
+ * catálogo entero dos veces a la misma tienda. Si ya hay una corriendo, los SKU
+ * nuevos esperan en la cola y se mandan cuando termine.
+ */
+async function correrPendiente(businessId) {
+  const previo = enCurso.get(businessId);
+  // El que espera vuelve a entrar al terminar: ahí la cola ya tiene lo nuevo.
+  if (previo) return previo.then(() => correrPendiente(businessId));
+
+  const corrida = vaciar(businessId)
+    .catch(() => { /* cada canal ya maneja lo suyo; acá no queda nada por decir */ })
+    .finally(() => { enCurso.delete(businessId); });
+  enCurso.set(businessId, corrida);
+  return corrida;
+}
+
 /** Marca un SKU como cambiado. No espera a nadie: agenda y vuelve. */
 function marcar(businessId, sku) {
   if (!businessId || !sku) return;
 
   let entrada = pendientes.get(businessId);
   if (!entrada) {
-    entrada = { skus: new Set(), timer: null };
+    entrada = { skus: new Set(), timer: null, desde: Date.now() };
     pendientes.set(businessId, entrada);
   }
   entrada.skus.add(sku);
 
+  // La espera se reinicia con cada movimiento, pero nunca más allá del tope.
+  const espera = Math.max(0, Math.min(DEMORA_MS, entrada.desde + MAX_ESPERA_MS - Date.now()));
   clearTimeout(entrada.timer);
-  entrada.timer = setTimeout(() => { correrPendiente(businessId); }, DEMORA_MS);
+  entrada.timer = setTimeout(() => { correrPendiente(businessId); }, espera);
   // Que un envío pendiente no impida cerrar el proceso en un deploy.
   entrada.timer.unref?.();
 }

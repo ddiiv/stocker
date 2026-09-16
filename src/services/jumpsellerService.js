@@ -40,7 +40,9 @@ const TAM_PAGINA = 100;
  * tienda—, se vuelve a pedir igual.
  */
 const CACHE_MS = Number(process.env.JUMPSELLER_CACHE_MS) || 5 * 60 * 1000;
-// businessId → { vence, porSku, productos }
+// Un catálogo entero por negocio ocupa memoria: se guardan los últimos.
+const MAX_TIENDAS_EN_CACHE = Number(process.env.JUMPSELLER_CACHE_TIENDAS) || 20;
+// businessId → { vence, porSku, faltantes, productos }
 const cacheTiendas = new Map();
 
 // Sólo lo que hace falta para cruzar por SKU y escribir stock.
@@ -248,12 +250,30 @@ function mapearPorSku(productos) {
 async function mapaDeSkus(cuenta, { skus = null } = {}) {
   const guardado = cacheTiendas.get(cuenta.businessId);
   const fresco = guardado && guardado.vence > Date.now();
-  if (fresco && skus?.length && skus.every((sku) => guardado.porSku.has(sku))) {
+  /*
+   * Sirve si ya sabe algo de cada SKU: dónde va, o que la tienda no lo tiene.
+   * Sin esa segunda mitad, una venta de un artículo que sólo se vende en el
+   * local volvía a pedir el catálogo entero cada vez, para no escribir nada.
+   */
+  if (fresco && skus?.length
+    && skus.every((sku) => guardado.porSku.has(sku) || guardado.faltantes.has(sku))) {
     return guardado;
   }
+
   const productos = await listarProductos(cuenta);
-  const entrada = { vence: Date.now() + CACHE_MS, porSku: mapearPorSku(productos), productos: productos.length };
+  const entrada = {
+    vence: Date.now() + CACHE_MS,
+    porSku: mapearPorSku(productos),
+    faltantes: new Set(),
+    productos: productos.length,
+  };
+  for (const sku of skus || []) if (!entrada.porSku.has(sku)) entrada.faltantes.add(sku);
+
   cacheTiendas.set(cuenta.businessId, entrada);
+  // El más viejo primero: el Map conserva el orden en que se fueron guardando.
+  while (cacheTiendas.size > MAX_TIENDAS_EN_CACHE) {
+    cacheTiendas.delete(cacheTiendas.keys().next().value);
+  }
   return entrada;
 }
 
@@ -265,9 +285,17 @@ async function enviarStock(cuenta, destino, cantidad) {
     });
   }
   /*
-   * El producto se edita con nombre y precio: la API los pide en el cuerpo, y
-   * se mandan los que ya tiene para no cambiar nada más que el stock.
+   * El producto se edita con nombre y precio: la API los pide en el cuerpo. Se
+   * piden los de AHORA y no los del mapa guardado: el mapa puede tener varios
+   * minutos, y mandar un precio viejo le pisaría al dueño el cambio que acaba
+   * de hacer en su panel, sin que nadie se entere.
    */
+  const actual = await pedir(cuenta, 'get', `/products/${destino.productId}.json`, {
+    params: { fields: 'id,name,price' },
+  });
+  const suyo = actual?.product || actual || {};
+  if (suyo.name != null) destino.titulo = suyo.name;
+  if (suyo.price != null) destino.precio = Number(suyo.price) || 0;
   return pedir(cuenta, 'put', `/products/${destino.productId}.json`, {
     cuerpo: { product: { name: destino.titulo, price: destino.precio, stock: cantidad } },
   });
@@ -376,11 +404,18 @@ async function sincronizarStock(businessId, { simular = false, skus = null } = {
   };
 
   if (!simular) {
+    /*
+     * Una corrida de un SKU no vio el resto: puede contar un error nuevo, pero
+     * no borrar el que dejó el barrido completo ni decir que la tienda entera
+     * quedó sincronizada recién.
+     */
     const conError = resultados.find((r) => r.estado === 'error');
-    await cuenta.update({
-      ultimaSync: new Date(),
-      ultimoError: conError ? String(conError.error).slice(0, 500) : null,
-    });
+    const parcial = Array.isArray(skus) && skus.length > 0;
+    const cambios = {};
+    if (conError) cambios.ultimoError = String(conError.error).slice(0, 500);
+    else if (!parcial) cambios.ultimoError = null;
+    if (!parcial) cambios.ultimaSync = new Date();
+    if (Object.keys(cambios).length) await cuenta.update(cambios);
     if (resumen.actualizados) {
       log.info('jumpseller', 'stock sincronizado', { businessId, actualizados: resumen.actualizados });
     }

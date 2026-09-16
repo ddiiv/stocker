@@ -63,6 +63,11 @@ Module._load = function (pedido) {
       }
 
       const producto = url.match(/\/products\/(\d+)\.json$/);
+      if (producto && metodo === 'get') {
+        const p = productos.find((x) => String(x.id) === producto[1]);
+        if (!p) error(404, { message: 'Product not found' });
+        return { data: { product: { id: p.id, name: p.name, price: p.price } } };
+      }
       if (producto && metodo === 'put') {
         const p = productos.find((x) => String(x.id) === producto[1]);
         if (!p) error(404, { message: 'Product not found' });
@@ -72,6 +77,9 @@ Module._load = function (pedido) {
           error(422, { message: 'name and price are required' });
         }
         if (cuerpo.product.stock !== undefined) p.stock = cuerpo.product.stock;
+        // La API guarda lo que venga en el cuerpo: si mandan un precio viejo, lo pisa.
+        if (cuerpo.product.name !== undefined) p.name = cuerpo.product.name;
+        if (cuerpo.product.price !== undefined) p.price = cuerpo.product.price;
         return { data: { product: p } };
       }
       return { data: {} };
@@ -275,6 +283,22 @@ const falla = async (fn) => { try { await fn(); return null; } catch (e) { retur
     const enLaTienda = (sku) => productos.flatMap((p) => (p.variants?.length ? p.variants : [p]))
       .find((x) => x.sku === sku)?.stock;
     const listados = () => LLAMADAS.filter((l) => l.metodo === 'get' && l.url.endsWith('/products.json')).length;
+    /*
+     * Se anota cada sincronización con los SKU que le llegaron: contar sólo los
+     * PUT no distingue una tanda de dos, que es justo lo que hay que probar.
+     */
+    const corridas = [];
+    const ventanas = [];
+    const sincronizarReal = jumpseller.sincronizarStock;
+    jumpseller.sincronizarStock = async (bid, opciones = {}) => {
+      if (opciones.skus) corridas.push([...opciones.skus]);
+      const desde = Date.now();
+      try {
+        return await sincronizarReal(bid, opciones);
+      } finally {
+        if (opciones.skus) ventanas.push([desde, Date.now()]);
+      }
+    };
 
     reset();
     await stock.mover({ variantId: variantes[2].id, businessId: negocio.id, locationId: local.id,
@@ -285,13 +309,15 @@ const falla = async (fn) => { try { await fn(); return null; } catch (e) { retur
 
     // Dos movimientos seguidos son UNA sola tanda, como una venta de dos artículos.
     reset();
+    corridas.length = 0;
     await stock.mover({ variantId: variantes[0].id, businessId: negocio.id, locationId: local.id,
       delta: 1, tipo: 'ingreso', motivo: 'QA venta' });
     await stock.mover({ variantId: variantes[2].id, businessId: negocio.id, locationId: local.id,
       delta: 1, tipo: 'ingreso', motivo: 'QA venta' });
     await esperar(200);
     chk('los dos SKU van en la misma tanda', [11, 8], [enLaTienda('QA-JS-1'), enLaTienda('QA-JS-3')]);
-    chk('con un solo pedido por cada uno', 2, puts());
+    chk('en UNA sola sincronización, no una por artículo', [1, [['QA-JS-1', 'QA-JS-3']]],
+      [corridas.length, corridas.map((c) => c.slice().sort())]);
 
     // Un SKU que la tienda todavía no tenía obliga a listar de nuevo.
     reset();
@@ -306,6 +332,52 @@ const falla = async (fn) => { try { await fn(); return null; } catch (e) { retur
     await esperar(200);
     chk('un SKU que no estaba en el mapa lo vuelve a pedir', [1, 4], [listados(), enLaTienda('QA-JS-6')]);
 
+    // El dueño cambia el precio en su panel: la venta no se lo puede pisar.
+    reset();
+    productos.find((p) => p.id === 502).price = 150;
+    await stock.mover({ variantId: variantes[2].id, businessId: negocio.id, locationId: local.id,
+      delta: 1, tipo: 'ingreso', motivo: 'QA venta' });
+    await esperar(200);
+    chk('el precio que puso el dueño queda como está', 150, productos.find((p) => p.id === 502).price);
+    chk('y el stock igual se actualiza', 9, enLaTienda('QA-JS-3'));
+
+    // Un SKU que la tienda no tiene no puede hacer que cada venta liste el catálogo.
+    const soloLocal = await ProductVariant.create({
+      productId: prod.id, businessId: negocio.id, sku: 'QA-JS-SOLO-LOCAL',
+      variante1Nombre: 'Talle', variante1Valor: 'L', stock: 0, stockMinimo: 0,
+    });
+    await stock.mover({ variantId: soloLocal.id, businessId: negocio.id, locationId: local.id,
+      delta: 1, tipo: 'ingreso', motivo: 'QA venta' });
+    await esperar(200);
+    reset();
+    await stock.mover({ variantId: soloLocal.id, businessId: negocio.id, locationId: local.id,
+      delta: 1, tipo: 'ingreso', motivo: 'QA venta' });
+    await esperar(200);
+    chk('un artículo que no está en la tienda no vuelve a pedir el catálogo', 0, listados());
+
+    // Dos tandas a la vez no pueden pisarse: la segunda espera a la primera.
+    reset();
+    corridas.length = 0;
+    ventanas.length = 0;
+    aviso.marcar(negocio.id, 'QA-JS-1');
+    const primera = aviso.correrPendiente(negocio.id);
+    aviso.marcar(negocio.id, 'QA-JS-3');
+    const segunda = aviso.correrPendiente(negocio.id);
+    await Promise.all([primera, segunda]);
+    chk('las dos tandas salieron', 2, ventanas.length);
+    chk('pero una después de la otra, sin encimarse', true,
+      ventanas.length === 2 && ventanas[1][0] >= ventanas[0][1]);
+
+    // Una sincronización de un SKU no borra el error que dejó el barrido.
+    const cuentaJs = await JumpsellerAccount.findOne({ where: { businessId: negocio.id } });
+    await cuentaJs.update({ ultimoError: 'error del barrido anterior' });
+    await jumpseller.sincronizarStock(negocio.id, { simular: false, skus: ['QA-JS-1'] });
+    await cuentaJs.reload();
+    chk('una corrida de un SKU no borra el error de la tienda', 'error del barrido anterior', cuentaJs.ultimoError);
+    await jumpseller.sincronizarStock(negocio.id, { simular: false });
+    await cuentaJs.reload();
+    chk('pero una pasada completa sin errores sí lo limpia', null, cuentaJs.ultimoError);
+
     // Sin tienda conectada no se avisa a nadie, y la venta sigue igual.
     const guardada = await JumpsellerAccount.findOne({ where: { businessId: negocio.id } });
     await guardada.update({ syncActiva: false });
@@ -315,6 +387,8 @@ const falla = async (fn) => { try { await fn(); return null; } catch (e) { retur
     await esperar(200);
     chk('con la sincronización apagada no se le manda nada', 0, puts());
     await guardada.update({ syncActiva: true });
+
+    jumpseller.sincronizarStock = sincronizarReal;
 
     tit('8. EL BARRIDO PERIÓDICO SINCRONIZA LA TIENDA SOLO');
     productos = tienda();
