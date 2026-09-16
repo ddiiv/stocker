@@ -21,6 +21,16 @@ export async function previewMlSync() {
 }
 
 /** Sincroniza de verdad. Si se pasan SKUs, solo esos. */
+/*
+ * El checklist: qué productos tienen su stock puesto en ML y cuáles no. Va
+ * aparte de la previa porque mira también las publicaciones finalizadas y es
+ * una búsqueda más cara: se pide cuando la persona la abre.
+ */
+export async function getMlCobertura() {
+  const { data } = await http.get("/mercadolibre/cobertura");
+  return data;
+}
+
 export async function runMlSync(skus) {
   const { data } = await http.post("/mercadolibre/sync", skus?.length ? { skus } : {});
   return data;

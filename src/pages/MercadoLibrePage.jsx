@@ -7,7 +7,7 @@ import {
 import {
   getMlStatus, getMlAuthUrl, disconnectMl, previewMlSync, runMlSync,
   getMlLocales, setMlLocales, importarPedidosMl,
-  getMlLinks, saveMlLink, deleteMlLink,
+  getMlLinks, saveMlLink, deleteMlLink, getMlCobertura,
 } from "../services/mercadolibreService";
 import { PageHeader, Card } from "../components/ui/Layout";
 import Postventa from "../components/mercadolibre/Postventa";
@@ -518,6 +518,8 @@ export default function MercadoLibrePage() {
             </>
           )}
 
+          <ChecklistPublicaciones />
+
           <Card className="p-0">
             <div className="flex items-center justify-between border-b border-line px-4 py-3">
               <div>
@@ -686,5 +688,168 @@ function DetallePublicacion({ r }) {
         </div>
       )}
     </div>
+  );
+}
+
+/*
+ * El checklist de publicaciones.
+ *
+ * Contesta la pregunta que la previa de sincronización no contestaba: de todo
+ * lo que hay en Stocker, qué está puesto en Mercado Libre y qué no. Se agrupa
+ * por producto padre porque así se compra y así se piensa —"las remeras negras
+ * están, los pantalones no"—, y adentro se ve talle por talle.
+ *
+ * Se pide cuando la persona lo abre: mira también las publicaciones
+ * finalizadas, que es una búsqueda más cara y no hace falta en cada venta.
+ */
+function ChecklistPublicaciones() {
+  const [datos, setDatos] = useState(null);
+  const [cargando, setCargando] = useState(false);
+  const [error, setError] = useState("");
+  const [soloFaltantes, setSoloFaltantes] = useState(true);
+  const [abiertos, setAbiertos] = useState(() => new Set());
+
+  async function cargar() {
+    setCargando(true); setError("");
+    try {
+      setDatos(await getMlCobertura());
+    } catch (e) {
+      setError(e.response?.data?.message || "No se pudo armar el checklist.");
+    }
+    setCargando(false);
+  }
+
+  const productos = (datos?.productos || []).filter((p) => !soloFaltantes || p.estado !== "completo");
+  const alternar = (id) => setAbiertos((prev) => {
+    const n = new Set(prev);
+    if (n.has(id)) n.delete(id); else n.add(id);
+    return n;
+  });
+  const ICONO = {
+    completo: <CheckCircle2 size={15} className="shrink-0 text-teal-600" />,
+    parcial: <AlertCircle size={15} className="shrink-0 text-brass-600" />,
+    "sin-publicar": <AlertTriangle size={15} className="shrink-0 text-brick-500" />,
+  };
+
+  return (
+    <Card className="mb-5 p-0">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line px-4 py-3">
+        <div>
+          <p className="font-display text-sm font-semibold text-ink-950">Checklist de publicaciones</p>
+          <p className="text-xs text-ink-500">
+            Qué productos tienen su stock puesto en Mercado Libre y cuáles no. Incluye las publicaciones
+            finalizadas y pausadas.
+          </p>
+        </div>
+        <button className="btn-ghost text-xs" onClick={cargar} disabled={cargando}>
+          <RefreshCw size={14} className={cargando ? "animate-spin" : ""} />
+          {datos ? "Actualizar" : "Armar checklist"}
+        </button>
+      </div>
+
+      {error && (
+        <p className="flex items-start gap-1.5 px-4 py-3 text-sm text-brick-700">
+          <AlertTriangle size={15} className="mt-0.5 shrink-0" />{error}
+        </p>
+      )}
+
+      {!datos && !error && (
+        <p className="px-4 py-6 text-center text-sm text-ink-600">
+          {cargando ? "Leyendo tus publicaciones de Mercado Libre…" : "Todavía no lo armaste."}
+        </p>
+      )}
+
+      {datos && (
+        <>
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line px-4 py-2 text-xs text-ink-600">
+            <span>
+              <strong className="text-ink-900">{datos.resumen.variantesEnMl}</strong> de{" "}
+              <strong className="text-ink-900">{datos.resumen.variantes}</strong> variantes están en Mercado Libre
+              {" · "}{datos.resumen.completos} producto(s) completo(s)
+              {" · "}{datos.resumen.parciales} a medias
+              {" · "}{datos.resumen.sinPublicar} sin publicar
+            </span>
+            <label className="flex items-center gap-1.5">
+              <input type="checkbox" checked={soloFaltantes} onChange={(e) => setSoloFaltantes(e.target.checked)} />
+              Ver sólo lo que falta
+            </label>
+          </div>
+
+          {datos.sinLugarOnline && (
+            <p className="border-b border-line bg-paper-100 px-4 py-2 text-xs text-ink-600">
+              Ningún local abastece las ventas online, así que no hay stock para publicar. Se marca desde
+              Empleados → Locales.
+            </p>
+          )}
+
+          {productos.length === 0 ? (
+            <p className="px-4 py-6 text-center text-sm text-ink-600">
+              {soloFaltantes ? "No falta ninguno: todo lo que tenés está publicado." : "No hay productos para mostrar."}
+            </p>
+          ) : (
+            <ul className="divide-y divide-line">
+              {productos.map((p) => (
+                <li key={p.productId}>
+                  <button
+                    type="button"
+                    className="flex w-full flex-wrap items-center justify-between gap-2 px-4 py-2.5 text-left hover:bg-paper-100"
+                    onClick={() => alternar(p.productId)}
+                  >
+                    <span className="flex min-w-0 items-center gap-2">
+                      {ICONO[p.estado]}
+                      <span className="min-w-0">
+                        <span className="block truncate text-sm text-ink-900">{p.titulo}</span>
+                        <span className="block truncate font-mono text-[11px] text-ink-500">{p.sku}</span>
+                      </span>
+                    </span>
+                    <span className="text-xs text-ink-600">
+                      {p.enMl} de {p.total} en Mercado Libre
+                      {p.sinMl > 0 && <span className="text-brick-600"> · faltan {p.sinMl}</span>}
+                    </span>
+                  </button>
+
+                  {abiertos.has(p.productId) && (
+                    <ul className="border-t border-line bg-paper-50 px-4 py-2">
+                      {p.variantes.map((v) => (
+                        <li key={v.variantId} className="flex flex-wrap items-start justify-between gap-2 py-1.5 text-xs">
+                          <span className="flex items-start gap-2">
+                            {v.sincronizable
+                              ? <Check size={13} className="mt-0.5 shrink-0 text-teal-600" />
+                              : <span className="mt-0.5 h-3 w-3 shrink-0 rounded-full border border-brick-300" />}
+                            <span>
+                              <span className="text-ink-800">{v.etiqueta || "Sin variantes"}</span>
+                              <span className="ml-1.5 font-mono text-[11px] text-ink-500">{v.sku}</span>
+                              {v.esPack && <span className="ml-1 text-[10px] text-ink-500">(pack)</span>}
+                              {v.enMl ? (
+                                <span className="ml-2">
+                                  <a className="text-teal-600 underline" href={v.permalink} target="_blank" rel="noreferrer">
+                                    {v.mlItemId}
+                                  </a>
+                                  {[v.tipoNombre, estadoMlTexto(v.estadoMl, v.subEstadosMl)]
+                                    .filter(Boolean).map((t) => ` · ${t}`).join("")}
+                                </span>
+                              ) : (
+                                <span className="ml-2 text-brick-600">sin publicación en Mercado Libre</span>
+                              )}
+                              {v.motivo && <span className="ml-1 text-ink-500">— {v.motivo}</span>}
+                            </span>
+                          </span>
+                          <span className="whitespace-nowrap text-ink-600">
+                            {v.enMl && <>ML {v.stockMl ?? "—"} · </>}Stocker {v.stockStocker}
+                            {v.enMl && v.sincronizable && !v.alDia && (
+                              <span className="ml-1 text-brass-700">a sincronizar</span>
+                            )}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
+        </>
+      )}
+    </Card>
   );
 }
