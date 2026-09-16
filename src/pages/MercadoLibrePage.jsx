@@ -7,7 +7,7 @@ import {
 import {
   getMlStatus, getMlAuthUrl, disconnectMl, previewMlSync, runMlSync,
   getMlLocales, setMlLocales, importarPedidosMl,
-  getMlLinks, saveMlLink, deleteMlLink, getMlCobertura, republicarMl,
+  getMlLinks, saveMlLink, deleteMlLink, getMlCobertura, republicarMl, reactivarMl,
 } from "../services/mercadolibreService";
 import { PageHeader, Card } from "../components/ui/Layout";
 import Postventa from "../components/mercadolibre/Postventa";
@@ -161,6 +161,31 @@ export default function MercadoLibrePage() {
     } catch (e) {
       setError(e.response?.data?.message || "No se pudieron traer las ventas anteriores.");
     } finally { setImportando(false); }
+  }
+
+  /*
+   * Despausar lo que se pausó a mano en Mercado Libre.
+   *
+   * ML reactiva sola la que pausó por falta de stock, pero no la que pausó el
+   * vendedor: eso fue una decisión suya. La sincronización le manda el stock y
+   * avisa; despausarla se pide desde acá.
+   */
+  const pausadasPorVos = (preview?.resultados || [])
+    .filter((r) => (r.subEstadosMl || []).includes("paused_by_seller") && r.mlItemId);
+
+  async function reactivar(ids) {
+    if (!ids.length) return;
+    if (!confirm(`Se van a reactivar ${ids.length} publicación(es) pausada(s) por vos en MercadoLibre. ¿Continuar?`)) return;
+    setTrabajando(true); setError(""); setAviso("");
+    try {
+      const r = await reactivarMl(ids);
+      const fallaron = (r.resultados || []).filter((x) => !x.ok);
+      setAviso(`${r.reactivadas} publicación(es) reactivada(s)`
+        + (fallaron.length ? `. ${fallaron.length} no se pudo: ${fallaron[0].error}` : "."));
+      await verCambios();
+    } catch (e) {
+      setError(e.response?.data?.message || "No se pudieron reactivar.");
+    } finally { setTrabajando(false); }
   }
 
   async function sincronizar() {
@@ -421,6 +446,21 @@ export default function MercadoLibrePage() {
                     : `${preview.resumen.duplicadasEnCero} publicación(es) duplicada(s) quedaron en 0 y Mercado Libre las pausa.`}
                 </p>
               )}
+              {pausadasPorVos.length > 0 && (
+                <p className="-mt-2 mb-5 flex flex-wrap items-center gap-2 text-xs text-ink-600">
+                  <span>
+                    {pausadasPorVos.length} publicación(es) están pausadas por vos en MercadoLibre: reciben el stock,
+                    pero ML no las reactiva sola.
+                  </span>
+                  <button
+                    className="btn-ghost border border-line px-2 py-1 text-xs"
+                    disabled={trabajando}
+                    onClick={() => reactivar(pausadasPorVos.map((r) => r.mlItemId))}
+                  >
+                    Reactivar {pausadasPorVos.length === 1 ? "la publicación" : `las ${pausadasPorVos.length}`}
+                  </button>
+                </p>
+              )}
               {preview.resumen.noSincronizables > 0 && (
                 <p className="-mt-2 mb-5 text-xs text-ink-600">
                   {preview.resumen.noSincronizables} publicación(es) no se pueden sincronizar desde Stocker
@@ -479,7 +519,7 @@ export default function MercadoLibrePage() {
                             <td className="px-4 py-2"><span className="tag-chip">{r.sku}</span></td>
                             <td className="px-4 py-2 text-ink-900">{r.titulo}</td>
                             <td className="px-4 py-2">
-                              <DetallePublicacion r={r} />
+                              <DetallePublicacion r={r} onReactivar={() => reactivar([r.mlItemId])} />
                             </td>
                             <td className="px-4 py-2 text-ink-600">{r.stockMl ?? "—"}</td>
                             <td className="px-4 py-2 font-medium text-ink-900">
@@ -670,7 +710,7 @@ function Etiqueta({ children }) {
  * para que se entienda por qué no cambian, y cuáles comparten stock con la
  * elegida (Mercado Libre las actualiza juntas).
  */
-function DetallePublicacion({ r }) {
+function DetallePublicacion({ r, onReactivar }) {
   const [verOtras, setVerOtras] = useState(false);
   const estado = estadoMlTexto(r.estadoMl, r.subEstadosMl);
   const otras = r.otras || [];
@@ -687,6 +727,11 @@ function DetallePublicacion({ r }) {
         {r.manual && <Etiqueta>Vínculo manual</Etiqueta>}
       </div>
       {r.aviso && <p className="mt-1 text-[11px] text-ink-500">{r.aviso}</p>}
+      {onReactivar && (r.subEstadosMl || []).includes("paused_by_seller") && (
+        <button type="button" className="mt-1 text-[11px] text-teal-600 underline" onClick={onReactivar}>
+          Reactivar en MercadoLibre
+        </button>
+      )}
       {otras.length > 0 && (
         <div className="mt-1">
           <button type="button" className="text-[11px] text-ink-600 underline" onClick={() => setVerOtras((x) => !x)}>
@@ -748,6 +793,20 @@ function ChecklistPublicaciones() {
    * acepta stock. Crea otra publicación, así que se pide confirmación y se
    * hace de a una.
    */
+  async function reactivar(v) {
+    setRepublicando(v.variantId); setError(""); setAviso("");
+    try {
+      const r = await reactivarMl([v.mlItemId]);
+      const falla = (r.resultados || []).find((x) => !x.ok);
+      if (falla) setError(falla.error);
+      else setAviso(`${v.sku}: publicación reactivada.`);
+      await cargar();
+    } catch (e) {
+      setError(e.response?.data?.message || "No se pudo reactivar.");
+    }
+    setRepublicando(null);
+  }
+
   async function republicar(v) {
     const ok = window.confirm(
       `¿Republicar ${v.sku} en Mercado Libre?\n\n`
@@ -885,6 +944,16 @@ function ChecklistPublicaciones() {
                                 <span className="ml-2 text-brick-600">sin publicación en Mercado Libre</span>
                               )}
                               {v.motivo && <span className="ml-1 text-ink-500">— {v.motivo}</span>}
+                              {(v.subEstadosMl || []).includes("paused_by_seller") && (
+                                <button
+                                  type="button"
+                                  className="ml-2 text-[11px] text-teal-600 underline disabled:text-ink-400"
+                                  disabled={republicando === v.variantId}
+                                  onClick={() => reactivar(v)}
+                                >
+                                  {republicando === v.variantId ? "Reactivando…" : "Reactivar"}
+                                </button>
+                              )}
                               {v.estadoMl === "closed" && (
                                 <button
                                   type="button"

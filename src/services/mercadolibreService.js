@@ -40,6 +40,15 @@ export async function republicarMl(mlItemId) {
   return data;
 }
 
+/*
+ * Despausa publicaciones que el vendedor pausó a mano: ML no las reactiva
+ * sola, hace falta pedírselo.
+ */
+export async function reactivarMl(mlItemIds) {
+  const { data } = await http.post("/mercadolibre/reactivar", { mlItemIds });
+  return data;
+}
+
 export async function runMlSync(skus) {
   const { data } = await http.post("/mercadolibre/sync", skus?.length ? { skus } : {});
   return data;
