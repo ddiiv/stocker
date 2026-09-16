@@ -1298,124 +1298,13 @@ async function sincronizarStock(businessId, { simular = false, skus = null } = {
 
 /* ── Sincronización automática ─────────────────────────────────────
  *
- * Cada movimiento que toca el lugar de publicación deja ese SKU marcado, y
- * unos segundos después se manda a MercadoLibre.
- *
- * Tres decisiones que valen la pena explicar:
- *
- * 1. NUNCA rompe la operación que la disparó. Se llama sin await y todo error
- *    queda adentro: si ML no responde, la venta se hace igual. Un inventario
- *    desactualizado en la publicación se arregla con la próxima pasada; una
- *    venta que no se pudo cobrar porque ML estaba caído, no.
- *
- * 2. Se agrupa con una demora corta. Una venta de cinco artículos son cinco
- *    movimientos en el mismo segundo: sin agrupar serían cinco pedidos a ML
- *    con el mismo token, y la API tiene límites.
- *
- * 3. Sólo mira los SKU marcados. Sincronizar el catálogo entero después de
- *    cada venta sería pedirle a ML cientos de publicaciones para actualizar
- *    una.
- */
-const DEMORA_SYNC_MS = Number(process.env.ML_SYNC_DEMORA_MS) || 6000;
-
-// businessId → { skus: Set, timer }
-const pendientesSync = new Map();
-
-/*
- * A la lista de SKU que cambiaron, se le agregan los packs que los llevan.
- *
- * Un pack no tiene stock propio: lo que se publica de él es cuántos se pueden
- * armar con lo que haya adentro. Así que vender una remera suelta cambia el
- * stock publicado del pack de tres remeras, aunque el SKU del pack no se haya
- * tocado. Sin esto, la publicación del pack se quedaba con el número viejo
- * hasta que alguien sincronizara a mano — y mientras tanto puede vender packs
- * que ya no se pueden armar.
- *
- * Se resuelve acá, al vaciar la tanda, y no en cada movimiento de stock: es UNA
- * consulta por tanda en vez de una por línea de cada venta.
- */
-async function conLosPacksQueLosUsan(skus, businessId) {
-  if (!skus.length) return skus;
-  try {
-    const { ProductVariant, PackComponente } = require('../models');
-    const variantes = await ProductVariant.findAll({
-      where: { businessId, sku: skus }, attributes: ['id'],
-    });
-    if (!variantes.length) return skus;
-
-    const filas = await PackComponente.findAll({
-      where: { businessId, componenteVariantId: variantes.map((v) => v.id) },
-      attributes: ['packVariantId'],
-    });
-    if (!filas.length) return skus;
-
-    const packs = await ProductVariant.findAll({
-      where: { id: filas.map((f) => f.packVariantId), businessId, activo: true },
-      attributes: ['sku'],
-    });
-    return [...new Set([...skus, ...packs.map((p) => p.sku)])];
-  } catch (e) {
-    /*
-     * Si esto falla se sincroniza igual lo que sí se sabe. Perder la
-     * actualización de un pack es malo; perder también la de la prenda que la
-     * disparó, peor.
-     */
-    log.warn('mercadolibre', 'no se pudieron resolver los packs afectados', {
-      businessId, motivo: e.message?.slice(0, 200),
-    });
-    return skus;
-  }
-}
-
-async function correrSyncPendiente(businessId) {
-  const entrada = pendientesSync.get(businessId);
-  if (!entrada) return;
-  pendientesSync.delete(businessId);
-
-  const skus = await conLosPacksQueLosUsan([...entrada.skus], businessId);
-  if (!skus.length) return;
-
-  try {
-    const r = await sincronizarStock(businessId, { skus });
-    if (r.resumen.actualizados || r.resumen.errores) {
-      log.info('mercadolibre', 'sincronización automática', {
-        businessId, skus: skus.length,
-        actualizados: r.resumen.actualizados, errores: r.resumen.errores,
-      });
-    }
-  } catch (e) {
-    /*
-     * Se avisa y se sigue. Los casos comunes —cuenta desconectada, sin lugar
-     * online, token vencido— no son errores de la venta que lo disparó, y el
-     * botón de sincronizar manual sigue estando para cuando se resuelvan.
-     */
-    log.warn('mercadolibre', 'no se pudo sincronizar automáticamente', {
-      businessId, motivo: e.message?.slice(0, 200),
-    });
-  }
-}
-
-/*
- * Marca un SKU para sincronizar. La llama stockService en cada movimiento.
- *
- * Devuelve enseguida: lo único que hace es anotar y programar. Comprobar si el
- * negocio tiene ML conectado se deja para el momento del envío, porque hacerlo
- * acá sería una consulta a la base por cada línea de cada venta.
+ * La cola de SKU cambiados es de todos los canales y vive en
+ * `avisoStockService`: la venta es una sola, y con una cola por tienda una
+ * venta de tres artículos disparaba dos tandas distintas. Acá queda sólo la
+ * puerta de entrada, que es la que ya usaba el resto del sistema.
  */
 function marcarParaSync(businessId, sku) {
-  if (!businessId || !sku || !estaConfigurado()) return;
-
-  let entrada = pendientesSync.get(businessId);
-  if (!entrada) {
-    entrada = { skus: new Set(), timer: null };
-    pendientesSync.set(businessId, entrada);
-  }
-  entrada.skus.add(sku);
-
-  clearTimeout(entrada.timer);
-  entrada.timer = setTimeout(() => { correrSyncPendiente(businessId); }, DEMORA_SYNC_MS);
-  // Que un envío pendiente no impida cerrar el proceso en un deploy.
-  entrada.timer.unref?.();
+  require('./avisoStockService').marcar(businessId, sku);
 }
 
 module.exports = {
@@ -1433,5 +1322,5 @@ module.exports = {
   reactivar,
   // Expuesto para las pruebas: es la regla que hace que un pack publicado no
   // se quede con el stock viejo cuando se mueve una de sus prendas.
-  __conLosPacksQueLosUsan: conLosPacksQueLosUsan,
+  __conLosPacksQueLosUsan: (skus, businessId) => require('./avisoStockService').conLosPacksQueLosUsan(skus, businessId),
 };

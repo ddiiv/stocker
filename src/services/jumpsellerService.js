@@ -30,6 +30,19 @@ const CONCURRENCIA = Number(process.env.JUMPSELLER_CONCURRENCIA) || 4;
 const ESPERA_429_MS = Number(process.env.JUMPSELLER_ESPERA_429_MS) || 1500;
 // El máximo por página que acepta la API.
 const TAM_PAGINA = 100;
+/*
+ * Cuánto vive el mapa de la tienda.
+ *
+ * La API de Jumpseller no tiene una búsqueda por SKU documentada: para saber
+ * dónde va un SKU hay que listar el catálogo. Después de cada venta eso sería
+ * pedir cientos de productos para actualizar uno, así que el mapa se guarda
+ * unos minutos. Si el SKU que se busca no está —un producto nuevo en la
+ * tienda—, se vuelve a pedir igual.
+ */
+const CACHE_MS = Number(process.env.JUMPSELLER_CACHE_MS) || 5 * 60 * 1000;
+// businessId → { vence, porSku, productos }
+const cacheTiendas = new Map();
+
 // Sólo lo que hace falta para cruzar por SKU y escribir stock.
 const CAMPOS = 'id,name,sku,price,stock,stock_unlimited,status,permalink,variants';
 
@@ -122,6 +135,7 @@ async function conectar(businessId, { loginKey, authToken, tienda = null }) {
 
   const valores = { businessId, loginKey: clave, authToken: token, ultimoError: null };
   if (tienda) valores.tienda = String(tienda).trim().slice(0, 120);
+  cacheTiendas.delete(businessId);
   const cuenta = await cuentaDe(businessId);
   if (cuenta) await cuenta.update(valores);
   else await JumpsellerAccount.create(valores);
@@ -129,6 +143,7 @@ async function conectar(businessId, { loginKey, authToken, tienda = null }) {
 }
 
 async function desconectar(businessId) {
+  cacheTiendas.delete(businessId);
   await JumpsellerAccount.destroy({ where: { businessId } });
   return { conectado: false };
 }
@@ -226,6 +241,22 @@ function mapearPorSku(productos) {
   return salida;
 }
 
+/**
+ * El mapa SKU → publicación de la tienda. Se reusa el guardado mientras siga
+ * fresco Y tenga los SKU que se están por mandar; si no, se lista de nuevo.
+ */
+async function mapaDeSkus(cuenta, { skus = null } = {}) {
+  const guardado = cacheTiendas.get(cuenta.businessId);
+  const fresco = guardado && guardado.vence > Date.now();
+  if (fresco && skus?.length && skus.every((sku) => guardado.porSku.has(sku))) {
+    return guardado;
+  }
+  const productos = await listarProductos(cuenta);
+  const entrada = { vence: Date.now() + CACHE_MS, porSku: mapearPorSku(productos), productos: productos.length };
+  cacheTiendas.set(cuenta.businessId, entrada);
+  return entrada;
+}
+
 /** Manda el stock de una variante o de un producto sin variantes. */
 async function enviarStock(cuenta, destino, cantidad) {
   if (destino.variantId) {
@@ -263,8 +294,7 @@ async function sincronizarStock(businessId, { simular = false, skus = null } = {
     );
   }
 
-  const productos = await listarProductos(cuenta);
-  const porSku = mapearPorSku(productos);
+  const { porSku, productos: cuantosProductos } = await mapaDeSkus(cuenta, { skus });
   const variantes = await variantesPublicables(businessId);
   const cantidades = await cantidadesPublicables(businessId, locales, variantes);
 
@@ -326,6 +356,9 @@ async function sincronizarStock(businessId, { simular = false, skus = null } = {
     const enviados = await enParalelo(aMandar, CONCURRENCIA, async ({ destino, cantidad, fila }) => {
       try {
         await enviarStock(cuenta, destino, cantidad);
+        // El mapa guardado queda al día: si no, la próxima venta creería que
+        // la tienda sigue teniendo el número viejo.
+        destino.stockActual = cantidad;
         return { ...fila, estado: 'actualizado' };
       } catch (err) {
         return { ...fila, estado: 'error', error: detalleDeError(err) };
@@ -356,7 +389,7 @@ async function sincronizarStock(businessId, { simular = false, skus = null } = {
   return {
     simulado: simular,
     lugares: locales.map((l) => ({ id: l.id, nombre: l.nombre, tipo: l.tipo })),
-    productosEncontrados: productos.length,
+    productosEncontrados: cuantosProductos,
     skusEnTienda: porSku.size,
     sinPublicacion: sinPublicacion.length,
     resultados,

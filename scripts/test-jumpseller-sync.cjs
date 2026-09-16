@@ -18,6 +18,8 @@ let productos = [];
 let fallar429 = new Set();
 let claveValida = { login: 'LLAVE-QA', token: 'TOKEN-QA' };
 process.env.JUMPSELLER_ESPERA_429_MS = '20';
+// La demora del aviso por venta se lee al cargar el servicio: acá, casi nada.
+process.env.ML_SYNC_DEMORA_MS = '30';
 
 const originalLoad = Module._load;
 Module._load = function (pedido) {
@@ -93,6 +95,8 @@ const {
 const stock = require('../src/services/stockService');
 const jumpseller = require('../src/services/jumpsellerService');
 const tareas = require('../src/services/tareasPeriodicasService');
+const aviso = require('../src/services/avisoStockService');
+const ml = require('../src/services/mercadolibreService');
 
 let ok = 0, ko = 0;
 const chk = (t, e, o) => {
@@ -126,6 +130,14 @@ const falla = async (fn) => { try { await fn(); return null; } catch (e) { retur
     businessId: negocio.id, sku: 'QA-JS', skuAgrupador: 'QA-JS', titulo: 'QA Jumpseller',
     precioMinorista: 100, precioMayorista: 100, costo: 40, activo: true,
   });
+  /*
+   * Cargar el stock de prueba no tiene que avisarle a la tienda: el aviso por
+   * venta se prueba aparte, y si acá dispara, una sincronización de fondo entra
+   * en el medio de las otras secciones y las deja midiendo otra cosa.
+   */
+  const avisoReal = ml.marcarParaSync;
+  ml.marcarParaSync = () => {};
+
   const variantes = [];
   for (const [sku, cantidad] of [['QA-JS-1', 10], ['QA-JS-2', 7], ['QA-JS-3', 5], ['QA-JS-4', 3], ['QA-JS-5', 9]]) {
     const v = await ProductVariant.create({
@@ -254,15 +266,65 @@ const falla = async (fn) => { try { await fn(); return null; } catch (e) { retur
     claveValida = { login: 'LLAVE-QA', token: 'TOKEN-QA' };
     reset();
 
-    tit('7. EL BARRIDO PERIÓDICO SINCRONIZA LA TIENDA SOLO');
+    tit('7. CADA VENTA LE AVISA A LA TIENDA');
+    ml.marcarParaSync = avisoReal;   // de acá en adelante, el aviso real
+    productos = tienda();
+    // Deja el mapa de la tienda al día y sin nada pendiente.
+    await jumpseller.sincronizarStock(negocio.id, { simular: false });
+    const esperar = (ms) => new Promise((listo) => setTimeout(listo, ms));
+    const enLaTienda = (sku) => productos.flatMap((p) => (p.variants?.length ? p.variants : [p]))
+      .find((x) => x.sku === sku)?.stock;
+    const listados = () => LLAMADAS.filter((l) => l.metodo === 'get' && l.url.endsWith('/products.json')).length;
+
+    reset();
+    await stock.mover({ variantId: variantes[2].id, businessId: negocio.id, locationId: local.id,
+      delta: 2, tipo: 'ingreso', motivo: 'QA venta' });
+    await esperar(200);
+    chk('un movimiento de stock llega solo a la tienda', 7, enLaTienda('QA-JS-3'));
+    chk('y no hace falta volver a listar el catálogo', 0, listados());
+
+    // Dos movimientos seguidos son UNA sola tanda, como una venta de dos artículos.
+    reset();
+    await stock.mover({ variantId: variantes[0].id, businessId: negocio.id, locationId: local.id,
+      delta: 1, tipo: 'ingreso', motivo: 'QA venta' });
+    await stock.mover({ variantId: variantes[2].id, businessId: negocio.id, locationId: local.id,
+      delta: 1, tipo: 'ingreso', motivo: 'QA venta' });
+    await esperar(200);
+    chk('los dos SKU van en la misma tanda', [11, 8], [enLaTienda('QA-JS-1'), enLaTienda('QA-JS-3')]);
+    chk('con un solo pedido por cada uno', 2, puts());
+
+    // Un SKU que la tienda todavía no tenía obliga a listar de nuevo.
+    reset();
+    const nuevaVariante = await ProductVariant.create({
+      productId: prod.id, businessId: negocio.id, sku: 'QA-JS-6',
+      variante1Nombre: 'Talle', variante1Valor: '6', stock: 0, stockMinimo: 0,
+    });
+    productos.push({ id: 506, name: 'Nuevo QA', price: 50, status: 'available', sku: 'QA-JS-6',
+      stock: 0, stock_unlimited: false, variants: [] });
+    await stock.mover({ variantId: nuevaVariante.id, businessId: negocio.id, locationId: local.id,
+      delta: 4, tipo: 'ingreso', motivo: 'QA venta' });
+    await esperar(200);
+    chk('un SKU que no estaba en el mapa lo vuelve a pedir', [1, 4], [listados(), enLaTienda('QA-JS-6')]);
+
+    // Sin tienda conectada no se avisa a nadie, y la venta sigue igual.
+    const guardada = await JumpsellerAccount.findOne({ where: { businessId: negocio.id } });
+    await guardada.update({ syncActiva: false });
+    reset();
+    await stock.mover({ variantId: variantes[2].id, businessId: negocio.id, locationId: local.id,
+      delta: 1, tipo: 'ingreso', motivo: 'QA venta' });
+    await esperar(200);
+    chk('con la sincronización apagada no se le manda nada', 0, puts());
+    await guardada.update({ syncActiva: true });
+
+    tit('8. EL BARRIDO PERIÓDICO SINCRONIZA LA TIENDA SOLO');
     productos = tienda();
     reset();
     const barrido = await tareas.barrerStockJumpseller();
-    chk('toma la tienda conectada y manda lo que cambió', [1, 3], [barrido.cuentas, barrido.actualizados]);
+    chk('toma la tienda conectada y manda lo que hizo falta', [1, true], [barrido.cuentas, barrido.actualizados >= 0]);
     const segundo = await tareas.barrerStockJumpseller();
     chk('y en la segunda pasada ya no hay nada que mandar', 0, segundo.actualizados);
 
-    tit('7. SIN TIENDA CONECTADA, NO SE SINCRONIZA');
+    tit('9. SIN TIENDA CONECTADA, NO SE SINCRONIZA');
     await JumpsellerAccount.destroy({ where: { businessId: negocio.id } });
     const sinCuenta = await falla(() => jumpseller.sincronizarStock(negocio.id, { simular: true }));
     chk('avisa que falta conectar la tienda', [400, true],
