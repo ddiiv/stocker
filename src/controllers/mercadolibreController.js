@@ -91,6 +91,19 @@ const preview = async (req, res, next) => {
 };
 
 // POST /api/mercadolibre/sync  → sincroniza de verdad
+/*
+ * GET /api/mercadolibre/cobertura
+ *
+ * El checklist: qué productos tienen su stock puesto en ML y cuáles no. Va
+ * aparte de la previa de sincronización porque mira también las publicaciones
+ * finalizadas, que es una búsqueda más cara y no hace falta en cada venta.
+ */
+const cobertura = async (req, res, next) => {
+  try {
+    res.json(await ml.coberturaMl(req.auth.businessId));
+  } catch (e) { next(e); }
+};
+
 const sync = async (req, res, next) => {
   try {
     const { skus } = req.body || {};
@@ -315,4 +328,4 @@ const notificacion = async (req, res) => {
   }
 };
 
-module.exports = { status, authUrl, callback, disconnect, preview, sync, importarPedidos, getLocales, setLocales, listLinks, upsertLink, deleteLink, notificacion };
+module.exports = { status, authUrl, callback, disconnect, preview, sync, importarPedidos, getLocales, setLocales, listLinks, upsertLink, deleteLink, notificacion, cobertura };

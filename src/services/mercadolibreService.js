@@ -361,6 +361,13 @@ async function renovarToken(cuenta) {
  * cambios.
  */
 const ESTADOS_A_TRAER = ['active', 'paused'];
+/*
+ * El checklist mira además las finalizadas. No aceptan cambios de stock —eso
+ * lo decide ML, que sólo deja republicarlas—, pero son justo las que hay que
+ * ver: una publicación vieja que quedó cerrada es stock que no se está
+ * ofreciendo y que, sin esta lista, no aparece en ningún lado.
+ */
+const ESTADOS_CON_FINALIZADAS = [...ESTADOS_A_TRAER, 'closed'];
 const TAM_PAGINA_SCAN = 100;
 const ESPERA_CONFLICTO_MS = Number(process.env.ML_ESPERA_CONFLICTO_MS) || 1500;
 
@@ -454,12 +461,12 @@ async function traerItems(ids, headers) {
   return items;
 }
 
-/** Trae todas las publicaciones activas y pausadas del vendedor, con su SKU. */
-async function listarPublicaciones(cuenta) {
+/** Trae las publicaciones del vendedor con su SKU: activas, pausadas y, si se pide, finalizadas. */
+async function listarPublicaciones(cuenta, { incluirFinalizadas = false } = {}) {
   const token = await tokenValido(cuenta);
   const headers = { Authorization: `Bearer ${token}` };
   const ids = new Set();
-  for (const status of ESTADOS_A_TRAER) {
+  for (const status of (incluirFinalizadas ? ESTADOS_CON_FINALIZADAS : ESTADOS_A_TRAER)) {
     for (const id of await idsDelVendedor(cuenta, headers, status)) ids.add(String(id));
   }
   if (!ids.size) return [];
@@ -737,6 +744,206 @@ async function enviarGrupo(token, grupo) {
   return { sinCambios: false };
 }
 
+/*
+ * Qué publicación le toca a cada SKU en esta cuenta.
+ *
+ * Lo usan la sincronización y el checklist: si cada uno armara su propio mapa,
+ * la pantalla podría decir que un SKU está publicado y la sincronización elegir
+ * otra publicación, que es la clase de diferencia que nadie entiende después.
+ */
+async function destinosDeLaCuenta(cuenta, businessId, { incluirFinalizadas = false } = {}) {
+  const token = await tokenValido(cuenta);
+  const headersMl = { Authorization: `Bearer ${token}` };
+  const publicaciones = await listarPublicaciones(cuenta, { incluirFinalizadas });
+
+  /*
+   * Vínculos manuales: pisan lo que se detecte automáticamente. Si apuntan a
+   * una publicación que la búsqueda no trajo (por ejemplo, finalizada), se la
+   * pide aparte para saber su estado y su link.
+   */
+  const manuales = await MercadoLibreLink.findAll({ where: { businessId } });
+  const traidas = new Set(publicaciones.map((p) => String(p.id)));
+  const faltantes = [...new Set(manuales.map((l) => String(l.mlItemId)).filter((id) => !traidas.has(id)))];
+  if (faltantes.length) publicaciones.push(...await traerItems(faltantes, headersMl));
+
+  const candidatas = candidatasPorSku(publicaciones);
+  const porSku = mapearPorSku(publicaciones);
+  const todasLasCandidatas = publicaciones.flatMap(candidatasDeItem);
+  for (const l of manuales) {
+    const encontrada = todasLasCandidatas.find((c) => c.mlItemId === String(l.mlItemId)
+      && String(c.mlVariationId || '') === String(l.mlVariationId || ''));
+    const otras = (candidatas.get(l.sku) || []).filter((c) => !encontrada
+      || c.mlItemId !== encontrada.mlItemId || c.mlVariationId !== encontrada.mlVariationId);
+    porSku.set(l.sku, encontrada
+      ? { ...encontrada, manual: true, otras }
+      : {
+        mlItemId: String(l.mlItemId), mlVariationId: l.mlVariationId ? String(l.mlVariationId) : null,
+        titulo: l.titulo, permalink: enlaceDe(l.mlItemId), editable: true, via: 'items',
+        idsVariaciones: [], subEstados: [], relacionados: [], manual: true, otras,
+      });
+  }
+  const multiOrigen = (await etiquetasDelVendedor(cuenta, headersMl)).includes('warehouse_management');
+  return { token, headersMl, publicaciones, porSku, multiOrigen };
+}
+
+/*
+ * Las variantes que se pueden publicar.
+ *
+ * Los de feria quedan afuera: no llevan stock, así que publicar el suyo sería
+ * anunciar cero unidades de algo que se vende igual, o peor, pisar la
+ * publicación de su equivalente del catálogo normal.
+ */
+function variantesPublicables(businessId, { soloActivas = false } = {}) {
+  const where = soloActivas ? { activo: true } : {};
+  return ProductVariant.findAll({
+    where,
+    include: [{
+      model: Product, as: 'producto', required: true,
+      where: { businessId, activo: true, ...NO_ES_FERIA },
+    }],
+  });
+}
+
+/*
+ * Cuánto le toca publicar a cada variante: lo disponible en los locales que
+ * abastecen online, menos su margen de seguridad.
+ *
+ * El stock de todas las variantes sale en una sola consulta: preguntarlo de a
+ * una eran tantas idas a la base como artículos publicados.
+ */
+async function cantidadesPublicables(businessId, locales, variantes) {
+  const filasStock = await VariantStock.findAll({
+    where: { businessId, locationId: locales.map((l) => l.id) },
+    attributes: ['productVariantId', 'stock', 'reservado'],
+  });
+  const disponible = new Map();
+  for (const f of filasStock) {
+    /*
+     * Lo DISPONIBLE, no lo que hay en el estante.
+     *
+     * Una unidad apartada para un pedido online sigue en el estante hasta que
+     * alguien la despacha, pero no se puede volver a vender: publicarla sería
+     * ofrecer dos veces la misma prenda, que es justo lo que la reserva vino a
+     * evitar.
+     */
+    const libre = Math.max(0, (Number(f.stock) || 0) - (Number(f.reservado) || 0));
+    disponible.set(f.productVariantId, (disponible.get(f.productVariantId) || 0) + libre);
+  }
+
+  /*
+   * Los packs no tienen fila en `variant_stocks`: lo que hay de un pack es lo
+   * que alcance para armarlo con lo que lleva adentro. Sin esto, cada pack
+   * publicado saldría con stock cero y dejaría de venderse sin explicación.
+   */
+  const idsPacks = variantes.filter((v) => v.esPack).map((v) => v.id);
+  if (idsPacks.length) {
+    const armables = await packService.disponibleDePacksEnLocales(
+      idsPacks, locales.map((l) => l.id), businessId,
+    );
+    for (const [packId, cuantos] of armables) disponible.set(packId, cuantos);
+  }
+
+  const salida = new Map();
+  for (const v of variantes) {
+    const margen = Math.max(0, Math.trunc(Number(v.margenMl) || 0));
+    // El negativo se publica como cero: lo que quedó en -3 no tiene nada para
+    // despachar, y mandarlo a ML sería pedirle que ofrezca deuda.
+    const hay = Math.max(0, disponible.get(v.id) || 0);
+    salida.set(v.id, { disponible: hay, margen, cantidad: Math.max(0, hay - margen) });
+  }
+  return salida;
+}
+
+/**
+ * El checklist: qué productos tienen su stock puesto en Mercado Libre y cuáles
+ * no, agrupados por producto padre con sus variantes.
+ *
+ * Mira TODAS las publicaciones, finalizadas incluidas. Una vieja que quedó
+ * cerrada no acepta stock —ML sólo deja republicarla—, pero sale en la lista
+ * con ese motivo: sin eso, un SKU que en Stocker tiene mercadería y en ML no se
+ * está ofreciendo no aparece en ningún lado.
+ */
+async function coberturaMl(businessId) {
+  const cuenta = await MercadoLibreAccount.findOne({ where: { businessId } });
+  if (!cuenta) throw Object.assign(new Error('No hay una cuenta de MercadoLibre conectada.'), { status: 400 });
+
+  const locales = await stockService.localesQueAbastecenOnline(businessId);
+  const { porSku } = await destinosDeLaCuenta(cuenta, businessId, { incluirFinalizadas: true });
+  const variantes = await variantesPublicables(businessId, { soloActivas: true });
+  const cantidades = locales.length
+    ? await cantidadesPublicables(businessId, locales, variantes)
+    : new Map();
+
+  const porProducto = new Map();
+  for (const v of variantes) {
+    const padre = v.producto;
+    if (!porProducto.has(padre.id)) {
+      porProducto.set(padre.id, {
+        productId: padre.id,
+        sku: padre.skuAgrupador || padre.sku,
+        titulo: padre.titulo,
+        categoria: padre.categoria || null,
+        variantes: [],
+      });
+    }
+    const d = porSku.get(v.sku);
+    const c = cantidades.get(v.id) || { cantidad: 0, margen: 0, disponible: 0 };
+    porProducto.get(padre.id).variantes.push({
+      variantId: v.id,
+      sku: v.sku,
+      etiqueta: [v.variante1Valor, v.variante2Valor].filter(Boolean).join(' / '),
+      esPack: Boolean(v.esPack),
+      enMl: Boolean(d),
+      sincronizable: Boolean(d) && d.editable !== false,
+      motivo: d && d.editable === false ? d.motivoNoEditable : null,
+      manual: Boolean(d?.manual),
+      mlItemId: d?.mlItemId || null,
+      mlVariationId: d?.mlVariationId || null,
+      permalink: d ? (d.permalink || enlaceDe(d.mlItemId)) : null,
+      estadoMl: d?.status || null,
+      subEstadosMl: d?.subEstados || [],
+      tipoNombre: d ? (NOMBRE_TIPO[d.tipo] || null) : null,
+      otras: (d?.otras || []).length,
+      stockMl: d?.stockActual ?? null,
+      stockStocker: c.cantidad,
+      alDia: Boolean(d) && d.editable !== false && d.stockActual === c.cantidad,
+    });
+  }
+
+  const productos = [...porProducto.values()].map((g) => {
+    const enMl = g.variantes.filter((x) => x.enMl).length;
+    const sincronizables = g.variantes.filter((x) => x.sincronizable).length;
+    return {
+      ...g,
+      total: g.variantes.length,
+      enMl,
+      sinMl: g.variantes.length - enMl,
+      alDia: g.variantes.filter((x) => x.alDia).length,
+      estado: sincronizables === 0 ? 'sin-publicar'
+        : (sincronizables === g.variantes.length ? 'completo' : 'parcial'),
+    };
+  });
+  // Primero lo que falta: esto es una lista de tareas, no un inventario.
+  const orden = { 'sin-publicar': 0, parcial: 1, completo: 2 };
+  productos.sort((a, b) => (orden[a.estado] - orden[b.estado])
+    || String(a.titulo || '').localeCompare(String(b.titulo || ''), 'es'));
+
+  return {
+    sinLugarOnline: !locales.length,
+    lugares: locales.map((l) => ({ id: l.id, nombre: l.nombre })),
+    productos,
+    resumen: {
+      productos: productos.length,
+      completos: productos.filter((p) => p.estado === 'completo').length,
+      parciales: productos.filter((p) => p.estado === 'parcial').length,
+      sinPublicar: productos.filter((p) => p.estado === 'sin-publicar').length,
+      variantes: productos.reduce((t, p) => t + p.total, 0),
+      variantesEnMl: productos.reduce((t, p) => t + p.enMl, 0),
+      variantesSinMl: productos.reduce((t, p) => t + p.sinMl, 0),
+    },
+  };
+}
+
 /**
  * Sincroniza el stock de Stocker hacia ML.
  * @param {number} businessId
@@ -774,98 +981,10 @@ async function sincronizarStock(businessId, { simular = false, skus = null } = {
     );
   }
 
-  const token = await tokenValido(cuenta);
-  const headersMl = { Authorization: `Bearer ${token}` };
-  const publicaciones = await listarPublicaciones(cuenta);
+  const { token, publicaciones, porSku, multiOrigen } = await destinosDeLaCuenta(cuenta, businessId);
 
-  /*
-   * Vínculos manuales: pisan lo que se detecte automáticamente. Si apuntan a
-   * una publicación que la búsqueda no trajo (por ejemplo, finalizada), se la
-   * pide aparte para saber su estado y su link.
-   */
-  const manuales = await MercadoLibreLink.findAll({ where: { businessId } });
-  const traidas = new Set(publicaciones.map((p) => String(p.id)));
-  const faltantes = [...new Set(manuales.map((l) => String(l.mlItemId)).filter((id) => !traidas.has(id)))];
-  if (faltantes.length) publicaciones.push(...await traerItems(faltantes, headersMl));
-
-  const candidatas = candidatasPorSku(publicaciones);
-  const porSku = mapearPorSku(publicaciones);
-  const todasLasCandidatas = publicaciones.flatMap(candidatasDeItem);
-  for (const l of manuales) {
-    const encontrada = todasLasCandidatas.find((c) => c.mlItemId === String(l.mlItemId)
-      && String(c.mlVariationId || '') === String(l.mlVariationId || ''));
-    const otras = (candidatas.get(l.sku) || []).filter((c) => !encontrada
-      || c.mlItemId !== encontrada.mlItemId || c.mlVariationId !== encontrada.mlVariationId);
-    porSku.set(l.sku, encontrada
-      ? { ...encontrada, manual: true, otras }
-      : {
-        mlItemId: String(l.mlItemId), mlVariationId: l.mlVariationId ? String(l.mlVariationId) : null,
-        titulo: l.titulo, permalink: enlaceDe(l.mlItemId), editable: true, via: 'items',
-        idsVariaciones: [], subEstados: [], relacionados: [], manual: true, otras,
-      });
-  }
-  const multiOrigen = (await etiquetasDelVendedor(cuenta, headersMl)).includes('warehouse_management');
-
-  // Stock actual en Stocker
-  const variantes = await ProductVariant.findAll({
-    /*
-     * Los de feria quedan afuera: no llevan stock, así que publicar el suyo
-     * sería anunciar cero unidades de algo que se vende igual, o peor, pisar la
-     * publicación de su equivalente del catálogo normal.
-     */
-    include: [{
-      model: Product, as: 'producto', required: true,
-      where: { businessId, activo: true, ...NO_ES_FERIA },
-    }],
-  });
-
-  /*
-   * El stock de todas las variantes en una sola consulta.
-   *
-   * Preguntarlo de a una eran tantas idas a la base como artículos publicados:
-   * con dos mil variantes, dos mil consultas por sincronización. Se trae todo
-   * junto y se suma en memoria, que es una lectura chica y acotada al negocio.
-   */
-  const filasStock = await VariantStock.findAll({
-    where: { businessId, locationId: locales.map((l) => l.id) },
-    attributes: ['productVariantId', 'stock', 'reservado'],
-  });
-  const stockPorVariante = new Map();
-  for (const f of filasStock) {
-    /*
-     * Lo DISPONIBLE, no lo que hay en el estante.
-     *
-     * Una unidad apartada para un pedido online sigue en el estante hasta que
-     * alguien la despacha, pero no se puede volver a vender: publicarla sería
-     * ofrecer dos veces la misma prenda, que es justo lo que la reserva vino a
-     * evitar. Esta consulta arma su propio mapa por rendimiento y por eso hay
-     * que restar acá también: `stockOnline` no pasa por este camino.
-     */
-    const libre = Math.max(0, (Number(f.stock) || 0) - (Number(f.reservado) || 0));
-    stockPorVariante.set(
-      f.productVariantId,
-      (stockPorVariante.get(f.productVariantId) || 0) + libre,
-    );
-  }
-
-  /*
-   * Los packs no tienen fila en `variant_stocks`: lo que hay de un pack es lo
-   * que alcance para armarlo con lo que lleva adentro.
-   *
-   * Sin esto, cada pack publicado en Mercado Libre saldría con stock cero —
-   * dejaría de venderse de un día para el otro y sin explicación visible—.
-   *
-   * La cuenta se hace en bloque para todos los packs a la vez: de a uno serían
-   * dos consultas por pack, y en un catálogo con cincuenta packs eso es cien
-   * idas a la base por sincronización.
-   */
-  const idsPacks = variantes.filter((v) => v.esPack).map((v) => v.id);
-  if (idsPacks.length) {
-    const armables = await packService.disponibleDePacksEnLocales(
-      idsPacks, locales.map((l) => l.id), businessId,
-    );
-    for (const [packId, cuantos] of armables) stockPorVariante.set(packId, cuantos);
-  }
+  const variantes = await variantesPublicables(businessId);
+  const cantidades = await cantidadesPublicables(businessId, locales, variantes);
 
   const sincronizados = [];
   const sinPublicacion = [];
@@ -903,8 +1022,7 @@ async function sincronizarStock(businessId, { simular = false, skus = null } = {
      * cero. En un pack el margen son packs enteros, porque lo disponible de un
      * pack ya viene contado en packs.
      */
-    const margenMl = Math.max(0, Math.trunc(Number(v.margenMl) || 0));
-    const cantidad = Math.max(0, (stockPorVariante.get(v.id) || 0) - margenMl);
+    const { margen: margenMl, cantidad } = cantidades.get(v.id) || { margen: 0, cantidad: 0 };
     const fila = {
       sku: v.sku, titulo: v.producto.titulo, margenMl,
       mlItemId: destino.mlItemId, mlVariationId: destino.mlVariationId,
@@ -1169,6 +1287,7 @@ module.exports = {
   listarPublicaciones,
   mapearPorSku,
   sincronizarStock,
+  coberturaMl,
   // Expuesto para las pruebas: es la regla que hace que un pack publicado no
   // se quede con el stock viejo cuando se mueve una de sus prendas.
   __conLosPacksQueLosUsan: conLosPacksQueLosUsan,

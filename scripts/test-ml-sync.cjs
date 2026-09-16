@@ -576,6 +576,61 @@ const CUANTAS = 204;   // el número exacto que disparó el aviso
       publicaciones = publicaciones.filter((p) => !/^MLA9\d{3}$/.test(p.id));
     }
 
+    tit('13. CHECKLIST: QUÉ TIENE EL STOCK PUESTO EN ML Y QUÉ NO');
+    const cobProd = await Product.create({
+      businessId: negocio.id, sku: 'QA-COB', skuAgrupador: 'QA-COB', titulo: 'QA Cobertura',
+      precioMinorista: 100, precioMayorista: 100, costo: 10, activo: true,
+    });
+    const cobVariantes = [];
+    try {
+      const atributoSku = (valor) => [{ id: 'SELLER_SKU', value_name: valor }];
+      for (const sku of ['QA-COB-1', 'QA-COB-2', 'QA-COB-3']) {
+        cobVariantes.push(await ProductVariant.create({
+          productId: cobProd.id, businessId: negocio.id, sku,
+          variante1Nombre: 'Talle', variante1Valor: sku.slice(-1), stock: 0, stockMinimo: 0,
+        }));
+      }
+      publicaciones.push(
+        { id: 'MLA8001', title: 'Publicada', status: 'active', listing_type_id: 'gold_special',
+          available_quantity: 0, attributes: atributoSku('QA-COB-1'), variations: [] },
+        { id: 'MLA8002', title: 'Vieja finalizada', status: 'closed', listing_type_id: 'gold_special',
+          available_quantity: 0, attributes: atributoSku('QA-COB-2'), variations: [] },
+      );
+
+      reset();
+      const cob = await ml.coberturaMl(negocio.id);
+      const grupo = (cob.productos || []).find((p) => p.productId === cobProd.id);
+      chk('el checklist también busca las finalizadas', true,
+        LLAMADAS.some((l) => l.url.includes('/items/search') && l.params.status === 'closed'));
+      chk('el producto padre aparece con sus variantes', 3, grupo?.total);
+      chk('la publicada y la finalizada figuran en ML; la tercera no', [true, true, false],
+        (grupo?.variantes || []).map((x) => x.enMl));
+      chk('pero sólo se puede sincronizar la que está viva', [true, false, false],
+        (grupo?.variantes || []).map((x) => x.sincronizable));
+      chk('y la finalizada dice por qué no', true, /finalizada/.test((grupo?.variantes || [])[1]?.motivo || ''));
+      chk('el producto queda a medias', 'parcial', grupo?.estado);
+      chk('cuenta cuántas variantes están y cuántas faltan', [2, 1], [grupo?.enMl, grupo?.sinMl]);
+      chk('cada variante publicada trae su link', true,
+        String((grupo?.variantes || [])[0]?.permalink || '').includes('MLA-8001'));
+      chk('lo que falta va primero', true,
+        (cob.productos || []).findIndex((p) => p.estado === 'completo')
+          >= (cob.productos || []).findIndex((p) => p.estado === 'parcial'));
+      chk('el resumen cierra: las que están más las que faltan son todas', true,
+        cob.resumen.variantes === cob.resumen.variantesEnMl + cob.resumen.variantesSinMl);
+      chk('y la sincronización de siempre no busca finalizadas', false,
+        (await (async () => {
+          reset();
+          await ml.sincronizarStock(negocio.id, { simular: true, skus: ['QA-COB-1'] });
+          return LLAMADAS.some((l) => l.url.includes('/items/search') && l.params.status === 'closed');
+        })()));
+    } catch (e) {
+      chk('la sección 13 no revienta', null, String(e?.stack || e));
+    } finally {
+      publicaciones = publicaciones.filter((p) => !/^MLA800\d$/.test(p.id));
+      await ProductVariant.destroy({ where: { id: cobVariantes.map((v) => v.id) } });
+      await Product.destroy({ where: { id: cobProd.id } });
+    }
+
     tit('Limpieza');
     const ids = variantes.map((v) => v.id);
     // El pack primero: su composición apunta a una de estas variantes.
