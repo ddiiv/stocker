@@ -32,6 +32,7 @@ let bulkDisponible = true;
 let etiquetasUsuario = [];
 const stockUp = new Map();
 const conflictos = new Map();
+const relistados = [];
 // Los reintentos por 409 esperan de verdad: acá, poco.
 process.env.ML_ESPERA_CONFLICTO_MS = '20';
 
@@ -104,6 +105,22 @@ Module._load = function (pedido) {
         return { data: {} };
       }
       if (/\/users\/[^/]+$/.test(url)) return { data: { id: ML_USER, tags: etiquetasUsuario } };
+
+      if (metodo === 'post' && /\/items\/[^/]+\/relist$/.test(url)) {
+        // Como ML: republicar cierra la vieja y crea otra publicación, con otro id.
+        const viejo = (url.match(/\/items\/([^/]+)\/relist$/) || [])[1];
+        const pub = publicaciones.find((p) => p.id === viejo);
+        if (!pub) throw error(404, 'item not found');
+        if (pub.status !== 'closed') throw error(400, 'item is not closed');
+        const nueva = {
+          ...pub, id: `${viejo}-R`, status: 'active', sub_status: [],
+          available_quantity: cuerpo.quantity ?? 0,
+          permalink: `https://articulo.mercadolibre.com.ar/${viejo}-R-republicada-_JM`,
+        };
+        publicaciones.push(nueva);
+        relistados.push({ id: viejo, cuerpo });
+        return { data: nueva };
+      }
 
       const item = (url.match(/\/items\/([^/?]+)/) || [])[1];
       if (item && fallar.has(item)) {
@@ -461,7 +478,7 @@ const CUANTAS = 204;   // el número exacto que disparó el aviso
       ml.marcarParaSync = () => {};
       try {
         for (const sku of ['QA-SYNC-P1', 'QA-SYNC-DUP', 'QA-SYNC-VA', 'QA-SYNC-VB', 'QA-SYNC-FULL',
-          'QA-SYNC-FLEX', 'QA-SYNC-409', 'QA-SYNC-ATTR']) {
+          'QA-SYNC-FLEX', 'QA-SYNC-409', 'QA-SYNC-ATTR', 'QA-SYNC-UPX', 'QA-SYNC-REL']) {
           const v = await ProductVariant.create({
             productId: prod.id, businessId: negocio.id, sku,
             variante1Nombre: 'N', variante1Valor: sku, stock: 0, stockMinimo: 0,
@@ -481,7 +498,7 @@ const CUANTAS = 204;   // el número exacto que disparó el aviso
           listing_type_id: 'gold_special', available_quantity: 0, attributes: conSku('QA-SYNC-P1'), variations: [],
           permalink: 'https://articulo.mercadolibre.com.ar/MLA-9001-pausada-sin-stock-_JM' },
         { id: 'MLA9101', title: 'Repetida clásica', status: 'active', listing_type_id: 'gold_special',
-          available_quantity: 0, attributes: conSku('QA-SYNC-DUP'), variations: [], sold_quantity: 50 },
+          available_quantity: 5, attributes: conSku('QA-SYNC-DUP'), variations: [], sold_quantity: 50 },
         { id: 'MLA9102', title: 'Repetida premium', status: 'paused', sub_status: ['out_of_stock'],
           listing_type_id: 'gold_pro', available_quantity: 0, attributes: conSku('QA-SYNC-DUP'), variations: [] },
         { id: 'MLA9103', title: 'Repetida premium pausada por el vendedor', status: 'paused', sub_status: ['paused_by_seller'],
@@ -503,6 +520,17 @@ const CUANTAS = 204;   // el número exacto que disparó el aviso
           available_quantity: 0, seller_custom_field: 'dato-interno', attributes: conSku('QA-SYNC-ATTR'), variations: [] },
         { id: 'MLA9701', title: 'Finalizada', status: 'closed', listing_type_id: 'gold_pro', available_quantity: 0,
           attributes: conSku('QA-SYNC-P1'), variations: [] },
+        // Dos publicaciones del mismo user product: ML las sincroniza sola.
+        { id: 'MLA9801', title: 'Mismo producto A', status: 'active', listing_type_id: 'gold_special',
+          available_quantity: 0, attributes: conSku('QA-SYNC-UPX'), variations: [], user_product_id: 'MLAU900' },
+        { id: 'MLA9802', title: 'Mismo producto B', status: 'active', listing_type_id: 'gold_special',
+          available_quantity: 5, attributes: conSku('QA-SYNC-UPX'), variations: [], user_product_id: 'MLAU900' },
+        // El par catálogo / tradicional, ligado por item_relations.
+        { id: 'MLA9901', title: 'Tradicional', status: 'active', listing_type_id: 'gold_special',
+          available_quantity: 0, attributes: conSku('QA-SYNC-REL'), variations: [] },
+        { id: 'MLA9902', title: 'De catálogo', status: 'active', listing_type_id: 'gold_special',
+          available_quantity: 5, attributes: conSku('QA-SYNC-REL'), variations: [], catalog_listing: true,
+          item_relations: [{ id: 'MLA9901' }] },
       );
       stockUp.set('MLAU777', { version: 7, locations: [{ type: 'selling_address', quantity: 2 }, { type: 'meli_facility', quantity: 10 }] });
       conflictos.set('MLA9501', 1);
@@ -530,6 +558,14 @@ const CUANTAS = 204;   // el número exacto que disparó el aviso
         (dup?.otras || []).map((o) => o.mlItemId));
       chk('sin permalink, el link lleva el guión que ML necesita', 'https://articulo.mercadolibre.com.ar/MLA-9101',
         dup?.otras?.[0]?.permalink);
+      chk('la previa avisa que la duplicada con stock se va a poner en 0', true,
+        (dup?.otras || []).find((o) => o.mlItemId === 'MLA9101')?.seVaACero === true);
+      chk('la que comparte stock con la asignada no se toca', undefined,
+        ((fila('QA-SYNC-UPX')?.otras || [])[0] || {}).seVaACero);
+      chk('ni la ligada por catálogo', [true, undefined],
+        [((fila('QA-SYNC-REL')?.otras || [])[0] || {}).comparteStock,
+          ((fila('QA-SYNC-REL')?.otras || [])[0] || {}).seVaACero]);
+      chk('el resumen cuenta las duplicadas a poner en 0', 1, previa.resumen?.duplicadasACero);
       chk('el tipo de publicación se muestra con su nombre', 'Premium', dup?.tipoNombre);
       chk('el SKU de cada variación se lee de sus atributos', ['MLA9201', '11', 'MLA9201', '12'],
         [fila('QA-SYNC-VA')?.mlItemId, fila('QA-SYNC-VA')?.mlVariationId, fila('QA-SYNC-VB')?.mlItemId, fila('QA-SYNC-VB')?.mlVariationId]);
@@ -545,7 +581,18 @@ const CUANTAS = 204;   // el número exacto que disparó el aviso
       chk('la pausada sin stock se actualiza', 'actualizado', filaE('QA-SYNC-P1')?.estado);
       chk('y ML la reactiva', 'active', publicaciones.find((p) => p.id === 'MLA9001').status);
       chk('la finalizada con el mismo SKU no se toca', 0, putsA('MLA9701'));
-      chk('con SKU repetido sólo se escribe la asignada', [1, 0, 0], ['MLA9102', 'MLA9101', 'MLA9103'].map(putsA));
+      // La asignada recibe el stock; la duplicada con stock, un cero. La que ya
+      // estaba en cero (pausada por el vendedor) no se toca.
+      chk('la asignada recibe stock y la duplicada un cero', [1, 1, 0], ['MLA9102', 'MLA9101', 'MLA9103'].map(putsA));
+      const dupCero = publicaciones.find((p) => p.id === 'MLA9101');
+      chk('la duplicada queda en 0 y ML la pausa', [0, 'paused', ['out_of_stock']],
+        [dupCero.available_quantity, dupCero.status, dupCero.sub_status]);
+      chk('y la fila lo dice', true,
+        (filaE('QA-SYNC-DUP')?.otras || []).find((o) => o.mlItemId === 'MLA9101')?.enCero === true);
+      chk('la que comparte user product sigue con su stock', 5,
+        publicaciones.find((p) => p.id === 'MLA9802').available_quantity);
+      chk('y la de catálogo también', 5, publicaciones.find((p) => p.id === 'MLA9902').available_quantity);
+      chk('el resumen cuenta las que quedaron en cero', 1, envio.resumen?.duplicadasEnCero);
       const putVariaciones = LLAMADAS.filter((l) => l.metodo === 'put' && l.url.endsWith('/items/MLA9201'));
       chk('dos variaciones de la misma publicación van en un solo PUT', 1, putVariaciones.length);
       chk('con el id de todas, y stock sólo en las que cambian',
@@ -629,6 +676,59 @@ const CUANTAS = 204;   // el número exacto que disparó el aviso
       publicaciones = publicaciones.filter((p) => !/^MLA800\d$/.test(p.id));
       await ProductVariant.destroy({ where: { id: cobVariantes.map((v) => v.id) } });
       await Product.destroy({ where: { id: cobProd.id } });
+    }
+
+    tit('14. REPUBLICAR UNA PUBLICACIÓN FINALIZADA');
+    const reVariantes = [];
+    try {
+      const atributoSku = (valor) => [{ id: 'SELLER_SKU', value_name: valor }];
+      const original = ml.marcarParaSync;
+      ml.marcarParaSync = () => {};
+      try {
+        for (const [sku, cantidad] of [['QA-SYNC-RE', 4], ['QA-SYNC-RE0', 0]]) {
+          const v = await ProductVariant.create({
+            productId: prod.id, businessId: negocio.id, sku,
+            variante1Nombre: 'N', variante1Valor: sku, stock: 0, stockMinimo: 0,
+          });
+          if (cantidad) {
+            await stock.mover({ variantId: v.id, businessId: negocio.id, locationId: local.id,
+              delta: cantidad, tipo: 'ingreso', motivo: 'QA sync' });
+          }
+          reVariantes.push(v);
+          variantes.push(v);
+        }
+      } finally {
+        ml.marcarParaSync = original;
+      }
+      publicaciones.push(
+        { id: 'MLA7001', title: 'Vieja para republicar', status: 'closed', listing_type_id: 'gold_special',
+          price: 1000, available_quantity: 0, seller_id: ML_USER, attributes: atributoSku('QA-SYNC-RE'), variations: [] },
+        { id: 'MLA7002', title: 'Activa', status: 'active', listing_type_id: 'gold_special',
+          price: 1000, available_quantity: 1, seller_id: ML_USER, attributes: atributoSku('QA-SYNC-RE'), variations: [] },
+        { id: 'MLA7003', title: 'De otro vendedor', status: 'closed', listing_type_id: 'gold_special',
+          price: 1000, available_quantity: 0, seller_id: '999999', attributes: atributoSku('QA-SYNC-RE'), variations: [] },
+        { id: 'MLA7004', title: 'Finalizada sin stock', status: 'closed', listing_type_id: 'gold_special',
+          price: 1000, available_quantity: 0, seller_id: ML_USER, attributes: atributoSku('QA-SYNC-RE0'), variations: [] },
+      );
+      const falla = async (fn) => { try { await fn(); return null; } catch (e) { return e; } };
+
+      const hecha = await ml.republicar(negocio.id, { mlItemId: 'MLA7001' });
+      const mandado = relistados.find((x) => x.id === 'MLA7001')?.cuerpo;
+      chk('republica con el stock que hay en Stocker', 4, mandado?.quantity);
+      chk('y conserva precio y tipo de publicación', [1000, 'gold_special'],
+        [mandado?.price, mandado?.listing_type_id]);
+      chk('devuelve la publicación nueva, con otro id y su link', ['MLA7001-R', true],
+        [hecha.mlItemId, String(hecha.permalink).includes('MLA7001-R')]);
+      chk('una activa no se republica', 400, (await falla(() => ml.republicar(negocio.id, { mlItemId: 'MLA7002' })))?.status);
+      chk('la de otro vendedor tampoco', 403, (await falla(() => ml.republicar(negocio.id, { mlItemId: 'MLA7003' })))?.status);
+      chk('ni una sin stock en Stocker', 400, (await falla(() => ml.republicar(negocio.id, { mlItemId: 'MLA7004' })))?.status);
+      chk('la que no existe da 404', 404, (await falla(() => ml.republicar(negocio.id, { mlItemId: 'MLA0000' })))?.status);
+      chk('y la republicada ya se sincroniza como cualquier otra', 'MLA7001-R',
+        (await ml.sincronizarStock(negocio.id, { simular: true, skus: ['QA-SYNC-RE'] })).resultados[0]?.mlItemId);
+    } catch (e) {
+      chk('la sección 14 no revienta', null, String(e?.stack || e));
+    } finally {
+      publicaciones = publicaciones.filter((p) => !/^MLA700\d/.test(p.id));
     }
 
     tit('Limpieza');

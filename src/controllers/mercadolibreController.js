@@ -104,6 +104,20 @@ const cobertura = async (req, res, next) => {
   } catch (e) { next(e); }
 };
 
+/*
+ * POST /api/mercadolibre/republicar  { mlItemId }
+ *
+ * Una publicación finalizada no acepta stock: ML sólo deja republicarla, y eso
+ * crea otra publicación. Va a pedido y de a una, nunca sola.
+ */
+const republicar = async (req, res, next) => {
+  try {
+    const mlItemId = String(req.body?.mlItemId || '').trim();
+    if (!mlItemId) return res.status(400).json({ message: 'Falta la publicación a republicar.' });
+    return res.json(await ml.republicar(req.auth.businessId, { mlItemId }));
+  } catch (e) { return next(e); }
+};
+
 const sync = async (req, res, next) => {
   try {
     const { skus } = req.body || {};
@@ -328,4 +342,4 @@ const notificacion = async (req, res) => {
   }
 };
 
-module.exports = { status, authUrl, callback, disconnect, preview, sync, importarPedidos, getLocales, setLocales, listLinks, upsertLink, deleteLink, notificacion, cobertura };
+module.exports = { status, authUrl, callback, disconnect, preview, sync, importarPedidos, getLocales, setLocales, listLinks, upsertLink, deleteLink, notificacion, cobertura, republicar };

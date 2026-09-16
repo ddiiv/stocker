@@ -616,11 +616,20 @@ function mapearPorSku(publicaciones) {
   return mapa;
 }
 
-/** Cómo se muestra una publicación con el mismo SKU que no es la elegida. */
-function resumenDeOtra(o, elegida) {
-  const comparteStock = Boolean(o.userProductId && o.userProductId === elegida.userProductId)
+/*
+ * Dos publicaciones comparten stock cuando ML las sincroniza sola: son del
+ * mismo user product, o son el par catálogo/tradicional. Importa al poner en
+ * cero las duplicadas: un cero en una de ellas vaciaría también la asignada.
+ */
+function comparteStockCon(o, elegida) {
+  return Boolean(o.userProductId && o.userProductId === elegida.userProductId)
     || (o.relacionados || []).includes(elegida.mlItemId)
     || (elegida.relacionados || []).includes(o.mlItemId);
+}
+
+/** Cómo se muestra una publicación con el mismo SKU que no es la elegida. */
+function resumenDeOtra(o, elegida) {
+  const comparteStock = comparteStockCon(o, elegida);
   return {
     mlItemId: o.mlItemId, mlVariationId: o.mlVariationId, titulo: o.titulo,
     permalink: o.permalink, estadoMl: o.status, subEstadosMl: o.subEstados,
@@ -690,8 +699,7 @@ function agruparEnvios(aMandar) {
   const grupos = new Map();
   for (const e of aMandar) {
     const d = e.destino;
-    const clave = d.via === 'selling_address' ? `up:${d.userProductId}`
-      : (d.mlVariationId ? `item:${d.mlItemId}` : `sku:${e.v.sku}`);
+    const clave = d.via === 'selling_address' ? `up:${d.userProductId}` : `item:${d.mlItemId}`;
     if (!grupos.has(clave)) grupos.set(clave, []);
     grupos.get(clave).push(e);
   }
@@ -855,6 +863,88 @@ async function cantidadesPublicables(businessId, locales, variantes) {
 }
 
 /**
+ * Republica una publicación finalizada, con el stock que hay hoy en Stocker.
+ *
+ * Una finalizada no acepta stock: ML sólo deja republicarla, y eso crea una
+ * publicación NUEVA con otro id. Se conservan el precio y el tipo de
+ * publicación; la cantidad sale de Stocker, que es la que manda.
+ *
+ * Se republica de a una y a pedido de la persona: ML permite una sola
+ * republicación por publicación, y republicar es volver a ponerla a la venta
+ * con lo que eso implica.
+ */
+async function republicar(businessId, { mlItemId }) {
+  const cuenta = await MercadoLibreAccount.findOne({ where: { businessId } });
+  if (!cuenta) throw Object.assign(new Error('No hay una cuenta de MercadoLibre conectada.'), { status: 400 });
+  const locales = await stockService.localesQueAbastecenOnline(businessId);
+  if (!locales.length) {
+    throw Object.assign(
+      new Error('Ningún local está marcado para abastecer las ventas online: no hay stock que publicar.'),
+      { status: 409, detalles: { codigo: 'SIN_LUGAR_ONLINE' } },
+    );
+  }
+
+  const token = await tokenValido(cuenta);
+  const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+  const [item] = await traerItems([String(mlItemId)], headers);
+  if (!item) throw Object.assign(new Error('Esa publicación no existe o no se pudo leer en Mercado Libre.'), { status: 404 });
+  /*
+   * De la cuenta conectada y de nadie más. El id llega del navegador, y sin
+   * este control se podría republicar la publicación de otro vendedor.
+   */
+  if (item.seller_id && String(item.seller_id) !== String(cuenta.mlUserId)) {
+    throw Object.assign(new Error('Esa publicación no es de tu cuenta de Mercado Libre.'), { status: 403 });
+  }
+  if (item.status !== 'closed') {
+    throw Object.assign(
+      new Error('Sólo se republican las publicaciones finalizadas. Las pausadas se reactivan solas cuando les llega stock.'),
+      { status: 400 },
+    );
+  }
+
+  const variantes = await variantesPublicables(businessId, { soloActivas: true });
+  const cantidades = await cantidadesPublicables(businessId, locales, variantes);
+  const porSkuStocker = new Map(variantes.map((v) => [v.sku, v]));
+  const cantidadDe = (sku) => {
+    const v = sku ? porSkuStocker.get(sku) : null;
+    return v ? (cantidades.get(v.id)?.cantidad || 0) : 0;
+  };
+
+  let cuerpo;
+  if (item.variations?.length) {
+    const variations = item.variations
+      .map((v) => ({ id: v.id, price: v.price ?? item.price, quantity: cantidadDe(skuDe(v)) }))
+      .filter((v) => v.quantity > 0);
+    if (!variations.length) {
+      throw Object.assign(
+        new Error('Ninguna variación de esa publicación tiene stock en Stocker, así que no hay nada para republicar.'),
+        { status: 400 },
+      );
+    }
+    cuerpo = { listing_type_id: item.listing_type_id, variations };
+  } else {
+    const quantity = cantidadDe(skuDe(item));
+    if (quantity <= 0) {
+      throw Object.assign(
+        new Error('No hay stock en Stocker para ese SKU, así que no hay nada para republicar.'),
+        { status: 400 },
+      );
+    }
+    cuerpo = { price: item.price, quantity, listing_type_id: item.listing_type_id };
+  }
+
+  const { data } = await httpML.post(`${ML_API}/items/${item.id}/relist`, cuerpo, { headers });
+  const nuevo = data?.id ? String(data.id) : null;
+  return {
+    mlItemId: nuevo,
+    permalink: data?.permalink || (nuevo ? enlaceDe(nuevo) : null),
+    titulo: data?.title || item.title,
+    cantidad: cuerpo.quantity ?? cuerpo.variations.reduce((t, v) => t + v.quantity, 0),
+    anterior: String(item.id),
+  };
+}
+
+/**
  * El checklist: qué productos tienen su stock puesto en Mercado Libre y cuáles
  * no, agrupados por producto padre con sus variantes.
  *
@@ -1003,6 +1093,9 @@ async function sincronizarStock(businessId, { simular = false, skus = null } = {
    */
   const resultados = [];
   const aMandar = [];
+  // Las duplicadas que hay que dejar en cero, una por publicación.
+  const aCero = new Map();
+  let duplicadasEnCero = 0;
 
   for (const v of variantes) {
     if (skus && !skus.includes(v.sku)) continue;
@@ -1047,6 +1140,28 @@ async function sincronizarStock(businessId, { simular = false, skus = null } = {
       continue;
     }
     fila.aviso = avisoDeEstado(destino, cantidad);
+
+    /*
+     * Las otras publicaciones con el mismo SKU van a cero.
+     *
+     * Mercado Libre no permite publicaciones duplicadas, y mientras una siga
+     * con el stock viejo puede vender algo que ya no está: el stock de Stocker
+     * es uno solo y se publica en la asignada. El cero es además la forma que
+     * ML documenta para pausar una publicación.
+     *
+     * Las que COMPARTEN stock con la asignada no se tocan: ML las sincroniza
+     * solas, y un cero ahí vaciaría también la buena.
+     */
+    for (const o of destino.otras || []) {
+      if (!o.editable || o.mlItemId === destino.mlItemId) continue;
+      if (multiOrigen && o.via === 'items') continue;
+      if (comparteStockCon(o, destino)) continue;
+      if (Number(o.stockActual) === 0) continue;
+      const clave = `${o.mlItemId}:${o.mlVariationId || ''}`;
+      const resumen = (fila.otras || []).find((x) => `${x.mlItemId}:${x.mlVariationId || ''}` === clave);
+      if (resumen) resumen.seVaACero = true;
+      if (!aCero.has(clave)) aCero.set(clave, { v: { id: null, sku: v.sku }, destino: o, cantidad: 0, fila: null });
+    }
 
     /*
      * Lo que ya coincide no se toca. Es el ahorro más grande de todos: en una
@@ -1097,6 +1212,30 @@ async function sincronizarStock(businessId, { simular = false, skus = null } = {
   for (const e of enviados.flat()) {
     if (e.variantId) sincronizados.push(e.variantId);
     resultados.push(e.fila);
+  }
+
+  // Recién después, las duplicadas a cero: primero queda bien la asignada.
+  if (!simular && aCero.size) {
+    const puestas = await enParalelo(agruparEnvios([...aCero.values()]), CONCURRENCIA, async (grupo) => {
+      const clave = (e) => `${e.destino.mlItemId}:${e.destino.mlVariationId || ''}`;
+      try {
+        await enviarGrupo(token, grupo);
+        return grupo.map((e) => ({ clave: clave(e), ok: true }));
+      } catch (err) {
+        const detalle = detalleDeError(err);
+        return grupo.map((e) => ({ clave: clave(e), ok: false, detalle }));
+      }
+    });
+    const porClave = new Map(puestas.flat().map((x) => [x.clave, x]));
+    for (const r of resultados) {
+      for (const o of r.otras || []) {
+        const hecho = porClave.get(`${o.mlItemId}:${o.mlVariationId || ''}`);
+        if (!hecho) continue;
+        o.enCero = hecho.ok;
+        if (!hecho.ok) o.errorCero = hecho.detalle;
+      }
+    }
+    duplicadasEnCero = puestas.flat().filter((x) => x.ok).length;
   }
 
   // SKUs publicados en ML que no existen en Stocker: los reportamos para que
@@ -1151,6 +1290,8 @@ async function sincronizarStock(businessId, { simular = false, skus = null } = {
       sinCambios:   resultados.filter((r) => r.estado === 'sin-cambios').length,
       errores:      resultados.filter((r) => r.estado === 'error').length,
       noSincronizables: resultados.filter((r) => r.estado === 'no-sincronizable').length,
+      duplicadasACero: aCero.size,
+      duplicadasEnCero,
     },
   };
 }
@@ -1288,6 +1429,7 @@ module.exports = {
   mapearPorSku,
   sincronizarStock,
   coberturaMl,
+  republicar,
   // Expuesto para las pruebas: es la regla que hace que un pack publicado no
   // se quede con el stock viejo cuando se mueve una de sus prendas.
   __conLosPacksQueLosUsan: conLosPacksQueLosUsan,
