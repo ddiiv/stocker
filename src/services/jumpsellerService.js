@@ -24,7 +24,17 @@ export async function previewJumpseller() {
   return data;
 }
 
+/*
+ * Arranca la sincronización y vuelve: con muchos productos son minutos de
+ * trabajo, y esperarla adentro del pedido hacía caer la aplicación. Lo que
+ * devuelve es el trabajo, y `getJumpsellerSyncEstado` dice cómo viene.
+ */
 export async function syncJumpseller(skus) {
   const { data } = await http.post("/jumpseller/sync", { skus });
+  return data;
+}
+
+export async function getJumpsellerSyncEstado() {
+  const { data } = await http.get("/jumpseller/sync/estado");
   return data;
 }

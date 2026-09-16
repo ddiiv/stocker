@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { RefreshCw, AlertTriangle, Check, Store, Unlink } from "lucide-react";
 import {
   getJumpsellerStatus, conectarJumpseller, desconectarJumpseller,
-  previewJumpseller, syncJumpseller,
+  previewJumpseller, syncJumpseller, getJumpsellerSyncEstado,
 } from "../services/jumpsellerService";
 import { PageHeader, Card } from "../components/ui/Layout";
 
@@ -26,6 +26,8 @@ export default function JumpsellerPage() {
   const [aviso, setAviso] = useState("");
   const [previa, setPrevia] = useState(null);
   const [form, setForm] = useState({ loginKey: "", authToken: "", tienda: "" });
+  // Cómo viene la sincronización que corre en el servidor.
+  const [avance, setAvance] = useState(null);
 
   async function cargar() {
     setCargando(true); setError("");
@@ -37,6 +39,43 @@ export default function JumpsellerPage() {
     setCargando(false);
   }
   useEffect(() => { cargar(); }, []);
+
+  /*
+   * La sincronización corre en el servidor: acá se pregunta cómo viene.
+   *
+   * Se pregunta también al abrir la pantalla, no sólo después de apretar el
+   * botón: si alguien la arrancó y cerró la pestaña, al volver tiene que ver
+   * que sigue andando y no un botón como si nada estuviera pasando.
+   */
+  useEffect(() => {
+    let vivo = true;
+    let timer = null;
+    async function mirar() {
+      try {
+        const t = await getJumpsellerSyncEstado();
+        if (!vivo) return;
+        setAvance(t.estado === "corriendo" ? t : null);
+        if (t.estado === "corriendo") {
+          timer = setTimeout(mirar, 2000);
+          return;
+        }
+        if (t.estado === "listo" && t.resultado) {
+          setPrevia(t.resultado);
+          setAviso(`Listo: ${t.resultado.resumen.actualizados} actualizado(s), `
+            + `${t.resultado.resumen.sinCambios} sin cambios`
+            + (t.resultado.resumen.errores ? `, ${t.resultado.resumen.errores} con error.` : "."));
+          await cargar();
+        }
+        if (t.estado === "error") setError(t.error || "La sincronización terminó con un error.");
+      } catch {
+        // Si no se pudo preguntar, se vuelve a intentar en la próxima vuelta.
+        if (vivo) timer = setTimeout(mirar, 4000);
+      }
+    }
+    if (estado?.conectado) mirar();
+    return () => { vivo = false; clearTimeout(timer); };
+    // `mirar` se vuelve a armar sola con cada cambio de estado de la conexión.
+  }, [estado?.conectado, trabajando]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function conectar(e) {
     e.preventDefault();
@@ -79,13 +118,11 @@ export default function JumpsellerPage() {
     if (!confirm(`Se va a actualizar el stock de ${pendientes.length} producto(s) en Jumpseller. ¿Continuar?`)) return;
     setTrabajando(true); setError(""); setAviso("");
     try {
-      const r = await syncJumpseller(pendientes.map((x) => x.sku));
-      setPrevia(r);
-      setAviso(`Listo: ${r.resumen.actualizados} actualizado(s), ${r.resumen.sinCambios} sin cambios`
-        + (r.resumen.errores ? `, ${r.resumen.errores} con error.` : "."));
-      await cargar();
+      const t = await syncJumpseller(pendientes.map((x) => x.sku));
+      setAvance(t.estado === "corriendo" ? t : null);
+      setAviso("La sincronización está corriendo. Podés cerrar esta pantalla: sigue sola.");
     } catch (e) {
-      setError(e.response?.data?.message || "No se pudo sincronizar.");
+      setError(e.response?.data?.message || "No se pudo arrancar la sincronización.");
     } finally { setTrabajando(false); }
   }
 
@@ -99,7 +136,8 @@ export default function JumpsellerPage() {
             <button className="btn-ghost border border-line" onClick={verCambios} disabled={trabajando}>
               <RefreshCw size={15} className={trabajando ? "animate-spin" : ""} /> Ver cambios
             </button>
-            <button className="btn-primary" onClick={sincronizar} disabled={trabajando || (previa !== null && !pendientes.length)}>
+            <button className="btn-primary" onClick={sincronizar}
+              disabled={trabajando || Boolean(avance) || (previa !== null && !pendientes.length)}>
               {previa ? `Sincronizar ${pendientes.length} producto(s)` : "Sincronizar stock ahora"}
             </button>
           </div>
@@ -118,6 +156,29 @@ export default function JumpsellerPage() {
       )}
 
       {cargando && <p className="mt-4 text-sm text-ink-500">Cargando…</p>}
+
+      {avance && (
+        <Card className="mt-4">
+          <p className="font-display text-sm font-semibold text-ink-950">Sincronizando…</p>
+          <p className="mt-1 text-xs text-ink-600">
+            {avance.progreso?.total
+              ? `${avance.progreso.hechos || 0} de ${avance.progreso.total} producto(s)`
+                + (avance.progreso.errores ? ` · ${avance.progreso.errores} con error` : "")
+              : "Leyendo los productos de la tienda…"}
+          </p>
+          {avance.progreso?.total > 0 && (
+            <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-paper-200">
+              <div
+                className="h-full bg-teal-500 transition-all"
+                style={{ width: `${Math.round(((avance.progreso.hechos || 0) / avance.progreso.total) * 100)}%` }}
+              />
+            </div>
+          )}
+          <p className="mt-2 text-xs text-ink-500">
+            Corre en el servidor: podés cerrar la pantalla y volver más tarde.
+          </p>
+        </Card>
+      )}
 
       {!cargando && !estado?.conectado && (
         <Card className="mt-4 max-w-xl">
@@ -177,7 +238,13 @@ export default function JumpsellerPage() {
           {previa && (
             <>
               <div className="mt-4 grid gap-4 sm:grid-cols-4">
-                <Card><p className="text-xs uppercase tracking-wide text-ink-600">Productos en la tienda</p><p className="mt-2 font-display text-xl font-semibold">{previa.productosEncontrados}</p></Card>
+                <Card>
+                  <p className="text-xs uppercase tracking-wide text-ink-600">Productos en la tienda</p>
+                  <p className="mt-2 font-display text-xl font-semibold">{previa.productosEncontrados}</p>
+                  {/* Un producto con variantes tiene un SKU por variante: sin esto, "51
+                      productos" al lado de 967 filas no se entiende. */}
+                  <p className="mt-0.5 text-xs text-ink-500">{previa.skusEnTienda} SKU en total</p>
+                </Card>
                 <Card><p className="text-xs uppercase tracking-wide text-ink-600">{previa.simulado ? "A actualizar" : "Actualizados"}</p><p className="mt-2 font-display text-xl font-semibold text-brass-600">{previa.simulado ? previa.resumen.pendientes : previa.resumen.actualizados}</p></Card>
                 <Card><p className="text-xs uppercase tracking-wide text-ink-600">Sin cambios</p><p className="mt-2 font-display text-xl font-semibold">{previa.resumen.sinCambios}</p></Card>
                 <Card><p className="text-xs uppercase tracking-wide text-ink-600">Errores</p><p className={`mt-2 font-display text-xl font-semibold ${previa.resumen.errores ? "text-brick-500" : ""}`}>{previa.resumen.errores}</p></Card>
@@ -194,6 +261,12 @@ export default function JumpsellerPage() {
                 <p className="mt-2 text-xs text-ink-600">
                   {previa.resumen.noSincronizables} producto(s) no se sincronizan: tienen stock ilimitado en
                   Jumpseller, así que la tienda no lleva la cuenta de las unidades.
+                </p>
+              )}
+
+              {previa.truncado && (
+                <p className="mt-2 text-xs text-ink-500">
+                  El detalle muestra los primeros {previa.resultados.length}. Los números de arriba son de todo.
                 </p>
               )}
 
