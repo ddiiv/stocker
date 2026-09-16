@@ -27,9 +27,10 @@
  */
 
 const ml = require('./mercadolibreService');
+const jumpseller = require('./jumpsellerService');
 const postventa = require('./mercadolibrePostventaService');
 const mlPedidos = require('./mercadolibrePedidosService');
-const { MercadoLibreAccount } = require('../models');
+const { MercadoLibreAccount, JumpsellerAccount } = require('../models');
 const { log } = require('../utils/logger');
 
 /*
@@ -153,6 +154,45 @@ async function barrerStockMl() {
 }
 
 /*
+ * El mismo barrido para Jumpseller.
+ *
+ * Va aparte del de Mercado Libre y con su propio try: son dos tiendas
+ * distintas, y que una esté caída o con la clave vencida no puede dejar sin
+ * sincronizar a la otra.
+ */
+async function barrerStockJumpseller() {
+  const cuentas = await JumpsellerAccount.findAll({ where: { syncActiva: true } });
+  let actualizados = 0;
+  let fallaron = 0;
+
+  for (const cuenta of cuentas) {
+    try {
+      const r = await jumpseller.sincronizarStock(cuenta.businessId);
+      actualizados += r.resumen?.actualizados || 0;
+      if (r.resumen?.actualizados) {
+        log.info('jumpseller', 'barrido periódico', {
+          businessId: cuenta.businessId, actualizados: r.resumen.actualizados,
+        });
+      }
+    } catch (e) {
+      fallaron += 1;
+      /*
+       * El error queda en la tienda, no sólo en el log: una clave que dejó de
+       * andar no se arregla sola, y la pantalla de Jumpseller es donde alguien
+       * lo va a ver.
+       */
+      try {
+        await cuenta.update({ ultimoError: String(e.message || e).slice(0, 500) });
+      } catch { /* si ni eso se puede guardar, queda el log */ }
+      log.warn('jumpseller', 'el barrido falló', {
+        businessId: cuenta.businessId, motivo: String(e.message || e).slice(0, 200),
+      });
+    }
+  }
+  return { cuentas: cuentas.length, actualizados, fallaron };
+}
+
+/*
  * Una corrida por vez.
  *
  * Con doscientas publicaciones por cuenta y varias cuentas, un barrido puede
@@ -166,9 +206,14 @@ async function tick() {
   }
   corriendo = true;
   try {
-    await barrerStockMl();
+    if (process.env.ML_BARRIDO !== 'off') await barrerStockMl();
   } catch (e) {
     log.warn('mercadolibre', 'el barrido periódico se cayó entero', { motivo: e.message });
+  }
+  try {
+    if (process.env.JUMPSELLER_BARRIDO !== 'off') await barrerStockJumpseller();
+  } catch (e) {
+    log.warn('jumpseller', 'el barrido periódico se cayó entero', { motivo: e.message });
   } finally {
     corriendo = false;
   }
@@ -177,12 +222,14 @@ async function tick() {
 /** Arranca las tareas. Se llama una vez, desde index.js. */
 function arrancar() {
   if (timer) return false;
-  if (!ml.estaConfigurado()) {
-    console.log('  Barrido de stock a Mercado Libre .. apagado (falta configurar la app)');
-    return false;
-  }
-  if (process.env.ML_BARRIDO === 'off') {
-    console.log('  Barrido de stock a Mercado Libre .. apagado por ML_BARRIDO=off');
+  /*
+   * El barrido arranca aunque Mercado Libre no esté configurado: ahora también
+   * sincroniza Jumpseller, y un negocio puede tener una tienda y no la otra.
+   */
+  const conMl = ml.estaConfigurado() && process.env.ML_BARRIDO !== 'off';
+  const conJumpseller = process.env.JUMPSELLER_BARRIDO !== 'off';
+  if (!conMl && !conJumpseller) {
+    console.log('  Barrido de stock ................. apagado');
     return false;
   }
 
@@ -194,7 +241,8 @@ function arrancar() {
   }, DEMORA_INICIAL_MS);
   timer.unref?.();
 
-  console.log(`  Barrido de stock a Mercado Libre .. cada ${Math.round(INTERVALO_MS / 60000)} min`);
+  const canales = [conMl ? 'Mercado Libre' : null, conJumpseller ? 'Jumpseller' : null].filter(Boolean);
+  console.log(`  Barrido de stock ................. cada ${Math.round(INTERVALO_MS / 60000)} min (${canales.join(' y ')})`);
   return true;
 }
 
@@ -206,4 +254,4 @@ function parar() {
   timer = null;
 }
 
-module.exports = { arrancar, parar, barrerStockMl, INTERVALO_MS };
+module.exports = { arrancar, parar, barrerStockMl, barrerStockJumpseller, INTERVALO_MS };
