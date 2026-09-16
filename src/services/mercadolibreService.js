@@ -31,6 +31,15 @@ export async function getMlCobertura() {
   return data;
 }
 
+/*
+ * Republica una publicación finalizada: ML no deja ponerle stock, sólo volver
+ * a publicarla, y eso crea otra publicación con otro código.
+ */
+export async function republicarMl(mlItemId) {
+  const { data } = await http.post("/mercadolibre/republicar", { mlItemId });
+  return data;
+}
+
 export async function runMlSync(skus) {
   const { data } = await http.post("/mercadolibre/sync", skus?.length ? { skus } : {});
   return data;

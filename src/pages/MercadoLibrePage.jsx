@@ -7,7 +7,7 @@ import {
 import {
   getMlStatus, getMlAuthUrl, disconnectMl, previewMlSync, runMlSync,
   getMlLocales, setMlLocales, importarPedidosMl,
-  getMlLinks, saveMlLink, deleteMlLink, getMlCobertura,
+  getMlLinks, saveMlLink, deleteMlLink, getMlCobertura, republicarMl,
 } from "../services/mercadolibreService";
 import { PageHeader, Card } from "../components/ui/Layout";
 import Postventa from "../components/mercadolibre/Postventa";
@@ -414,6 +414,13 @@ export default function MercadoLibrePage() {
                 <Card><p className="text-xs uppercase tracking-wide text-ink-600">Errores</p><p className={`mt-2 font-display text-xl font-semibold ${preview.resumen.errores ? "text-brick-500" : ""}`}>{preview.resumen.errores}</p></Card>
               </div>
 
+              {(preview.resumen.duplicadasACero > 0 || preview.resumen.duplicadasEnCero > 0) && (
+                <p className="-mt-2 mb-5 text-xs text-ink-600">
+                  {preview.simulado
+                    ? `${preview.resumen.duplicadasACero} publicación(es) duplicada(s) con el mismo SKU se van a poner en 0: Mercado Libre no permite duplicadas y, con stock viejo, pueden vender algo que ya no está. Las que comparten stock con la asignada no se tocan.`
+                    : `${preview.resumen.duplicadasEnCero} publicación(es) duplicada(s) quedaron en 0 y Mercado Libre las pausa.`}
+                </p>
+              )}
               {preview.resumen.noSincronizables > 0 && (
                 <p className="-mt-2 mb-5 text-xs text-ink-600">
                   {preview.resumen.noSincronizables} publicación(es) no se pueden sincronizar desde Stocker
@@ -636,6 +643,21 @@ function estadoMlTexto(estado, subEstados = []) {
   return { closed: "Finalizada", under_review: "En revisión", inactive: "Inactiva" }[estado] || estado;
 }
 
+/*
+ * Qué se dice de una publicación repetida.
+ *
+ * Por SKU se usa una sola, la de mejor exposición. Las otras se ponen en cero
+ * —ML no permite duplicadas, y con el stock viejo pueden vender algo que ya no
+ * está—, salvo las que comparten stock con la asignada, que ML actualiza sola.
+ */
+function textoDeOtra(o) {
+  if (o.comparteStock) return "comparte stock con la asignada: Mercado Libre las actualiza juntas";
+  if (o.enCero) return "duplicada: quedó en 0 y Mercado Libre la pausa";
+  if (o.errorCero) return `duplicada: no se pudo poner en 0 (${o.errorCero})`;
+  if (o.seVaACero) return "duplicada: se va a poner en 0";
+  return "duplicada: no se le escribe stock";
+}
+
 function Etiqueta({ children }) {
   return <span className="rounded bg-paper-200 px-1.5 py-0.5 text-[10px] text-ink-600">{children}</span>;
 }
@@ -680,7 +702,7 @@ function DetallePublicacion({ r }) {
                   {[o.tipoNombre, estadoMlTexto(o.estadoMl, o.subEstadosMl), o.full ? "Full" : null]
                     .filter(Boolean).map((t) => ` · ${t}`).join("")}
                   {" — "}
-                  {o.comparteStock ? "comparte stock con la asignada" : "no se sincroniza: se usa la de mejor exposición"}
+                  {textoDeOtra(o)}
                 </li>
               ))}
             </ul>
@@ -708,6 +730,8 @@ function ChecklistPublicaciones() {
   const [error, setError] = useState("");
   const [soloFaltantes, setSoloFaltantes] = useState(true);
   const [abiertos, setAbiertos] = useState(() => new Set());
+  const [aviso, setAviso] = useState("");
+  const [republicando, setRepublicando] = useState(null);
 
   async function cargar() {
     setCargando(true); setError("");
@@ -717,6 +741,30 @@ function ChecklistPublicaciones() {
       setError(e.response?.data?.message || "No se pudo armar el checklist.");
     }
     setCargando(false);
+  }
+
+  /*
+   * Republicar es lo único que se puede hacer con una finalizada: ML no le
+   * acepta stock. Crea otra publicación, así que se pide confirmación y se
+   * hace de a una.
+   */
+  async function republicar(v) {
+    const ok = window.confirm(
+      `¿Republicar ${v.sku} en Mercado Libre?\n\n`
+      + `Se crea una publicación NUEVA, con otro código, el precio y el tipo de la anterior y `
+      + `${v.stockStocker} unidad(es) de Stocker. Mercado Libre permite republicar una sola vez `
+      + "y la publicación vuelve a estar a la venta.",
+    );
+    if (!ok) return;
+    setRepublicando(v.variantId); setError(""); setAviso("");
+    try {
+      const r = await republicarMl(v.mlItemId);
+      setAviso(`${v.sku}: republicada como ${r.mlItemId} con ${r.cantidad} unidad(es).`);
+      await cargar();
+    } catch (e) {
+      setError(e.response?.data?.message || "No se pudo republicar.");
+    }
+    setRepublicando(null);
   }
 
   const productos = (datos?.productos || []).filter((p) => !soloFaltantes || p.estado !== "completo");
@@ -750,6 +798,11 @@ function ChecklistPublicaciones() {
       {error && (
         <p className="flex items-start gap-1.5 px-4 py-3 text-sm text-brick-700">
           <AlertTriangle size={15} className="mt-0.5 shrink-0" />{error}
+        </p>
+      )}
+      {aviso && (
+        <p className="flex items-start gap-1.5 px-4 py-3 text-sm text-ink-700">
+          <Check size={15} className="mt-0.5 shrink-0 text-teal-600" />{aviso}
         </p>
       )}
 
@@ -832,6 +885,16 @@ function ChecklistPublicaciones() {
                                 <span className="ml-2 text-brick-600">sin publicación en Mercado Libre</span>
                               )}
                               {v.motivo && <span className="ml-1 text-ink-500">— {v.motivo}</span>}
+                              {v.estadoMl === "closed" && (
+                                <button
+                                  type="button"
+                                  className="ml-2 text-[11px] text-teal-600 underline disabled:text-ink-400"
+                                  disabled={republicando === v.variantId}
+                                  onClick={() => republicar(v)}
+                                >
+                                  {republicando === v.variantId ? "Republicando…" : "Republicar"}
+                                </button>
+                              )}
                             </span>
                           </span>
                           <span className="whitespace-nowrap text-ink-600">
