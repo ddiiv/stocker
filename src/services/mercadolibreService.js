@@ -67,8 +67,17 @@ export async function runMlSync(skus) {
  * El webhook sólo avisa de lo que pasa desde que está tildado: las ventas de
  * antes no llegan nunca por ahí. Es idempotente, así que se puede repetir.
  */
+/*
+ * Arranca la importación y vuelve: un año de ventas son miles de órdenes y
+ * varios minutos. `getMlImportEstado` dice cómo viene.
+ */
 export async function importarPedidosMl(dias) {
   const { data } = await http.post("/mercadolibre/importar-pedidos", { dias });
+  return data;
+}
+
+export async function getMlImportEstado() {
+  const { data } = await http.get("/mercadolibre/importar-pedidos/estado");
   return data;
 }
 

@@ -6,7 +6,7 @@ import {
 } from "lucide-react";
 import {
   getMlStatus, getMlAuthUrl, disconnectMl, previewMlSync, runMlSync,
-  getMlLocales, setMlLocales, importarPedidosMl,
+  getMlLocales, setMlLocales, importarPedidosMl, getMlImportEstado,
   getMlLinks, saveMlLink, deleteMlLink, getMlCobertura, republicarMl, reactivarMl,
 } from "../services/mercadolibreService";
 import { PageHeader, Card } from "../components/ui/Layout";
@@ -43,7 +43,9 @@ export default function MercadoLibrePage() {
   // Traer las ventas viejas. El webhook sólo avisa de lo que pasa desde que
   // está configurado; lo anterior hay que ir a buscarlo.
   const [importando, setImportando] = useState(false);
-  const [diasImportar, setDiasImportar] = useState(7);
+  const [diasImportar, setDiasImportar] = useState(30);
+  // Cómo viene la importación, que corre en el servidor.
+  const [avanceImport, setAvanceImport] = useState(null);
   const [trabajando, setTrabajando] = useState(false);
   const [links, setLinks] = useState([]);
   const [linkModal, setLinkModal] = useState(false);
@@ -156,12 +158,39 @@ export default function MercadoLibrePage() {
 
     setImportando(true); setError(""); setAviso("");
     try {
-      const r = await importarPedidosMl(diasImportar);
-      setAviso(r.mensaje);
+      const t = await importarPedidosMl(diasImportar);
+      setAvanceImport(t.estado === "corriendo" ? t : null);
+      setAviso("La importación está corriendo. Podés cerrar esta pantalla: sigue sola.");
     } catch (e) {
       setError(e.response?.data?.message || "No se pudieron traer las ventas anteriores.");
     } finally { setImportando(false); }
   }
+
+  /*
+   * La importación corre en el servidor: acá se pregunta cómo viene.
+   *
+   * Un año de ventas son miles de órdenes y varios minutos; esperarla adentro
+   * del pedido la cortaba a la mitad. Se pregunta también al abrir la pantalla,
+   * por si alguien la arrancó y se fue.
+   */
+  useEffect(() => {
+    let vivo = true;
+    let timer = null;
+    async function mirar() {
+      try {
+        const t = await getMlImportEstado();
+        if (!vivo) return;
+        setAvanceImport(t.estado === "corriendo" ? t : null);
+        if (t.estado === "corriendo") { timer = setTimeout(mirar, 2000); return; }
+        if (t.estado === "listo" && t.resultado?.mensaje) setAviso(t.resultado.mensaje);
+        if (t.estado === "error") setError(t.error || "La importación terminó con un error.");
+      } catch {
+        if (vivo) timer = setTimeout(mirar, 4000);
+      }
+    }
+    if (status?.conectado) mirar();
+    return () => { vivo = false; clearTimeout(timer); };
+  }, [status?.conectado, importando]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /*
    * Despausar lo que se pausó a mano en Mercado Libre.
@@ -344,19 +373,32 @@ export default function MercadoLibrePage() {
               <div className="flex items-center gap-1.5">
                 <select className="input h-9 w-28 text-sm"
                   value={diasImportar} onChange={(e) => setDiasImportar(Number(e.target.value))}>
-                  <option value={3}>3 días</option>
                   <option value={7}>7 días</option>
-                  <option value={15}>15 días</option>
                   <option value={30}>30 días</option>
+                  <option value={90}>90 días</option>
+                  <option value={180}>180 días</option>
+                  <option value={365}>1 año</option>
                 </select>
-                <button className="btn-ghost gap-1.5" onClick={importarVentas} disabled={importando}>
-                  {importando
+                <button className="btn-ghost gap-1.5" onClick={importarVentas}
+                  disabled={importando || Boolean(avanceImport)}>
+                  {importando || avanceImport
                     ? <><RefreshCw size={15} className="animate-spin" /> Trayendo…</>
                     : <><ArrowUpDown size={15} /> Traer ventas anteriores</>}
                 </button>
               </div>
               <button className="btn-ghost ml-auto" onClick={cargar}><RefreshCw size={15} /> Actualizar</button>
             </div>
+
+            {avanceImport && (
+              <p className="mt-3 text-xs text-ink-600">
+                {avanceImport.progreso?.etapa === "importando"
+                  ? `Importando ${avanceImport.progreso.hechos || 0} de ${avanceImport.progreso.total} venta(s)…`
+                  : `Leyendo ventas de Mercado Libre${avanceImport.progreso?.encontrados
+                    ? `: ${avanceImport.progreso.encontrados}${avanceImport.progreso.total
+                      ? ` de ${avanceImport.progreso.total}` : ""}` : "…"}`}
+                {" "}Corre en el servidor: podés cerrar la pantalla.
+              </p>
+            )}
             <p className="mt-3 text-xs text-ink-500">
               Las notificaciones de Mercado Libre sólo avisan de lo que pasa <strong>desde</strong> que se
               configuraron: para ver las ventas anteriores hay que traerlas con el botón de arriba. Sólo se
