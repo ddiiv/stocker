@@ -1,5 +1,6 @@
 const ml = require('../services/mercadolibreService');
 const mlPedidos = require('../services/mercadolibrePedidosService');
+const trabajos = require('../services/trabajosService');
 const { log, sinDatos } = require('../utils/logger');
 const { Op } = require('sequelize');
 const { MercadoLibreAccount, MercadoLibreLink, BusinessLocation } = require('../models');
@@ -156,34 +157,47 @@ const sync = async (req, res, next) => {
  * Es idempotente —usa la misma puerta que el webhook— así que se puede correr
  * las veces que haga falta sin apartar stock dos veces.
  */
+/*
+ * El mensaje cuenta lo que se salteó y por qué.
+ *
+ * "Se importaron 3" a secas, sobre veinte ventas encontradas, hace pensar que
+ * algo se rompió. Lo normal es que la mayoría ya se haya despachado, y eso hay
+ * que decirlo.
+ */
+function mensajeDeImportacion(r) {
+  const partes = [`${r.importados} pedido(s) importado(s)`];
+  if (r.repetidos) partes.push(`${r.repetidos} ya estaban`);
+  if (r.yaDespachados) partes.push(`${r.yaDespachados} ya se habían despachado y no se tocaron`);
+  if (r.cancelados) partes.push(`${r.cancelados} cancelado(s) en ML`);
+  if (r.sinStock) partes.push(`${r.sinStock} sin stock para apartar`);
+  if (r.errores.length) partes.push(`${r.errores.length} con error`);
+  return `Se revisaron ${r.encontrados} venta(s) desde el `
+    + `${new Date(r.desde).toLocaleDateString('es-AR')}: ${partes.join(', ')}.`
+    + (r.truncado ? ' Quedaron ventas sin revisar: pedí un rango más corto para traer el resto.' : '');
+}
+
+/*
+ * Importar contesta que arrancó, no el resultado.
+ *
+ * Un año de ventas son miles de órdenes y varios minutos: adentro del pedido
+ * HTTP, el proxy lo corta a la mitad y no queda registro de qué alcanzó a
+ * entrar. La pantalla pregunta cómo viene.
+ */
 const importarPedidos = async (req, res, next) => {
   try {
-    const r = await mlPedidos.importarPedidos(req.auth.businessId, {
-      dias: req.body?.dias,
-      desde: req.body?.desde,
-      tope: req.body?.tope,
-    });
+    const { businessId } = req.auth;
+    const opciones = { dias: req.body?.dias, desde: req.body?.desde, tope: req.body?.tope };
+    const trabajo = trabajos.iniciar(`ml-import:${businessId}`, (avisar) => mlPedidos
+      .importarPedidos(businessId, { ...opciones, onProgreso: avisar })
+      .then((r) => ({ ok: true, ...r, mensaje: mensajeDeImportacion(r) })));
+    res.status(202).json(trabajo);
+  } catch (e) { next(e); }
+};
 
-    /*
-     * El mensaje cuenta lo que se salteó y por qué.
-     *
-     * "Se importaron 3" a secas, sobre veinte ventas encontradas, hace pensar
-     * que algo se rompió. Lo normal es que la mayoría ya se haya despachado, y
-     * eso hay que decirlo.
-     */
-    const partes = [`${r.importados} pedido(s) importado(s)`];
-    if (r.repetidos) partes.push(`${r.repetidos} ya estaban`);
-    if (r.yaDespachados) partes.push(`${r.yaDespachados} ya se habían despachado y no se tocaron`);
-    if (r.cancelados) partes.push(`${r.cancelados} cancelado(s) en ML`);
-    if (r.sinStock) partes.push(`${r.sinStock} sin stock para apartar`);
-    if (r.errores.length) partes.push(`${r.errores.length} con error`);
-
-    res.json({
-      ok: true,
-      ...r,
-      mensaje: `Se revisaron ${r.encontrados} venta(s) desde el `
-        + `${new Date(r.desde).toLocaleDateString('es-AR')}: ${partes.join(', ')}.`,
-    });
+/** Cómo viene la importación que está corriendo, o cómo terminó la última. */
+const importarEstado = async (req, res, next) => {
+  try {
+    res.json(trabajos.estado(`ml-import:${req.auth.businessId}`));
   } catch (e) { next(e); }
 };
 
@@ -357,4 +371,4 @@ const notificacion = async (req, res) => {
   }
 };
 
-module.exports = { status, authUrl, callback, disconnect, preview, sync, importarPedidos, getLocales, setLocales, listLinks, upsertLink, deleteLink, notificacion, cobertura, republicar, reactivar };
+module.exports = { status, authUrl, callback, disconnect, preview, sync, importarPedidos, getLocales, setLocales, listLinks, upsertLink, deleteLink, notificacion, cobertura, republicar, reactivar, importarEstado };

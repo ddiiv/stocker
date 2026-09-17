@@ -41,6 +41,19 @@ const enviosDelDia = require('./enviosDelDiaService');
 const { log } = require('../utils/logger');
 
 const ML_API = 'https://api.mercadolibre.com';
+// Cuántas órdenes trae como mucho una importación, y hasta qué offset pagina
+// el buscador de ML antes de devolver error.
+/*
+ * El cero se lee aparte: `Number(0) || 1000` devuelve 1000, así que con `||`
+ * un tope en cero —el que usan las pruebas para simular el corte— quedaba
+ * ignorado en silencio.
+ */
+const numero = (valor, porDefecto) => {
+  const n = Number(valor);
+  return Number.isFinite(n) && n >= 0 ? n : porDefecto;
+};
+const TOPE_ORDENES = numero(process.env.ML_TOPE_ORDENES, 5000);
+const offsetMaximo = () => numero(process.env.ML_OFFSET_MAXIMO, 1000);
 
 /*
  * ── El formato nuevo de /shipments ───────────────────────────────
@@ -626,7 +639,7 @@ async function manejarFlexHandshake(cuenta, shipmentId) {
  * Se cuentan y se informan igual. Un salteo silencioso deja a quien importa
  * creyendo que trajo todo.
  */
-async function importarPedidos(businessId, { desde = null, dias = 7, tope = 200 } = {}) {
+async function importarPedidos(businessId, { desde = null, dias = 7, tope = 200, onProgreso = null } = {}) {
   const cuenta = await MercadoLibreAccount.findOne({ where: { businessId } });
   if (!cuenta) {
     const e = new Error('No hay una cuenta de Mercado Libre conectada.');
@@ -634,7 +647,14 @@ async function importarPedidos(businessId, { desde = null, dias = 7, tope = 200 
     throw e;
   }
 
-  const cuantosDias = Math.max(1, Math.min(Number(dias) || 7, 60));
+  /*
+   * Hasta un año para atrás.
+   *
+   * Antes el tope eran 60 días, y con la pantalla de Envíos mostrando hasta un
+   * año de registro, lo anterior a esos 60 días no estaba en ningún lado: ni
+   * importado ni importable.
+   */
+  const cuantosDias = Math.max(1, Math.min(Number(dias) || 7, 365));
   const desdeFecha = desde ? new Date(desde) : new Date(Date.now() - cuantosDias * 86400000);
   if (Number.isNaN(desdeFecha.getTime())) {
     const e = new Error('La fecha desde la que importar no es válida.');
@@ -643,15 +663,22 @@ async function importarPedidos(businessId, { desde = null, dias = 7, tope = 200 
   }
 
   const token = await ml.tokenValido(cuenta);
-  const limite = Math.max(1, Math.min(Number(tope) || 200, 500));
+  const limite = Math.max(1, Math.min(Number(tope) || 200, TOPE_ORDENES));
 
   /*
    * Se pide de a 50, que es el máximo del buscador de ML, y se corta al llegar
-   * al tope. Sin tope, un vendedor con miles de ventas del último mes tendría
-   * una importación de minutos adentro de una sola request.
+   * al tope: un año de ventas de un vendedor grande son miles de órdenes, y
+   * traerlas todas de una no le sirve a nadie.
+   *
+   * El buscador tampoco pagina indefinidamente: pasado el offset máximo
+   * devuelve error. Al llegar ahí se corta y se dice que quedó cortado, en vez
+   * de fallar entera la importación.
    */
   const ordenes = [];
+  let truncado = false;
+  let total = null;
   for (let offset = 0; offset < limite; offset += 50) {
+    if (offset >= offsetMaximo()) { truncado = true; break; }
     const { data } = await axios.get(`${ML_API}/orders/search`, {
       headers: { Authorization: `Bearer ${token}` },
       params: {
@@ -663,9 +690,17 @@ async function importarPedidos(businessId, { desde = null, dias = 7, tope = 200 
       },
     });
     const lote = data.results || [];
+    if (data.paging?.total !== undefined) total = Number(data.paging.total);
     ordenes.push(...lote);
-    if (lote.length < 50 || ordenes.length >= (data.paging?.total || 0)) break;
+    onProgreso?.({ etapa: 'leyendo', encontrados: ordenes.length, total });
+    if (!lote.length || ordenes.length >= limite) break;
+    if (total !== null && ordenes.length >= total) break;
   }
+  /*
+   * Si quedó algo afuera se dice. Cortar en silencio es peor que no traer: el
+   * resumen diría "se revisaron 200 ventas" y nadie sabría que había 900.
+   */
+  if (total !== null && ordenes.length < total) truncado = true;
 
   const resumen = {
     encontrados: ordenes.length,
@@ -677,9 +712,17 @@ async function importarPedidos(businessId, { desde = null, dias = 7, tope = 200 
     conAvisos: 0,
     errores: [],
     desde: desdeFecha,
+    dias: cuantosDias,
+    truncado,
   };
 
+  let procesados = 0;
   for (const orden of ordenes) {
+    procesados += 1;
+    // Cada tanto: la pantalla pregunta cada un par de segundos.
+    if (procesados % 10 === 0 || procesados === ordenes.length) {
+      onProgreso?.({ etapa: 'importando', total: ordenes.length, hechos: procesados });
+    }
     try {
       if (ordenCancelada(orden)) {
         // Registrada, no salteada: ver `registrarCancelacion`.
@@ -866,7 +909,13 @@ async function traerEtiquetas(cuenta, envioIds) {
 const RECONCILIAR_CADA_MS = 60 * 1000;     // lo normal: abrir la pantalla seguido no martilla a ML
 const RECONCILIAR_FORZADO_MS = 10 * 1000;  // el botón: más corto, pero con freno igual
 const TOPE_ABIERTOS = 150;
-const DIAS_HACIA_ATRAS = 60;
+/*
+ * Hasta dónde mira la reconciliación. Un año, igual que la importación: lo que
+ * acota el costo no es la fecha sino `TOPE_ABIERTOS`, porque sólo se revisan
+ * los pedidos que siguen abiertos. Uno de hace meses que quedó a medias se
+ * sigue revisando, que es justamente lo que hay que hacer con él.
+ */
+const DIAS_HACIA_ATRAS = 365;
 const reconciliando = new Map();
 
 async function reconciliarEnvios(businessId, { forzar = false } = {}) {

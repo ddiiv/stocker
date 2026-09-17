@@ -37,7 +37,8 @@ Module._load = function (pedido) {
         // El buscador de órdenes: lo usa la importación de ventas anteriores.
         if (url.includes('/orders/search')) {
           const off = Number(cfg?.params?.offset) || 0;
-          return { data: { results: BUSCADOR.slice(off, off + 50), paging: { total: BUSCADOR.length } } };
+          const cuantos = Math.min(Number(cfg?.params?.limit) || 50, 50);
+          return { data: { results: BUSCADOR.slice(off, off + cuantos), paging: { total: BUSCADOR.length } } };
         }
         for (const [patron, data] of RESPUESTAS) {
           if (url.includes(patron)) return { data };
@@ -590,6 +591,35 @@ const ML_USER = '999000111';
       [linea?.variante1Nombre, linea?.variante1Valor]);
     chk('el componente también', ['Talle', 'M'],
       [linea?.componentes?.[0]?.variante1Nombre, linea?.componentes?.[0]?.variante1Valor]);
+    tit('LA IMPORTACIÓN LLEGA HASTA UN AÑO PARA ATRÁS');
+    /*
+     * Envíos muestra hasta un año de registro; con la importación cortada en 60
+     * días, lo anterior no estaba ni importado ni era importable.
+     */
+    BUSCADOR = [];
+    const unAno = await mlPedidos.importarPedidos(negocio.id, { dias: 500 });
+    chk('pedir más de un año se acota a 365 días', 365, unAno.dias);
+    const haceUnAno = Math.round((Date.now() - new Date(unAno.desde).getTime()) / 86400000);
+    chk('y la fecha desde la que busca es de hace un año', true, haceUnAno >= 364 && haceUnAno <= 366);
+    chk('con la tienda vacía no hay nada cortado', [0, false], [unAno.encontrados, unAno.truncado]);
+
+    // Lo que no entra en el tope se dice: cortar en silencio es peor que no traer.
+    BUSCADOR = Array.from({ length: 7 }, (_, i) => orden(78000100 + i, {
+      date_created: '2026-08-28T10:00:00.000Z',
+      order_items: [{ quantity: 1, unit_price: 100, item: { id: 'MLA1', seller_sku: 'QA-ML-SIN-STOCK' } }],
+    }));
+    const cortada = await mlPedidos.importarPedidos(negocio.id, { dias: 365, tope: 3 });
+    chk('con un tope chico trae sólo eso', 3, cortada.encontrados);
+    chk('y avisa que quedó cortada', true, cortada.truncado);
+
+    // El buscador de ML no pagina para siempre: al llegar al tope se corta.
+    process.env.ML_OFFSET_MAXIMO = '0';
+    const porOffset = await mlPedidos.importarPedidos(negocio.id, { dias: 365, tope: 200 });
+    chk('al tope de paginado también se corta y se avisa', [0, true],
+      [porOffset.encontrados, porOffset.truncado]);
+    delete process.env.ML_OFFSET_MAXIMO;
+    BUSCADOR = [];
+
 
     tit('Limpieza');
     await limpiar();

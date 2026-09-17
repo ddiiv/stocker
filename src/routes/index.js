@@ -422,6 +422,7 @@ r.post  ('/mercadolibre/reactivar',   requireAuth, requirePermission('integracio
  * que sincronizar. Ver mercadolibrePedidosService.importarPedidos.
  */
 r.post  ('/mercadolibre/importar-pedidos', requireAuth, requirePermission('integraciones','editar'), requireFeature(FEATURES.ECOMMERCE), mlCtrl.importarPedidos);
+r.get   ('/mercadolibre/importar-pedidos/estado', requireAuth, requirePermission('integraciones','ver'), mlCtrl.importarEstado);
 r.get   ('/mercadolibre/locales',     requireAuth, requirePermission('integraciones','ver'),    mlCtrl.getLocales);
 r.put   ('/mercadolibre/locales',     requireAuth, requirePermission('integraciones','editar'), mlCtrl.setLocales);
 r.post  ('/mercadolibre/sync',        requireAuth, requirePermission('integraciones','editar'), requireFeature(FEATURES.ECOMMERCE), mlCtrl.sync);
