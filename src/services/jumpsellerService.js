@@ -17,6 +17,7 @@ const axios = require('axios');
 const { JumpsellerAccount } = require('../models');
 const stockService = require('./stockService');
 const { variantesPublicables, cantidadesPublicables } = require('./stockPublicableService');
+const cola = require('./colaVentasOnlineService');
 const { log } = require('../utils/logger');
 
 const API = 'https://api.jumpseller.com/v1';
@@ -39,6 +40,10 @@ const ESPERA_429_MS = Number(process.env.JUMPSELLER_ESPERA_429_MS) || 1500;
  */
 // Se leen en cada pedido: así se pueden apretar sin reiniciar, y las pruebas
 // pueden probar el freno de verdad.
+const numero = (valor, porDefecto) => {
+  const n = Number(valor);
+  return Number.isFinite(n) && n >= 0 ? n : porDefecto;
+};
 const topePorSegundo = () => Number(process.env.JUMPSELLER_POR_SEGUNDO) || 10;
 const topePorMinuto = () => Number(process.env.JUMPSELLER_POR_MINUTO) || 700;
 // businessId → marcas de tiempo de los últimos pedidos
@@ -340,6 +345,124 @@ async function enviarStock(cuenta, destino, cantidad) {
   });
 }
 
+/*
+ * Traer las ventas anteriores de la tienda.
+ *
+ * Igual que en Mercado Libre: hasta un año para atrás, y lo que entra es lo
+ * PAGADO y todavía SIN DESPACHAR. Una venta ya despachada no se toca —apartarle
+ * stock restaría del inventario mercadería que ya no está— y una cancelada o
+ * abandonada tampoco tiene nada que apartar.
+ *
+ * El alta va por la cola de ventas online, la misma que usan el webhook y
+ * Mercado Libre: es la que aparta el stock de a un pedido por vez y deja el
+ * pedido listo para despachar en Envíos del Día.
+ */
+const DIAS_IMPORTAR_MAXIMO = 365;
+const TOPE_ORDENES = numero(process.env.JUMPSELLER_TOPE_ORDENES, 5000);
+const TOPE_PAGINAS = 500;
+
+const soloFecha = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+
+async function importarPedidos(businessId, { dias = 7, tope = 200, onProgreso = null } = {}) {
+  const cuenta = await cuentaDe(businessId);
+  if (!cuenta) throw error('No hay una tienda de Jumpseller conectada.', 400);
+
+  const cuantosDias = Math.max(1, Math.min(Math.trunc(Number(dias) || 7), DIAS_IMPORTAR_MAXIMO));
+  const hasta = new Date();
+  const desde = new Date(Date.now() - cuantosDias * 86400000);
+  const limite = Math.max(1, Math.min(Number(tope) || 200, TOPE_ORDENES));
+
+  const ordenes = [];
+  let truncado = false;
+  for (let pagina = 1; pagina <= TOPE_PAGINAS; pagina++) {
+    const lote = await pedir(cuenta, 'get', '/orders.json', {
+      params: {
+        page: pagina,
+        limit: TAM_PAGINA,
+        dateFilter: 'customDate',
+        initialDate: soloFecha(desde),
+        finalDate: soloFecha(hasta),
+        'status_filters[]': 'paid',
+        fulfillment_filters: 'unfulfilled',
+      },
+    });
+    const lista = Array.isArray(lote) ? lote.map((x) => x?.order || x).filter(Boolean) : [];
+    ordenes.push(...lista);
+    onProgreso?.({ etapa: 'leyendo', encontrados: ordenes.length });
+    if (lista.length < TAM_PAGINA) break;
+    if (ordenes.length >= limite || pagina === TOPE_PAGINAS) { truncado = true; break; }
+  }
+
+  const aProcesar = ordenes.slice(0, limite);
+  if (aProcesar.length < ordenes.length) truncado = true;
+
+  const resumen = {
+    encontrados: aProcesar.length,
+    importados: 0,
+    repetidos: 0,
+    sinStock: 0,
+    conAvisos: 0,
+    // Con alguna línea sin SKU: entra igual, pero hay que identificarla.
+    sinSku: 0,
+    // Sin ninguna línea utilizable: no hay nada que apartar.
+    sinLineas: 0,
+    errores: [],
+    desde,
+    dias: cuantosDias,
+    truncado,
+  };
+
+  let hechos = 0;
+  for (const orden of aProcesar) {
+    hechos += 1;
+    if (hechos % 10 === 0 || hechos === aProcesar.length) {
+      onProgreso?.({ etapa: 'importando', total: aProcesar.length, hechos });
+    }
+    try {
+      /*
+       * Una línea sin SKU entra igual, con un SKU inventado que no existe en
+       * Stocker: el pedido queda registrado y se ve que falta identificarla. Si
+       * se saltearan las líneas, el pedido entraría incompleto y nadie se daría
+       * cuenta de que faltó despachar algo.
+       */
+      const items = (orden.products || []).map((p) => ({
+        sku: String(p.sku || '').trim() || `SIN-SKU:${p.variant_id || p.id || 's/id'}`,
+        cantidad: Math.trunc(Number(p.qty) || 0),
+        precioUnitario: Number(p.price) || null,
+      })).filter((i) => i.cantidad > 0);
+      if (!items.length) { resumen.sinLineas += 1; continue; }
+      if (items.some((i) => i.sku.startsWith('SIN-SKU:'))) resumen.sinSku += 1;
+
+      const cliente = orden.customer || {};
+      const r = await cola.encolarYProcesar({
+        businessId,
+        plataforma: 'jumpseller',
+        pedidoExterno: String(orden.id),
+        total: Number(orden.total) || null,
+        comprador: {
+          nombre: [cliente.name, cliente.surname].filter(Boolean).join(' ').trim() || null,
+          email: cliente.email || null,
+        },
+        items,
+      });
+      if (r.repetido) resumen.repetidos += 1;
+      else if (r.pedido?.estado === 'rechazado') resumen.sinStock += 1;
+      else {
+        resumen.importados += 1;
+        if (r.pedido?.estado === 'parcial') resumen.conAvisos += 1;
+      }
+    } catch (e) {
+      // Una venta que falla no voltea la importación: se anota y se sigue.
+      resumen.errores.push({ orden: String(orden.id), motivo: (e.message || '').slice(0, 200) });
+    }
+  }
+
+  log.info('jumpseller', 'importación de ventas anteriores', {
+    businessId, encontrados: resumen.encontrados, importados: resumen.importados,
+  });
+  return resumen;
+}
+
 /**
  * Sincroniza el stock de Stocker hacia Jumpseller, cruzando por SKU.
  *
@@ -506,6 +629,7 @@ async function sincronizarStock(businessId, {
 module.exports = {
   estado,
   conectar,
+  importarPedidos,
   desconectar,
   listarProductos,
   mapearPorSku,

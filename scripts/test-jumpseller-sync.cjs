@@ -15,6 +15,7 @@ const Module = require('module');
 
 const LLAMADAS = [];
 let productos = [];
+let ORDENES = [];
 let fallar429 = new Set();
 let claveValida = { login: 'LLAVE-QA', token: 'TOKEN-QA' };
 // Como Jumpseller: más de `topeMock` pedidos en un segundo son 429.
@@ -64,6 +65,11 @@ Module._load = function (pedido) {
 
       if (url.endsWith('/products/count.json')) return { data: { count: productos.length } };
 
+      if (url.endsWith('/orders.json') && metodo === 'get') {
+        const limite = Math.min(Number(params.limit) || 50, 100);
+        const desde = ((Number(params.page) || 1) - 1) * limite;
+        return { data: ORDENES.slice(desde, desde + limite).map((o) => ({ order: o })) };
+      }
       if (url.endsWith('/products.json') && metodo === 'get') {
         const limite = Math.min(Number(params.limit) || 50, 100);
         const desde = ((Number(params.page) || 1) - 1) * limite;
@@ -120,7 +126,7 @@ Module._load = function (pedido) {
 const { Op } = require('sequelize');
 const {
   Business, BusinessLocation, Product, ProductVariant, VariantStock, StockMovement,
-  JumpsellerAccount,
+  JumpsellerAccount, PedidoPlataforma, PedidoPlataformaItem,
 } = require('../src/models');
 const stock = require('../src/services/stockService');
 const jumpseller = require('../src/services/jumpsellerService');
@@ -154,6 +160,14 @@ const falla = async (fn) => { try { await fn(); return null; } catch (e) { retur
     }
     await Product.destroy({ where: { businessId: negocio.id, sku: { [Op.like]: 'QA-JS%' } } });
     await JumpsellerAccount.destroy({ where: { businessId: negocio.id } });
+    // Las ventas que trajo la importación de prueba.
+    const pedidos = await PedidoPlataforma.findAll({
+      where: { businessId: negocio.id, plataforma: 'jumpseller', pedidoExterno: { [Op.like]: 'QA5%' } },
+    });
+    if (pedidos.length) {
+      await PedidoPlataformaItem.destroy({ where: { pedidoId: pedidos.map((x) => x.id) } });
+      await PedidoPlataforma.destroy({ where: { id: pedidos.map((x) => x.id) } });
+    }
   };
   await limpiar();
 
@@ -508,7 +522,56 @@ const falla = async (fn) => { try { await fn(); return null; } catch (e) { retur
     topeMock = 0;
     await ProductVariant.destroy({ where: { id: delRitmo.map((v) => v.id) } });
 
-    tit('11. SIN TIENDA CONECTADA, NO SE SINCRONIZA');
+    tit('11. TRAER LAS VENTAS ANTERIORES');
+    /*
+     * Lo mismo que en Mercado Libre: entra lo PAGADO y sin despachar. Una venta
+     * ya despachada no se toca —apartarle stock restaría mercadería que ya no
+     * está— y el alta va por la cola de ventas online, que es la que aparta.
+     */
+    const venta = (id, productos2, extra = {}) => ({
+      id, total: 100, created_at: new Date().toISOString(),
+      customer: { name: 'Ana', surname: 'Pérez', email: 'ana@qa.test' },
+      products: productos2, ...extra,
+    });
+    ORDENES = [
+      venta('QA5001', [{ id: 1, variant_id: 11, sku: 'QA-JS-1', qty: 1, price: 100, name: 'Remera QA' }]),
+      venta('QA5002', [{ id: 2, variant_id: 12, sku: '', qty: 1, price: 50, name: 'Sin SKU' }]),
+      venta('QA5003', []),
+    ];
+    reset();
+    const traida = await jumpseller.importarPedidos(negocio.id, { dias: 30 });
+    const pedidoOrders = LLAMADAS.find((l) => l.url.endsWith('/orders.json'));
+    chk('le pide a la tienda sólo las pagadas y sin despachar',
+      ['paid', 'unfulfilled', 'customDate'],
+      [pedidoOrders?.params?.['status_filters[]'], pedidoOrders?.params?.fulfillment_filters,
+        pedidoOrders?.params?.dateFilter]);
+    chk('y con el rango de fechas puesto', true,
+      /^\d{4}-\d{2}-\d{2}$/.test(pedidoOrders?.params?.initialDate || ''));
+    chk('encuentra las tres ventas', 3, traida.encontrados);
+    chk('las dos con líneas quedan registradas', 2, traida.importados);
+    chk('la que trae una línea sin SKU se cuenta aparte', 1, traida.sinSku);
+    chk('pero queda registrada igual, para que no se pierda', 1,
+      await PedidoPlataforma.count({ where: { businessId: negocio.id, pedidoExterno: 'QA5002' } }));
+    chk('la venta sin líneas no se importa y se cuenta', [1, 0],
+      [traida.sinLineas,
+        await PedidoPlataforma.count({ where: { businessId: negocio.id, pedidoExterno: 'QA5003' } })]);
+    chk('la del SKU conocido aparta stock', 'QA-JS-1', (await PedidoPlataformaItem.findOne({
+      where: { pedidoId: (await PedidoPlataforma.findOne({ where: { businessId: negocio.id, pedidoExterno: 'QA5001' } })).id },
+    })).sku);
+
+    const deNuevo = await jumpseller.importarPedidos(negocio.id, { dias: 30 });
+    chk('importar de nuevo no duplica', [0, 2], [deNuevo.importados, deNuevo.repetidos]);
+
+    const unAno = await jumpseller.importarPedidos(negocio.id, { dias: 900 });
+    chk('pedir más de un año se acota a 365 días', 365, unAno.dias);
+
+    ORDENES = ['QA5010', 'QA5011', 'QA5012', 'QA5013'].map((id) => venta(id,
+      [{ id: 9, variant_id: 99, sku: 'QA-JS-2', qty: 1, price: 10, name: 'Otra' }]));
+    const cortada = await jumpseller.importarPedidos(negocio.id, { dias: 30, tope: 2 });
+    chk('con un tope chico trae sólo eso y avisa', [2, true], [cortada.encontrados, cortada.truncado]);
+    ORDENES = [];
+
+    tit('12. SIN TIENDA CONECTADA, NO SE SINCRONIZA');
     await JumpsellerAccount.destroy({ where: { businessId: negocio.id } });
     const sinCuenta = await falla(() => jumpseller.sincronizarStock(negocio.id, { simular: true }));
     chk('avisa que falta conectar la tienda', [400, true],

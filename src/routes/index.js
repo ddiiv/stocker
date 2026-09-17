@@ -405,6 +405,8 @@ r.delete('/jumpseller/conectar',      requireAuth, requirePermission('integracio
 r.get   ('/jumpseller/preview',       requireAuth, requirePermission('integraciones','ver'),    jsCtrl.preview);
 r.post  ('/jumpseller/sync',          requireAuth, requirePermission('integraciones','editar'), requireFeature(FEATURES.ECOMMERCE), jsCtrl.sync);
 r.get   ('/jumpseller/sync/estado',   requireAuth, requirePermission('integraciones','ver'),    jsCtrl.syncEstado);
+r.post  ('/jumpseller/importar-pedidos', requireAuth, requirePermission('integraciones','editar'), requireFeature(FEATURES.ECOMMERCE), jsCtrl.importar);
+r.get   ('/jumpseller/importar-pedidos/estado', requireAuth, requirePermission('integraciones','ver'), jsCtrl.importarEstado);
 
 r.get   ('/mercadolibre/status',      requireAuth, requirePermission('integraciones','ver'),    mlCtrl.status);
 r.get   ('/mercadolibre/auth-url',    requireAuth, requirePermission('integraciones','editar'), requireFeature(FEATURES.ECOMMERCE), mlCtrl.authUrl);
