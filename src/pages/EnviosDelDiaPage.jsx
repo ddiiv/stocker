@@ -49,27 +49,26 @@ const hoyISO = () => {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 };
 
-const isoDeHace = (dias) => {
-  const d = new Date();
-  d.setDate(d.getDate() - dias);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-};
 
 /*
- * Los presets del selector "Alcance".
+ * El alcance: cuánto para atrás mira la pantalla.
  *
- * No alcanza con un número de días: "Próximos 30" y "Últimos 30" son los
- * mismos 30 días de ventana pero mirando para lados opuestos, y eso requiere
- * mover el selector de Día además del de Alcance. Guardarlo como un preset
- * con nombre evita que, después de elegir "Últimos 30 días", la pantalla
- * vuelva a mostrar "Próximos 30 días" sólo porque el número de días coincide.
+ * Nunca menos de 30 días. Esta pantalla no es sólo la tarea de hoy: también es
+ * el registro de lo que se despachó, lo que llegó y lo que se canceló, y con
+ * la ventana pegada al día de hoy todo eso desaparecía al día siguiente. Se
+ * puede pedir más, nunca menos; el servidor lo vuelve a subir a 30 si igual
+ * llega un pedido con menos.
+ *
+ * Lo que sale más adelante —un corte de mañana— es otra pregunta, y va en su
+ * propia casilla.
  */
+const MINIMO_DIAS_ATRAS = 30;
 const ALCANCES = {
-  hoy:       { texto: "Sólo hoy",          dias: 0,  atras: false },
-  hoy2:      { texto: "Hoy y 2 días",      dias: 2,  atras: false },
-  prox7:     { texto: "Próximos 7 días",   dias: 7,  atras: false },
-  prox30:    { texto: "Próximos 30 días",  dias: 30, atras: false },
-  ultimos30: { texto: "Últimos 30 días",   dias: 30, atras: true },
+  d30:  { texto: "Últimos 30 días",  atras: 30 },
+  d60:  { texto: "Últimos 60 días",  atras: 60 },
+  d90:  { texto: "Últimos 90 días",  atras: 90 },
+  d180: { texto: "Últimos 180 días", atras: 180 },
+  d365: { texto: "Último año",       atras: 365 },
 };
 
 /*
@@ -311,14 +310,15 @@ export default function EnviosDelDiaPage() {
    * es de otro estado, es de otro día, y hay que poder ir preparándolo.
    */
   const [dias, setDias] = useState(0);
-  const [alcance, setAlcance] = useState("hoy");
+  const [diasAtras, setDiasAtras] = useState(MINIMO_DIAS_ATRAS);
+  const [alcance, setAlcance] = useState("d30");
   const [filtro, setFiltro] = useState("para_enviar");
 
   function elegirAlcance(clave) {
-    const preset = ALCANCES[clave] || ALCANCES.hoy;
+    const preset = ALCANCES[clave] || ALCANCES.d30;
     setAlcance(clave);
-    setFecha(preset.atras ? isoDeHace(preset.dias) : hoyISO());
-    setDias(preset.dias);
+    setFecha(hoyISO());
+    setDiasAtras(Math.max(MINIMO_DIAS_ATRAS, preset.atras));
   }
 
   const [locales, setLocales] = useState([]);
@@ -343,6 +343,7 @@ export default function EnviosDelDiaPage() {
     locationId: locationId ? Number(locationId) : null,
     envioTipo: soloFlex ? "flex" : null,
     diasAdelante: dias,
+    diasAtras,
     filtro,
   };
 
@@ -351,7 +352,7 @@ export default function EnviosDelDiaPage() {
     try {
       setJornada(await fetchJornada({
         fecha, locationId: locationId ? Number(locationId) : null,
-        envioTipo: soloFlex ? "flex" : null, diasAdelante: dias, filtro,
+        envioTipo: soloFlex ? "flex" : null, diasAdelante: dias, diasAtras, filtro,
       }));
     } catch (e) {
       /*
@@ -365,7 +366,7 @@ export default function EnviosDelDiaPage() {
     } finally {
       setCargando(false);
     }
-  }, [fecha, locationId, soloFlex, dias, filtro]);
+  }, [fecha, locationId, soloFlex, dias, diasAtras, filtro]);
 
   useEffect(() => { cargar(); }, [cargar]);
   /*
@@ -374,7 +375,7 @@ export default function EnviosDelDiaPage() {
    * "los seleccionados" sin ver cuáles son es la peor manera de descontar
    * stock.
    */
-  useEffect(() => { setElegidos(new Set()); }, [fecha, locationId, soloFlex, dias, filtro]);
+  useEffect(() => { setElegidos(new Set()); }, [fecha, locationId, soloFlex, dias, diasAtras, filtro]);
   useEffect(() => { fetchLocalesDeVenta().then(setLocales).catch(() => setLocales([])); }, []);
 
   /*
@@ -637,7 +638,7 @@ export default function EnviosDelDiaPage() {
     <div>
       <PageHeader
         title="Envíos del día"
-        subtitle="Lo que sale hoy: qué bajar del estante y qué paquete armar con eso"
+        subtitle="Los últimos 30 días y lo que sale hoy: qué bajar del estante, qué paquete armar, y qué se despachó, llegó o se canceló"
         actions={
           <div className="flex flex-wrap items-center gap-2">
             <button className="btn-ghost gap-1.5 text-sm" onClick={cargar} disabled={cargando}>
@@ -695,6 +696,15 @@ export default function EnviosDelDiaPage() {
                 <option key={clave} value={clave}>{p.texto}</option>
               ))}
             </select>
+          </label>
+          {/*
+            * Lo que todavía no venció va aparte del registro: son dos
+            * preguntas distintas —"qué pasó" y "qué se viene"— y mezclarlas en
+            * el mismo selector obligaba a elegir una de las dos.
+            */}
+          <label className="flex items-center gap-2 pb-1.5 text-sm text-ink-700">
+            <input type="checkbox" checked={dias > 0} onChange={(e) => setDias(e.target.checked ? 7 : 0)} />
+            Sumar lo que sale en los próximos 7 días
           </label>
         </div>
 

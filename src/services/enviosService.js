@@ -13,6 +13,7 @@ import { http } from "../lib/http";
  * @param {number} [filtros.locationId]         sólo lo que sale de este local.
  * @param {string} [filtros.envioTipo]          'flex' para ver sólo los que tienen corte.
  * @param {number} [filtros.diasAdelante]      0 = sólo hoy; 7 = la semana que viene.
+ * @param {number} [filtros.diasAtras]         cuántos días para atrás. Mínimo 30.
  * @param {string} [filtros.filtro]             para_enviar | en_camino | entregado |
  *                                              cancelado | con_faltante | todos
  */
@@ -22,6 +23,8 @@ export async function fetchJornada(filtros = {}) {
   if (filtros.locationId) params.locationId = filtros.locationId;
   if (filtros.envioTipo) params.envioTipo = filtros.envioTipo;
   if (filtros.diasAdelante) params.diasAdelante = filtros.diasAdelante;
+  // El alcance hacia atrás: el servidor nunca lo baja de 30 días.
+  if (filtros.diasAtras) params.diasAtras = filtros.diasAtras;
   if (filtros.filtro) params.filtro = filtros.filtro;
   const { data } = await http.get("/envios/del-dia", { params });
   return data;
@@ -39,6 +42,8 @@ export async function abrirPdfJornada(filtros = {}) {
   if (filtros.locationId) params.locationId = filtros.locationId;
   if (filtros.envioTipo) params.envioTipo = filtros.envioTipo;
   if (filtros.diasAdelante) params.diasAdelante = filtros.diasAdelante;
+  // El alcance hacia atrás: el servidor nunca lo baja de 30 días.
+  if (filtros.diasAtras) params.diasAtras = filtros.diasAtras;
   if (filtros.filtro) params.filtro = filtros.filtro;
 
   const { data } = await http.get("/envios/del-dia/pdf", { params, responseType: "blob" });
