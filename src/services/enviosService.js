@@ -101,7 +101,15 @@ export async function despacharVarios(pedidoIds) {
 export async function sincronizarConMl({ forzar = false } = {}) {
   // `forzar` es el botón: baja el freno del servidor de un minuto a diez
   // segundos. Sin esto, apretarlo recién abierta la pantalla no hacía nada.
-  const { data } = await http.post("/envios/sincronizar", null, {
+  /*
+   * El cuerpo va vacío pero como objeto, no como `null`.
+   *
+   * El cliente manda todo con Content-Type JSON, así que un `null` viaja como
+   * el texto "null", y para el parser del servidor —en modo estricto— eso no es
+   * un cuerpo: contestaba 400 y la pantalla mostraba "Unexpected token 'n'…"
+   * en vez de sincronizar. Los envíos no cargaban por esto.
+   */
+  const { data } = await http.post("/envios/sincronizar", {}, {
     params: forzar ? { forzar: 1 } : {},
   });
   return data;
