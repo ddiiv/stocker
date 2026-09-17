@@ -40,11 +40,12 @@ const fallo = async (fn) => { try { await fn(); return null; } catch (e) { retur
 
 function sesion() {
   let cookie = '';
-  return async (m, ruta, cuerpo) => {
+  // `crudo` manda el cuerpo tal cual, para poder probar uno inválido.
+  return async (m, ruta, cuerpo, { crudo = false } = {}) => {
     const r = await fetch(`${API}${ruta}`, {
       method: m,
       headers: { 'Content-Type': 'application/json', ...(cookie ? { Cookie: cookie } : {}) },
-      body: cuerpo ? JSON.stringify(cuerpo) : undefined,
+      body: crudo ? cuerpo : (cuerpo ? JSON.stringify(cuerpo) : undefined),
     });
     const set = r.headers.getSetCookie?.() || [];
     if (set.length) cookie = set.map((c) => c.split(';')[0]).join('; ');
@@ -648,6 +649,25 @@ function sesion() {
     chk('sin dejar reservas colgadas', 0, await apartado(vA));
 
   } finally {
+    tit('UN CUERPO INVÁLIDO NO SE MUESTRA COMO ERROR DEL MOTOR');
+    /*
+     * La pantalla mandaba `null` como cuerpo y, con el Content-Type en JSON,
+     * eso viaja como el texto "null": para el parser en modo estricto no es un
+     * cuerpo, contestaba 400 y Envíos mostraba "Unexpected token 'n'…" en vez
+     * de sincronizar. No cargaba ningún envío por esto.
+     */
+    const crudoNull = await api('POST', '/api/envios/sincronizar', 'null', { crudo: true });
+    chk('un cuerpo "null" se rechaza con un mensaje entendible', [400, 'CUERPO_INVALIDO'],
+      [crudoNull.status, crudoNull.json?.codigo]);
+    chk('y no se filtra el mensaje del motor', false,
+      /Unexpected token|is not valid JSON/i.test(crudoNull.json?.message || ''));
+    const crudoRoto = await api('POST', '/api/envios/sincronizar', '{ esto no es json', { crudo: true });
+    chk('lo mismo con cualquier cuerpo roto', 'CUERPO_INVALIDO', crudoRoto.json?.codigo);
+
+    const conVacio = await api('POST', '/api/envios/sincronizar', {});
+    chk('con el cuerpo vacío la sincronización sí entra', true,
+      conVacio.status < 500 && conVacio.json?.codigo !== 'CUERPO_INVALIDO');
+
     tit('Limpieza');
     await limpiar();
     await StockMovement.destroy({ where: { productVariantId: [vA.id, vB.id] } });

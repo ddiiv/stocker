@@ -132,6 +132,28 @@ const errorHandler = (err, req, res, next) => { // eslint-disable-line no-unused
     return res.status(400).json({ message: mensaje, errors: [mensaje] });
   }
 
+  /*
+   * El cuerpo no era JSON válido.
+   *
+   * body-parser deja acá el mensaje del motor —"Unexpected token 'n', \"null\"
+   * is not valid JSON"—, que no le dice nada a quien está usando la pantalla,
+   * cambia con la versión de Node y encima se lee como si el problema fuera de
+   * la pantalla y no del pedido. Un cliente que manda `null` como cuerpo entra
+   * por acá: para el parser en modo estricto, un `null` suelto no es un cuerpo.
+   */
+  if (err.type === 'entity.parse.failed') {
+    return res.status(400).json({
+      message: 'El pedido llegó con un cuerpo que no es JSON válido.',
+      codigo: 'CUERPO_INVALIDO',
+    });
+  }
+  if (err.type === 'entity.too.large') {
+    return res.status(413).json({
+      message: 'El pedido es más grande de lo que el servidor acepta.',
+      codigo: 'CUERPO_GRANDE',
+    });
+  }
+
   // Sólo se devuelve el texto original cuando el código lo eligió a propósito.
   const paraElUsuario = err.status
     ? (err.message || 'Error en la operación')
