@@ -38,3 +38,17 @@ export async function getJumpsellerSyncEstado() {
   const { data } = await http.get("/jumpseller/sync/estado");
   return data;
 }
+
+/*
+ * Trae las ventas anteriores de la tienda. Como la sincronización, arranca un
+ * trabajo en el servidor y vuelve: un año de ventas son minutos.
+ */
+export async function importarPedidosJumpseller(dias) {
+  const { data } = await http.post("/jumpseller/importar-pedidos", { dias });
+  return data;
+}
+
+export async function getJumpsellerImportEstado() {
+  const { data } = await http.get("/jumpseller/importar-pedidos/estado");
+  return data;
+}

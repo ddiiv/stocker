@@ -3,6 +3,7 @@ import { RefreshCw, AlertTriangle, Check, Store, Unlink } from "lucide-react";
 import {
   getJumpsellerStatus, conectarJumpseller, desconectarJumpseller,
   previewJumpseller, syncJumpseller, getJumpsellerSyncEstado,
+  importarPedidosJumpseller, getJumpsellerImportEstado,
 } from "../services/jumpsellerService";
 import { PageHeader, Card } from "../components/ui/Layout";
 
@@ -28,6 +29,9 @@ export default function JumpsellerPage() {
   const [form, setForm] = useState({ loginKey: "", authToken: "", tienda: "" });
   // Cómo viene la sincronización que corre en el servidor.
   const [avance, setAvance] = useState(null);
+  const [diasImportar, setDiasImportar] = useState(30);
+  const [avanceImport, setAvanceImport] = useState(null);
+  const [importando, setImportando] = useState(false);
 
   async function cargar() {
     setCargando(true); setError("");
@@ -110,6 +114,46 @@ export default function JumpsellerPage() {
       setError(e.response?.data?.message || "No se pudieron leer los productos de la tienda.");
     } finally { setTrabajando(false); }
   }
+
+  /*
+   * Traer las ventas que ya se hicieron en la tienda.
+   *
+   * Son las pagadas y sin despachar: apartan stock en Stocker y quedan en
+   * Envíos del Día. Corre en el servidor, como la sincronización.
+   */
+  async function importar() {
+    if (!confirm(
+      `Se van a traer las ventas pagadas y sin despachar de los últimos ${diasImportar} días.\n\n`
+      + "Las ya despachadas no se tocan: apartarles stock restaría mercadería que ya salió.",
+    )) return;
+    setImportando(true); setError(""); setAviso("");
+    try {
+      const t = await importarPedidosJumpseller(diasImportar);
+      setAvanceImport(t.estado === "corriendo" ? t : null);
+      setAviso("La importación está corriendo. Podés cerrar esta pantalla: sigue sola.");
+    } catch (e) {
+      setError(e.response?.data?.message || "No se pudieron traer las ventas anteriores.");
+    } finally { setImportando(false); }
+  }
+
+  useEffect(() => {
+    let vivo = true;
+    let timer = null;
+    async function mirar() {
+      try {
+        const t = await getJumpsellerImportEstado();
+        if (!vivo) return;
+        setAvanceImport(t.estado === "corriendo" ? t : null);
+        if (t.estado === "corriendo") { timer = setTimeout(mirar, 2000); return; }
+        if (t.estado === "listo" && t.resultado?.mensaje) setAviso(t.resultado.mensaje);
+        if (t.estado === "error") setError(t.error || "La importación terminó con un error.");
+      } catch {
+        if (vivo) timer = setTimeout(mirar, 4000);
+      }
+    }
+    if (estado?.conectado) mirar();
+    return () => { vivo = false; clearTimeout(timer); };
+  }, [estado?.conectado, importando]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const pendientes = (previa?.resultados || []).filter((r) => r.estado === "pendiente" || r.estado === "error");
 
@@ -228,10 +272,37 @@ export default function JumpsellerPage() {
                 {estado.ultimoError && (
                   <p className="mt-1 text-xs text-brick-700">Último error: {estado.ultimoError}</p>
                 )}
+                {avanceImport && (
+                  <p className="mt-1 text-xs text-ink-600">
+                    {avanceImport.progreso?.etapa === "importando"
+                      ? `Importando ${avanceImport.progreso.hechos || 0} de ${avanceImport.progreso.total} venta(s)…`
+                      : `Leyendo ventas de la tienda${avanceImport.progreso?.encontrados
+                        ? `: ${avanceImport.progreso.encontrados}` : "…"}`}
+                  </p>
+                )}
               </div>
-              <button className="btn-ghost border border-line text-xs" onClick={desconectar} disabled={trabajando}>
-                <Unlink size={14} /> Desconectar
-              </button>
+              <div className="flex flex-wrap items-center gap-2">
+                {/*
+                  * Traer lo anterior va al lado de la tienda y no arriba: es lo
+                  * primero que hace falta al conectar, y después casi nunca.
+                  */}
+                <select className="input h-9 w-28 text-sm" value={diasImportar}
+                  onChange={(e) => setDiasImportar(Number(e.target.value))}>
+                  <option value={7}>7 días</option>
+                  <option value={30}>30 días</option>
+                  <option value={90}>90 días</option>
+                  <option value={180}>180 días</option>
+                  <option value={365}>1 año</option>
+                </select>
+                <button className="btn-ghost border border-line text-xs" onClick={importar}
+                  disabled={importando || Boolean(avanceImport)}>
+                  <RefreshCw size={14} className={importando || avanceImport ? "animate-spin" : ""} />
+                  {importando || avanceImport ? "Trayendo…" : "Traer ventas anteriores"}
+                </button>
+                <button className="btn-ghost border border-line text-xs" onClick={desconectar} disabled={trabajando}>
+                  <Unlink size={14} /> Desconectar
+                </button>
+              </div>
             </div>
           </Card>
 
