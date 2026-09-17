@@ -456,14 +456,17 @@ function sesion() {
     chk('y como venido de días anteriores', true, viejo?.deDiasAnteriores);
 
     /*
-     * Pero sólo lo que sigue pendiente. Uno despachado anteayer pertenece a
-     * ESE día: arrastrarlo llenaría la jornada de trabajo ya hecho.
+     * Pero sólo lo pendiente es TRABAJO. Uno despachado anteayer ya no hay que
+     * tocarlo: sale de la bandeja de "para enviar" y queda en el registro, que
+     * ahora son los últimos 30 días.
      */
     await PedidoPlataforma.update(
       { estadoEnvio: 'despachado' },
       { where: { pedidoExterno: 'QA-ENV-1' } },
     );
-    chk('el ya despachado no se arrastra', false,
+    chk('el ya despachado no sigue apareciendo como trabajo', false,
+      Boolean(paqueteDe(await api('GET', '/api/envios/del-dia?filtro=para_enviar'), 'QA-ENV-1')));
+    chk('pero queda en el registro', true,
       Boolean(paqueteDe(await api('GET', '/api/envios/del-dia?filtro=todos'), 'QA-ENV-1')));
 
     // Y uno cancelado tampoco vuelve a aparecer.
@@ -649,6 +652,39 @@ function sesion() {
     chk('sin dejar reservas colgadas', 0, await apartado(vA));
 
   } finally {
+    tit('EL REGISTRO NO SE BORRA AL DÍA SIGUIENTE: 30 DÍAS COMO MÍNIMO');
+    /*
+     * Esta pantalla no es sólo la tarea de hoy: también es el registro de lo
+     * que se despachó, lo que llegó y lo que se canceló. Con la ventana pegada
+     * al día, todo eso desaparecía al día siguiente.
+     */
+    const hace20 = new Date(Date.now() - 20 * 86400000);
+    await PedidoPlataforma.update(
+      { despacharAntesDe: hace20, recibidoEn: hace20, estadoEnvio: 'despachado',
+        despachadoEn: hace20, estadoEnvioMl: 'delivered' },
+      { where: { pedidoExterno: 'QA-ENV-2' } },
+    );
+    const porDefecto = await api('GET', '/api/envios/del-dia?filtro=todos');
+    chk('por defecto la vista arranca 30 días atrás', 30, porDefecto.json?.diasAtras);
+    chk('y un envío de hace 20 días sigue apareciendo', true, Boolean(paqueteDe(porDefecto, 'QA-ENV-2')));
+
+    const pidiendoMenos = await api('GET', '/api/envios/del-dia?filtro=todos&diasAtras=5');
+    chk('pedir menos de 30 días no achica la vista', [30, true],
+      [pidiendoMenos.json?.diasAtras, Boolean(paqueteDe(pidiendoMenos, 'QA-ENV-2'))]);
+    const pidiendoCero = await api('GET', '/api/envios/del-dia?filtro=todos&diasAtras=0');
+    chk('ni pedir cero', 30, pidiendoCero.json?.diasAtras);
+
+    const hace100 = new Date(Date.now() - 100 * 86400000);
+    await PedidoPlataforma.update(
+      { despacharAntesDe: hace100, recibidoEn: hace100, despachadoEn: hace100 },
+      { where: { pedidoExterno: 'QA-ENV-2' } },
+    );
+    const conNoventa = await api('GET', '/api/envios/del-dia?filtro=todos&diasAtras=90');
+    chk('con 90 días de alcance, uno de hace 100 no entra', [90, false],
+      [conNoventa.json?.diasAtras, Boolean(paqueteDe(conNoventa, 'QA-ENV-2'))]);
+    const conElAno = await api('GET', '/api/envios/del-dia?filtro=todos&diasAtras=365');
+    chk('pidiendo el año, sí', true, Boolean(paqueteDe(conElAno, 'QA-ENV-2')));
+
     tit('UN CUERPO INVÁLIDO NO SE MUESTRA COMO ERROR DEL MOTOR');
     /*
      * La pantalla mandaba `null` como cuerpo y, con el Content-Type en JSON,

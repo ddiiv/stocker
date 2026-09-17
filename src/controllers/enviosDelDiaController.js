@@ -28,6 +28,8 @@ const getDelDia = async (req, res, next) => {
       incluirDespachados: req.query.incluirDespachados === '1',
       // Cuántos días hacia adelante: 0 es sólo hoy. El servicio lo acota a 30.
       diasAdelante: req.query.diasAdelante ? Number(req.query.diasAdelante) : 0,
+      // Cuántos días hacia atrás. El servicio nunca baja de 30.
+      diasAtras: req.query.diasAtras ? Number(req.query.diasAtras) : null,
       filtro: req.query.filtro || null,
     });
     res.json(jornada);
@@ -50,6 +52,8 @@ const getPdf = async (req, res, next) => {
       incluirDespachados: req.query.incluirDespachados === '1',
       // Cuántos días hacia adelante: 0 es sólo hoy. El servicio lo acota a 30.
       diasAdelante: req.query.diasAdelante ? Number(req.query.diasAdelante) : 0,
+      // Cuántos días hacia atrás. El servicio nunca baja de 30.
+      diasAtras: req.query.diasAtras ? Number(req.query.diasAtras) : null,
       filtro: req.query.filtro || null,
     });
 

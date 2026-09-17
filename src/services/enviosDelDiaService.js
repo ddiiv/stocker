@@ -145,14 +145,39 @@ const esEntregado = (p) => p.estadoEnvioMl === 'delivered';
 // seguía mostrando en "Para enviar".
 const esCancelado = (p) => p.estado === 'cancelado' || ['cancelled', 'not_delivered'].includes(p.estadoEnvioMl);
 
-/** Cuántos días hacia adelante mira la vista. 0 = sólo hoy. */
-function limitesDelRango(fecha, diasAdelante) {
-  const { desde } = limitesDelDia(fecha);
-  const dias = Math.max(0, Math.min(Number(diasAdelante) || 0, 30));
-  const hasta = new Date(desde);
+/*
+ * El alcance de la vista: siempre 30 días para atrás, como mínimo.
+ *
+ * Antes arrancaba en el día elegido, así que la pantalla mostraba el día y
+ * nada más: un envío despachado la semana pasada, uno entregado hace diez días
+ * o uno que Mercado Libre canceló hace tres no aparecían en ningún lado salvo
+ * que alguien supiera mover el filtro. Para el depósito eso es un registro que
+ * no existe.
+ *
+ * El piso es del servidor y no de la pantalla: si llega un pedido con menos
+ * días —una pantalla vieja, un link guardado— se sube igual a 30.
+ */
+const DIAS_ATRAS_MINIMO = 30;
+const DIAS_ATRAS_MAXIMO = 365;
+const DIAS_ADELANTE_MAXIMO = 30;
+
+function limitesDelRango(fecha, diasAdelante, diasAtras) {
+  const { desde: base } = limitesDelDia(fecha);
+  const atras = Math.min(
+    DIAS_ATRAS_MAXIMO,
+    Math.max(DIAS_ATRAS_MINIMO, Math.trunc(Number(diasAtras) || 0) || DIAS_ATRAS_MINIMO),
+  );
+  const dias = Math.max(0, Math.min(Math.trunc(Number(diasAdelante) || 0), DIAS_ADELANTE_MAXIMO));
+
+  const desde = new Date(base);
+  desde.setDate(desde.getDate() - atras);
+  desde.setHours(0, 0, 0, 0);
+
+  const hasta = new Date(base);
   hasta.setDate(hasta.getDate() + dias);
   hasta.setHours(23, 59, 59, 999);
-  return { desde, hasta, dias };
+  // `dia` es el día que se está mirando: el alcance hacia atrás no lo corre.
+  return { desde, hasta, dias, diasAtras: atras, dia: base };
 }
 
 /**
@@ -164,12 +189,13 @@ function limitesDelRango(fecha, diasAdelante) {
  * @param {number} [opts.locationId]  sólo lo que sale de este local.
  * @param {string} [opts.envioTipo]   'flex' para ver sólo los que tienen reloj.
  * @param {boolean} [opts.incluirDespachados] para ver la jornada completa al cierre.
+ * @param {number} [opts.diasAtras]   cuántos días para atrás. Nunca menos de 30.
  */
 async function delDia(businessId, {
   fecha = null, locationId = null, envioTipo = null,
-  incluirDespachados = false, diasAdelante = 0, filtro = null,
+  incluirDespachados = false, diasAdelante = 0, diasAtras = null, filtro = null,
 } = {}) {
-  const { desde, hasta, dias } = limitesDelRango(fecha, diasAdelante);
+  const { desde, hasta, dias, diasAtras: atras, dia } = limitesDelRango(fecha, diasAdelante, diasAtras);
 
   /*
    * El corte es por `despacharAntesDe` cuando la plataforma lo dijo, y por
@@ -308,7 +334,7 @@ async function delDia(businessId, {
      * a entrar para descubrir que está vacía.
      */
     return {
-      fecha: desde, hasta, dias, filtro: cual,
+      fecha: desde, hasta, dias, diasAtras: atras, filtro: cual,
       porEstado: {
         para_enviar: 0, en_camino: 0, entregado: 0, cancelado: 0, con_faltante: 0, historial: 0, todos: 0,
       },
@@ -664,7 +690,9 @@ async function delDia(businessId, {
          * "atrasado" —nunca tuvo hora— pero tampoco es de hoy. Sin decirlo, en
          * la lista se mezcla con los del día y parece que entró recién.
          */
-        deDiasAnteriores: new Date(p.despacharAntesDe || p.recibidoEn).getTime() < desde.getTime(),
+        // Contra el día que se mira, no contra el inicio del alcance: con 30
+        // días de registro, "anterior a hoy" sigue siendo anterior a HOY.
+        deDiasAnteriores: new Date(p.despacharAntesDe || p.recibidoEn).getTime() < dia.getTime(),
         /*
          * Mercado Libre ya la dio por despachada, pero acá todavía no salió.
          *
@@ -807,6 +835,7 @@ async function delDia(businessId, {
     fecha: desde,
     hasta,
     dias,
+    diasAtras: atras,
     filtro: cual,
     // Cuántos hay en cada estado, para poder numerar las pestañas.
     porEstado,
