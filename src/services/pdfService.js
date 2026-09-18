@@ -1,4 +1,5 @@
 const PDFDocument = require('pdfkit');
+const bwip = require('bwip-js');
 const fs          = require('fs-extra');
 const path        = require('path');
 
@@ -101,6 +102,116 @@ function drawHeaderBar(doc, { titulo, subtitulo, badge, badgeColor = COLOR.brass
  *
  * Devuelve la nueva `y`, para que el resto del comprobante baje.
  */
+/*
+ * ── El comprobante como lo autorizó ARCA ───────────────────────────
+ *
+ * El número que Stocker lleva adentro (2609-00001) NO es el del comprobante:
+ * el que vale es el punto de venta y el número que devolvió ARCA al dar el
+ * CAE, y es el que hay que imprimir y el que va adentro del QR. Salen de la
+ * respuesta guardada; si el comprobante no llegó a tener CAE, no hay ninguno.
+ */
+const CBTE_TIPO = { A: 1, B: 6, C: 11 };
+// La URL que manda la especificación vigente del QR (RG 4892).
+const URL_QR = 'https://www.arca.gob.ar/fe/qr/';
+
+function comprobanteArca(invoice) {
+  const r = invoice.arcaRespuesta || {};
+  return {
+    ptoVta: Number(r.puntoVenta || r.PtoVta || 0),
+    nroCmp: Number(r.numero || r.CbteDesde || 0),
+    tipoCmp: Number(r.cbteTipo || CBTE_TIPO[invoice.tipo] || 0),
+  };
+}
+
+/** "00003-00000123", como se imprime. Null si no tiene número de ARCA. */
+function numeroArca(invoice) {
+  const { ptoVta, nroCmp } = comprobanteArca(invoice);
+  if (!ptoVta || !nroCmp) return null;
+  return `${String(ptoVta).padStart(5, '0')}-${String(nroCmp).padStart(8, '0')}`;
+}
+
+/*
+ * El QR que la RG 4892 exige en la representación impresa.
+ *
+ * Es lo que le permite a cualquiera —el comprador, un inspector— verificar el
+ * comprobante contra ARCA sin depender de lo que diga el papel: codifica una
+ * URL de AFIP con los datos del comprobante en base64.
+ *
+ * No se dibuja si el CAE no es real: un QR sobre un comprobante de
+ * homologación lleva a una consulta que no existe, y sería peor que no tener
+ * QR, porque el papel parecería válido.
+ */
+function datosQr(invoice) {
+  if (!invoice.cae || invoice.simulado || invoice.ambiente !== 'produccion') return null;
+  const { ptoVta, nroCmp, tipoCmp } = comprobanteArca(invoice);
+  if (!ptoVta || !nroCmp || !tipoCmp) return null;
+
+  const soloDigitos = (v) => String(v ?? '').replace(/\D/g, '');
+  const cuitEmisor = soloDigitos(invoice.emisorCuit);
+  const docReceptor = soloDigitos(invoice.clienteCuit);
+  if (!cuitEmisor) return null;
+
+  const datos = {
+    ver: 1,
+    fecha: new Date(invoice.fechaEmision || Date.now()).toISOString().slice(0, 10),
+    cuit: Number(cuitEmisor),
+    ptoVta,
+    tipoCmp,
+    nroCmp,
+    importe: Number(Number(invoice.total || 0).toFixed(2)),
+    moneda: 'PES',
+    ctz: 1,
+    // "E" es CAE. "A" sería CAEA, que Stocker no usa.
+    tipoCodAut: 'E',
+    codAut: Number(soloDigitos(invoice.cae)),
+  };
+  /*
+   * El documento del receptor va "de corresponder": en un consumidor final sin
+   * datos no se manda nada, en vez de inventar un 99 con número cero.
+   */
+  if (docReceptor.length === 11) {
+    datos.tipoDocRec = 80;               // CUIT
+    datos.nroDocRec = Number(docReceptor);
+  } else if (docReceptor.length === 7 || docReceptor.length === 8) {
+    datos.tipoDocRec = 96;               // DNI
+    datos.nroDocRec = Number(docReceptor);
+  }
+
+  return datos;
+}
+
+/** El texto que se codifica: la URL de ARCA con los datos en base64. */
+function urlQr(invoice) {
+  const datos = datosQr(invoice);
+  if (!datos) return null;
+  return `${URL_QR}?p=${Buffer.from(JSON.stringify(datos), 'utf8').toString('base64')}`;
+}
+
+async function qrDelComprobante(invoice) {
+  const url = urlQr(invoice);
+  if (!url) return null;
+  try {
+    return await bwip.toBuffer({ bcid: 'qrcode', text: url, scale: 3, includetext: false });
+  } catch {
+    /*
+     * Sin QR se sigue. El comprobante ya está autorizado y el CAE impreso lo
+     * respalda: quedarse sin PDF por no poder dibujar un cuadrito sería peor.
+     */
+    return null;
+  }
+}
+
+/** Dibuja el QR con su leyenda. Devuelve la altura que ocupó. */
+function drawQr(doc, qr, y) {
+  if (!qr) return 0;
+  doc.image(qr, 50, y, { width: 82 });
+  doc.font('Helvetica').fontSize(7.5).fillColor('#666')
+    .text('Comprobante autorizado por ARCA (AFIP). Escaneá el código para verificarlo.',
+      142, y + 24, { width: 260 });
+  doc.fillColor('#000');
+  return 92;
+}
+
 function drawAvisoNoFiscal(doc, invoice, y) {
   const esProduccion = invoice.ambiente === 'produccion';
   if (esProduccion && !invoice.simulado) return y;
@@ -216,6 +327,8 @@ function drawFooter(doc, business) {
 // ── PDF de Factura ────────────────────────────────────────────────
 async function generateInvoicePdf(invoice, items, business) {
   await ensureDir();
+  // El QR se arma antes de abrir el documento: dibujarlo pide un buffer ya listo.
+  const qr = await qrDelComprobante(invoice);
   const filename = `factura-${invoice.numero.replace(/\//g, '-')}-${invoice.id}.pdf`;
   const filepath = path.join(PDF_DIR, filename);
 
@@ -238,7 +351,7 @@ async function generateInvoicePdf(invoice, items, business) {
     y = drawAvisoNoFiscal(doc, invoice, y);
     y = drawSectionTitle(doc, 'Comprobante', y);
     const col1x = 50, col2x = 310;
-    drawKeyValue(doc, col1x, y,     'N° Factura',    invoice.numero);
+    drawKeyValue(doc, col1x, y,     'N° Comprobante',    numeroArca(invoice) || invoice.numero);
     drawKeyValue(doc, col1x, y+14,  'Fecha emisión', dateTime(invoice.fechaEmision));
     drawKeyValue(doc, col1x, y+28,  'Tipo',          `Factura ${invoice.tipo}`);
     drawKeyValue(doc, col2x, y,     'CAE',           invoice.cae || '—');
@@ -282,6 +395,8 @@ async function generateInvoicePdf(invoice, items, business) {
       doc.fillColor('#000');
     }
 
+    drawQr(doc, qr, doc.y + 16);
+
     drawFooter(doc, business);
     doc.end();
     stream.on('finish', () => resolve(path.relative(process.cwd(), filepath)));
@@ -293,6 +408,7 @@ async function generateInvoicePdf(invoice, items, business) {
 // Usar para servir el PDF directamente desde el endpoint, funciona en
 // cualquier hosting con filesystem efímero (Railway, Render, etc.).
 async function generateInvoicePdfBuffer(invoice, items, business) {
+  const qr = await qrDelComprobante(invoice);
   const emisorNombre = invoice.emisorNombre || business.nombreNegocio;
   const emisorCuit   = invoice.emisorCuit   || business.cuit;
 
@@ -313,7 +429,7 @@ async function generateInvoicePdfBuffer(invoice, items, business) {
     y = drawAvisoNoFiscal(doc, invoice, y);
     y = drawSectionTitle(doc, 'Comprobante', y);
     const col1x = 50, col2x = 310;
-    drawKeyValue(doc, col1x, y,    'N° Factura',    invoice.numero);
+    drawKeyValue(doc, col1x, y,    'N° Comprobante',    numeroArca(invoice) || invoice.numero);
     drawKeyValue(doc, col1x, y+14, 'Fecha emisión', dateTime(invoice.fechaEmision));
     drawKeyValue(doc, col1x, y+28, 'Tipo',          `Factura ${invoice.tipo}`);
     drawKeyValue(doc, col2x, y,    'CAE',           invoice.cae || '—');
@@ -348,6 +464,8 @@ async function generateInvoicePdfBuffer(invoice, items, business) {
          .text(`Cobro acreditado en: ${invoice.cobroDestino}`, 50, doc.y + 14, { width: 500 });
       doc.fillColor('#000');
     }
+
+    drawQr(doc, qr, doc.y + 16);
 
     drawFooter(doc, business);
     doc.end();
@@ -730,4 +848,7 @@ async function generateSubscriptionReceiptPdf(pago, negocio, plan) {
   return ruta;
 }
 
-module.exports = { destinatariosDe, generateInvoicePdf, generateInvoicePdfBuffer, generateSalePdf, generateSaleTicketPdf, generateSubscriptionReceiptPdf, PDF_DIR, COLOR };
+module.exports = { destinatariosDe, generateInvoicePdf, generateInvoicePdfBuffer, generateSalePdf, generateSaleTicketPdf, generateSubscriptionReceiptPdf, PDF_DIR, COLOR,
+  // Expuesto para las pruebas: lo que va adentro del QR y el número de ARCA.
+  __qr: { datosQr, urlQr, numeroArca },
+};
