@@ -49,8 +49,8 @@ const PASOS = [
     ojo: "Homologación y producción son dos listas separadas. Hacer el trámite en una y consultar la otra da exactamente este error.",
   },
   {
-    que: 'Avisarle al cliente que apriete "Verificar" de nuevo.',
-    ojo: null,
+    que: "Listo: no hay que avisarle a nadie.",
+    ojo: 'Stocker le pregunta a AFIP cada 15 minutos a qué CUIT representa y activa al cliente solo. Si querés verlo ahora, tocá "Sincronizar con AFIP" arriba.',
   },
 ];
 
@@ -92,6 +92,8 @@ export default function ArcaPage() {
   const [pendientes, setPendientes] = useState(null);
   const [error, setError] = useState("");
   const [cargando, setCargando] = useState(false);
+  const [sincronizando, setSincronizando] = useState(false);
+  const [resumen, setResumen] = useState("");
 
   const cargar = useCallback(async () => {
     setCargando(true);
@@ -109,19 +111,61 @@ export default function ArcaPage() {
 
   useEffect(() => { cargar(); }, [cargar]);
 
+  /*
+   * Le pregunta a AFIP en el momento en vez de esperar el barrido de los 15
+   * minutos. Se usa recién hecho el trámite: si quedó bien, la fila desaparece
+   * de la lista acá mismo y el cliente ya puede facturar.
+   */
+  async function sincronizar() {
+    setSincronizando(true);
+    setError("");
+    setResumen("");
+    try {
+      const r = await api.sincronizarDelegacionesArca();
+      const filas = Array.isArray(r.resultado) ? r.resultado : [];
+      const activadas = filas.reduce((a, f) => a + (f.activadas || 0), 0);
+      const revocadas = filas.reduce((a, f) => a + (f.revocadas || 0), 0);
+      const fallado = filas.filter((f) => f.error);
+      setResumen(
+        fallado.length
+          ? `AFIP no contestó en ${fallado.map((f) => f.ambiente).join(", ")}: ${fallado[0].error}`
+          : activadas || revocadas
+            ? `${activadas} habilitado${activadas === 1 ? "" : "s"}, ${revocadas} dado${revocadas === 1 ? "" : "s"} de baja.`
+            : "Sin cambios: AFIP devuelve los mismos CUIT que ya teníamos.",
+      );
+      await cargar();
+    } catch (e) {
+      setError(mensajeDe(e));
+    } finally {
+      setSincronizando(false);
+    }
+  }
+
   return (
     <div>
       <PageHead
         titulo="Delegaciones de AFIP"
-        bajada="Los CUIT de clientes esperando que hagamos el trámite. Es la única parte del alta que no se puede automatizar."
+        bajada="Los CUIT de clientes esperando que hagamos el trámite en AFIP. Una vez hecho, Stocker lo detecta solo: esta lista se vacía sin tocar nada."
         acciones={
-          <button onClick={cargar} disabled={cargando} className="btn-ghost gap-1.5 text-sm">
-            <RefreshCw size={14} className={cargando ? "animate-spin" : ""} /> Actualizar
-          </button>
+          <div className="flex items-center gap-2">
+            <button onClick={cargar} disabled={cargando} className="btn-ghost gap-1.5 text-sm">
+              <RefreshCw size={14} className={cargando ? "animate-spin" : ""} /> Actualizar
+            </button>
+            <button
+              onClick={sincronizar}
+              disabled={sincronizando}
+              className="btn-primary gap-1.5 text-sm"
+              title="Le pregunta a AFIP ahora mismo a qué CUIT representamos"
+            >
+              <RefreshCw size={14} className={sincronizando ? "animate-spin" : ""} />
+              {sincronizando ? "Preguntando a AFIP…" : "Sincronizar con AFIP"}
+            </button>
+          </div>
         }
       />
 
       {error && <Aviso tono="error">{error}</Aviso>}
+      {resumen && <Aviso tono="info">{resumen}</Aviso>}
 
       {pendientes === null ? (
         <Cargando />

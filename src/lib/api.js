@@ -23,6 +23,12 @@ export const editarSuscripcion = (id, payload) =>
 export const getDelegacionesArca = () =>
   http.get("/backoffice/arca/delegaciones").then((r) => r.data);
 
+/* Le pregunta a AFIP, ahora mismo, a qué CUIT representamos. Corre solo cada 15
+   minutos; el botón existe para el rato después de hacer el trámite, cuando uno
+   quiere ver que quedó bien sin esperar el próximo barrido. */
+export const sincronizarDelegacionesArca = () =>
+  http.post("/backoffice/arca/delegaciones/sincronizar").then((r) => r.data);
+
 // ── Cobros ───────────────────────────────────────────────────────
 export const aprobarPago = (id) => http.post(`/backoffice/pagos/${id}/aprobar`).then((r) => r.data);
 export const rechazarPago = (id, motivo) =>
