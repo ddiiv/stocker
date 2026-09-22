@@ -55,6 +55,11 @@ const GRUPOS = [
         activo: (p) => (p === "/ventas" || p.startsWith("/ventas/")) && p !== "/ventas/pos",
       },
       { to: "/ventas/pos",  label: "Punto de venta (POS)", icon: ScanLine,    permission: "ventas" },
+      /*
+       * Va con Ventas y no con Integraciones: lo mira quien vende, todos los
+       * días, y termina en una venta.
+       */
+      { to: "/pedidos-mayoristas", label: "Pedidos mayoristas", icon: Store, permission: "ventas" },
       { to: "/caja",        label: "Caja",                 icon: Wallet,      permission: "caja" },
       { to: "/clientes",    label: "Clientes",             icon: UserCircle2, permission: "clientes" },
       { to: "/facturacion", label: "Facturación",          icon: Receipt,     permission: "facturacion" },

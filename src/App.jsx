@@ -58,6 +58,7 @@ const EventoPage = lazy(() => import("./pages/EventoPage"));
 const StockARegularizarPage = lazy(() => import("./pages/StockARegularizarPage"));
 const PacksPage = lazy(() => import("./pages/PacksPage"));
 const ReposicionPage = lazy(() => import("./pages/ReposicionPage"));
+const PedidosMayoristasPage = lazy(() => import("./pages/PedidosMayoristasPage"));
 const ScanStockPage = lazy(() => import("./pages/ScanStockPage"));
 const PosPage = lazy(() => import("./pages/PosPage"));
 const BusinessCuitsPage = lazy(() => import("./pages/BusinessCuitsPage"));
@@ -104,6 +105,7 @@ export default function App() {
             <Route path="/evento"                       element={<PermissionRoute permission="stock"><EventoPage /></PermissionRoute>} />
             <Route path="/deposito"                     element={<PermissionRoute permission="deposito"><DepositoPage /></PermissionRoute>} />
             <Route path="/reposicion"                   element={<PermissionRoute permission="reposicion"><ReposicionPage /></PermissionRoute>} />
+            <Route path="/pedidos-mayoristas"           element={<PermissionRoute permission="ventas"><PedidosMayoristasPage /></PermissionRoute>} />
             <Route path="/envios"                       element={<PermissionRoute permission="stock"><EnviosDelDiaPage /></PermissionRoute>} />
             <Route path="/stock/:skuAgrupador"          element={<PermissionRoute permission="stock"><ProductDetailPage /></PermissionRoute>} />
             <Route path="/ventas"                       element={<PermissionRoute permission="ventas"><SalesPage /></PermissionRoute>} />

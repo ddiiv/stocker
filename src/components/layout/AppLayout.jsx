@@ -35,6 +35,7 @@ const TITLES = {
   "/deposito": "Depósito",
   "/evento": "Evento",
   "/reposicion": "Reposición",
+  "/pedidos-mayoristas": "Pedidos mayoristas",
   "/ventas": "Ventas y cotizaciones",
   "/ventas/nueva": "Nueva venta / cotización",
   "/ventas/pos": "Punto de venta (POS)",
