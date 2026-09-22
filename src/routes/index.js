@@ -171,6 +171,7 @@ r.get ('/backoffice/seguridad',      requirePlatformAdmin, backofficeCtrl.estado
 // backofficeController.delegacionesArca: el mail avisa cuando aparece uno,
 // esta lista es la que no deja que se pierda.
 r.get ('/backoffice/arca/delegaciones', requirePlatformAdmin, backofficeCtrl.delegacionesArca);
+r.post('/backoffice/arca/delegaciones/sincronizar', requirePlatformAdmin, backofficeCtrl.sincronizarDelegacionesArca);
 r.get ('/backoffice/ajustes',        requirePlatformAdmin, backofficeCtrl.getAjustes);
 r.put ('/backoffice/ajustes',        requirePlatformAdmin, backofficeCtrl.editarAjustes);
 

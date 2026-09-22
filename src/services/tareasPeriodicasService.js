@@ -28,6 +28,7 @@
 
 const ml = require('./mercadolibreService');
 const jumpseller = require('./jumpsellerService');
+const arca = require('./arcaService');
 const postventa = require('./mercadolibrePostventaService');
 const mlPedidos = require('./mercadolibrePedidosService');
 const { MercadoLibreAccount, JumpsellerAccount } = require('../models');
@@ -214,6 +215,17 @@ async function tick() {
     if (process.env.JUMPSELLER_BARRIDO !== 'off') await barrerStockJumpseller();
   } catch (e) {
     log.warn('jumpseller', 'el barrido periódico se cayó entero', { motivo: e.message });
+  }
+  /*
+   * Las delegaciones de ARCA: sale del TA que ya está cacheado 12 horas, así
+   * que mirarlo en cada vuelta no le agrega ni un pedido a AFIP. Es lo que
+   * hace que una delegación recién aceptada se active sola y que una revocada
+   * se vea el mismo día.
+   */
+  try {
+    if (process.env.ARCA_DELEGACIONES !== 'off') await arca.sincronizarTodasLasDelegaciones();
+  } catch (e) {
+    log.warn('arca', 'el barrido de delegaciones se cayó entero', { motivo: e.message });
   } finally {
     corriendo = false;
   }
@@ -228,7 +240,14 @@ function arrancar() {
    */
   const conMl = ml.estaConfigurado() && process.env.ML_BARRIDO !== 'off';
   const conJumpseller = process.env.JUMPSELLER_BARRIDO !== 'off';
-  if (!conMl && !conJumpseller) {
+  /*
+   * Las delegaciones de AFIP cuelgan del mismo reloj, pero no del mismo
+   * motivo: un negocio puede facturar sin tener ninguna tienda online. Si esto
+   * no entra en la decisión, quien no publica en ML ni en Jumpseller se queda
+   * sin el barrido entero y las delegaciones nuevas no se activan nunca.
+   */
+  const conArca = process.env.ARCA_DELEGACIONES !== 'off';
+  if (!conMl && !conJumpseller && !conArca) {
     console.log('  Barrido de stock ................. apagado');
     return false;
   }
@@ -241,8 +260,12 @@ function arrancar() {
   }, DEMORA_INICIAL_MS);
   timer.unref?.();
 
+  const minutos = Math.round(INTERVALO_MS / 60000);
   const canales = [conMl ? 'Mercado Libre' : null, conJumpseller ? 'Jumpseller' : null].filter(Boolean);
-  console.log(`  Barrido de stock ................. cada ${Math.round(INTERVALO_MS / 60000)} min (${canales.join(' y ')})`);
+  console.log(canales.length
+    ? `  Barrido de stock ................. cada ${minutos} min (${canales.join(' y ')})`
+    : '  Barrido de stock ................. apagado (ninguna tienda conectada)');
+  if (conArca) console.log(`  Delegaciones de AFIP ............. cada ${minutos} min`);
   return true;
 }
 

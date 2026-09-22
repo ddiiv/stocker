@@ -603,6 +603,21 @@ const resumen = async (_req, res, next) => {
  * queda sin poder facturar sin que nadie lo sepa. Acá se ve cuántos hay y hace
  * cuánto esperan, que es lo que convierte "me llegó un mail" en una cola.
  */
+/*
+ * POST /api/backoffice/arca/delegaciones/sincronizar
+ *
+ * Para el operador: después de aceptar las designaciones en AFIP y asignarles
+ * el certificado, esto vuelve a leer qué reconoce AFIP y activa las cuentas
+ * que quedaron listas. Sin esto habría que esperar al barrido o pedirle al
+ * cliente que apriete "Verificar".
+ */
+const sincronizarDelegacionesArca = async (req, res, next) => {
+  try {
+    const arca = require('../services/arcaService');
+    res.json({ ok: true, resultado: await arca.sincronizarTodasLasDelegaciones() });
+  } catch (e) { next(e); }
+};
+
 const delegacionesArca = async (req, res, next) => {
   try {
     const configs = await BusinessArcaConfig.findAll({
@@ -661,5 +676,4 @@ module.exports = {
   aprobarPago, rechazarPago,
   listarPlanes, catalogoDeFeatures, editarPlan,
   getAjustes, editarAjustes, resumen, estadoMercadoPago, estadoSeguridad,
-  CLAVES_PUBLICAS,
-};
+  CLAVES_PUBLICAS, sincronizarDelegacionesArca };

@@ -55,23 +55,44 @@ const URLS = {
   },
 };
 
-// ── Cache de TA (Token+Sign) por (cuit, ambiente, service) ────────
-// AFIP no permite renovar un TA vigente (dura 12h). Si lo perdemos quedamos
-// sin poder autenticar hasta que caduque, así que lo persistimos en Postgres
-// (ver arcaTokenStore). Usamos 11h de TTL por margen.
+/*
+ * ── Cache de TA (Token+Sign) por (cuit, ambiente, service) ───────
+ *
+ * El TA dura 12h y lo persistimos en Postgres (ver arcaTokenStore) porque
+ * perderlo nos deja sin autenticar.
+ *
+ * Lo que AFIP NO permite es pedir muchos TA seguidos para el mismo servicio:
+ * el "El CEE ya posee un TA valido" salta si se piden dos dentro de una
+ * ventana corta —2 minutos en producción, 10 en homologación según el manual
+ * del WSAA—, no durante las 12h enteras. Por eso sí se puede forzar uno nuevo
+ * cuando hace falta (ver `forzar`), siempre que entre pedido y pedido pasen
+ * varios minutos.
+ *
+ * El TTL sale del propio TA (`exp_time`), no de un número puesto a mano: AFIP
+ * ignora la expiración que pedimos y pone la suya.
+ */
 const taStore = require('./arcaTokenStore');
-const TA_TTL_MS = 11 * 60 * 60 * 1000; // 11h (el TA real dura 12h)
+const TA_TTL_MS = 11 * 60 * 60 * 1000; // sólo como red de seguridad si el TA no se puede leer
+const MARGEN_TA_MS = 5 * 60 * 1000;    // no usar un TA en sus últimos minutos
 
 function cacheKey({ cuit, ambiente, service }) {
   return `${cuit}::${ambiente}::${service}`;
 }
 
 // ── 1) WSAA: obtener TA ──────────────────────────────────────────
-async function getTA({ cert, key, ambiente, service = 'wsfe' }) {
+async function getTA({ cert, key, ambiente, service = 'wsfe', forzar = false }) {
   const cuitStr = extractCuitFromCert(cert);
   const key0 = cacheKey({ cuit: cuitStr, ambiente, service });
-  const guardado = await taStore.get(key0);
-  if (guardado) return guardado;
+  /*
+   * `forzar` se usa para releer las delegaciones: el TA guardado puede ser de
+   * hace horas y no traer al cliente que delegó recién. Quien lo fuerza tiene
+   * que espaciar los pedidos (el barrido va cada 15 minutos); si AFIP lo
+   * rechaza igual, se sigue con el guardado en vez de romper.
+   */
+  if (!forzar) {
+    const guardado = await taStore.get(key0);
+    if (guardado) return guardado;
+  }
 
   // 1.1) Armar LoginTicketRequest XML
   // AFIP requiere formato ISO 8601 CON offset de timezone (no acepta el .toISOString()
@@ -138,7 +159,9 @@ async function getTA({ cert, key, ambiente, service = 'wsfe' }) {
   if (!token || !sign) throw new Error('WSAA: no se pudo parsear token/sign del TA.');
 
   const ta = { token, sign, cuit: cuitStr };
-  await taStore.set(key0, ta, Date.now() + TA_TTL_MS);
+  const vence = datosDelTA(ta).vence;
+  const expiraEn = vence ? vence.getTime() - MARGEN_TA_MS : Date.now() + TA_TTL_MS;
+  await taStore.set(key0, ta, expiraEn);
   return ta;
 }
 
@@ -573,8 +596,64 @@ async function padronA5({ cert, key, ambiente, cuitConsultado }) {
   };
 }
 
+/*
+ * Los CUIT que este certificado puede representar hoy, según AFIP.
+ *
+ * El token del TA es XML en base64 y adentro trae la lista de relaciones que
+ * AFIP reconoce para este certificado y este servicio. Es la única forma
+ * automática de saber que una delegación quedó ACTIVA de punta a punta: el
+ * cliente delega, alguien de Stocker acepta la designación y le asigna el
+ * certificado, y recién entonces el CUIT aparece acá.
+ *
+ * Sirve también para lo contrario. La revocación es unilateral y AFIP no avisa
+ * nada: el CUIT simplemente deja de estar en la lista. Sin mirarla, un cliente
+ * que nos sacó la delegación se entera cuando falla la primera factura, que es
+ * el peor momento posible.
+ */
+function xmlDelTA(ta) {
+  if (!ta?.token) return '';
+  try {
+    return Buffer.from(String(ta.token), 'base64').toString('utf8');
+  } catch {
+    return '';
+  }
+}
+
+/*
+ * Lo que el TA dice de sí mismo: a quiénes representamos y hasta cuándo vale.
+ *
+ * Las dos cosas salen del mismo XML y se usan juntas. `vence` importa porque
+ * la lista de relaciones es una foto del momento en que AFIP emitió el TA: un
+ * cliente que delega después no aparece hasta que pidamos uno nuevo.
+ *
+ *   <id ... gen_time="1790005496" exp_time="1790048756"/>   (epoch en segundos)
+ */
+function datosDelTA(ta) {
+  const xml = xmlDelTA(ta);
+  if (!xml) return { relaciones: [], generado: null, vence: null };
+
+  const cuits = new Set();
+  for (const m of xml.matchAll(/<relation\b[^>]*\bkey="(\d{11})"/g)) cuits.add(m[1]);
+
+  const epoch = (attr) => {
+    const m = xml.match(new RegExp(`\\b${attr}="(\\d+)"`));
+    if (!m) return null;
+    const ms = Number(m[1]) * 1000;
+    return Number.isFinite(ms) && ms > 0 ? new Date(ms) : null;
+  };
+
+  return { relaciones: [...cuits], generado: epoch('gen_time'), vence: epoch('exp_time') };
+}
+
+/** Los CUIT que nos delegaron el servicio, según el TA. */
+function relacionesDelTA(ta) {
+  return datosDelTA(ta).relaciones;
+}
+
 module.exports = {
   URLS,
+  relacionesDelTA,
+  datosDelTA,
   feDummy,
   feParamGetPtosVenta,
   // sólo para los tests

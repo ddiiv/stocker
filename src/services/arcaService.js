@@ -241,6 +241,147 @@ function recorte(xml) {
 }
 
 // ── Verificar delegación de un CUIT ───────────────────────────────
+/*
+ * ── Las delegaciones se detectan solas ─────────────────────────────
+ *
+ * El trámite de AFIP tiene tres pasos y ninguno se puede hacer por API: el
+ * cliente delega el servicio a nuestro CUIT, alguien de Stocker acepta la
+ * designación y le asigna el certificado. Lo que SÍ se puede leer es el
+ * resultado: el TA que devuelve el WSAA trae adentro la lista de CUIT que
+ * nuestro certificado puede representar, y esa lista sólo se completa cuando
+ * los tres pasos están hechos.
+ *
+ * Así, el cliente deja de tener que apretar "Verificar" hasta que alguna vez
+ * le dé bien, y —más importante— una revocación se ve el mismo día: AFIP no
+ * avisa nada cuando un cliente nos saca la delegación, el CUIT simplemente
+ * desaparece de la lista. Sin esto, eso se descubre cuando falla la primera
+ * factura, que es el peor momento para descubrirlo.
+ *
+ * El TA dura 12 horas y ya se cachea, así que mirar esto seguido no le agrega
+ * ni un pedido a AFIP.
+ */
+const soloDigitos = (v) => String(v ?? '').replace(/\D/g, '');
+
+async function sincronizarDelegaciones({ ambiente = 'produccion', relaciones = null } = {}) {
+  const { BusinessArcaConfig, BusinessCuit } = require('../models');
+  const configs = await BusinessArcaConfig.findAll({ where: { ambiente } });
+  if (!configs.length) return { ambiente, cuentas: 0, activadas: 0, revocadas: 0, representados: 0 };
+
+  /*
+   * La lista de delegaciones viaja adentro del TA, y el TA es una foto del
+   * momento en que AFIP lo emitió: dura 12 horas. Si alguien delegó hace diez
+   * minutos, el TA guardado no lo tiene, y pedirle a WSFE que facture por él
+   * devuelve el mismo error 600 que si no hubiera hecho el trámite.
+   *
+   * Por eso, cuando hay alguien esperando, se pide un TA nuevo. AFIP solo
+   * rechaza los pedidos muy seguidos (2 minutos en producción, 10 en
+   * homologación); cada 15 minutos está holgado. Si no hay nadie esperando se
+   * usa el guardado y no se molesta a AFIP.
+   */
+  let lista = relaciones;
+  let vence = null;
+  if (!lista) {
+    if (isMock) return { ambiente, omitido: 'mock', cuentas: configs.length, activadas: 0, revocadas: 0, representados: 0 };
+    const { cert, key } = loadCert(ambiente);
+    const cli = loadClient();
+    const hayEsperando = configs.some((c) => !c.delegacionVerificada);
+    let ta;
+    try {
+      ta = await cli.__getTA({ cert, key, ambiente, service: 'wsfe', forzar: hayEsperando });
+    } catch (e) {
+      /*
+       * Si AFIP no da uno nuevo (pedidos muy seguidos, o WSAA caído) se sigue
+       * con el guardado: peor es quedarse sin leer nada. Lo único que se pierde
+       * es enterarse de los cambios de esta vuelta.
+       */
+      if (!hayEsperando) throw e;
+      log.warn('arca', 'no se pudo renovar el TA, se usa el guardado', {
+        ambiente, motivo: String(e.message || e).slice(0, 200),
+      });
+      ta = await cli.__getTA({ cert, key, ambiente, service: 'wsfe' });
+    }
+    const datos = cli.datosDelTA(ta);
+    lista = datos.relaciones;
+    vence = datos.vence;
+  }
+  const representados = new Set((lista || []).map(soloDigitos).filter(Boolean));
+
+  /*
+   * Una lista vacía no se toma como "nadie nos delegó".
+   *
+   * Un TA ilegible, un parseo que cambió o un WSAA que contesta raro dan lo
+   * mismo que una revocación masiva, y la diferencia importa: dar de baja a
+   * todos los clientes de golpe los deja sin facturar hasta que alguien mire.
+   * Si de verdad no queda ninguno, cada intento de facturar va a fallar igual
+   * con el error de AFIP, que es una señal mucho más barata de equivocarse.
+   */
+  if (!representados.size && configs.some((c) => c.delegacionVerificada)) {
+    log.warn('arca', 'el TA no trajo ninguna relación: no se revoca nada', { ambiente, cuentas: configs.length });
+    return { ambiente, inconcluso: true, cuentas: configs.length, activadas: 0, revocadas: 0, representados: 0, taVence: vence };
+  }
+
+  const cuits = await BusinessCuit.findAll({
+    where: { id: configs.map((c) => c.businessCuitId) },
+    attributes: ['id', 'cuit'],
+  });
+  const cuitDe = new Map(cuits.map((c) => [c.id, soloDigitos(c.cuit)]));
+
+  let activadas = 0;
+  let revocadas = 0;
+  for (const cfg of configs) {
+    const cuit = cuitDe.get(cfg.businessCuitId);
+    if (!cuit) continue;
+    const activa = representados.has(cuit);
+
+    if (activa && !cfg.delegacionVerificada) {
+      await cfg.update({
+        delegacionVerificada: true,
+        ultimaVerificacion: new Date(),
+        ultimoError: null,
+        delegacionAvisadaEn: null,
+      });
+      activadas += 1;
+      log.info('arca', 'delegación activa', { businessId: cfg.businessId, ambiente });
+    } else if (!activa && cfg.delegacionVerificada) {
+      /*
+       * Se marca, no se borra la configuración: el punto de venta y la
+       * condición de IVA siguen siendo los suyos, y si vuelve a delegar el
+       * mismo día tiene que poder facturar sin cargar nada de nuevo.
+       */
+      await cfg.update({
+        delegacionVerificada: false,
+        ultimaVerificacion: new Date(),
+        ultimoError: 'La delegación ya no está activa en AFIP. Si no la quitaste vos, '
+          + 'volvé a delegar "Facturación Electrónica" a Stocker desde Administrador de Relaciones.',
+      });
+      revocadas += 1;
+      log.warn('arca', 'delegación revocada', { businessId: cfg.businessId, ambiente });
+    } else if (activa) {
+      await cfg.update({ ultimaVerificacion: new Date() });
+    }
+  }
+  return { ambiente, cuentas: configs.length, activadas, revocadas, representados: representados.size, taVence: vence };
+}
+
+/** Lo mismo para todos los ambientes que haya configurados. */
+async function sincronizarTodasLasDelegaciones() {
+  const { BusinessArcaConfig } = require('../models');
+  const filas = await BusinessArcaConfig.findAll({ attributes: ['ambiente'], group: ['ambiente'] });
+  const ambientes = [...new Set(filas.map((f) => f.ambiente || 'homologacion'))];
+  const salida = [];
+  for (const ambiente of ambientes) {
+    try {
+      salida.push(await sincronizarDelegaciones({ ambiente }));
+    } catch (e) {
+      log.warn('arca', 'no se pudieron sincronizar las delegaciones', {
+        ambiente, motivo: String(e.message || e).slice(0, 200),
+      });
+      salida.push({ ambiente, error: String(e.message || e).slice(0, 200) });
+    }
+  }
+  return salida;
+}
+
 async function verifyDelegation({ businessCuit, ambiente = 'homologacion' }) {
   if (isMock) return { ok: true, mock: true, note: 'ARCA_MOCK=true — verificación simulada.' };
   if (!businessCuit) throw new Error('Falta el CUIT del negocio a verificar.');
@@ -448,4 +589,6 @@ module.exports = {
   tipoComprobante,
   solicitarCAE, determineInvoiceType, calcularIVA,
   checkStatus, verifyDelegation, debugConfig,
+  sincronizarDelegaciones,
+  sincronizarTodasLasDelegaciones,
 };
