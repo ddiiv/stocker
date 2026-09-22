@@ -216,6 +216,26 @@ async function recibirUnaVez({ businessId, origen, cuerpo }) {
     }
 
     if (existente.estado !== 'pendiente') {
+      /*
+       * Que el pedido siga su curso allá no es un cambio del pedido.
+       *
+       * El origen manda el pedido entero cada vez que pasa algo suyo —lo marca
+       * enviado, entregado—, y eso llega igual que una modificación. Avisar
+       * "el portal cambió este pedido" cuando sólo cambió su estado convierte
+       * el aviso en ruido, y el día que cambie de verdad nadie lo va a mirar.
+       *
+       * Una cancelación sí importa siempre: la venta ya existe.
+       */
+      const mismoContenido = Number(existente.total) === Number(datos.total)
+        && Number(existente.unidades) === Number(datos.unidades);
+      if (!cancelado && mismoContenido) {
+        await existente.update({
+          estadoOrigen: datos.estadoOrigen,
+          actualizadoEnOrigen: datos.actualizadoEnOrigen,
+        }, { transaction: t });
+        return { solicitud: existente, creada: false, repetido: true, ignorado: false, cambioTardio: false };
+      }
+
       const cambio = {
         secuencia: datos.secuencia,
         estadoOrigen: datos.estadoOrigen,

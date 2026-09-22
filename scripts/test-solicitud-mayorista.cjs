@@ -319,6 +319,20 @@ async function mandar(token, cuerpo) {
     chk('y queda anotado para que alguien lo mire', [9, 250000],
       [anotado?.secuencia ?? 'sin anotar', anotado?.total ?? 'sin anotar']);
 
+    /*
+     * Que el pedido siga su curso allá —enviado, entregado— llega igual que una
+     * modificación. Si eso avisara "el portal cambió el pedido", el aviso sería
+     * ruido y el día que cambie de verdad nadie lo miraría.
+     */
+    await mandar(token, pedido(`${QA}001`, {
+      // El mismo contenido que quedó guardado acá: lo único que cambió es su estado allá.
+      secuencia: 12, total: 90000, unidades: 2, estado: 'enviado', evento: 'enviado',
+    }));
+    const despachada = await leer(`${QA}001`);
+    chk('que el pedido avance allá no cuenta como cambio', ['enviado', 250000],
+      [despachada.s.estadoOrigen,
+        (() => { try { return JSON.parse(despachada.s.cambioPosterior).total; } catch { return 'sin anotar'; } })()]);
+
     tit('5. LO QUE NO PUEDE ENTRAR');
     const malo = async (cuerpo) => (await mandar(token, cuerpo)).status;
     chk('un pedido sin número de origen', 400, await malo(pedido(`${QA}900`, { pedidoExterno: '' })));
