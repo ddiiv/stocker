@@ -22,9 +22,12 @@ require('dotenv').config({ path: __dirname + '/../.env' });
 const API = process.env.API || 'http://localhost:3000';
 const { Op } = require('sequelize');
 const {
-  Business, Product, ProductVariant,
+  Business, BusinessLocation, Client, Product, ProductVariant, Sale, SaleItem, VariantStock,
+  SalePayment, ClientAccountEntry, Invoice,
   IntegracionExterna, SolicitudMayorista, SolicitudMayoristaItem,
 } = require('../src/models');
+const { devolverStockVenta } = require('../src/services/saleStockService');
+const sequelize = require('../src/config/database');
 const integraciones = require('../src/services/integracionesService');
 
 let ok = 0, ko = 0;
@@ -37,6 +40,23 @@ const tit = (t) => console.log(`\n\x1b[1m${t}\x1b[0m`);
 
 // El prefijo con el que se reconocen los pedidos de esta prueba, para limpiar.
 const QA = 'QA-ISU-';
+
+/* La sesión de una persona, que es con la que se revisa la bandeja. */
+function sesion() {
+  let cookie = '';
+  return async (metodo, ruta, cuerpo) => {
+    const r = await fetch(`${API}${ruta}`, {
+      method: metodo,
+      headers: { 'Content-Type': 'application/json', ...(cookie ? { Cookie: cookie } : {}) },
+      body: cuerpo ? JSON.stringify(cuerpo) : undefined,
+    });
+    const set = r.headers.getSetCookie?.() || [];
+    if (set.length) cookie = set.map((c) => c.split(';')[0]).join('; ');
+    const texto = await r.text();
+    let json = null; try { json = JSON.parse(texto); } catch { /* no json */ }
+    return { status: r.status, json, texto };
+  };
+}
 
 async function mandar(token, cuerpo) {
   const r = await fetch(`${API}/api/integraciones/isuwaya/pedidos`, {
@@ -66,7 +86,63 @@ async function mandar(token, cuerpo) {
   if (variantes.length < 2) { console.log('Hacen falta dos variantes con SKU en', negocio.nombre); process.exit(1); }
   const [v1, v2] = variantes;
 
+  const local = await BusinessLocation.findOne({
+    where: { businessId: negocio.id, tipo: 'local', activo: true }, order: [['id', 'ASC']],
+  });
+  if (!local) { console.log('Hace falta un local de venta en', negocio.nombre); process.exit(1); }
+
+  /*
+   * El stock se deja como estaba.
+   *
+   * Aceptar un pedido sin stock da de alta las unidades que faltan —es lo que
+   * se pidió— y eso queda escrito en el inventario. Se guarda la foto de
+   * antes y se restaura al final: una suite no puede dejarle stock inventado
+   * a la base.
+   */
+  const stockAntes = new Map();
+  for (const v of [v1, v2]) {
+    const fila = await VariantStock.findOne({ where: { productVariantId: v.id, locationId: local.id } });
+    stockAntes.set(v.id, fila ? { stock: fila.stock, reservado: fila.reservado } : null);
+  }
+  const ventasDePrueba = [];
+
   const limpiar = async () => {
+    /*
+     * Las ventas de la prueba se borran con todo lo que les cuelga.
+     *
+     * Una venta fiada deja además su renglón en la cuenta corriente del
+     * cliente, y una cobrada sus pagos: borrando sólo la venta, la base rechaza
+     * el DELETE por clave foránea, la limpieza se corta a la mitad y la corrida
+     * siguiente arranca con basura de la anterior. Pasó: por eso está escrito
+     * así y no con un destroy solo.
+     */
+    const aBorrar = [...new Set([
+      ...ventasDePrueba.filter(Boolean),
+      ...(await Sale.findAll({
+        where: { businessId: negocio.id, notas: { [Op.like]: `%${QA}%` } }, attributes: ['id'],
+      })).map((v) => v.id),
+    ])];
+    for (const id of aBorrar) {
+      const venta = await Sale.findByPk(id, { include: [{ model: SaleItem, as: 'items' }] });
+      if (!venta) continue;
+      const t = await sequelize.transaction();
+      try {
+        await devolverStockVenta(venta, t, { motivo: 'QA solicitud mayorista' });
+        await t.commit();
+      } catch { await t.rollback().catch(() => {}); }
+      await SolicitudMayorista.update({ saleId: null }, { where: { saleId: id } });
+      await ClientAccountEntry.destroy({ where: { saleId: id } });
+      await SalePayment.destroy({ where: { saleId: id } });
+      await Invoice.destroy({ where: { saleId: id } });
+      await SaleItem.destroy({ where: { saleId: id } });
+      await Sale.destroy({ where: { id } });
+    }
+    ventasDePrueba.length = 0;
+    for (const [variantId, antes] of stockAntes) {
+      if (!antes) { await VariantStock.destroy({ where: { productVariantId: variantId, locationId: local.id } }); continue; }
+      await VariantStock.update(antes, { where: { productVariantId: variantId, locationId: local.id } });
+    }
+    await Client.destroy({ where: { businessId: negocio.id, nombre: 'QA Textiles Mayorista' } });
     const filas = await SolicitudMayorista.findAll({
       where: { pedidoExterno: { [Op.like]: `${QA}%` } }, attributes: ['id'],
     });
@@ -77,6 +153,21 @@ async function mandar(token, cuerpo) {
     await IntegracionExterna.destroy({ where: { nombre: { [Op.like]: 'QA %' } } });
   };
   await limpiar();
+
+  /*
+   * El cliente de prueba se crea DESPUÉS de la limpieza, que es justamente la
+   * que lo borra. Creado antes, la suite se queda con el id de una fila que ya
+   * no existe y la venta fiada rebota con "el cliente no pertenece a este
+   * negocio": un error que manda a buscar el problema al lado equivocado.
+   */
+  const [cliente] = await Client.findOrCreate({
+    where: { businessId: negocio.id, cuit: '30-99999991-1' },
+    defaults: {
+      businessId: negocio.id, nombre: 'QA Textiles Mayorista', cuit: '30-99999991-1', tipo: 'mayorista',
+      // Fiar exige cuenta habilitada y límite: es la puerta que Stocker ya tiene.
+      cuentaHabilitada: true, limiteCredito: 500000,
+    },
+  });
 
   /*
    * Se busca por el número del pedido y NO por el negocio.
@@ -268,9 +359,160 @@ async function mandar(token, cuerpo) {
     const tercera = await integraciones.emitir({
       businessId: negocio.id, origen: 'isuwaya', nombre: 'QA ISUWAYA 3',
     });
+    const token3 = tercera.token;
     chk('emitir una nueva apaga la anterior: no quedan dos vivas', 401,
       (await mandar(segunda.token, pedido(`${QA}012`))).status);
     chk('y la última anda', 201, (await mandar(tercera.token, pedido(`${QA}013`))).status);
+
+    tit('7. LA BANDEJA');
+    const api = sesion();
+    const login = await api('POST', '/api/auth/login', { email: negocio.email, password: 'Demo2026!!' });
+    if (login.status !== 200) { console.log('No se pudo entrar como', negocio.email, login.status); process.exit(1); }
+
+    // Cantidades chicas: acá se prueba la bandeja, no el stock.
+    await mandar(token3, pedido(`${QA}100`, {
+      items: [
+        { sku: v1.sku, cantidad: 1, precioUnitario: 45000, producto: 'Remera QA' },
+        { sku: v2.sku, cantidad: 1, precioUnitario: 40000, producto: 'Pantalón QA' },
+      ],
+    }));
+    const bandeja = await api('GET', '/api/solicitudes-mayoristas?estado=pendiente');
+    const enLista = (bandeja.json?.solicitudes || []).find((x) => x.pedidoExterno === `${QA}100`);
+    chk('la solicitud aparece en la bandeja', [200, true, 'pendiente'],
+      [bandeja.status, !!enLista, enLista?.estado]);
+
+    const det = await api('GET', `/api/solicitudes-mayoristas/${enLista.id}`);
+    chk('el detalle trae las líneas y qué no se pudo identificar', [2, 0],
+      [det.json?.items?.length, det.json?.sinIdentificar?.length]);
+    chk('y el JSON del origen llega leído, no como texto', 'Textiles QA', det.json?.cliente?.nombre);
+
+    tit('8. RECHAZAR');
+    const sinMotivo = await api('POST', `/api/solicitudes-mayoristas/${enLista.id}/rechazar`, {});
+    chk('rechazar sin motivo no se puede: del otro lado hay alguien esperando', 400, sinMotivo.status);
+
+    const rechazo = await api('POST', `/api/solicitudes-mayoristas/${enLista.id}/rechazar`,
+      { motivo: 'No hay tela para esa curva hasta el mes que viene.' });
+    chk('con motivo, queda rechazada y el motivo guardado',
+      [200, 'rechazada', 'No hay tela para esa curva hasta el mes que viene.'],
+      [rechazo.status, rechazo.json?.estado, rechazo.json?.motivoRechazo]);
+    chk('una rechazada ya no se puede aceptar', 409,
+      (await api('POST', `/api/solicitudes-mayoristas/${enLista.id}/aceptar`, { locationId: local.id })).status);
+
+    tit('9. ACEPTAR: LO QUE NO SE PUEDE VENDER');
+    await mandar(token3, pedido(`${QA}101`, {
+      items: [
+        { sku: v1.sku, cantidad: 1, producto: 'Remera QA' },
+        { sku: 'SIN-SKU:QA:Melang:XXL', cantidad: 2, producto: 'Buzo QA' },
+      ],
+    }));
+    const conRaro = (await api('GET', `/api/solicitudes-mayoristas?estado=pendiente`))
+      .json.solicitudes.find((x) => x.pedidoExterno === `${QA}101`);
+    const noIdentificada = await api('POST', `/api/solicitudes-mayoristas/${conRaro.id}/aceptar`,
+      { locationId: local.id });
+    chk('con una línea que Stocker no reconoce no se acepta', [409, 'SIN_IDENTIFICAR'],
+      [noIdentificada.status, noIdentificada.json?.codigo || noIdentificada.json?.detalles?.codigo]);
+    chk('y la solicitud sigue en la bandeja, no marcada', 'pendiente',
+      (await api('GET', `/api/solicitudes-mayoristas/${conRaro.id}`)).json?.estado);
+
+    tit('10. ACEPTAR: EL PEDIDO SE HACE VENTA');
+    /*
+     * El stock se pone en cero a propósito.
+     *
+     * Sin fijarlo, que falte o no stock depende de lo que tenga la base ese
+     * día: si había, la venta sale derecho y toda la mitad importante de esta
+     * sección —el aviso de faltante, la vuelta a la bandeja, el alta
+     * confirmada— no se prueba y la suite igual da verde. Se descubrió
+     * justamente así: tres controles no hicieron fallar nada.
+     */
+    for (const variante of [v1, v2]) {
+      const [fila] = await VariantStock.findOrCreate({
+        where: { productVariantId: variante.id, locationId: local.id },
+        defaults: { productVariantId: variante.id, locationId: local.id, businessId: negocio.id, stock: 0, reservado: 0 },
+      });
+      await fila.update({ stock: 0, reservado: 0 });
+    }
+    /*
+     * Un pedido mayorista se hace a pedido: lo normal es que el stock no esté.
+     * Stocker avisa qué falta y no vende hasta que una persona lo confirme.
+     */
+    await mandar(token3, pedido(`${QA}102`, {
+      items: [{ sku: v1.sku, cantidad: 3, precioUnitario: 45000, producto: 'Remera QA' },
+        { sku: v2.sku, cantidad: 2, precioUnitario: 40000, producto: 'Pantalón QA' }],
+      total: 215000, unidades: 5,
+    }));
+    const paraVender = (await api('GET', '/api/solicitudes-mayoristas?estado=pendiente'))
+      .json.solicitudes.find((x) => x.pedidoExterno === `${QA}102`);
+
+    const sinStock = await api('POST', `/api/solicitudes-mayoristas/${paraVender.id}/aceptar`,
+      { locationId: local.id, estado: 'pagado', medioPago: 'efectivo' });
+    chk('si falta stock, avisa qué falta antes de vender', [409, 'SIN_STOCK'],
+      [sinStock.status, sinStock.json?.codigo || sinStock.json?.detalles?.codigo]);
+    chk('y dice cuántas unidades faltan de cada artículo', true,
+      (sinStock.json?.faltantes || sinStock.json?.detalles?.faltantes || []).length > 0);
+    chk('y la solicitud VUELVE a la bandeja para reintentar', 'pendiente',
+      (await api('GET', `/api/solicitudes-mayoristas/${paraVender.id}`)).json?.estado);
+
+    /*
+     * Ahora con el alta confirmada: se suman las unidades que faltaban y la
+     * venta se las lleva. Es lo mismo que hace el mostrador cuando la percha
+     * tiene algo que el inventario no.
+     */
+    const aceptada = await api(
+      'POST', `/api/solicitudes-mayoristas/${paraVender.id}/aceptar`,
+      {
+        locationId: local.id, estado: 'pagado', medioPago: 'efectivo', confirmarAltaStock: true,
+        // Artículos de mentira a propósito: aceptar es aceptar ESTE pedido.
+        items: [{ productVariantId: v2.id, cantidad: 99 }],
+      },
+    );
+    ventasDePrueba.push(aceptada.json?.venta?.id);
+    chk('se acepta y nace la venta', [201, true], [aceptada.status, !!aceptada.json?.venta?.id]);
+    chk('la venta lleva los artículos del pedido y no los que mandó el navegador',
+      [2, 3, 2],
+      [aceptada.json?.venta?.items?.length,
+        aceptada.json?.venta?.items?.find((i) => i.productVariantId === v1.id)?.cantidad,
+        aceptada.json?.venta?.items?.find((i) => i.productVariantId === v2.id)?.cantidad]);
+    chk('la solicitud queda aceptada y apunta a su venta', ['aceptada', aceptada.json?.venta?.id],
+      [(await api('GET', `/api/solicitudes-mayoristas/${paraVender.id}`)).json?.estado,
+        (await api('GET', `/api/solicitudes-mayoristas/${paraVender.id}`)).json?.saleId]);
+    chk('y queda escrito de qué pedido salió', true,
+      String(aceptada.json?.venta?.notas || '').includes(`${QA}102`));
+    chk('el alta se avisa: se dieron de alta las unidades que faltaban', 'STOCK_DADO_DE_ALTA',
+      aceptada.json?.venta?.altaStock?.codigo);
+    /*
+     * Lo que se dio de alta se lo llevó la venta: el inventario no queda con
+     * unidades fantasma sueltas.
+     */
+    const tras102 = await VariantStock.findOne({ where: { productVariantId: v1.id, locationId: local.id } });
+    chk('y el inventario no queda con unidades fantasma sueltas', 0, Number(tras102?.stock ?? 0));
+
+    const repetida = await api('POST', `/api/solicitudes-mayoristas/${paraVender.id}/aceptar`,
+      { locationId: local.id, estado: 'pagado', medioPago: 'efectivo', confirmarAltaStock: true });
+    if (repetida.json?.venta?.id) ventasDePrueba.push(repetida.json.venta.id);
+    chk('aceptarla dos veces no crea una segunda venta', [409, 1],
+      [repetida.status,
+        await Sale.count({ where: { businessId: negocio.id, notas: { [Op.like]: `%${QA}102%` } } })]);
+
+    tit('11. O SE DEJA A COBRAR');
+    await mandar(token3, pedido(`${QA}103`, {
+      items: [{ sku: v1.sku, cantidad: 1, precioUnitario: 45000, producto: 'Remera QA' }],
+      total: 45000, unidades: 1,
+    }));
+    const aFiar = (await api('GET', '/api/solicitudes-mayoristas?estado=pendiente'))
+      .json.solicitudes.find((x) => x.pedidoExterno === `${QA}103`);
+    const fiada = await api('POST', `/api/solicitudes-mayoristas/${aFiar.id}/aceptar`, {
+      locationId: local.id,
+      clientId: cliente.id,
+      condicionPago: 'cuenta_corriente',
+      descontarStock: true,
+      confirmarAltaStock: true,
+    });
+    if (fiada.json?.venta?.id) ventasDePrueba.push(fiada.json.venta.id);
+    chk('la misma solicitud se puede dejar a cobrar en vez de cobrarla',
+      [201, 'cuenta_corriente', cliente.id],
+      [fiada.status, fiada.json?.venta?.condicionPago, fiada.json?.venta?.clientId]);
+    chk('y queda como deuda del cliente, no como plata en la caja', true,
+      Number(fiada.json?.venta?.saldoPendiente) > 0);
   } finally {
     tit('Limpieza');
     await limpiar();

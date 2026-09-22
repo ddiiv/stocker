@@ -256,4 +256,165 @@ async function recibirUnaVez({ businessId, origen, cuerpo }) {
   });
 }
 
-module.exports = { recibir, __leerCuerpo: leerCuerpo, MAX_LINEAS, MAX_CANTIDAD };
+/*
+ * ══ La bandeja: lo que ve quien revisa ═══════════════════════════
+ */
+
+/** Las solicitudes del negocio, las pendientes primero. */
+async function listar({ businessId, estado = null, limite = 100 }) {
+  const where = { businessId };
+  if (estado) where.estado = estado;
+  const filas = await SolicitudMayorista.findAll({
+    where,
+    include: [{ model: SolicitudMayoristaItem, as: 'items' }],
+    order: [['estado', 'ASC'], ['id', 'DESC']],
+    limit: Math.min(Number(limite) || 100, 500),
+  });
+  const pendientes = await SolicitudMayorista.count({ where: { businessId, estado: 'pendiente' } });
+  return { pendientes, solicitudes: filas.map(comoSeVe) };
+}
+
+const leerJson = (t) => { try { return t ? JSON.parse(t) : null; } catch { return null; } };
+
+function comoSeVe(fila) {
+  const j = fila.toJSON();
+  return {
+    ...j,
+    total: Number(j.total),
+    comprador: leerJson(j.comprador),
+    cliente: leerJson(j.cliente),
+    envio: leerJson(j.envio),
+    cambioPosterior: leerJson(j.cambioPosterior),
+    items: (j.items || []).map((i) => ({ ...i, precioOrigen: i.precioOrigen === null ? null : Number(i.precioOrigen) })),
+  };
+}
+
+/**
+ * Una solicitud con todo lo que hace falta para decidir sin adivinar.
+ *
+ * Aprobar a ciegas es el problema que el circuito de reposición ya tuvo: se
+ * aprobaba, y el faltante aparecía recién cuando el local reclamaba. Acá quien
+ * revisa ve, antes de firmar, qué líneas no se pudieron identificar y con qué
+ * cliente de Stocker matchea el CUIT que mandó el origen.
+ */
+async function detalle({ businessId, id }) {
+  const { Client } = require('../models');
+  const fila = await SolicitudMayorista.findOne({
+    where: { id, businessId },
+    include: [{ model: SolicitudMayoristaItem, as: 'items' }],
+  });
+  if (!fila) throw error('Esa solicitud no existe.', 404);
+
+  const vista = comoSeVe(fila);
+  const cuit = String(vista.cliente?.cuit || vista.comprador?.documento || '').replace(/\D/g, '');
+  /*
+   * El cliente se sugiere, no se crea solo.
+   *
+   * Crear una ficha por cada pedido que entra llena la lista de clientes de
+   * fichas que nadie miró. Quien revisa elige: la existente, una nueva, o
+   * ninguna —salvo que fíe, que ahí Stocker ya exige cliente.
+   */
+  let clienteSugerido = null;
+  if (cuit) {
+    const candidatos = await Client.findAll({ where: { businessId }, attributes: ['id', 'nombre', 'cuit', 'tipo'] });
+    clienteSugerido = candidatos.find((c) => String(c.cuit || '').replace(/\D/g, '') === cuit)?.toJSON() || null;
+  }
+
+  return {
+    ...vista,
+    clienteSugerido,
+    sinIdentificar: vista.items.filter((i) => !i.productVariantId).map((i) => ({ sku: i.sku, descripcion: i.descripcion })),
+  };
+}
+
+/**
+ * Se queda con la solicitud antes de crear la venta.
+ *
+ * El cambio de estado se hace con un UPDATE condicionado: si dos personas
+ * aprietan aceptar a la vez, una sola se la lleva. Al revés —crear la venta y
+ * después marcar— las dos crearían su venta y el cliente recibiría el pedido
+ * dos veces.
+ */
+async function reservarParaAceptar({ businessId, id, employeeId }) {
+  const fila = await SolicitudMayorista.findOne({ where: { id, businessId } });
+  if (!fila) throw error('Esa solicitud no existe.', 404);
+  if (fila.estado === 'aceptada') {
+    throw error(`Esta solicitud ya se aceptó${fila.saleId ? ` (venta ${fila.saleId})` : ''}.`, 409);
+  }
+  if (fila.estado !== 'pendiente') {
+    throw error(`Esta solicitud está ${fila.estado} y ya no se puede aceptar.`, 409);
+  }
+
+  const items = await SolicitudMayoristaItem.findAll({ where: { solicitudId: fila.id }, order: [['id', 'ASC']] });
+  const sinIdentificar = items.filter((i) => !i.productVariantId);
+  if (sinIdentificar.length) {
+    throw Object.assign(
+      new Error('Hay líneas que Stocker no reconoce y no se pueden vender: '
+        + sinIdentificar.map((i) => i.sku).join(', ')
+        + '. Corregí el catálogo del origen y volvé a mandar el pedido.'),
+      /*
+       * El código viaja plano y también dentro de `detalles`: el manejador de
+       * errores del proyecto arma la respuesta desde `detalles`, y sin eso la
+       * pantalla recibe un 409 sin saber cuál es.
+       */
+      {
+        status: 409,
+        codigo: 'SIN_IDENTIFICAR',
+        faltantes: sinIdentificar.map((i) => ({ sku: i.sku, descripcion: i.descripcion })),
+        detalles: {
+          codigo: 'SIN_IDENTIFICAR',
+          faltantes: sinIdentificar.map((i) => ({ sku: i.sku, descripcion: i.descripcion })),
+        },
+      },
+    );
+  }
+
+  const [tomadas] = await SolicitudMayorista.update(
+    { estado: 'aceptada', revisadoPorEmployeeId: employeeId || null, revisadoEn: new Date() },
+    { where: { id: fila.id, businessId, estado: 'pendiente' } },
+  );
+  if (!tomadas) throw error('Otra persona está revisando esta solicitud en este momento.', 409);
+
+  return { solicitud: fila, items };
+}
+
+/** La venta salió: se anota cuál. */
+async function anotarVenta({ businessId, id, saleId }) {
+  await SolicitudMayorista.update({ saleId }, { where: { id, businessId } });
+}
+
+/** La venta no salió: la solicitud vuelve a la bandeja. */
+async function devolverALaBandeja({ businessId, id }) {
+  await SolicitudMayorista.update(
+    { estado: 'pendiente', revisadoPorEmployeeId: null, revisadoEn: null },
+    { where: { id, businessId, saleId: null } },
+  );
+}
+
+/**
+ * Rechazar exige motivo.
+ *
+ * Del otro lado hay un cliente que armó un pedido: "rechazado" sin decir por
+ * qué obliga a levantar el teléfono, y el que atiende tampoco sabe.
+ */
+async function rechazar({ businessId, id, motivo, employeeId }) {
+  const texto = recortar(motivo, 500);
+  if (!texto) throw error('Decí por qué se rechaza: del otro lado hay un cliente esperando.');
+  const fila = await SolicitudMayorista.findOne({ where: { id, businessId } });
+  if (!fila) throw error('Esa solicitud no existe.', 404);
+  if (fila.estado === 'aceptada') throw error('Esta solicitud ya se aceptó: anulá la venta si hace falta.', 409);
+
+  const [tocadas] = await SolicitudMayorista.update(
+    { estado: 'rechazada', motivoRechazo: texto, revisadoPorEmployeeId: employeeId || null, revisadoEn: new Date() },
+    { where: { id, businessId, estado: { [Op.in]: ['pendiente', 'cancelada'] } } },
+  );
+  if (!tocadas) throw error('Esta solicitud ya no está para revisar.', 409);
+  log.info('solicitud-mayorista', 'rechazada', { businessId, id, motivo: texto.slice(0, 80) });
+  return detalle({ businessId, id });
+}
+
+module.exports = {
+  recibir, listar, detalle, rechazar,
+  reservarParaAceptar, anotarVenta, devolverALaBandeja,
+  __leerCuerpo: leerCuerpo, MAX_LINEAS, MAX_CANTIDAD,
+};

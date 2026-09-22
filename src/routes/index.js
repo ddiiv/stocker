@@ -49,6 +49,7 @@ const { restringirBackoffice } = require('../middleware/ipAllowlist');
 const { frenarSiBloqueado } = require('../services/bloqueoService');
 const publicCtrl = require('../controllers/publicController');
 const integracionesCtrl = require('../controllers/integracionesController');
+const solicitudMayoristaCtrl = require('../controllers/solicitudMayoristaController');
 const { requireIntegracion } = require('../middleware/integracion');
 const { FEATURES } = require('../config/planes');
 
@@ -276,6 +277,18 @@ r.post('/account/2fa/canal/desactivar', requireAuth, requireOwner, loginLimiter,
  * una persona la mire. Por eso esta ruta no puede tocar stock ni plata.
  */
 r.post('/integraciones/isuwaya/pedidos', requireIntegracion('isuwaya'), integracionesCtrl.recibirPedido);
+
+/*
+ * ── La bandeja de pedidos mayoristas ──────────────────────────────
+ *
+ * Aceptar crea una venta, así que pide el permiso de ventas: es exactamente lo
+ * que se está haciendo. Rechazar pide el mismo, porque del otro lado hay un
+ * cliente esperando y la decisión es comercial, no de depósito.
+ */
+r.get ('/solicitudes-mayoristas',     requireAuth, requireAnyPermission(['ventas', 'stock'], 'ver'), solicitudMayoristaCtrl.getSolicitudes);
+r.get ('/solicitudes-mayoristas/:id', requireAuth, requireAnyPermission(['ventas', 'stock'], 'ver'), solicitudMayoristaCtrl.getSolicitud);
+r.post('/solicitudes-mayoristas/:id/aceptar',  requireAuth, requirePermission('ventas', 'editar'), solicitudMayoristaCtrl.postAceptar);
+r.post('/solicitudes-mayoristas/:id/rechazar', requireAuth, requirePermission('ventas', 'editar'), solicitudMayoristaCtrl.postRechazar);
 
 // El dueño maneja sus credenciales desde la configuración del negocio.
 r.get   ('/integraciones',     requireAuth, requireOwner, integracionesCtrl.listar);
