@@ -129,7 +129,8 @@ export default function ArcaConfigPage() {
         <p className="mb-1 flex items-center gap-1 font-medium text-ink-950"><Info size={14} /> ¿Qué hago acá?</p>
         <p>Vas a autorizar a Stocker a emitir facturas <strong>a tu nombre</strong> ante AFIP.
         Nosotros ponemos el certificado y firma; vos ponés el CUIT y el punto de venta.
-        Solo necesitás hacer 2 clicks en AFIP una única vez (pasos <strong>1</strong> y <strong>2</strong> abajo).</p>
+        Solo necesitás hacer 2 clicks en AFIP una única vez (pasos <strong>1</strong> y <strong>2</strong> abajo);
+        el resto lo detectamos nosotros.</p>
       </div>
 
       {/* ═══════════════════ PASOS EN AFIP ═══════════════════ */}
@@ -171,6 +172,10 @@ export default function ArcaConfigPage() {
             <li><strong>Servicio:</strong> AFIP → Web Services → <strong>Facturación Electrónica (wsfe)</strong></li>
             <li><strong>Representante:</strong> ingresá el CUIT de Stocker (abajo)</li>
           </ul>
+          <p className="mb-3 rounded-md border border-teal-500 bg-teal-50 px-3 py-2 text-xs text-ink-900">
+            Cuando termines, <strong>no hace falta que nos avises</strong>: Stocker revisa cada 15 minutos
+            qué CUIT lo delegaron y se activa solo. Si querés confirmarlo en el momento, usá el paso 4.
+          </p>
           <div className="rounded-md border border-line bg-paper-100 px-3 py-2 text-sm">
             <p className="text-xs uppercase tracking-wide text-ink-600">CUIT de Stocker (copiar y pegar en AFIP)</p>
             <div className="mt-1 flex items-center justify-between gap-2">
@@ -246,6 +251,7 @@ export default function ArcaConfigPage() {
             <div className="flex justify-between"><dt className="text-ink-600">Delegación</dt>
               <dd>{config?.delegacionVerificada ? <span className="badge badge-ok">Verificada</span> : <span className="badge badge-low">Sin verificar</span>}</dd>
             </div>
+            <p className="text-xs text-ink-500">Se revisa solo cada 15 minutos contra AFIP.</p>
             {config?.ultimaVerificacion && (
               <div className="flex justify-between"><dt className="text-ink-600">Última prueba</dt>
                 <dd className="text-xs text-ink-500">{new Date(config.ultimaVerificacion).toLocaleString("es-AR")}</dd></div>
@@ -264,9 +270,11 @@ export default function ArcaConfigPage() {
       <Card>
         <div className="mb-3 flex items-center gap-2">
           <span className="flex h-7 w-7 items-center justify-center rounded-full bg-brass-500 text-xs font-bold text-ink-950">4</span>
-          <h3 className="font-display text-base font-semibold text-ink-950">Verificar delegación con AFIP</h3>
+          <h3 className="font-display text-base font-semibold text-ink-950">Verificar ahora (opcional)</h3>
         </div>
-        <p className="mb-3 text-sm text-ink-700">Le preguntamos a AFIP si tu CUIT ya nos delegó el servicio wsfe y si el punto de venta existe. Es una prueba de conectividad, no emite ninguna factura.</p>
+        <p className="mb-3 text-sm text-ink-700">La delegación la detectamos solos cada 15 minutos. Este botón es el atajo
+        para no esperar: le preguntamos a AFIP si tu CUIT ya nos delegó el servicio wsfe y si el punto de venta existe.
+        Es una prueba de conectividad, no emite ninguna factura.</p>
         <button className="btn-accent" onClick={handleVerify} disabled={verifying || !config?.puntoVenta}>
           <RefreshCw size={15} className={verifying ? "animate-spin" : ""} /> {verifying ? "Verificando…" : "Verificar ahora"}
         </button>
@@ -430,7 +438,7 @@ export default function ArcaConfigPage() {
               </div>
               <div>
                 <p className="font-medium text-ink-900">¿Puedo dejar de usar Stocker?</p>
-                <p className="text-ink-600">Sí. En AFIP → Administrador de Relaciones → sacás la delegación wsfe hacia nuestro CUIT y desde ese momento no podemos emitir más facturas a tu nombre.</p>
+                <p className="text-ink-600">Sí. En AFIP → Administrador de Relaciones → sacás la delegación wsfe hacia nuestro CUIT y desde ese momento no podemos emitir más facturas a tu nombre. Stocker lo detecta en la revisión siguiente y deja de intentarlo.</p>
               </div>
               <div>
                 <p className="font-medium text-ink-900">¿Qué pasa si me equivoco de punto de venta?</p>
