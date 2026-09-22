@@ -541,6 +541,94 @@ async function mandar(token, cuerpo) {
       [fiada.status, fiada.json?.venta?.condicionPago, fiada.json?.venta?.clientId]);
     chk('y queda como deuda del cliente, no como plata en la caja', true,
       Number(fiada.json?.venta?.saldoPendiente) > 0);
+
+    tit('12. LA VUELTA: QUÉ PASÓ CON CADA PEDIDO');
+    /*
+     * El portal pregunta en vez de que Stocker avise: ya tiene un reloj y
+     * reintentos escritos, y si se cae no se pierde nada —cuando vuelve,
+     * pregunta desde donde quedó—.
+     */
+    const traer = async (qs = '') => {
+      const r = await fetch(`${API}/api/integraciones/isuwaya/pedidos/resoluciones${qs}`, {
+        headers: { Authorization: `Bearer ${token3}` },
+      });
+      return { status: r.status, json: await r.json() };
+    };
+
+    const vuelta = await traer('');
+    const porPedido = new Map((vuelta.json?.resoluciones || []).map((x) => [x.pedidoExterno, x]));
+    chk('vuelve lo aceptado, con el número de venta', ['aceptada', true],
+      [porPedido.get(`${QA}102`)?.estado,
+        Boolean(porPedido.get(`${QA}102`)?.venta?.numero)]);
+    chk('y lo rechazado, con el motivo', ['rechazada', true],
+      [porPedido.get(`${QA}100`)?.estado,
+        String(porPedido.get(`${QA}100`)?.motivo || '').includes('tela')]);
+    chk('lo que nadie revisó todavía no vuelve', undefined, porPedido.get(`${QA}101`));
+
+    /*
+     * El cursor: con lo que ya leyó, no le vuelve lo mismo. Sin esto el portal
+     * reaplicaría cada resolución en cada vuelta del reloj.
+     */
+    const desdeElCursor = await traer(`?desde=${encodeURIComponent(vuelta.json.hasta)}`);
+    chk('con el cursor de la vuelta anterior no repite nada', 0, desdeElCursor.json?.resoluciones?.length);
+
+    /*
+     * Multi-tenant: una solicitud de OTRO negocio no puede volver por esta
+     * credencial. Es el mismo cuidado que con el alta.
+     */
+    const otroNegocio = await Business.findOne({ where: { id: { [Op.ne]: negocio.id } }, order: [['id', 'ASC']] });
+    if (otroNegocio) {
+      const ajena = await SolicitudMayorista.create({
+        businessId: otroNegocio.id, origen: 'isuwaya', pedidoExterno: `${QA}AJENA`,
+        estado: 'aceptada', revisadoEn: new Date(), total: 1, unidades: 1,
+      });
+      const conAjena = await traer('');
+      chk('un pedido de otro negocio no vuelve por esta credencial', false,
+        (conAjena.json?.resoluciones || []).some((x) => x.pedidoExterno === `${QA}AJENA`));
+      await ajena.destroy();
+    }
+
+    tit('13. LOS PRECIOS LOS MANDA STOCKER');
+    const precios = async (qs = '') => {
+      const r = await fetch(`${API}/api/integraciones/isuwaya/precios${qs}`, {
+        headers: { Authorization: `Bearer ${token3}` },
+      });
+      return { status: r.status, json: await r.json() };
+    };
+    const { precioMayorista } = require('../src/services/precioService');
+    const productoDeV1 = await Product.findByPk(v1.productId);
+
+    const lista = await precios('');
+    const precioDeV1 = (lista.json?.precios || []).find((x) => x.sku === v1.sku);
+    chk('cada SKU viene con su precio mayorista', [200, precioMayorista(v1, productoDeV1)],
+      [lista.status, precioDeV1?.precio]);
+    chk('y con el agrupador, que es por donde el portal los junta', true,
+      Boolean(precioDeV1?.skuAgrupador));
+
+    chk('con un corte en el futuro no viene nada', 0,
+      (await precios(`?desde=${encodeURIComponent(new Date(Date.now() + 86400000).toISOString())}`)).json?.precios?.length);
+
+    /*
+     * El caso que se escapa solo: subir el precio del producto PADRE mueve a
+     * todas las variantes que lo heredan, y la variante no se toca. Mirando
+     * sólo su fecha, el portal se quedaría con los precios viejos sin ninguna
+     * señal de que cambiaron.
+     */
+    /*
+     * El corte se toma DESPUÉS de la última vez que se tocó la variante, no
+     * "hace un segundo": durante esta misma prueba la variante se movió (el
+     * alta de stock la toca), y con un corte más viejo la prueba pasaba aunque
+     * sólo se mirara la fecha de la variante — que es exactamente lo que tiene
+     * que fallar.
+     */
+    await v1.reload();
+    const antesDelCambio = new Date(new Date(v1.updatedAt).getTime() + 1).toISOString();
+    const precioViejo = productoDeV1.precioMayorista;
+    await productoDeV1.update({ precioMayorista: Number(precioViejo || 0) + 777 });
+    const delta = await precios(`?desde=${encodeURIComponent(antesDelCambio)}`);
+    const heredada = (delta.json?.precios || []).find((x) => x.sku === v1.sku);
+    chk('cambiar el precio del producto padre arrastra a sus variantes', true, Boolean(heredada));
+    await productoDeV1.update({ precioMayorista: precioViejo });
   } finally {
     tit('Limpieza');
     await limpiar();

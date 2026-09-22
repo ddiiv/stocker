@@ -433,8 +433,76 @@ async function rechazar({ businessId, id, motivo, employeeId }) {
   return detalle({ businessId, id });
 }
 
+/*
+ * ══ La vuelta: lo que el origen necesita saber ═══════════════════
+ *
+ * El origen pregunta; Stocker no avisa. Es a propósito:
+ *
+ *   · El origen ya tiene un reloj corriendo y reintentos escritos. Avisar
+ *     desde acá significaría una segunda cola, con su propia credencial, su
+ *     propio reintento y una URL pública del otro lado que hoy no existe.
+ *   · Si el origen está caído, preguntando no se pierde nada: cuando vuelve,
+ *     pregunta desde donde quedó. Avisando habría que guardar lo que no se
+ *     pudo entregar y reintentarlo, que es la cola de nuevo.
+ *
+ * El corte es por `revisadoEn` y el que pregunta manda hasta dónde ya leyó.
+ */
+async function resoluciones({ businessId, origen, desde = null, limite = 200 }) {
+  const { Sale } = require('../models');
+  const corte = desde ? new Date(desde) : new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+  if (Number.isNaN(corte.getTime())) throw error('La fecha "desde" no se entiende.');
+
+  const filas = await SolicitudMayorista.findAll({
+    where: {
+      businessId,
+      origen,
+      estado: { [Op.in]: ['aceptada', 'rechazada'] },
+      revisadoEn: { [Op.gt]: corte },
+    },
+    order: [['revisadoEn', 'ASC'], ['id', 'ASC']],
+    limit: Math.min(Number(limite) || 200, 500),
+  });
+
+  const ventas = new Map();
+  const ids = filas.map((f) => f.saleId).filter(Boolean);
+  if (ids.length) {
+    const encontradas = await Sale.findAll({
+      where: { id: ids, businessId },
+      attributes: ['id', 'numero', 'total', 'condicionPago', 'estado'],
+    });
+    for (const v of encontradas) ventas.set(v.id, v);
+  }
+
+  const salida = filas.map((f) => {
+    const venta = f.saleId ? ventas.get(f.saleId) : null;
+    return {
+      pedidoExterno: f.pedidoExterno,
+      estado: f.estado,
+      motivo: f.motivoRechazo || null,
+      revisadoEn: f.revisadoEn,
+      venta: venta ? {
+        numero: venta.numero,
+        total: Number(venta.total),
+        condicionPago: venta.condicionPago,
+        estado: venta.estado,
+      } : null,
+    };
+  });
+
+  /*
+   * `hasta` es el cursor para la próxima vuelta, y sale de lo que se devolvió y
+   * no del reloj de acá: con el reloj se saltearían las que se revisaron entre
+   * la consulta y la respuesta.
+   */
+  return {
+    resoluciones: salida,
+    hasta: salida.length ? salida[salida.length - 1].revisadoEn : (desde || null),
+    truncado: salida.length >= Math.min(Number(limite) || 200, 500),
+  };
+}
+
 module.exports = {
-  recibir, listar, detalle, rechazar,
+  recibir, listar, detalle, rechazar, resoluciones,
   reservarParaAceptar, anotarVenta, devolverALaBandeja,
   __leerCuerpo: leerCuerpo, MAX_LINEAS, MAX_CANTIDAD,
 };

@@ -277,6 +277,9 @@ r.post('/account/2fa/canal/desactivar', requireAuth, requireOwner, loginLimiter,
  * una persona la mire. Por eso esta ruta no puede tocar stock ni plata.
  */
 r.post('/integraciones/isuwaya/pedidos', requireIntegracion('isuwaya'), integracionesCtrl.recibirPedido);
+/* Lo que pasó con esos pedidos, y la lista de precios: las dos las pregunta el portal. */
+r.get('/integraciones/isuwaya/pedidos/resoluciones', requireIntegracion('isuwaya'), integracionesCtrl.resolucionesDePedidos);
+r.get('/integraciones/isuwaya/precios',              requireIntegracion('isuwaya'), integracionesCtrl.preciosPorSku);
 
 /*
  * ── La bandeja de pedidos mayoristas ──────────────────────────────

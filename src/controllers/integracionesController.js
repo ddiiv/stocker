@@ -41,6 +41,44 @@ const recibirPedido = async (req, res, next) => {
   } catch (e) { next(e); }
 };
 
+/*
+ * GET /api/integraciones/:origen/pedidos/resoluciones?desde=&limite=
+ *
+ * Lo que pasó con los pedidos que mandó: aceptados —con el número de venta— y
+ * rechazados con su motivo. El que pregunta manda hasta dónde ya leyó y se
+ * lleva el cursor para la próxima vuelta.
+ *
+ * Pregunta el origen en vez de avisar Stocker porque el origen ya tiene un
+ * reloj y reintentos escritos, y porque si se cae no se pierde nada: cuando
+ * vuelve, pregunta desde donde quedó.
+ */
+const resolucionesDePedidos = async (req, res, next) => {
+  try {
+    const { businessId, origen } = req.integracion;
+    res.json(await solicitudes.resoluciones({
+      businessId, origen, desde: req.query.desde || null, limite: req.query.limite,
+    }));
+  } catch (e) { next(e); }
+};
+
+/*
+ * GET /api/integraciones/:origen/precios?desde=
+ *
+ * El precio mayorista de cada SKU. Existe para que haya UNA lista: el catálogo
+ * del portal salió de una exportación y desde ese día los precios viven por
+ * separado, así que el cliente arma el pedido con un número y la venta se
+ * registra con otro.
+ */
+const preciosPorSku = async (req, res, next) => {
+  try {
+    const precios = require('../services/preciosIntegracionService');
+    res.json(await precios.precios({
+      businessId: req.integracion.businessId,
+      desde: req.query.desde || null,
+    }));
+  } catch (e) { next(e); }
+};
+
 /** GET /api/integraciones — las credenciales del negocio, sin los tokens. */
 const listar = async (req, res, next) => {
   try {
@@ -82,4 +120,4 @@ const revocar = async (req, res, next) => {
   } catch (e) { next(e); }
 };
 
-module.exports = { recibirPedido, listar, emitir, revocar };
+module.exports = { recibirPedido, resolucionesDePedidos, preciosPorSku, listar, emitir, revocar };
