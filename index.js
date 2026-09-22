@@ -304,6 +304,21 @@ app.get('/api/mi-ip', (req, res) => {
 app.use(['/api/auth', '/api/backoffice/login', '/api/backoffice/totp'], publicLimiter);
 app.use('/api', apiLimiter, routes);
 
+/*
+ * Las integraciones también contestan sin el /api.
+ *
+ * Todo lo del sistema cuelga de /api, pero del otro lado hay un sistema
+ * configurado con una URL base y una ruta, y las dos formas de escribirlo son
+ * igual de razonables: la base con /api y la ruta sin él, o al revés. Cuando
+ * no coinciden, el pedido llega hasta acá y se pierde con un 404 que en el
+ * panel del otro lado se lee "la ruta no existe" — y no existe ningún lugar
+ * donde se vea que faltaban cuatro caracteres.
+ *
+ * El 307 mantiene el método y el cuerpo, así que el POST llega igual. Es sólo
+ * para /integraciones: el resto del sistema sigue viviendo únicamente en /api.
+ */
+app.use('/integraciones', (req, res) => res.redirect(307, `/api/integraciones${req.url === '/' ? '' : req.url}`));
+
 // ── 404 y errores ─────────────────────────────────────────────────
 app.use(notFound);
 app.use(errorHandler);

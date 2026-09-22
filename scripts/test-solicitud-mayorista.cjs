@@ -230,6 +230,20 @@ async function mandar(token, cuerpo) {
     const guardado = await leer(`${QA}001`);
     chk('el negocio sale de la credencial, no del cuerpo', negocio.id, guardado.s.businessId);
 
+    /*
+     * Del otro lado hay un sistema configurado con una URL base y una ruta, y
+     * las dos formas de partirlo son razonables. Cuando no coinciden, el pedido
+     * se perdía con un 404 que se lee "la ruta no existe" y no dice que
+     * faltaban cuatro caracteres. Ahora llega igual.
+     */
+    const sinApi = await fetch(`${API}/integraciones/isuwaya/pedidos`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify(pedido(`${QA}003`)),
+    });
+    chk('el pedido llega aunque la URL venga sin el /api', [201, true],
+      [sinApi.status, Boolean(await leer(`${QA}003`))]);
+
     tit('2. QUÉ ENTRA');
     chk('las dos líneas quedaron, en orden', 2, guardado.items.length);
     chk('los SKU del catálogo se cruzan con su variante',
