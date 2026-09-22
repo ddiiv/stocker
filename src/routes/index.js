@@ -48,6 +48,8 @@ const { requirePlatformAdmin } = require('../middleware/backoffice');
 const { restringirBackoffice } = require('../middleware/ipAllowlist');
 const { frenarSiBloqueado } = require('../services/bloqueoService');
 const publicCtrl = require('../controllers/publicController');
+const integracionesCtrl = require('../controllers/integracionesController');
+const { requireIntegracion } = require('../middleware/integracion');
 const { FEATURES } = require('../config/planes');
 
 const r = Router();
@@ -261,6 +263,25 @@ r.post('/account/2fa/canal/desactivar', requireAuth, requireOwner, loginLimiter,
  * permiso es de ventas porque eso es lo que se está registrando; el de stock no
  * alcanzaría, y el de stock solo tampoco: quien integra necesita poder vender.
  */
+/*
+ * ── Integraciones: sistemas de afuera que escriben acá ────────────
+ *
+ * Hoy es ISUWAYA, el portal de pedidos mayoristas. Entra con una credencial de
+ * máquina y NO con una sesión: la de una persona se corta a los 30 minutos, se
+ * revoca al cambiar la contraseña del dueño y con doble factor no se renueva
+ * sola. El negocio sale de la credencial y nunca del cuerpo del pedido, que es
+ * la misma regla que ya vale para Mercado Libre.
+ *
+ * Lo que entra por acá no crea ninguna venta: deja una solicitud esperando que
+ * una persona la mire. Por eso esta ruta no puede tocar stock ni plata.
+ */
+r.post('/integraciones/isuwaya/pedidos', requireIntegracion('isuwaya'), integracionesCtrl.recibirPedido);
+
+// El dueño maneja sus credenciales desde la configuración del negocio.
+r.get   ('/integraciones',     requireAuth, requireOwner, integracionesCtrl.listar);
+r.post  ('/integraciones',     requireAuth, requireOwner, integracionesCtrl.emitir);
+r.delete('/integraciones/:id', requireAuth, requireOwner, integracionesCtrl.revocar);
+
 r.post('/online/pedidos',   requireAuth, requirePermission('ventas', 'editar'), colaCtrl.postPedido);
 r.get ('/online/pedidos',   requireAuth, requireAnyPermission(['ventas', 'stock'], 'ver'), colaCtrl.getPedidos);
 /*

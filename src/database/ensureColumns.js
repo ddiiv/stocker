@@ -18,6 +18,14 @@ const { sinDatos } = require('../utils/logger');
 
 // tabla → { columna: definición }
 const COLUMNAS_ESPERADAS = {
+  /*
+   * El puente con ISUWAYA. La tabla es nueva, así que `sync` la crea entera en
+   * una base limpia; esto es para las que ya la tienen creada de una versión
+   * anterior del modelo, que es justo lo que `sync` no arregla.
+   */
+  solicitudes_mayoristas: {
+    cambioPosterior: { type: DataTypes.TEXT, allowNull: true },
+  },
   business_locations: {
     /*
      * Local o depósito. Los que ya existen quedan como 'local' —es lo que

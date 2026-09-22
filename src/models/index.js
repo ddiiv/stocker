@@ -1331,6 +1331,170 @@ const PedidoReposicionItem = db.define('PedidoReposicionItem', {
   descripcion:      { type: DataTypes.STRING(255) },
 }, { tableName: 'pedido_reposicion_items' });
 
+/*
+ * ══ El puente con un sistema de afuera ═══════════════════════════
+ *
+ * Hoy lo usa ISUWAYA, el portal de pedidos mayoristas: el cliente arma el
+ * pedido allá y acá entra como una solicitud para revisar.
+ *
+ * ── Por qué una credencial propia y no un login ──────────────────
+ *
+ * La sesión de una persona no sirve para esto: se corta a los 30 minutos de
+ * inactividad, se revoca cuando el dueño cambia la contraseña, y con doble
+ * factor no se puede renovar sola. Una integración que se apaga sin avisar es
+ * peor que una que no existe, porque los pedidos se pierden en silencio.
+ *
+ * ── El negocio sale de acá y NUNCA del pedido ────────────────────
+ *
+ * Es la misma regla que ya vale para Mercado Libre: si el negocio viniera en
+ * el cuerpo, cualquiera con una credencial podría escribir ventas, stock y
+ * cuenta corriente en la cuenta de otro cliente de Stocker.
+ */
+const IntegracionExterna = db.define('IntegracionExterna', {
+  id:         { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
+  businessId: { type: DataTypes.INTEGER, allowNull: false },
+  // 'isuwaya' | el que se sume después.
+  origen:     { type: DataTypes.STRING(20), allowNull: false },
+  nombre:     { type: DataTypes.STRING(100), allowNull: true },
+  /*
+   * El token se guarda hasheado, como los códigos de recuperación.
+   *
+   * Lo generamos nosotros con azar de sobra, así que no hay diccionario que
+   * probar y bcrypt sólo costaría tiempo en cada pedido. Lo que sí importa es
+   * que una copia de la base no alcance para hacerse pasar por ISUWAYA.
+   */
+  tokenHash:  { type: DataTypes.STRING(64), allowNull: false },
+  // Los últimos caracteres del token en claro, para reconocerlo en la pantalla
+  // sin poder reconstruirlo.
+  pista:      { type: DataTypes.STRING(12), allowNull: true },
+  activa:     { type: DataTypes.BOOLEAN, defaultValue: true },
+  ultimoUsoEn: { type: DataTypes.DATE, allowNull: true },
+}, {
+  tableName: 'integraciones_externas',
+  indexes: [
+    { name: 'uq_integracion_token', unique: true, fields: ['tokenHash'] },
+    { name: 'ix_integracion_negocio', fields: ['businessId', 'origen'] },
+  ],
+});
+
+/*
+ * Un pedido de afuera esperando que alguien lo mire.
+ *
+ * No es una venta todavía y esa es toda la idea: la venta la crea la persona
+ * que aprueba, con su sesión, su local y su caja. Hasta entonces no se toca
+ * inventario, no se numera nada y no aparece en ninguna métrica.
+ *
+ * ── Por qué no se reusó la cola de Mercado Libre ─────────────────
+ *
+ * Esa cola APARTA stock y decide sola por stock; un pedido mayorista se hace a
+ * pedido, sin stock, y lo decide una persona. Meter las dos políticas en la
+ * misma tabla es tocar con las manos adentro del circuito por el que hoy entra
+ * la venta online.
+ *
+ * ── El último envío gana ─────────────────────────────────────────
+ *
+ * El origen manda el pedido ENTERO cada vez que cambia, con un número de
+ * secuencia. Reintentar es volver a mandar cómo quedó, así que no importa
+ * cuántas veces llegue ni en qué orden: se guarda el más nuevo y se descarta
+ * el que llegó tarde. Una vez revisada, la solicitud ya no se pisa.
+ */
+const SolicitudMayorista = db.define('SolicitudMayorista', {
+  id:            { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
+  businessId:    { type: DataTypes.INTEGER, allowNull: false },
+  origen:        { type: DataTypes.STRING(20), allowNull: false },
+  // El número del pedido EN el origen (ISU-137). Con el negocio y el origen
+  // forma la clave de la idempotencia.
+  pedidoExterno: { type: DataTypes.STRING(60), allowNull: false },
+  secuencia:     { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
+
+  // pendiente → aceptada | rechazada | cancelada
+  estado:        { type: DataTypes.STRING(12), allowNull: false, defaultValue: 'pendiente' },
+  // En qué estado dice el origen que está el pedido (pendiente, confirmado,
+  // modificado, cancelado…). Es suyo y no se traduce: sirve para ver cuando
+  // los dos lados dejaron de coincidir.
+  estadoOrigen:  { type: DataTypes.STRING(20), allowNull: true },
+
+  total:         { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },
+  unidades:      { type: DataTypes.INTEGER, defaultValue: 0 },
+  /*
+   * Cómo se acordó cobrar, según el origen: contado | cuenta_corriente |
+   * financiado. Es una propuesta, no una orden: la decisión final la toma
+   * quien aprueba, que es el que conoce el límite de crédito del cliente.
+   */
+  pagoCondicion: { type: DataTypes.STRING(20), allowNull: true },
+  pagoForma:     { type: DataTypes.STRING(60), allowNull: true },
+
+  // Comprador, cliente y envío como los manda el origen, en JSON. Se guardan
+  // enteros porque quien revisa necesita ver a dónde va el pedido, y traducir
+  // cada campo a una columna propia ataría esta tabla al formato del origen.
+  comprador:     { type: DataTypes.TEXT, allowNull: true },
+  cliente:       { type: DataTypes.TEXT, allowNull: true },
+  envio:         { type: DataTypes.TEXT, allowNull: true },
+
+  creadoEnOrigen:      { type: DataTypes.STRING(40), allowNull: true },
+  actualizadoEnOrigen: { type: DataTypes.STRING(40), allowNull: true },
+
+  revisadoPorEmployeeId: { type: DataTypes.INTEGER, allowNull: true },
+  revisadoEn:            { type: DataTypes.DATE, allowNull: true },
+  motivoRechazo:         { type: DataTypes.STRING(500), allowNull: true },
+  // La venta que salió de aceptarla. Es lo que evita crearla dos veces.
+  saleId:                { type: DataTypes.INTEGER, allowNull: true },
+  /*
+   * El origen cambió el pedido DESPUÉS de que acá se revisó.
+   *
+   * Una solicitud revisada no se pisa: la venta ya existe y reescribirla por
+   * detrás sería cambiarle el importe a algo que ya se cobró. Pero perder el
+   * aviso es peor: el depósito prepararía lo que el cliente ya no pidió. Se
+   * anota el cambio en JSON y la bandeja lo muestra para que una persona
+   * decida.
+   */
+  cambioPosterior:       { type: DataTypes.TEXT, allowNull: true },
+}, {
+  tableName: 'solicitudes_mayoristas',
+  indexes: [
+    /*
+     * El índice único de verdad, desde el primer día.
+     *
+     * La tabla de pedidos de plataforma promete esta protección en sus
+     * comentarios y no la tiene: se defiende con un SELECT previo, que deja
+     * una ventana de carrera. Con un origen que reintenta solo ante un
+     * timeout, esa ventana se visita seguido.
+     */
+    { name: 'uq_solicitud_externa', unique: true, fields: ['businessId', 'origen', 'pedidoExterno'] },
+    { name: 'ix_solicitud_estado', fields: ['businessId', 'estado'] },
+  ],
+});
+
+const SolicitudMayoristaItem = db.define('SolicitudMayoristaItem', {
+  id:           { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
+  solicitudId:  { type: DataTypes.INTEGER, allowNull: false },
+  /*
+   * El SKU va SIEMPRE en texto, y la variante puede faltar.
+   *
+   * El catálogo del origen se importó de acá, pero se desfasa: un color que se
+   * renombró, una variante que se borró, otra que allá se inventó. Saltear esa
+   * línea haría que el pedido se vea completo cuando no lo está. Guardando el
+   * texto, quien revisa ve exactamente qué no se pudo identificar.
+   */
+  sku:              { type: DataTypes.STRING(100), allowNull: false },
+  productVariantId: { type: DataTypes.INTEGER, allowNull: true },
+  cantidad:         { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
+  // Lo que el origen muestra en su remito. Descriptivo: el precio de la venta
+  // lo pone Stocker con su lista y su regla.
+  descripcion:      { type: DataTypes.STRING(255), allowNull: true },
+  /*
+   * El precio con el que el origen valorizó la línea.
+   *
+   * No se usa para cobrar: se muestra al lado del precio de Stocker para que
+   * la diferencia se vea ANTES de aceptar. Un pedido que el cliente aceptó por
+   * un importe y acá se registra por otro es un reclamo asegurado.
+   */
+  precioOrigen:     { type: DataTypes.DECIMAL(12, 2), allowNull: true },
+}, { tableName: 'solicitud_mayorista_items' });
+
+SolicitudMayorista.hasMany(SolicitudMayoristaItem, { as: 'items', foreignKey: 'solicitudId' });
+SolicitudMayoristaItem.belongsTo(SolicitudMayorista, { as: 'solicitud', foreignKey: 'solicitudId' });
+
 // ─── Sale ────────────────────────────────────────────────────────
 const Sale = db.define('Sale', {
   id:           { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
@@ -1823,6 +1987,7 @@ module.exports = {
   // Packs: una variante que se vende sola pero descuenta lo que lleva adentro.
   PackComponente,
   StockIngreso, StockIngresoItem, PedidoReposicion, PedidoReposicionItem,
+  IntegracionExterna, SolicitudMayorista, SolicitudMayoristaItem,
   db,
   Plan, Subscription, SubscriptionPayment, PlatformAdmin, PlatformSetting, AuthAttempt,
   Business, BusinessLocation, BusinessCuit, BusinessArcaConfig, ArcaToken, VariantType, VariantStock,
