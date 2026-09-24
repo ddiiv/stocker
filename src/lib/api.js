@@ -29,6 +29,20 @@ export const getDelegacionesArca = () =>
 export const sincronizarDelegacionesArca = () =>
   http.post("/backoffice/arca/delegaciones/sincronizar").then((r) => r.data);
 
+// ── Integraciones ────────────────────────────────────────────────
+/* Las credenciales con las que un sistema de afuera —hoy el portal mayorista—
+   le escribe a un negocio. Las emitimos nosotros al conectar el puente: hasta
+   que funciona, el cliente no tiene nada que pueda hacer solo.
+
+   El token viaja UNA vez, en la respuesta de emitir. Después no existe en
+   ningún lado que se pueda leer. */
+export const getIntegraciones = () =>
+  http.get("/backoffice/integraciones").then((r) => r.data);
+export const emitirIntegracion = (payload) =>
+  http.post("/backoffice/integraciones", payload).then((r) => r.data);
+export const revocarIntegracion = (id) =>
+  http.delete(`/backoffice/integraciones/${id}`).then((r) => r.data);
+
 // ── Cobros ───────────────────────────────────────────────────────
 export const aprobarPago = (id) => http.post(`/backoffice/pagos/${id}/aprobar`).then((r) => r.data);
 export const rechazarPago = (id, motivo) =>

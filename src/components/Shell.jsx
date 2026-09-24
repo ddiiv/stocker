@@ -1,5 +1,5 @@
 import { NavLink, Outlet } from "react-router-dom";
-import { LayoutDashboard, Building2, Layers, SlidersHorizontal, LogOut, Menu, Wallet, ShieldCheck, Globe, ExternalLink, Receipt } from "lucide-react";
+import { LayoutDashboard, Building2, Layers, SlidersHorizontal, LogOut, Menu, Wallet, ShieldCheck, Globe, ExternalLink, Receipt, Plug } from "lucide-react";
 import { useEffect, useState } from "react";
 import * as api from "../lib/api";
 import { useAdmin } from "../context/AdminAuth";
@@ -12,6 +12,12 @@ const LINKS = [
   // Al lado de Cobros porque es lo mismo desde el otro lado: sin la delegación
   // hecha, el cliente paga el plan y no puede facturar.
   { to: "/arca",     label: "ARCA",     icono: Receipt },
+  /*
+   * Al lado de ARCA porque son la misma tarea vista de lejos: las dos
+   * conectan al cliente con algo de afuera y, hasta que están, el sistema
+   * funciona a medias.
+   */
+  { to: "/integraciones", label: "Integraciones", icono: Plug },
   { to: "/seguridad", label: "Seguridad", icono: ShieldCheck },
   { to: "/ajustes",  label: "Página pública", icono: SlidersHorizontal },
 ];
