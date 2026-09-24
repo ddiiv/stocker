@@ -421,6 +421,77 @@ function leerErrores(xml) {
   return out;
 }
 
+/*
+ * ── Preguntar si un comprobante ya existe en AFIP ────────────────
+ *
+ * Es la respuesta a la pregunta más incómoda de todo esto: pedimos el CAE, se
+ * cortó la conexión, y no sabemos si AFIP lo autorizó o no.
+ *
+ * Reintentar a ciegas es lo peor que se puede hacer. El número siguiente se
+ * calcula preguntando cuál fue el último autorizado: si AFIP SÍ autorizó el
+ * que se cortó, el reintento pide el siguiente y el cliente termina con DOS
+ * comprobantes fiscales por una sola venta —y el primero, con su CAE, no queda
+ * registrado en ningún lado—.
+ *
+ * FECompConsultar contesta por (CbteTipo, PtoVta, CbteNro): o está y viene con
+ * su CAE, o AFIP contesta que no existe.
+ */
+async function feCompConsultar({ cert, key, ambiente, cuitEmisor, PtoVta, CbteTipo, CbteNro }) {
+  const xml = await callWsfe({
+    cert, key, ambiente, cuitEmisor,
+    method: 'FECompConsultar',
+    params: { FeCompConsReq: { CbteTipo, CbteNro, PtoVta } },
+  });
+  return parsearComprobante(xml);
+}
+
+/*
+ * Lo que AFIP sabe de ese comprobante, o null si no lo tiene.
+ *
+ * "No existe" no es un error: es la respuesta que hace falta para saber que se
+ * puede reintentar tranquilo. AFIP la da como error 602 ("No existen datos en
+ * nuestros registros para el criterio de búsqueda ingresado") y también,
+ * según el caso, devolviendo el resultado vacío.
+ *
+ * Cualquier OTRO error sí se levanta: no saber si el comprobante existe es
+ * distinto de saber que no existe, y confundirlos es volver al problema.
+ */
+const SIN_DATOS = 602;
+
+function parsearComprobante(xml) {
+  const errores = leerErrores(xml);
+  if (errores.length) {
+    if (errores.every((e) => e.codigo === SIN_DATOS)) return null;
+    throw new Error(errores.map((e) => `[${e.codigo}] ${e.mensaje}`).join(' | '));
+  }
+
+  const cuerpo = (xml.match(/<(?:\w+:)?ResultGet>([\s\S]*?)<\/(?:\w+:)?ResultGet>/) || [])[1];
+  if (!cuerpo) return null;
+
+  const dato = (nombre) => {
+    const v = (cuerpo.match(new RegExp(`<(?:\\w+:)?${nombre}>([^<]*)<`)) || [])[1]?.trim();
+    return (!v || /^null$/i.test(v)) ? null : v;
+  };
+
+  const cae = dato('CodAutorizacion');
+  if (!cae) return null;
+
+  const vto = dato('FchVto');
+  return {
+    CAE: cae,
+    CAEFchVto: vto ? vto.replace(/^(\d{4})(\d{2})(\d{2})$/, '$1-$2-$3') : null,
+    Resultado: dato('Resultado'),
+    CbteDesde: Number(dato('CbteDesde') || 0),
+    CbteHasta: Number(dato('CbteHasta') || 0),
+    CbteFch: dato('CbteFch'),
+    ImpTotal: Number(dato('ImpTotal') || 0),
+    DocNro: Number(dato('DocNro') || 0),
+    DocTipo: Number(dato('DocTipo') || 0),
+    PtoVta: Number(dato('PtoVta') || 0),
+    CbteTipo: Number(dato('CbteTipo') || 0),
+  };
+}
+
 async function feCAESolicitar({ cert, key, ambiente, cuitEmisor, FeCAEReq }) {
   const xml = await callWsfe({ cert, key, ambiente, cuitEmisor, method: 'FECAESolicitar', params: { FeCAEReq } });
   return parsearCAE(xml);
@@ -654,6 +725,8 @@ module.exports = {
   URLS,
   relacionesDelTA,
   datosDelTA,
+  feCompConsultar,
+  __parsearComprobante: parsearComprobante,
   feDummy,
   feParamGetPtosVenta,
   // sólo para los tests

@@ -189,30 +189,155 @@ async function solicitarCAE({ tipo, total, clienteCuit, clienteCondicion, busine
   };
 
   let result;
+  let recuperado = false;
   try {
     result = await cli.feCAESolicitar({ cert, key, ambiente, cuitEmisor, FeCAEReq });
   } catch (err) {
     const msg = err.message || '';
-    // Traducimos errores comunes a mensajes útiles para el usuario final
-    if (/No aparecio CUIT en lista de relaciones/i.test(msg) || /600.*relaci/i.test(msg)) {
+
+    /*
+     * Se cortó la conexión y no sabemos si AFIP lo autorizó.
+     *
+     * Es el caso que más caro sale de todos. El número siguiente se calcula
+     * preguntando cuál fue el último autorizado: si AFIP SÍ autorizó el que se
+     * cortó, un reintento pide el siguiente y el cliente termina con DOS
+     * comprobantes fiscales por una sola venta —y el primero, con su CAE, no
+     * queda registrado en ningún lado—.
+     *
+     * Así que antes de dar el error por bueno se pregunta. Si el comprobante
+     * está, se adopta su CAE: es el mismo que AFIP le habría devuelto a la
+     * llamada que se cortó.
+     */
+    if (esCorteDeRed(msg)) {
+      const enAfip = await buscarComprobante({
+        cli, cert, key, ambiente, cuitEmisor,
+        ptoVta: Number(puntoVenta), cbteTipo, numero,
+        esperado: { total: Number(total), docNro: FeCAEReq.FeDetReq.FECAEDetRequest.DocNro, fecha: hoy },
+        motivo: msg,
+      });
+      if (enAfip) {
+        log.warn('arca', 'la conexión se cortó pero AFIP ya lo había autorizado', {
+          cuitEmisor, ptoVta: Number(puntoVenta), cbteTipo, numero,
+        });
+        result = enAfip;
+        recuperado = true;
+      } else {
+        throw Object.assign(
+          new Error(`Se cortó la conexión con AFIP y el comprobante ${numero} NO quedó autorizado: se puede reintentar. (${msg})`),
+          /*
+           * `detalles` es lo único que el manejador de errores deja pasar a la
+           * pantalla además del mensaje: sin esto, el front no puede saber si
+           * ofrecer el botón de reintentar o mandar a mirar en AFIP.
+           */
+          {
+            status: 503, codigo: 'ARCA_SIN_AUTORIZAR', reintentable: true, numeroIntentado: numero,
+            detalles: { codigo: 'ARCA_SIN_AUTORIZAR', reintentable: true, numeroIntentado: numero },
+          },
+        );
+      }
+    }
+
+    /*
+     * Si se recuperó, no hay error que traducir: el comprobante está
+     * autorizado y la emisión sigue su curso con ese CAE.
+     */
+    if (recuperado) result = result;
+    else if (/No aparecio CUIT en lista de relaciones/i.test(msg) || /600.*relaci/i.test(msg)) {
       throw Object.assign(new Error(
         `El CUIT ${cuitEmisor} no tiene delegado el servicio de facturación electrónica a Stocker en AFIP. ` +
         `Andá a Configurar ARCA de este CUIT y seguí el paso 2 (delegar wsfe a Stocker en Administrador de Relaciones AFIP), ` +
         `después probá con "Verificar" antes de intentar facturar.`
       ), { status: 400 });
     }
-    if (/computador no autorizado/i.test(msg)) {
+    else if (/computador no autorizado/i.test(msg)) {
       throw Object.assign(new Error('El certificado de Stocker no está autorizado para wsfe en AFIP. Contactar soporte.'), { status: 502 });
-    }
-    throw err;
+    } else throw err;
   }
 
   return {
     cae: result.CAE,
     caeVencimiento: result.CAEFchVto,
     numero, puntoVenta: Number(puntoVenta), ambiente,
-    respuesta: { ...result, ambiente, puntoVenta, cbteTipo, numero },
+    /*
+     * Queda escrito que este CAE se recuperó y no se pidió.
+     *
+     * Es el mismo CAE, pero el comprobante se autorizó en una llamada que
+     * nunca terminó: el día que alguien audite por qué el registro de esa
+     * factura llegó tarde, esto es lo que lo explica.
+     */
+    recuperado,
+    respuesta: { ...result, ambiente, puntoVenta, cbteTipo, numero, ...(recuperado ? { recuperado: true } : {}) },
   };
+}
+
+/*
+ * Errores en los que NO se sabe qué pasó del otro lado.
+ *
+ * Un rechazo de AFIP es una respuesta: el comprobante no existe y se puede
+ * reintentar. Un corte de red no dice nada — el pedido puede haber llegado,
+ * haberse procesado, y haberse perdido la respuesta. Son los únicos casos en
+ * los que hay que ir a preguntar.
+ */
+function esCorteDeRed(mensaje) {
+  return /timeout|timedout|ETIMEDOUT|socket hang up|ECONNRESET|ECONNABORTED|ECONNREFUSED|EAI_AGAIN|ENOTFOUND|EPIPE|network|aborted|status code 5\d\d|respuesta inesperada/i
+    .test(String(mensaje || ''));
+}
+
+/**
+ * ¿AFIP tiene ese comprobante? Devuelve su CAE, o null si no existe.
+ *
+ * Si existe pero NO es el nuestro —otro importe, otro documento, otra fecha—
+ * no se adopta: significa que ese número se lo llevó otra emisión, y pegarle
+ * nuestro CAE a esa factura sería peor que el problema original.
+ */
+async function buscarComprobante({ cli, cert, key, ambiente, cuitEmisor, ptoVta, cbteTipo, numero, esperado, motivo }) {
+  let enAfip;
+  try {
+    enAfip = await cli.feCompConsultar({ cert, key, ambiente, cuitEmisor, PtoVta: ptoVta, CbteTipo: cbteTipo, CbteNro: numero });
+  } catch (e) {
+    /*
+     * No se pudo preguntar. Es el peor de los tres finales y por eso el error
+     * lo dice con todas las letras: no sabemos si el comprobante existe, y
+     * reintentar a ciegas puede duplicarlo. Lo resuelve una persona mirando en
+     * AFIP, no un reintento automático.
+     */
+    throw Object.assign(
+      new Error(
+        `Se cortó la conexión con AFIP al pedir el CAE (${motivo}) y tampoco se pudo consultar si el comprobante `
+        + `${numero} quedó autorizado (${e.message}). NO reintentes sin mirar antes en AFIP: `
+        + `punto de venta ${ptoVta}, tipo ${cbteTipo}, número ${numero}.`,
+      ),
+      {
+        status: 503, codigo: 'ARCA_INCIERTO', reintentable: false, numeroIntentado: numero,
+        detalles: {
+          codigo: 'ARCA_INCIERTO', reintentable: false, numeroIntentado: numero,
+          comprobante: { ptoVta, cbteTipo, numero },
+        },
+      },
+    );
+  }
+
+  if (!enAfip) return null;
+
+  const mismoImporte = Math.abs(Number(enAfip.ImpTotal) - Number(esperado.total)) < 0.01;
+  const mismoDoc = Number(enAfip.DocNro || 0) === Number(esperado.docNro || 0);
+  const mismaFecha = !enAfip.CbteFch || String(enAfip.CbteFch) === String(esperado.fecha);
+  if (mismoImporte && mismoDoc && mismaFecha) return enAfip;
+
+  throw Object.assign(
+    new Error(
+      `AFIP ya tiene autorizado ese comprobante, pero con otros datos (importe ${enAfip.ImpTotal}, `
+      + `documento ${enAfip.DocNro}): punto de venta ${ptoVta}, tipo ${cbteTipo}, número ${numero}. `
+      + 'Alguien más facturó con ese número mientras se emitía este. Revisalo en AFIP antes de volver a intentar.',
+    ),
+    {
+      status: 409, codigo: 'ARCA_NUMERO_OCUPADO', reintentable: false, numeroIntentado: numero,
+      detalles: {
+        codigo: 'ARCA_NUMERO_OCUPADO', reintentable: false, numeroIntentado: numero,
+        comprobante: { ptoVta, cbteTipo, numero },
+      },
+    },
+  );
 }
 
 // ── Health check ──────────────────────────────────────────────────
