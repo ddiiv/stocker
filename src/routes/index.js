@@ -175,6 +175,14 @@ r.get ('/backoffice/seguridad',      requirePlatformAdmin, backofficeCtrl.estado
 // esta lista es la que no deja que se pierda.
 r.get ('/backoffice/arca/delegaciones', requirePlatformAdmin, backofficeCtrl.delegacionesArca);
 r.post('/backoffice/arca/delegaciones/sincronizar', requirePlatformAdmin, backofficeCtrl.sincronizarDelegacionesArca);
+
+/*
+ * Las credenciales con las que un sistema de afuera le escribe a un negocio.
+ * Las emite el equipo de Stocker al conectar el puente, no el cliente.
+ */
+r.get   ('/backoffice/integraciones',     requirePlatformAdmin, backofficeCtrl.listarIntegraciones);
+r.post  ('/backoffice/integraciones',     requirePlatformAdmin, backofficeCtrl.emitirIntegracion);
+r.delete('/backoffice/integraciones/:id', requirePlatformAdmin, backofficeCtrl.revocarIntegracion);
 r.get ('/backoffice/ajustes',        requirePlatformAdmin, backofficeCtrl.getAjustes);
 r.put ('/backoffice/ajustes',        requirePlatformAdmin, backofficeCtrl.editarAjustes);
 

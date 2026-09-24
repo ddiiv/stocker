@@ -611,6 +611,113 @@ const resumen = async (_req, res, next) => {
  * que quedaron listas. Sin esto habría que esperar al barrido o pedirle al
  * cliente que apriete "Verificar".
  */
+/*
+ * ══ Credenciales de integración ══════════════════════════════════
+ *
+ * Las emite Stocker, no el cliente: el que conecta el portal mayorista de un
+ * negocio es el equipo de acá, en el mismo momento en que lo da de alta. El
+ * dueño tiene la suya en su panel, pero hasta que el puente funciona no hay
+ * nada que él pueda hacer solo.
+ *
+ * El token se muestra UNA vez, al emitirlo, y después ya no existe en ningún
+ * lado que se pueda leer: lo que queda son los últimos seis caracteres, para
+ * poder decir "es el que termina en 9f2c" sin poder reconstruirlo.
+ */
+const listarIntegraciones = async (req, res, next) => {
+  try {
+    const { IntegracionExterna, SolicitudMayorista } = require('../models');
+    const filas = await IntegracionExterna.findAll({
+      attributes: ['id', 'businessId', 'origen', 'nombre', 'pista', 'activa', 'ultimoUsoEn', 'createdAt'],
+      order: [['activa', 'DESC'], ['id', 'DESC']],
+      limit: Math.min(Number(req.query.limit) || 200, 500),
+    });
+
+    const negocios = await Business.findAll({
+      where: { id: [...new Set(filas.map((f) => f.businessId))] },
+      attributes: ['id', 'nombreNegocio', 'email'],
+    });
+    const porNegocio = new Map(negocios.map((n) => [n.id, n]));
+
+    /*
+     * Cuántos pedidos están esperando revisión de cada negocio.
+     *
+     * Es el dato que dice si el puente sirve de algo: una credencial que se usa
+     * todos los días y veinte solicitudes sin mirar es un problema del cliente,
+     * no de la conexión, y desde acá se puede levantar el teléfono.
+     */
+    const pendientes = await SolicitudMayorista.findAll({
+      where: { estado: 'pendiente' },
+      attributes: ['businessId'],
+    });
+    const porNegocioPendientes = new Map();
+    for (const p of pendientes) {
+      porNegocioPendientes.set(p.businessId, (porNegocioPendientes.get(p.businessId) || 0) + 1);
+    }
+
+    res.json({
+      integraciones: filas.map((f) => ({
+        ...f.toJSON(),
+        negocio: porNegocio.get(f.businessId)
+          ? {
+            id: f.businessId,
+            nombre: porNegocio.get(f.businessId).nombreNegocio,
+            email: porNegocio.get(f.businessId).email,
+          }
+          : { id: f.businessId, nombre: '(negocio borrado)', email: null },
+        pedidosPorRevisar: porNegocioPendientes.get(f.businessId) || 0,
+      })),
+    });
+  } catch (e) { next(e); }
+};
+
+/*
+ * Emite una credencial para un negocio. Devuelve el token una sola vez.
+ *
+ * Emitir apaga la anterior del mismo origen, así que el aviso va en la
+ * respuesta: quien lo hizo tiene que saber que el portal dejó de poder mandar
+ * pedidos hasta que cargue la nueva.
+ */
+const emitirIntegracion = async (req, res, next) => {
+  try {
+    const integraciones = require('../services/integracionesService');
+    const businessId = Number(req.body?.businessId);
+    if (!businessId) throw Object.assign(new Error('Elegí para qué negocio es.'), { status: 400 });
+
+    const negocio = await Business.findByPk(businessId, { attributes: ['id', 'nombreNegocio'] });
+    if (!negocio) throw Object.assign(new Error('Ese negocio no existe.'), { status: 404 });
+
+    const origen = String(req.body?.origen || 'isuwaya').toLowerCase();
+    const habia = await require('../models').IntegracionExterna.findOne({
+      where: { businessId, origen, activa: true },
+    });
+
+    const { token, integracion } = await integraciones.emitir({
+      businessId, origen, nombre: req.body?.nombre || null,
+    });
+
+    res.status(201).json({
+      token,
+      reemplaza: habia ? { pista: habia.pista, ultimoUsoEn: habia.ultimoUsoEn } : null,
+      integracion: {
+        id: integracion.id, origen: integracion.origen, nombre: integracion.nombre,
+        pista: integracion.pista, activa: integracion.activa,
+        negocio: { id: negocio.id, nombre: negocio.nombreNegocio },
+      },
+    });
+  } catch (e) { next(e); }
+};
+
+/** Corta el puente. La fila queda: sirve para saber qué hubo. */
+const revocarIntegracion = async (req, res, next) => {
+  try {
+    const { IntegracionExterna } = require('../models');
+    const fila = await IntegracionExterna.findByPk(Number(req.params.id));
+    if (!fila) throw Object.assign(new Error('Esa credencial no existe.'), { status: 404 });
+    await fila.update({ activa: false });
+    res.json({ ok: true });
+  } catch (e) { next(e); }
+};
+
 const sincronizarDelegacionesArca = async (req, res, next) => {
   try {
     const arca = require('../services/arcaService');
@@ -676,4 +783,5 @@ module.exports = {
   aprobarPago, rechazarPago,
   listarPlanes, catalogoDeFeatures, editarPlan,
   getAjustes, editarAjustes, resumen, estadoMercadoPago, estadoSeguridad,
-  CLAVES_PUBLICAS, sincronizarDelegacionesArca };
+  CLAVES_PUBLICAS, sincronizarDelegacionesArca,
+  listarIntegraciones, emitirIntegracion, revocarIntegracion };
