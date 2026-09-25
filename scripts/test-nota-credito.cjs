@@ -99,7 +99,17 @@ const QA = 'QA-NC-';
   const venta = ventas[0];
 
   const limpiar = async () => {
-    const filas = await Invoice.findAll({ where: { numero: { [Op.like]: `${QA}%` } }, attributes: ['id'] });
+    /*
+     * Las notas que emite la prueba NO llevan el prefijo QA: su número lo pone
+     * la numeración interna, como en producción. Hay que borrarlas por la
+     * factura a la que apuntan o quedan sueltas en la base, sumando en los
+     * totales de facturación de la cuenta demo.
+     */
+    const qa = await Invoice.findAll({ where: { numero: { [Op.like]: `${QA}%` } }, attributes: ['id'] });
+    const suyas = qa.length
+      ? await Invoice.findAll({ where: { facturaAsociadaId: qa.map((f) => f.id) }, attributes: ['id'] })
+      : [];
+    const filas = [...qa, ...suyas];
     if (filas.length) {
       await InvoiceItem.destroy({ where: { invoiceId: filas.map((f) => f.id) } });
       await ArcaIntento.update({ invoiceId: null }, { where: { invoiceId: filas.map((f) => f.id) } });
