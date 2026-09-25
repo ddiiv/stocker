@@ -29,11 +29,18 @@ function loadClient() {
 function loadCert(ambiente) {
   const creds = loadCredentials(ambiente);
   if (!creds) {
-    throw new Error(
+    /*
+     * Con status: es un problema de configuración, no una falla del sistema.
+     *
+     * Sin él, el manejador de errores lo trata como un 500 y la pantalla dice
+     * "el servidor tuvo un problema, no es algo que puedas corregir" — que es
+     * exactamente lo contrario de lo que pasa: falta cargar el certificado.
+     */
+    throw Object.assign(new Error(
       `ARCA cert/key no configurados para ambiente=${ambiente}. ` +
       `Definí ARCA_CERT_B64_${ambiente === 'produccion' ? 'PROD' : 'HOMO'} y ARCA_KEY_B64_${ambiente === 'produccion' ? 'PROD' : 'HOMO'} ` +
       `(base64, recomendado en Railway/hosting) o las rutas ARCA_CERT_PATH_* / ARCA_KEY_PATH_*.`
-    );
+    ), { status: 409, detalles: { codigo: 'ARCA_SIN_CERTIFICADO', ambiente } });
   }
   return creds;
 }
@@ -581,9 +588,19 @@ async function resolverIntento({ businessId, id }) {
     });
   } catch (e) {
     await cerrarIntento(intento, { estado: 'incierto', error: e.message, resuelto: false });
+    /*
+     * "No contestó" era mentir en la mitad de los casos: AFIP puede contestar
+     * perfectamente y decir que este CUIT no le delegó el servicio, o que el
+     * token no vale. Eso no es una caída y se arregla en otro lado.
+     */
+    const delegacion = /600|601|relaciones|no autorizad/i.test(String(e.message || ''));
     throw Object.assign(
-      new Error(`AFIP sigue sin contestar la consulta (${e.message}). El intento queda pendiente.`),
-      { status: 503, detalles: { codigo: 'ARCA_INCIERTO' } },
+      new Error(
+        delegacion
+          ? `AFIP no deja consultar este comprobante: ${e.message}. Revisá la delegación del CUIT ${intento.cuitEmisor} antes de reintentar.`
+          : `No se pudo confirmar con AFIP (${e.message}). El intento queda pendiente.`,
+      ),
+      { status: 503, detalles: { codigo: delegacion ? 'ARCA_SIN_DELEGACION' : 'ARCA_INCIERTO' } },
     );
   }
 
