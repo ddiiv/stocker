@@ -273,11 +273,20 @@ CREATE TABLE IF NOT EXISTS invoices (
     "pdfPath"          VARCHAR(255),
     "fechaEmision"     TIMESTAMP NOT NULL DEFAULT NOW(),
     estado           VARCHAR(15) DEFAULT 'emitida',
+    -- Una nota de crédito no es una factura anulada: es otro comprobante, con
+    -- su propio tipo ante AFIP, su correlativo y su CAE.
+    clase            VARCHAR(15) NOT NULL DEFAULT 'factura',
+    "facturaAsociadaId" INT,
+    motivo           VARCHAR(300),
+    -- Coordenadas del comprobante en AFIP: hacen falta para revertirlo.
+    "ptoVtaArca"       INT,
+    "cbteNroArca"      INT,
+    "cbteTipoArca"     INT,
+    "cbteFchArca"      VARCHAR(8),
     notas            TEXT,
     "createdAt"        TIMESTAMP DEFAULT NOW(),
     "updatedAt"        TIMESTAMP DEFAULT NOW(),
-    CONSTRAINT uq_invoices_biz_numero UNIQUE ("businessId", numero),
-    CONSTRAINT uq_invoices_sale       UNIQUE ("saleId")
+    CONSTRAINT uq_invoices_biz_numero UNIQUE ("businessId", numero)
 );
 CREATE INDEX IF NOT EXISTS idx_invoices_biz   ON invoices ("businessId");
 CREATE INDEX IF NOT EXISTS idx_invoices_fecha ON invoices ("fechaEmision");
@@ -320,3 +329,12 @@ CREATE TABLE IF NOT EXISTS invoice_items (
 --                 employees, employee_sessions, clients, products,
 --                 product_variants, stock_movements, sales, sale_items,
 --                 invoices, invoice_items
+
+/*
+ * Una venta tiene UNA factura, pero puede tener varias notas de crédito.
+ *
+ * Por eso el único es parcial y no sobre `saleId` a secas: con el único viejo
+ * una nota de crédito no se podía guardar, y el CAE se pide antes del insert
+ * —así que el comprobante quedaba autorizado en AFIP y recién ahí reventaba—.
+ */
+CREATE UNIQUE INDEX uq_invoices_sale_factura ON invoices ("saleId") WHERE clase = 'factura';

@@ -149,6 +149,21 @@ const COLUMNAS_ESPERADAS = {
     reservado: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
   },
   invoices: {
+    /*
+     * Notas de crédito y débito.
+     *
+     * Van en ESTA entrada y no en una nueva: `invoices` ya era una clave de
+     * este objeto, y en un objeto literal la segunda gana en silencio. Una
+     * entrada repetida no falla: simplemente no migra nada.
+     */
+    clase:             { type: DataTypes.STRING(15), allowNull: false, defaultValue: 'factura' },
+    facturaAsociadaId: { type: DataTypes.INTEGER, allowNull: true },
+    motivo:            { type: DataTypes.STRING(300), allowNull: true },
+    // Las coordenadas del comprobante en AFIP: hacen falta para revertirlo.
+    ptoVtaArca:        { type: DataTypes.INTEGER, allowNull: true },
+    cbteNroArca:       { type: DataTypes.INTEGER, allowNull: true },
+    cbteTipoArca:      { type: DataTypes.INTEGER, allowNull: true },
+    cbteFchArca:       { type: DataTypes.STRING(8), allowNull: true },
     // A qué CUIT del negocio entró el cobro, como texto para imprimir. Ver el
     // modelo: es una foto, igual que emisorNombre.
     cobroDestino: { type: DataTypes.STRING(300), allowNull: true },
@@ -306,6 +321,27 @@ const INDICES = [
     requierePg: 'SELECT COUNT(*) AS faltan FROM products WHERE "businessId" IS NULL',
     // El global se va recién cuando el nuevo está en pie.
     reemplaza: 'uq_products_sku',
+  },
+  /*
+   * Una venta tiene UNA factura, pero puede tener varias notas.
+   *
+   * El único viejo era sobre `saleId` a secas, de cuando el único comprobante
+   * posible era una factura. Con notas de crédito en la misma tabla —y en la
+   * misma venta— ese único las hace imposibles de guardar, y de la peor
+   * manera: el CAE se pide ANTES del insert, así que el comprobante queda
+   * autorizado en AFIP y recién ahí revienta al guardar. Un comprobante fiscal
+   * emitido que el sistema no registra.
+   *
+   * El parcial conserva lo que el viejo protegía —no se puede facturar dos
+   * veces la misma venta— y deja pasar las notas.
+   */
+  {
+    tabla: 'invoices',
+    nombre: 'uq_invoices_sale_factura',
+    columnas: ['saleId'],
+    unico: true,
+    where: { clase: 'factura' },
+    reemplaza: 'uq_invoices_sale',
   },
   {
     tabla: 'product_variants',

@@ -409,11 +409,20 @@ BEGIN
         pdfPath          NVARCHAR(255),
         fechaEmision     DATETIME2 NOT NULL DEFAULT SYSDATETIME(),
         estado           NVARCHAR(15) DEFAULT 'emitida', -- emitida|anulada|error
+        -- Una nota de crédito no es una factura anulada: es otro comprobante,
+        -- con su propio tipo ante AFIP, su correlativo y su CAE.
+        clase            NVARCHAR(15) NOT NULL DEFAULT 'factura', -- factura|nota_credito|nota_debito
+        facturaAsociadaId INT,          -- a qué comprobante revierte la nota
+        motivo           NVARCHAR(300), -- por qué se emitió la nota
+        -- Coordenadas del comprobante en AFIP: hacen falta para revertirlo.
+        ptoVtaArca       INT,
+        cbteNroArca      INT,
+        cbteTipoArca     INT,
+        cbteFchArca      NVARCHAR(8),
         notas            NVARCHAR(MAX),
         createdAt        DATETIME2 DEFAULT SYSDATETIME(),
         updatedAt        DATETIME2 DEFAULT SYSDATETIME(),
         CONSTRAINT uq_invoices_biz_numero UNIQUE (businessId, numero),
-        CONSTRAINT uq_invoices_sale   UNIQUE (saleId),
         CONSTRAINT fk_invoices_business  FOREIGN KEY (businessId)
             REFERENCES businesses(id)  ON DELETE CASCADE,
         CONSTRAINT fk_invoices_sale      FOREIGN KEY (saleId)
@@ -479,4 +488,15 @@ PRINT '✔ Schema Stocker instalado correctamente en SQL Server 2025.'
 PRINT '  Tablas: businesses, business_locations, roles, employees, clients,'
 PRINT '          products, product_variants, stock_movements,'
 PRINT '          sales, sale_items, invoices, invoice_items'
+GO
+
+GO
+/*
+ * Una venta tiene UNA factura, pero puede tener varias notas de crédito.
+ *
+ * Por eso el único es filtrado y no sobre saleId a secas: con el único viejo
+ * una nota de crédito no se podía guardar, y el CAE se pide antes del insert
+ * —así que el comprobante quedaba autorizado en AFIP y recién ahí reventaba—.
+ */
+CREATE UNIQUE INDEX uq_invoices_sale_factura ON invoices (saleId) WHERE clase = 'factura';
 GO

@@ -1860,6 +1860,46 @@ const Invoice = db.define('Invoice', {
   pdfPath:      { type: DataTypes.STRING(255) },
   fechaEmision: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
   estado:       { type: DataTypes.STRING(15), defaultValue: 'emitida' }, // emitida|anulada|error
+  /*
+   * Qué clase de comprobante es.
+   *
+   * Una nota de crédito no es una factura anulada: es OTRO comprobante, con su
+   * propio tipo ante AFIP, su propio correlativo y su propio CAE. La factura
+   * original sigue existiendo y sigue siendo válida —por eso no se puede
+   * "borrar" una factura con CAE—; lo que la nota hace es revertir su efecto.
+   *
+   * Vive en la misma tabla porque todo lo demás es idéntico: numeración, PDF,
+   * mail, QR, cliente, renglones. Separarla en otra tabla sería duplicar seis
+   * circuitos para cambiar un número.
+   */
+  clase:        { type: DataTypes.STRING(15), allowNull: false, defaultValue: 'factura' }, // factura|nota_credito|nota_debito
+  /*
+   * A qué comprobante revierte, cuando es una nota.
+   *
+   * AFIP lo pide como CbtesAsoc y es lo que hace que la nota "apunte" a la
+   * factura; acá además es lo que permite saber cuánto de una factura ya se
+   * acreditó, que es lo que decide si todavía se le puede emitir otra.
+   */
+  facturaAsociadaId: { type: DataTypes.INTEGER, allowNull: true },
+  /* Por qué se emitió la nota. Del otro lado hay un cliente que va a preguntar. */
+  motivo:       { type: DataTypes.STRING(300), allowNull: true },
+
+  /*
+   * Las coordenadas del comprobante EN AFIP, como datos y no dentro del JSON.
+   *
+   * Son las tres cosas con las que AFIP identifica un comprobante —tipo, punto
+   * de venta y número— más la fecha con la que se lo pidió. Hacen falta para
+   * dos cosas: imprimir el número que vale, y poder REVERTIRLO con una nota,
+   * que se las manda a AFIP en CbtesAsoc.
+   *
+   * Vivían sólo adentro de `arcaRespuesta`, un texto con JSON que puede no
+   * parsear. Un comprobante fiscal no puede depender de eso para poder
+   * anularse.
+   */
+  ptoVtaArca:   { type: DataTypes.INTEGER, allowNull: true },
+  cbteNroArca:  { type: DataTypes.INTEGER, allowNull: true },
+  cbteTipoArca: { type: DataTypes.INTEGER, allowNull: true },
+  cbteFchArca:  { type: DataTypes.STRING(8), allowNull: true },   // AAAAMMDD, el que se le mandó
   notas:        { type: DataTypes.TEXT },
 }, { tableName: 'invoices' });
 
@@ -1978,7 +2018,17 @@ Sale.hasMany(SaleItem, { foreignKey: 'saleId', as: 'items', onDelete: 'CASCADE' 
 SaleItem.belongsTo(Sale, { foreignKey: 'saleId' });
 SaleItem.belongsTo(ProductVariant, { foreignKey: 'productVariantId', as: 'variante' });
 
-Sale.hasOne(Invoice, { foreignKey: 'saleId', as: 'factura' });
+/*
+ * Una venta tiene UNA factura y puede tener varias notas.
+ *
+ * El `hasOne` con `scope` es lo que mantiene cierto el nombre: sin él, desde
+ * que existen las notas de crédito "la factura de esta venta" devolvía
+ * cualquiera de las dos filas, sin fallar ni avisar.
+ */
+Sale.hasOne(Invoice, { foreignKey: 'saleId', as: 'factura', scope: { clase: 'factura' } });
+Sale.hasMany(Invoice, { foreignKey: 'saleId', as: 'comprobantes' });
+Invoice.belongsTo(Invoice, { foreignKey: 'facturaAsociadaId', as: 'facturaAsociada' });
+Invoice.hasMany(Invoice, { foreignKey: 'facturaAsociadaId', as: 'notasAsociadas' });
 Invoice.belongsTo(Sale,     { foreignKey: 'saleId',     as: 'venta' });
 Invoice.belongsTo(Client,   { foreignKey: 'clientId',   as: 'cliente' });
 Invoice.belongsTo(Employee, { foreignKey: 'employeeId', as: 'empleado' });

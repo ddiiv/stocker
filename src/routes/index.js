@@ -612,6 +612,15 @@ r.get   ('/invoices',           requireAuth, requirePermission('facturacion','ve
 r.get   ('/invoices/:id',       requireAuth, requirePermission('facturacion','ver'),    invoiceCtrl.getInvoice);
 r.post  ('/invoices',           requireAuth, requirePermission('facturacion','editar'), requireFeature(FEATURES.FACTURACION), invoiceCtrl.createInvoice);
 r.patch ('/invoices/:id/anular',requireAuth, requirePermission('facturacion','editar'), invoiceCtrl.voidInvoice);
+/*
+ * La nota de crédito: la única forma de revertir una factura con CAE.
+ *
+ * Mismo permiso que emitir, porque es exactamente eso — emitir un comprobante
+ * fiscal—, y porque quien puede facturar mal tiene que poder corregirlo sin
+ * depender de otra persona.
+ */
+r.post  ('/invoices/:id/nota-credito', requireAuth, requirePermission('facturacion','editar'), invoiceCtrl.emitirNotaDeCredito);
+r.get   ('/invoices/:id/saldo-notas',  requireAuth, requirePermission('facturacion','ver'),    invoiceCtrl.saldoDeNotas);
 r.get   ('/invoices/:id/pdf',   requireAuth, requirePermission('facturacion','ver'),    invoiceCtrl.downloadPdf);
 
 // ── Métodos de pago ──────────────────────────────────────────────

@@ -90,7 +90,35 @@ function calcularIVA(total, tipoFactura) {
   const iva  = Math.round((Number(total) - neto) * 100) / 100;
   return { neto, iva };
 }
-const CBTE_TIPO = { A: 1, B: 6, C: 11 };
+/*
+ * El código de comprobante de AFIP, por clase y por letra.
+ *
+ * Antes era un mapa por letra sola con `|| CBTE_TIPO.B` de red: mientras las
+ * únicas opciones eran A, B y C —las tres facturas— ese default era "la letra
+ * más segura". Con las notas adentro deja de serlo: un error de mapeo emitiría
+ * una FACTURA donde se pidió una nota de crédito, que es el comprobante
+ * opuesto. Y un comprobante fiscal emitido no se corrige.
+ *
+ * Por eso ahora no hay default: si la combinación no existe, es un error.
+ */
+const CBTE_TIPO = {
+  factura:      { A: 1, B: 6,  C: 11 },
+  nota_credito: { A: 3, B: 8,  C: 13 },
+  nota_debito:  { A: 2, B: 7,  C: 12 },
+};
+const CLASES = Object.keys(CBTE_TIPO);
+
+function tipoDeComprobante(clase, letra) {
+  const porClase = CBTE_TIPO[clase];
+  const codigo = porClase?.[letra];
+  if (!codigo) {
+    throw Object.assign(
+      new Error(`No existe el comprobante "${clase}" letra "${letra}". Válidos: ${CLASES.join(', ')} × A, B, C.`),
+      { status: 400 },
+    );
+  }
+  return codigo;
+}
 function docTipoFromCliente(clienteCuit) {
   if (!clienteCuit) return 99; // consumidor final
   const s = String(clienteCuit).replace(/\D/g, '');
@@ -139,6 +167,14 @@ function condicionIvaReceptorId({ tipo, clienteCuit, clienteCondicion }) {
 async function solicitarCAE({
   tipo, total, clienteCuit, clienteCondicion, businessCuit, puntoVenta,
   ambiente = 'homologacion', businessId = null, saleId = null,
+  /*
+   * Qué se está emitiendo, y contra qué.
+   *
+   * `asociada` es obligatoria para una nota: AFIP la pide como CbtesAsoc y es
+   * lo que hace que la nota apunte a su factura. Sin eso es un comprobante
+   * suelto que no revierte nada.
+   */
+  clase = 'factura', asociada = null,
 }) {
   if (isMock) {
     const cae = `${Date.now()}`.slice(0, 14).padEnd(14, '0');
@@ -156,7 +192,7 @@ async function solicitarCAE({
   const { cert, key } = loadCert(ambiente);
   const cli = loadClient();
   const cuitEmisor = String(businessCuit).replace(/\D/g, '');
-  const cbteTipo = CBTE_TIPO[tipo] || CBTE_TIPO.B;
+  const cbteTipo = tipoDeComprobante(clase, tipo);
   const { neto, iva } = calcularIVA(total, tipo);
 
   const docNro = clienteCuit ? String(clienteCuit).replace(/\D/g, '') : '0';
@@ -220,6 +256,25 @@ async function solicitarCAE({
         ImpIVA:                   iva, ImpTrib: 0,
         MonId:                    'PES', MonCotiz: 1,
         CondicionIVAReceptorId:   condReceptor, // RG 5616 — obligatorio desde 11/2024
+        /*
+         * El comprobante que esta nota revierte.
+         *
+         * AFIP exige Tipo, PtoVta y Nro; el Cuit y la fecha se mandan igual
+         * porque completan la identificación y no cuestan nada. Va acá y no
+         * más abajo por el orden del XSD: el armado es posicional y este nodo
+         * tiene que quedar antes de Iva.
+         */
+        ...(asociada ? {
+          CbtesAsoc: {
+            CbteAsoc: {
+              Tipo:   Number(asociada.cbteTipo),
+              PtoVta: Number(asociada.ptoVta),
+              Nro:    Number(asociada.numero),
+              ...(asociada.cuit ? { Cuit: String(asociada.cuit).replace(/\D/g, '') } : {}),
+              ...(asociada.fecha ? { CbteFch: String(asociada.fecha) } : {}),
+            },
+          },
+        } : {}),
         // Objeto IVA obligatorio si ImpNeto > 0 (aplica a factura A y B). Id=5 → 21%.
         ...(iva > 0 ? {
           Iva: { AlicIva: { Id: 5, BaseImp: neto, Importe: iva } },
@@ -341,6 +396,13 @@ async function solicitarCAE({
      */
     intentoId: intento?.id || null,
     /*
+     * Las coordenadas del comprobante en AFIP, como datos y no adentro de un
+     * JSON: son exactamente lo que CbtesAsoc necesita para poder revertirlo, y
+     * depender de un blob opcional para eso es quedarse sin salida el día que
+     * no parsee.
+     */
+    cbteTipo, cbteFch: hoy, clase,
+    /*
      * Queda escrito que este CAE se recuperó y no se pidió.
      *
      * Es el mismo CAE, pero el comprobante se autorizó en una llamada que
@@ -367,7 +429,15 @@ async function rescatarSinFactura({ businessId, saleId, esperado, ptoVta, cbteTi
   let intento;
   try {
     intento = await ArcaIntento.findOne({
-      where: { saleId, invoiceId: null, cae: { [Op.ne]: null } },
+      /*
+       * El tipo de comprobante entra en la búsqueda, no sólo la venta.
+       *
+       * Una venta puede tener su factura Y sus notas de crédito, todas con el
+       * mismo saleId. Buscando sólo por venta, una nota que no se pudo guardar
+       * bloquearía el rescate de la factura —y al revés—, y el importe no
+       * alcanza para distinguirlas.
+       */
+      where: { saleId, cbteTipo, ptoVta, invoiceId: null, cae: { [Op.ne]: null } },
       order: [['id', 'DESC']],
     });
   } catch (e) {
@@ -1042,6 +1112,7 @@ function debugConfig() {
 module.exports = {
   tipoComprobante,
   solicitarCAE, determineInvoiceType, calcularIVA,
+  CBTE_TIPO, CLASES, tipoDeComprobante,
   checkStatus, verifyDelegation, debugConfig,
   sincronizarDelegaciones,
   sincronizarTodasLasDelegaciones,

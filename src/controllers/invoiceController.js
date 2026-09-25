@@ -56,15 +56,29 @@ const getInvoices = async (req, res, next) => {
      * en ventas: la pregunta que se hace al filtrar por mes es "cuánto facturé",
      * y eso no se responde sumando las treinta filas que se ven.
      *
-     * Las anuladas se cuentan aparte y NO suman: una nota de crédito deja el
-     * comprobante sin efecto fiscal, así que incluirla infla lo facturado.
+     * ── Las notas se restan, no se esconden ────────────────────
+     *
+     * Antes esto sumaba todo lo 'emitida' y descontaba lo 'anulada'. Con notas
+     * de crédito en la misma tabla eso queda mal de las dos puntas: la nota
+     * sumaría como si fuera una venta —inflando el facturado justo cuando se
+     * devolvió plata— y la factura revertida desaparecería del total, cuando
+     * en el libro sigue existiendo.
+     *
+     * Así que se separa por clase: facturado es lo emitido, acreditado es lo
+     * que se devolvió, y el neto es la resta. Los tres se devuelven porque los
+     * tres se miran: el contador quiere el facturado, el dueño el neto.
      */
     const emitidas = { ...where, estado: 'emitida' };
-    const [totalEmitido, cantidadEmitidas, anuladas] = await Promise.all([
-      Invoice.sum('total', { where: emitidas }),
-      Invoice.count({ where: emitidas }),
+    const [totalFacturado, cantidadEmitidas, anuladas, totalAcreditado, totalDebitado] = await Promise.all([
+      Invoice.sum('total', { where: { ...emitidas, clase: 'factura' } }),
+      Invoice.count({ where: { ...emitidas, clase: 'factura' } }),
       Invoice.count({ where: { ...where, estado: 'anulada' } }),
+      Invoice.sum('total', { where: { ...emitidas, clase: 'nota_credito' } }),
+      Invoice.sum('total', { where: { ...emitidas, clase: 'nota_debito' } }),
     ]);
+    const facturado = Number(totalFacturado) || 0;
+    const acreditado = Number(totalAcreditado) || 0;
+    const debitado = Number(totalDebitado) || 0;
 
     res.json({
       total: count,
@@ -75,7 +89,16 @@ const getInvoices = async (req, res, next) => {
         cantidad: count,
         emitidas: cantidadEmitidas,
         anuladas,
-        totalEmitido: Number(totalEmitido) || 0,
+        facturado,
+        acreditado,
+        debitado,
+        neto: Math.round((facturado - acreditado + debitado) * 100) / 100,
+        /*
+         * El nombre viejo sigue saliendo, ahora con el neto: las pantallas que
+         * lo leen quieren "cuánto facturé de verdad", y desde que existen las
+         * notas esa respuesta es el neto.
+         */
+        totalEmitido: Math.round((facturado - acreditado + debitado) * 100) / 100,
       },
     });
   } catch (error) { next(error); }
@@ -248,7 +271,10 @@ const createInvoice = async (req, res, next) => {
     // La config del emisor ya se leyó arriba para decidir la letra.
     const arcaConfig = configEmisor;
     const ambienteArca = arcaConfig?.ambiente === 'produccion' ? 'produccion' : 'homologacion';
-    const { cae, caeVencimiento, respuesta: arcaRespuesta, intentoId } = await solicitarCAE({
+    const {
+      cae, caeVencimiento, respuesta: arcaRespuesta, intentoId,
+      numero: cbteNroArca, puntoVenta: ptoVtaArca, cbteTipo: cbteTipoArca, cbteFch: cbteFchArca,
+    } = await solicitarCAE({
       tipo, total: totalAFacturar, clienteCuit: finalCuit,
       clienteCondicion: condicionReceptor,
       businessCuit: emisorCuit,
@@ -303,6 +329,15 @@ const createInvoice = async (req, res, next) => {
         iva, total:    totalAFacturar,
         esMayorista:   sale.esMayorista,
         cae, caeVencimiento,
+        /*
+         * Las coordenadas del comprobante en AFIP, como columnas.
+         *
+         * Es lo que hace falta para imprimir el número que vale y, sobre todo,
+         * para poder revertirlo con una nota de crédito: AFIP las pide en
+         * CbtesAsoc. Antes vivían sólo adentro de `arcaRespuesta`, un texto
+         * que puede no parsear.
+         */
+        ptoVtaArca, cbteNroArca, cbteTipoArca, cbteFchArca,
         arcaRespuesta,
         /*
          * Queda escrito en el comprobante si es fiscal o no.
@@ -494,11 +529,79 @@ const createInvoice = async (req, res, next) => {
   } catch (error) { await t.rollback().catch(() => {}); next(error); }
 };
 
+/*
+ * POST /api/invoices/:id/nota-credito
+ *
+ * La única forma de revertir una factura con CAE. El comprobante original
+ * sigue existiendo en AFIP y sigue siendo válido: lo que esto emite es otro
+ * comprobante que lo compensa.
+ *
+ * No pasa por el cupo del plan: el cupo mide capacidad de facturar, y una nota
+ * no es facturar — es la única forma de corregir. Cobrarle cupo convertiría un
+ * límite comercial en un candado fiscal.
+ */
+const emitirNotaDeCredito = async (req, res, next) => {
+  try {
+    const { emitirNota } = require('../services/notaCreditoService');
+    const nota = await emitirNota({
+      businessId: req.auth.businessId,
+      facturaId: Number(req.params.id),
+      clase: req.body?.clase === 'nota_debito' ? 'nota_debito' : 'nota_credito',
+      total: req.body?.total ?? null,
+      motivo: req.body?.motivo,
+      employeeId: req.auth.employeeId || null,
+    });
+    res.status(201).json(nota);
+  } catch (e) { next(e); }
+};
+
+/* GET /api/invoices/:id/saldo-notas — cuánto queda por acreditar. */
+const saldoDeNotas = async (req, res, next) => {
+  try {
+    const { saldoParaNotas } = require('../services/notaCreditoService');
+    const factura = await Invoice.findOne({
+      where: { id: req.params.id, businessId: req.auth.businessId },
+      attributes: ['id'],
+    });
+    if (!factura) return res.status(404).json({ message: 'Comprobante no encontrado.' });
+    res.json(await saldoParaNotas(factura.id));
+  } catch (e) { next(e); }
+};
+
 // PATCH /api/invoices/:id/anular
 const voidInvoice = async (req, res, next) => {
   try {
     const invoice = await Invoice.findOne({ where: { id: req.params.id, businessId: req.auth.businessId } });
     if (!invoice) return res.status(404).json({ message: 'Factura no encontrada.' });
+
+    /*
+     * Un comprobante fiscal no se anula marcándolo en la base.
+     *
+     * Existe en AFIP y va a seguir existiendo: ponerle 'anulada' acá deja los
+     * libros diciendo una cosa y AFIP otra, en silencio. La única salida real
+     * es la nota de crédito.
+     *
+     * Lo que sí se puede marcar es lo que NO es fiscal: homologación y los
+     * simulados de ARCA_MOCK, que son las pruebas. Sin eso no habría forma de
+     * limpiar la pantalla después de probar.
+     */
+    const esFiscal = invoice.cae && invoice.ambiente === 'produccion' && !invoice.simulado;
+    if (esFiscal && invoice.clase === 'factura') {
+      throw Object.assign(
+        new Error(
+          `La factura ${invoice.numero} está autorizada en ARCA (CAE ${invoice.cae}). `
+          + 'Para revertirla hace falta una nota de crédito: marcarla como anulada acá dejaría los libros en desacuerdo con AFIP.',
+        ),
+        { status: 409, detalles: { codigo: 'COMPROBANTE_FISCAL', accion: 'nota_credito' } },
+      );
+    }
+    if (esFiscal) {
+      throw Object.assign(
+        new Error('Una nota autorizada en ARCA no se anula. Si está mal emitida, se compensa con una nota del tipo contrario.'),
+        { status: 409, detalles: { codigo: 'COMPROBANTE_FISCAL' } },
+      );
+    }
+
     await invoice.update({ estado: 'anulada' });
     res.json(invoice);
   } catch (error) { next(error); }
@@ -524,4 +627,7 @@ const downloadPdf = async (req, res, next) => {
   } catch (error) { next(error); }
 };
 
-module.exports = { getInvoices, getInvoice, createInvoice, voidInvoice, downloadPdf };
+module.exports = {
+  getInvoices, getInvoice, createInvoice, voidInvoice, downloadPdf,
+  emitirNotaDeCredito, saldoDeNotas,
+};

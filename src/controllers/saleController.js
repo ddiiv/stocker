@@ -1183,18 +1183,45 @@ const anularSale = async (req, res, next) => {
      * marque otra cosa. La salida es la nota de crédito.
      */
     const { Invoice } = require('../models');
+    // La FACTURA, explícitamente: la venta también puede tener notas de crédito.
     const factura = await Invoice.findOne({
-      where: { saleId: sale.id, businessId: req.auth.businessId },
+      where: { saleId: sale.id, businessId: req.auth.businessId, clase: 'factura' },
       transaction: t,
     });
+    /*
+     * Una factura revertida por notas de crédito ya no frena la anulación.
+     *
+     * El comprobante sigue existiendo en AFIP —eso no cambia— pero su efecto
+     * está compensado, que es justamente lo que el mensaje de abajo pedía
+     * hacer. Seguir bloqueando después de haber emitido la nota sería mandar a
+     * hacer algo y no reconocerlo cuando está hecho.
+     */
+    let acreditadoDeLaFactura = 0;
     if (factura && factura.cae) {
+      const notas = await Invoice.findAll({
+        where: { facturaAsociadaId: factura.id, clase: 'nota_credito', cae: { [Op.ne]: null } },
+        attributes: ['total'],
+        transaction: t,
+      });
+      acreditadoDeLaFactura = notas.reduce((acc, n) => acc + Number(n.total), 0);
+    }
+    const revertida = factura && Number(factura.total) - acreditadoDeLaFactura <= 0.01;
+
+    if (factura && factura.cae && !revertida) {
       throw Object.assign(
         new Error(
           `La venta ${sale.numero} está facturada (${factura.numero}, CAE ${factura.cae}). `
           + 'Ese comprobante ya está autorizado en ARCA: para revertirlo hace falta una nota de crédito, '
-          + 'no alcanza con anular la venta acá.',
+          + 'no alcanza con anular la venta acá.'
+          + (acreditadoDeLaFactura > 0 ? ` Ya tiene notas por ${acreditadoDeLaFactura} de ${factura.total}.` : ''),
         ),
-        { status: 409, detalles: { codigo: 'VENTA_FACTURADA', factura: factura.numero, cae: factura.cae } },
+        {
+          status: 409,
+          detalles: {
+            codigo: 'VENTA_FACTURADA', factura: factura.numero, cae: factura.cae,
+            facturaId: factura.id, total: Number(factura.total), acreditado: acreditadoDeLaFactura,
+          },
+        },
       );
     }
 

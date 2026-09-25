@@ -1,3 +1,16 @@
+/*
+ * Cómo se llama el comprobante en el mail.
+ *
+ * Mandarle "Factura" a un cliente que recibe una nota de crédito es decirle
+ * que le cobraron de nuevo.
+ */
+const NOMBRE_COMPROBANTE = {
+  factura: 'Factura',
+  nota_credito: 'Nota de crédito',
+  nota_debito: 'Nota de débito',
+};
+const nombreComprobante = (invoice) => NOMBRE_COMPROBANTE[invoice?.clase] || 'Factura';
+
 const nodemailer = require('nodemailer');
 const correo = require('../config/correo');
 const { log, mask } = require('../utils/logger');
@@ -154,7 +167,7 @@ async function sendInvoiceEmail({ to, clienteNombre, invoice, pdfPath, business 
     <p>Te enviamos tu factura <strong>${escapeHtml(invoice.numero)}</strong> correspondiente a tu compra.</p>
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border:1px solid ${C.line};border-radius:6px;overflow:hidden;margin:12px 0;">
       <tr style="background:${C.paper100};"><td style="padding:8px 10px;color:${C.ink600};">Número</td><td style="padding:8px 10px;color:${C.ink950};font-weight:600;">${escapeHtml(invoice.numero)}</td></tr>
-      <tr><td style="padding:8px 10px;color:${C.ink600};">Tipo</td><td style="padding:8px 10px;color:${C.ink950};">Factura ${escapeHtml(invoice.tipo)}</td></tr>
+      <tr><td style="padding:8px 10px;color:${C.ink600};">Tipo</td><td style="padding:8px 10px;color:${C.ink950};">${escapeHtml(nombreComprobante(invoice))} ${escapeHtml(invoice.tipo)}</td></tr>
       <tr style="background:${C.paper100};"><td style="padding:8px 10px;color:${C.ink600};">Emisor</td><td style="padding:8px 10px;color:${C.ink950};">${escapeHtml(emisorNombre)} · ${escapeHtml(emisorCuit)}</td></tr>
       <tr><td style="padding:8px 10px;color:${C.ink600};">Total</td><td style="padding:8px 10px;color:${C.ink950};font-weight:700;">${money(invoice.total)}</td></tr>
       ${invoice.cae ? `<tr style="background:${C.paper100};"><td style="padding:8px 10px;color:${C.ink600};">CAE</td><td style="padding:8px 10px;font-family:monospace;color:${C.ink950};">${escapeHtml(invoice.cae)}</td></tr>` : ''}
@@ -164,8 +177,8 @@ async function sendInvoiceEmail({ to, clienteNombre, invoice, pdfPath, business 
   await transport().sendMail({
     from: correo.remitente(),
     to,
-    subject: `Factura ${invoice.numero} · ${emisorNombre}`,
-    html: shell({ title: `Factura ${invoice.tipo}`, businessName: emisorNombre, cuit: emisorCuit, bodyHtml: body }),
+    subject: `${nombreComprobante(invoice)} ${invoice.numero} · ${emisorNombre}`,
+    html: shell({ title: `${nombreComprobante(invoice)} ${invoice.tipo}`, businessName: emisorNombre, cuit: emisorCuit, bodyHtml: body }),
     attachments: pdfPath ? [{ filename: `factura-${invoice.numero.replace(/\//g, '-')}.pdf`, path: pdfPath }] : [],
   });
   log.info('email', 'factura enviada', { numero: invoice.numero, a: mask.email(to) });
@@ -193,7 +206,7 @@ async function sendInvoiceCopyToBusiness({ to, invoice, pdfPath, business, clien
 
   const filas = [
     ['Número', invoice.numero],
-    ['Tipo', `Factura ${invoice.tipo}`],
+    ['Tipo', `${nombreComprobante(invoice)} ${invoice.tipo}`],
     ['Cliente', `${clienteNombre || 'Consumidor Final'}${invoice.clienteCuit ? ` · CUIT ${invoice.clienteCuit}` : ''}`],
     ['Total', money(invoice.total)],
     ...(invoice.cae ? [['CAE', invoice.cae]] : []),

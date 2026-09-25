@@ -110,16 +110,38 @@ function drawHeaderBar(doc, { titulo, subtitulo, badge, badgeColor = COLOR.brass
  * CAE, y es el que hay que imprimir y el que va adentro del QR. Salen de la
  * respuesta guardada; si el comprobante no llegó a tener CAE, no hay ninguno.
  */
-const CBTE_TIPO = { A: 1, B: 6, C: 11 };
+/*
+ * El tipo de comprobante se importa: tener una copia acá fue exactamente lo
+ * que hizo que este archivo quedara pensando que todo es una factura.
+ */
+const { CBTE_TIPO } = require('./arcaService');
+
+/* Cómo se llama el comprobante, para el papel y para el asunto del mail. */
+const ETIQUETA_CLASE = {
+  factura: 'FACTURA',
+  nota_credito: 'NOTA DE CRÉDITO',
+  nota_debito: 'NOTA DE DÉBITO',
+};
+const etiquetaComprobante = (invoice) => ETIQUETA_CLASE[invoice?.clase] || 'FACTURA';
 // La URL que manda la especificación vigente del QR (RG 4892).
 const URL_QR = 'https://www.arca.gob.ar/fe/qr/';
 
 function comprobanteArca(invoice) {
   const r = invoice.arcaRespuesta || {};
+  /*
+   * Primero las columnas, después el JSON.
+   *
+   * El tipo NO se adivina por la letra: con notas de crédito en juego, caer al
+   * mapa por letra convertiría una nota en la FACTURA del mismo número, y el
+   * QR de ese papel verificaría contra un comprobante que no es. Si no se sabe
+   * el tipo, va cero y el QR no se dibuja: un papel sin QR es un problema
+   * menor que un papel con el QR de otro.
+   */
+  const porClase = CBTE_TIPO[invoice?.clase || 'factura'] || {};
   return {
-    ptoVta: Number(r.puntoVenta || r.PtoVta || 0),
-    nroCmp: Number(r.numero || r.CbteDesde || 0),
-    tipoCmp: Number(r.cbteTipo || CBTE_TIPO[invoice.tipo] || 0),
+    ptoVta: Number(invoice.ptoVtaArca || r.puntoVenta || r.PtoVta || 0),
+    nroCmp: Number(invoice.cbteNroArca || r.numero || r.CbteDesde || 0),
+    tipoCmp: Number(invoice.cbteTipoArca || r.cbteTipo || porClase[invoice.tipo] || 0),
   };
 }
 
@@ -344,7 +366,7 @@ async function generateInvoicePdf(invoice, items, business) {
     drawHeaderBar(doc, {
       titulo: emisorNombre,
       subtitulo: `CUIT ${emisorCuit}${business.telefono ? ' · Tel ' + business.telefono : ''}`,
-      badge: { top: 'FACTURA', big: invoice.tipo || 'B' },
+      badge: { top: etiquetaComprobante(invoice), big: invoice.tipo || 'B' },
     });
 
     let y = 110;
@@ -422,7 +444,7 @@ async function generateInvoicePdfBuffer(invoice, items, business) {
     drawHeaderBar(doc, {
       titulo: emisorNombre,
       subtitulo: `CUIT ${emisorCuit}${business.telefono ? ' · Tel ' + business.telefono : ''}`,
-      badge: { top: 'FACTURA', big: invoice.tipo || 'B' },
+      badge: { top: etiquetaComprobante(invoice), big: invoice.tipo || 'B' },
     });
 
     let y = 110;
