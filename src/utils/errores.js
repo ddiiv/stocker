@@ -116,6 +116,18 @@ export function analizarError(err, fallback = "No se pudo completar la operació
     };
   }
 
+  /*
+   * Un 503 con mensaje propio es un servicio de afuera que no contestó, no un
+   * error nuestro: ARCA caído, AFIP rechazando, Mercado Libre sin responder.
+   * El servidor ya escribió qué pasó y qué hacer —"probá en 40 segundos", "no
+   * se emitió nada"—, y taparlo con "el servidor tuvo un problema, no es algo
+   * que puedas corregir" convierte una espera de un minuto en un llamado a
+   * soporte.
+   */
+  if (status === 503 && msg) {
+    return { tipo: "servicio", titulo: msg, detalle: detalles.join(" · ") || null, accion: null };
+  }
+
   if (status >= 500) {
     return {
       tipo: "servidor",

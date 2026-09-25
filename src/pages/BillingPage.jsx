@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Receipt, XCircle, Download, Filter, Undo2 } from "lucide-react";
 import { fetchInvoices, fetchReceipts, voidInvoice, downloadInvoicePdf } from "../services/invoiceService";
 import NotaCreditoModal from "../components/billing/NotaCreditoModal";
+import IntentosPendientes from "../components/billing/IntentosPendientes";
 import { mensajeDeError } from "../utils/errores";
 import { formatCurrency, formatDate } from "../utils/formatters";
 import { PageHeader, EmptyState } from "../components/ui/Layout";
@@ -88,6 +89,12 @@ export default function BillingPage() {
         subtitle="Facturas para ARCA generadas desde pedidos pagos, y sus recibos asociados"
       />
       <BillingTabs />
+
+      {/*
+        * Lo que quedó a medias con ARCA, arriba de todo: pasa poco y hay que
+        * verlo cuando pasa. No se muestra nada si no hay nada.
+        */}
+      <IntentosPendientes />
 
       <div className="mb-4 flex flex-wrap items-center gap-3">
         <FiltroPeriodo valor={periodo} onChange={setPeriodo} />

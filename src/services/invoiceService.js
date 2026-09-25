@@ -44,6 +44,23 @@ export async function emitirNotaDeCredito(id, { motivo, total = null, clase = "n
   return data;
 }
 
+/*
+ * Los pedidos de CAE que quedaron sin resolver.
+ *
+ * Son los que una máquina no puede cerrar: no se pudo averiguar si AFIP
+ * autorizó el comprobante, y reintentar sin saber es como se duplica una
+ * factura. Los mira una persona.
+ */
+export async function fetchIntentosArca() {
+  const { data } = await http.get("/arca/intentos");
+  return data.intentos || [];
+}
+
+export async function resolverIntentoArca(id) {
+  const { data } = await http.post(`/arca/intentos/${id}/resolver`);
+  return data;
+}
+
 /* Cuánto de una factura todavía se puede acreditar. */
 export async function fetchSaldoDeNotas(id) {
   const { data } = await http.get(`/invoices/${id}/saldo-notas`);
