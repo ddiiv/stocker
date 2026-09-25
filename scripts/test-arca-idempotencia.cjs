@@ -105,6 +105,12 @@ process.env.ARCA_MOCK = 'false';
 
 const arca = require(path.join(__dirname, '..', 'src', 'services', 'arcaService.js'));
 const cli = require(path.join(__dirname, '..', 'src', 'services', 'arcaClient.js'));
+const { ArcaIntento } = require(path.join(__dirname, '..', 'src', 'models'));
+
+/* El CUIT con el que factura esta prueba. Por acá se limpia lo que deja. */
+const CUIT_QA = '30999999911';
+const limpiar = () => ArcaIntento.destroy({ where: { cuitEmisor: CUIT_QA } });
+const intentos = () => ArcaIntento.findAll({ where: { cuitEmisor: CUIT_QA }, order: [['id', 'ASC']] });
 
 let ok = 0, ko = 0;
 const chk = (t, esperado, obtuvo) => {
@@ -118,14 +124,17 @@ const HOY = new Date().toISOString().slice(0, 10).replace(/-/g, '');
 const TOTAL = 121000;
 const DOC = 30999999911;
 
-const emitir = () => arca.solicitarCAE({
-  tipo: 'B', total: TOTAL, clienteCuit: String(DOC), clienteCondicion: 'Consumidor Final',
+const emitir = ({ saleId = null, total = TOTAL } = {}) => arca.solicitarCAE({
+  tipo: 'B', total, clienteCuit: String(DOC), clienteCondicion: 'Consumidor Final',
   businessCuit: '30-99999991-1', puntoVenta: 8, ambiente: 'produccion',
+  businessId: 39, saleId,
 });
 
 const fallo = async (fn) => { try { await fn(); return null; } catch (e) { return e; } };
 
 (async () => {
+  await limpiar();
+  try {
   tit('1. LO NORMAL NO CAMBIA');
   AFIP.solicitar = 'ok'; AFIP.llamadas = [];
   const normal = await emitir();
@@ -133,6 +142,7 @@ const fallo = async (fn) => { try { await fn(); return null; } catch (e) { retur
   chk('no se le pregunta nada de más a AFIP', ['ultimo', 'solicitar'], AFIP.llamadas);
   chk('y no figura como recuperado', false, normal.recuperado);
 
+  await limpiar();
   tit('2. SE CORTÓ, Y AFIP NO LO HABÍA AUTORIZADO');
   /*
    * El final más común: el pedido no llegó. Lo único que hace falta es que el
@@ -151,6 +161,7 @@ const fallo = async (fn) => { try { await fn(); return null; } catch (e) { retur
   chk('y la pantalla lo puede leer, no sólo el texto',
     { codigo: 'ARCA_SIN_AUTORIZAR', reintentable: true, numeroIntentado: 24 }, sinAutorizar?.detalles);
 
+  await limpiar();
   tit('3. SE CORTÓ, PERO AFIP SÍ LO HABÍA AUTORIZADO');
   /*
    * Acá está el daño que esto evita: sin consultar, el reintento pediría el
@@ -165,6 +176,7 @@ const fallo = async (fn) => { try { await fn(); return null; } catch (e) { retur
   chk('y eso queda guardado en la respuesta de ARCA', true, rescatado.respuesta.recuperado);
   chk('no se pidió un CAE nuevo', 1, AFIP.llamadas.filter((l) => l === 'solicitar').length);
 
+  await limpiar();
   tit('4. EL NÚMERO ESTÁ, PERO NO ES EL NUESTRO');
   /*
    * Otra caja facturó con ese número mientras se emitía. Adoptar ese CAE
@@ -180,6 +192,7 @@ const fallo = async (fn) => { try { await fn(); return null; } catch (e) { retur
     && /tipo 6/.test(String(ajeno?.message))
     && /número 24/.test(String(ajeno?.message)));
 
+  await limpiar();
   tit('5. NO SE PUDO PREGUNTAR');
   /*
    * El peor final: no se sabe. Es el único caso en el que la respuesta correcta
@@ -198,6 +211,7 @@ const fallo = async (fn) => { try { await fn(); return null; } catch (e) { retur
     && /tipo 6/.test(String(incierto?.message))
     && /número 24/.test(String(incierto?.message)));
 
+  await limpiar();
   tit('6. UN RECHAZO DE AFIP NO ES UN CORTE');
   /*
    * Si AFIP contestó que no, el comprobante no existe y no hay nada que
@@ -206,7 +220,8 @@ const fallo = async (fn) => { try { await fn(); return null; } catch (e) { retur
    */
   AFIP.solicitar = 'rechazo'; AFIP.comprobante = null; AFIP.llamadas = [];
   const rechazo = await fallo(emitir);
-  chk('no se consulta', false, AFIP.llamadas.includes('consultar'));
+  chk('no se consulta por el rechazo', false,
+    AFIP.llamadas.slice(AFIP.llamadas.indexOf('solicitar')).includes('consultar'));
   chk('y se ve el motivo que dio AFIP', true, /10016/.test(String(rechazo?.message)));
 
   tit('7. LEER LO QUE CONTESTA FECompConsultar');
@@ -233,6 +248,117 @@ const fallo = async (fn) => { try { await fn(); return null; } catch (e) { retur
     } catch (e) { return e.message; }
   })();
   chk('un error distinto no se lee como "no existe"', true, /600/.test(String(otroError)));
+
+  await limpiar();
+  tit('8. EL CAE SALIÓ Y LA FACTURA NO QUEDÓ GUARDADA');
+  /*
+   * El CAE se pide adentro de la transacción de la venta, pero la factura se
+   * crea después: numeración, renglones, commit. Si algo de eso falla —y no
+   * hace falta que se muera el proceso, alcanza con que el commit no entre— la
+   * factura se deshace y el CAE queda emitido en AFIP igual.
+   *
+   * Mirar sólo los intentos "sin resolver" no alcanza: ese quedó 'autorizado',
+   * o sea resuelto, y nadie lo volvería a mirar. Lo que define el rescate es
+   * que no haya factura.
+   */
+  const intentoHuerfano = async (extra = {}) => ArcaIntento.create({
+    businessId: 39, saleId: 777, cuitEmisor: CUIT_QA, ambiente: 'produccion',
+    ptoVta: 8, cbteTipo: 6, numero: 24,
+    total: TOTAL, docNro: String(DOC), fecha: HOY,
+    estado: 'autorizado', cae: '75000000000024', caeVencimiento: '2026-11-30',
+    invoiceId: null, resueltoEn: new Date(), ...extra,
+  });
+
+  AFIP.solicitar = 'ok'; AFIP.comprobante = null; AFIP.llamadas = [];
+  await intentoHuerfano();
+  const reusado = await emitir({ saleId: 777 });
+  chk('se reusa el CAE que quedó sin factura', ['75000000000024', 24, true],
+    [reusado.cae, reusado.numero, reusado.recuperado]);
+  chk('y no se le pide nada a AFIP', [], AFIP.llamadas);
+
+  await limpiar();
+  await intentoHuerfano();
+  AFIP.llamadas = [];
+  const otroImporte = await fallo(() => emitir({ saleId: 777, total: TOTAL + 5000 }));
+  chk('si el importe cambió no se emite otro', 'ARCA_YA_FACTURADA', otroImporte?.codigo);
+  chk('y se dice cuál es el comprobante que ya existe',
+    { ptoVta: 8, cbteTipo: 6, numero: 24, importe: TOTAL }, otroImporte?.detalles?.comprobante);
+
+  await limpiar();
+  await intentoHuerfano({ invoiceId: 12345 });
+  AFIP.solicitar = 'ok'; AFIP.llamadas = [];
+  const conFactura = await emitir({ saleId: 777 });
+  chk('un intento que SÍ terminó en factura no se reusa', ['75000000000009', false],
+    [conFactura.cae, conFactura.recuperado]);
+
+  await limpiar();
+  tit('9. UN INTENTO QUE QUEDÓ EN CURSO');
+  /*
+   * El proceso se murió sin llegar a saber qué contestó AFIP. Se pregunta
+   * antes de numerar: si el comprobante está, es el de esta venta.
+   */
+  const enCurso = async (extra = {}) => {
+    const fila = await ArcaIntento.create({
+      businessId: 39, saleId: 777, cuitEmisor: CUIT_QA, ambiente: 'produccion',
+      ptoVta: 8, cbteTipo: 6, numero: 24, total: TOTAL, docNro: String(DOC), fecha: HOY,
+      estado: 'en_curso', ...extra,
+    });
+    return fila;
+  };
+
+  const viejo = new Date(Date.now() - 10 * 60_000);
+  await enCurso({ createdAt: viejo });
+  AFIP.solicitar = 'ok'; AFIP.llamadas = [];
+  AFIP.comprobante = { numero: 24, total: TOTAL, docNro: DOC, fecha: HOY, cae: '75000000000024' };
+  const rescatadoEnCurso = await emitir({ saleId: 777 });
+  chk('se consulta y se adopta el CAE de ese número', ['75000000000024', true],
+    [rescatadoEnCurso.cae, rescatadoEnCurso.recuperado]);
+  chk('y no se pidió un CAE nuevo', false, AFIP.llamadas.includes('solicitar'));
+  chk('el intento queda cerrado como autorizado', 'autorizado', (await intentos())[0]?.estado);
+
+  await limpiar();
+  await enCurso({ createdAt: viejo });
+  AFIP.comprobante = null; AFIP.solicitar = 'ok'; AFIP.llamadas = [];
+  const noEstaba = await emitir({ saleId: 777 });
+  chk('si AFIP no lo tenía, se emite normal', '75000000000009', noEstaba.cae);
+  const despues = await intentos();
+  chk('el viejo queda descartado y el nuevo autorizado',
+    ['descartado', 'autorizado'], despues.map((i) => i.estado));
+
+  await limpiar();
+  /*
+   * Recién pedido: puede estar corriendo AHORA en otra instancia. Seguir sería
+   * pedir dos CAE para la misma venta.
+   */
+  await enCurso();
+  AFIP.llamadas = [];
+  const enVuelo = await fallo(() => emitir({ saleId: 777 }));
+  chk('un intento recién hecho de la misma venta frena la emisión', 'ARCA_EN_CURSO', enVuelo?.codigo);
+  chk('sin preguntarle nada a AFIP', [], AFIP.llamadas);
+
+  await limpiar();
+  /*
+   * Un intento trabado de OTRA venta no puede dejar al negocio sin facturar:
+   * el número de esta emisión sale de preguntarle a AFIP cuál fue el último
+   * autorizado, que ya refleja la realidad.
+   */
+  await enCurso({ saleId: 999, createdAt: viejo });
+  AFIP.consultaCae = true; AFIP.solicitar = 'ok'; AFIP.llamadas = [];
+  /*
+   * Se atrapa el error a propósito: si esto se rompe, la prueba tiene que
+   * DECIR que frenó, no caerse y dejar sin correr todo lo que sigue.
+   */
+  let ajenoTrabado = null;
+  try { ajenoTrabado = await emitir({ saleId: 777 }); }
+  catch (e) { ajenoTrabado = { cae: `frenó: ${e.codigo || e.message}` }; }
+  AFIP.consultaCae = false;
+  chk('un intento trabado de otra venta no frena esta', '75000000000009', ajenoTrabado.cae);
+  chk('y queda anotado como incierto para que alguien lo mire', 'incierto',
+    (await intentos()).find((i) => i.saleId === 999)?.estado);
+
+  } finally {
+    await limpiar();
+  }
 
   console.log(`\n\x1b[1m─────────────────────────────\x1b[0m\n  \x1b[32mPasaron: ${ok}\x1b[0m   \x1b[31mFallaron: ${ko}\x1b[0m`);
   process.exit(ko ? 1 : 0);

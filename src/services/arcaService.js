@@ -136,7 +136,10 @@ function condicionIvaReceptorId({ tipo, clienteCuit, clienteCondicion }) {
 }
 
 // ── Solicitar CAE ─────────────────────────────────────────────────
-async function solicitarCAE({ tipo, total, clienteCuit, clienteCondicion, businessCuit, puntoVenta, ambiente = 'homologacion' }) {
+async function solicitarCAE({
+  tipo, total, clienteCuit, clienteCondicion, businessCuit, puntoVenta,
+  ambiente = 'homologacion', businessId = null, saleId = null,
+}) {
   if (isMock) {
     const cae = `${Date.now()}`.slice(0, 14).padEnd(14, '0');
     const vto = new Date(); vto.setDate(vto.getDate() + 10);
@@ -156,6 +159,44 @@ async function solicitarCAE({ tipo, total, clienteCuit, clienteCondicion, busine
   const cbteTipo = CBTE_TIPO[tipo] || CBTE_TIPO.B;
   const { neto, iva } = calcularIVA(total, tipo);
 
+  const docNro = clienteCuit ? String(clienteCuit).replace(/\D/g, '') : '0';
+  const hoy = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+  const esperado = { total: Number(total), docNro, fecha: hoy };
+
+  /*
+   * Lo que quedó abierto de antes se resuelve ANTES de pedir un número nuevo.
+   *
+   * Si un pedido anterior se murió sin respuesta, su número puede estar
+   * autorizado en AFIP. Numerar sin mirarlo es lo que produce el comprobante
+   * duplicado: el número siguiente sale de preguntar cuál fue el último
+   * autorizado, así que el que se perdió ya cuenta.
+   */
+  /*
+   * ¿Esta venta ya tiene un CAE que nunca llegó a ser factura?
+   *
+   * El CAE se pide adentro de la transacción de la venta, pero la factura se
+   * crea DESPUÉS: numeración, renglones, commit. Si algo de eso falla —y no
+   * hace falta que se muera el proceso: alcanza con que el commit no entre, o
+   * con que la numeración choque— la factura se deshace y el CAE queda
+   * emitido en AFIP igual.
+   *
+   * Mirar sólo los intentos "sin resolver" no alcanza para eso: ese intento
+   * quedó 'autorizado', o sea resuelto, y nadie lo volvería a mirar. El
+   * reintento pediría el número siguiente y el cliente terminaría con dos
+   * comprobantes fiscales por una venta.
+   *
+   * Por eso lo que define el rescate no es el estado sino la ausencia de
+   * factura.
+   */
+  const yaEmitido = await rescatarSinFactura({ businessId, saleId, esperado, ptoVta: Number(puntoVenta), cbteTipo });
+  if (yaEmitido) return { ...yaEmitido, ambiente };
+
+  const rescatado = await resolverIntentosAbiertos({
+    cli, cert, key, ambiente, cuitEmisor,
+    ptoVta: Number(puntoVenta), cbteTipo, saleId, esperado,
+  });
+  if (rescatado) return { ...rescatado, ambiente };
+
   // Consultar último número + 1
   const ultimo = await cli.feCompUltimoAutorizado({
     cert, key, ambiente, cuitEmisor,
@@ -163,7 +204,6 @@ async function solicitarCAE({ tipo, total, clienteCuit, clienteCondicion, busine
   });
   const numero = ultimo + 1;
 
-  const hoy = new Date().toISOString().slice(0, 10).replace(/-/g, '');
   const condReceptor = condicionIvaReceptorId({ tipo, clienteCuit, clienteCondicion });
   const FeCAEReq = {
     FeCabReq: {
@@ -188,6 +228,16 @@ async function solicitarCAE({ tipo, total, clienteCuit, clienteCondicion, busine
     },
   };
 
+  /*
+   * La fila se escribe ANTES de llamar, y fuera de cualquier transacción de la
+   * venta: si se fuera con un rollback, no serviría para nada — justamente
+   * tiene que sobrevivir a que todo lo demás se caiga.
+   */
+  const intento = await anotarIntento({
+    businessId, saleId, cuitEmisor, ambiente,
+    ptoVta: Number(puntoVenta), cbteTipo, numero, esperado,
+  });
+
   let result;
   let recuperado = false;
   try {
@@ -209,12 +259,23 @@ async function solicitarCAE({ tipo, total, clienteCuit, clienteCondicion, busine
      * llamada que se cortó.
      */
     if (esCorteDeRed(msg)) {
-      const enAfip = await buscarComprobante({
-        cli, cert, key, ambiente, cuitEmisor,
-        ptoVta: Number(puntoVenta), cbteTipo, numero,
-        esperado: { total: Number(total), docNro: FeCAEReq.FeDetReq.FECAEDetRequest.DocNro, fecha: hoy },
-        motivo: msg,
-      });
+      let enAfip;
+      try {
+        enAfip = await buscarComprobante({
+          cli, cert, key, ambiente, cuitEmisor,
+          ptoVta: Number(puntoVenta), cbteTipo, numero,
+          esperado, motivo: msg,
+        });
+      } catch (e) {
+        /*
+         * No se pudo averiguar, o el número está ocupado por otro. En los dos
+         * casos el intento queda ABIERTO como incierto: es lo que hace que la
+         * próxima emisión vuelva a preguntar en vez de numerar sobre algo que
+         * nadie sabe cómo terminó.
+         */
+        await cerrarIntento(intento, { estado: 'incierto', error: e.message, resuelto: false });
+        throw e;
+      }
       if (enAfip) {
         log.warn('arca', 'la conexión se cortó pero AFIP ya lo había autorizado', {
           cuitEmisor, ptoVta: Number(puntoVenta), cbteTipo, numero,
@@ -222,6 +283,7 @@ async function solicitarCAE({ tipo, total, clienteCuit, clienteCondicion, busine
         result = enAfip;
         recuperado = true;
       } else {
+        await cerrarIntento(intento, { estado: 'descartado', error: msg });
         throw Object.assign(
           new Error(`Se cortó la conexión con AFIP y el comprobante ${numero} NO quedó autorizado: se puede reintentar. (${msg})`),
           /*
@@ -243,6 +305,7 @@ async function solicitarCAE({ tipo, total, clienteCuit, clienteCondicion, busine
      */
     if (recuperado) result = result;
     else if (/No aparecio CUIT en lista de relaciones/i.test(msg) || /600.*relaci/i.test(msg)) {
+      await cerrarIntento(intento, { estado: 'descartado', error: msg });
       throw Object.assign(new Error(
         `El CUIT ${cuitEmisor} no tiene delegado el servicio de facturación electrónica a Stocker en AFIP. ` +
         `Andá a Configurar ARCA de este CUIT y seguí el paso 2 (delegar wsfe a Stocker en Administrador de Relaciones AFIP), ` +
@@ -250,14 +313,33 @@ async function solicitarCAE({ tipo, total, clienteCuit, clienteCondicion, busine
       ), { status: 400 });
     }
     else if (/computador no autorizado/i.test(msg)) {
+      await cerrarIntento(intento, { estado: 'descartado', error: msg });
       throw Object.assign(new Error('El certificado de Stocker no está autorizado para wsfe en AFIP. Contactar soporte.'), { status: 502 });
-    } else throw err;
+    } else {
+      /*
+       * AFIP contestó que no. Es una respuesta: el comprobante no existe y ese
+       * número queda libre. Cerrarlo acá evita que la próxima emisión gaste una
+       * consulta para enterarse de algo que ya sabemos.
+       */
+      await cerrarIntento(intento, { estado: 'descartado', error: msg });
+      throw err;
+    }
   }
+
+  await cerrarIntento(intento, {
+    estado: 'autorizado', cae: result.CAE, caeVencimiento: result.CAEFchVto,
+  });
 
   return {
     cae: result.CAE,
     caeVencimiento: result.CAEFchVto,
     numero, puntoVenta: Number(puntoVenta), ambiente,
+    /*
+     * Para que quien guarde la factura pueda dejar anotado que ESTE intento ya
+     * terminó en una factura. Va dentro de su misma transacción: si la factura
+     * se deshace, el vínculo también, y el intento vuelve a quedar rescatable.
+     */
+    intentoId: intento?.id || null,
     /*
      * Queda escrito que este CAE se recuperó y no se pidió.
      *
@@ -268,6 +350,253 @@ async function solicitarCAE({ tipo, total, clienteCuit, clienteCondicion, busine
     recuperado,
     respuesta: { ...result, ambiente, puntoVenta, cbteTipo, numero, ...(recuperado ? { recuperado: true } : {}) },
   };
+}
+
+/**
+ * El CAE de esta venta que nunca llegó a ser factura, si lo hay.
+ *
+ * Se busca por venta y por ausencia de `invoiceId`, no por estado: un intento
+ * 'autorizado' cuya factura se deshizo está resuelto para AFIP y sin terminar
+ * para Stocker, y es justamente el que hay que rescatar.
+ */
+async function rescatarSinFactura({ businessId, saleId, esperado, ptoVta, cbteTipo }) {
+  if (!saleId) return null;
+  const { ArcaIntento } = require('../models');
+  const { Op } = require('sequelize');
+
+  let intento;
+  try {
+    intento = await ArcaIntento.findOne({
+      where: { saleId, invoiceId: null, cae: { [Op.ne]: null } },
+      order: [['id', 'DESC']],
+    });
+  } catch (e) {
+    log.warn('arca', 'no se pudo mirar si la venta ya tenía CAE', { saleId, motivo: e.message });
+    return null;
+  }
+  if (!intento) return null;
+
+  /*
+   * Si el importe cambió, ese CAE ya no es el de lo que se quiere facturar
+   * hoy. Emitir otro sería dejar dos comprobantes fiscales por una venta: la
+   * salida es una nota de crédito y la decide una persona.
+   */
+  const mismoImporte = Math.abs(Number(intento.total) - Number(esperado.total)) < 0.01;
+  if (!mismoImporte) {
+    throw Object.assign(
+      new Error(
+        `Esta venta ya tiene un comprobante autorizado en AFIP por ${intento.total} (punto de venta ${intento.ptoVta}, `
+        + `tipo ${intento.cbteTipo}, número ${intento.numero}) y ahora se quiere facturar ${esperado.total}. `
+        + 'No se emite otro: si el importe cambió, corresponde una nota de crédito.',
+      ),
+      {
+        status: 409, codigo: 'ARCA_YA_FACTURADA', reintentable: false,
+        detalles: {
+          codigo: 'ARCA_YA_FACTURADA', reintentable: false,
+          comprobante: { ptoVta: intento.ptoVta, cbteTipo: intento.cbteTipo, numero: intento.numero, importe: Number(intento.total) },
+        },
+      },
+    );
+  }
+
+  log.warn('arca', 'la venta ya tenía un CAE sin factura: se reusa en vez de emitir otro', {
+    saleId, numero: intento.numero, ptoVta: intento.ptoVta,
+  });
+  return {
+    cae: intento.cae,
+    caeVencimiento: intento.caeVencimiento,
+    numero: intento.numero,
+    puntoVenta: intento.ptoVta,
+    recuperado: true,
+    intentoId: intento.id,
+    respuesta: {
+      CAE: intento.cae, CAEFchVto: intento.caeVencimiento,
+      puntoVenta: intento.ptoVta, cbteTipo: intento.cbteTipo, numero: intento.numero,
+      recuperado: true, sinFacturaPrevia: true,
+    },
+  };
+}
+
+/*
+ * ══ Los intentos: la memoria de lo que se le pidió a AFIP ════════
+ *
+ * Todo esto existe para un solo caso: que el proceso se muera entre el pedido
+ * del CAE y su respuesta. Adentro de una misma llamada el rescate ya funciona
+ * sin la tabla; lo que la tabla agrega es sobrevivir a un deploy.
+ */
+
+/*
+ * Cuánto se espera antes de tocar un intento de otra instancia.
+ *
+ * El pedido a AFIP corta a los 30 segundos. Un intento 'en_curso' más nuevo
+ * que esto puede estar corriendo AHORA en otra instancia —Railway puede tener
+ * más de una—, y darlo por descartado mientras todavía está vivo es escribir
+ * que un número quedó libre cuando en un rato va a estar autorizado.
+ */
+const EN_VUELO_MS = 90_000;
+
+async function anotarIntento({ businessId, saleId, cuitEmisor, ambiente, ptoVta, cbteTipo, numero, esperado }) {
+  const { ArcaIntento } = require('../models');
+  try {
+    return await ArcaIntento.create({
+      businessId: businessId || 0, saleId: saleId || null,
+      cuitEmisor, ambiente, ptoVta, cbteTipo, numero,
+      total: esperado.total, docNro: String(esperado.docNro || ''), fecha: esperado.fecha,
+      estado: 'en_curso',
+    });
+  } catch (e) {
+    /*
+     * Si no se pudo anotar, se factura igual.
+     *
+     * Esto es una red de seguridad para un caso raro; dejar a un negocio sin
+     * poder facturar porque la red no se pudo escribir sería cambiar un
+     * problema improbable por uno seguro. Queda en el log.
+     */
+    log.warn('arca', 'no se pudo anotar el intento de CAE', { cuitEmisor, numero, motivo: e.message });
+    return null;
+  }
+}
+
+async function cerrarIntento(intento, { estado, cae = null, caeVencimiento = null, error = null, resuelto = true }) {
+  if (!intento) return;
+  try {
+    await intento.update({
+      estado,
+      cae, caeVencimiento,
+      error: error ? String(error).slice(0, 500) : null,
+      resueltoEn: resuelto ? new Date() : null,
+    });
+  } catch (e) {
+    log.warn('arca', 'no se pudo cerrar el intento de CAE', { id: intento.id, motivo: e.message });
+  }
+}
+
+/**
+ * Resuelve lo que quedó abierto de emisiones anteriores.
+ *
+ * Devuelve el CAE ya emitido cuando el intento abierto era de ESTA venta y
+ * AFIP lo tiene autorizado — ahí no hay nada nuevo que emitir, la venta ya
+ * está facturada y lo único que faltaba era enterarse.
+ *
+ * Con un intento abierto de OTRA venta que no se puede resolver, NO se frena:
+ * queda anotado como incierto y la emisión de ahora sigue. Frenar sería dejar
+ * a un negocio entero sin facturar por una factura ajena que quedó a medias, y
+ * el número de esta emisión no depende de eso: sale de preguntarle a AFIP cuál
+ * fue el último autorizado, que ya refleja la realidad.
+ */
+async function resolverIntentosAbiertos({ cli, cert, key, ambiente, cuitEmisor, ptoVta, cbteTipo, saleId, esperado }) {
+  const { ArcaIntento } = require('../models');
+  const { Op } = require('sequelize');
+
+  let abiertos;
+  try {
+    abiertos = await ArcaIntento.findAll({
+      where: { cuitEmisor, ambiente, ptoVta, cbteTipo, estado: { [Op.in]: ['en_curso', 'incierto'] } },
+      order: [['id', 'ASC']],
+      limit: 20,
+    });
+  } catch (e) {
+    log.warn('arca', 'no se pudieron leer los intentos abiertos', { cuitEmisor, motivo: e.message });
+    return null;
+  }
+
+  for (const intento of abiertos) {
+    const esDeEstaVenta = Boolean(saleId) && Number(intento.saleId) === Number(saleId);
+    const edad = Date.now() - new Date(intento.createdAt || Date.now()).getTime();
+
+    /*
+     * Todavía puede estar corriendo. Si es de esta misma venta, alguien está
+     * facturándola en este momento —dos pantallas, doble clic— y seguir sería
+     * pedir dos CAE para la misma venta.
+     */
+    if (intento.estado === 'en_curso' && edad < EN_VUELO_MS) {
+      if (esDeEstaVenta) {
+        throw Object.assign(
+          new Error('Esta venta se está facturando en este momento. Esperá unos segundos y mirá si ya quedó emitida antes de volver a intentar.'),
+          { status: 409, codigo: 'ARCA_EN_CURSO', detalles: { codigo: 'ARCA_EN_CURSO' } },
+        );
+      }
+      continue;
+    }
+
+    let enAfip;
+    try {
+      enAfip = await cli.feCompConsultar({
+        cert, key, ambiente, cuitEmisor,
+        PtoVta: ptoVta, CbteTipo: cbteTipo, CbteNro: intento.numero,
+      });
+    } catch (e) {
+      await cerrarIntento(intento, { estado: 'incierto', error: e.message, resuelto: false });
+      if (!esDeEstaVenta) {
+        log.warn('arca', 'quedó un intento sin resolver de otra venta', {
+          cuitEmisor, ptoVta, numero: intento.numero, motivo: e.message,
+        });
+        continue;
+      }
+      throw Object.assign(
+        new Error(
+          `Un intento anterior de facturar esta venta quedó sin resolver y AFIP no contesta la consulta (${e.message}). `
+          + `NO se emite de nuevo para no duplicarla: mirá en AFIP el punto de venta ${ptoVta}, tipo ${cbteTipo}, número ${intento.numero}.`,
+        ),
+        {
+          status: 503, codigo: 'ARCA_INCIERTO', reintentable: false,
+          detalles: { codigo: 'ARCA_INCIERTO', reintentable: false, comprobante: { ptoVta, cbteTipo, numero: intento.numero } },
+        },
+      );
+    }
+
+    if (!enAfip) {
+      await cerrarIntento(intento, { estado: 'descartado', error: 'AFIP no tiene ese comprobante.' });
+      continue;
+    }
+
+    await cerrarIntento(intento, {
+      estado: 'autorizado', cae: enAfip.CAE, caeVencimiento: enAfip.CAEFchVto,
+    });
+    if (!esDeEstaVenta) continue;
+
+    /*
+     * Era de esta venta y AFIP lo tiene: la venta YA está facturada.
+     *
+     * Si el importe o el documento cambiaron desde aquel intento, el
+     * comprobante autorizado ya no es el que se quiere emitir hoy — y eso no
+     * se arregla emitiendo otro: hay una factura fiscal por el importe viejo y
+     * la salida es una nota de crédito, que la decide una persona.
+     */
+    const mismoImporte = Math.abs(Number(enAfip.ImpTotal) - Number(esperado.total)) < 0.01;
+    const mismoDoc = String(enAfip.DocNro || 0) === String(Number(esperado.docNro) || 0);
+    if (!mismoImporte || !mismoDoc) {
+      throw Object.assign(
+        new Error(
+          `Esta venta ya tiene un comprobante autorizado en AFIP (punto de venta ${ptoVta}, tipo ${cbteTipo}, `
+          + `número ${intento.numero}, importe ${enAfip.ImpTotal}), y no coincide con lo que se quiere facturar ahora `
+          + `(${esperado.total}). No se emite otro: si el importe cambió, corresponde una nota de crédito.`,
+        ),
+        {
+          status: 409, codigo: 'ARCA_YA_FACTURADA', reintentable: false,
+          detalles: {
+            codigo: 'ARCA_YA_FACTURADA', reintentable: false,
+            comprobante: { ptoVta, cbteTipo, numero: intento.numero, importe: Number(enAfip.ImpTotal) },
+          },
+        },
+      );
+    }
+
+    log.warn('arca', 'la venta ya estaba autorizada por un intento anterior', {
+      cuitEmisor, ptoVta, cbteTipo, numero: intento.numero, saleId,
+    });
+    return {
+      cae: enAfip.CAE,
+      caeVencimiento: enAfip.CAEFchVto,
+      numero: intento.numero,
+      puntoVenta: ptoVta,
+      recuperado: true,
+      intentoId: intento.id,
+      respuesta: { ...enAfip, puntoVenta: ptoVta, cbteTipo, numero: intento.numero, recuperado: true },
+    };
+  }
+
+  return null;
 }
 
 /*

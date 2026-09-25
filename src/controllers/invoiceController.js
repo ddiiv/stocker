@@ -1,7 +1,7 @@
 const path = require('path');
 const fse = require('fs-extra');
 const sequelize = require('../config/database');
-const { Invoice, InvoiceItem, Sale, SaleItem, Business, Client, BusinessCuit, BusinessArcaConfig, SalePayment } = require('../models');
+const { Invoice, InvoiceItem, Sale, SaleItem, Business, Client, BusinessCuit, BusinessArcaConfig, SalePayment, ArcaIntento } = require('../models');
 const { nextInvoiceNumber, crearConNumero } = require('../services/invoiceNumberService');
 const { tipoComprobante, solicitarCAE, determineInvoiceType, calcularIVA } = require('../services/arcaService');
 const { lookupCuit } = require('../services/arcaLookupService');
@@ -248,13 +248,23 @@ const createInvoice = async (req, res, next) => {
     // La config del emisor ya se leyó arriba para decidir la letra.
     const arcaConfig = configEmisor;
     const ambienteArca = arcaConfig?.ambiente === 'produccion' ? 'produccion' : 'homologacion';
-    const { cae, caeVencimiento, respuesta: arcaRespuesta } = await solicitarCAE({
+    const { cae, caeVencimiento, respuesta: arcaRespuesta, intentoId } = await solicitarCAE({
       tipo, total: totalAFacturar, clienteCuit: finalCuit,
       clienteCondicion: condicionReceptor,
       businessCuit: emisorCuit,
       puntoVenta: arcaConfig?.puntoVenta || null,
       ambiente:   ambienteArca,
       items: sale.items,
+      /*
+       * De quién es el CAE que se está pidiendo. Con esto, si el CAE sale y la
+       * factura no llega a guardarse —cualquier cosa que falle entre acá y el
+       * commit deshace el INSERT, con el comprobante ya emitido en AFIP—, el
+       * próximo intento de facturar esta venta encuentra ese CAE y lo reusa en
+       * vez de pedir otro. Sin esto quedan dos comprobantes fiscales por una
+       * venta, y eso no se corrige después.
+       */
+      businessId: req.auth.businessId,
+      saleId: sale.id,
     });
 
     /*
@@ -347,6 +357,19 @@ const createInvoice = async (req, res, next) => {
     }
 
     await InvoiceItem.bulkCreate(invoiceItems, { transaction: t });
+
+    /*
+     * El intento queda atado a la factura, DENTRO de esta transacción.
+     *
+     * Es lo que cierra el circuito: mientras el vínculo no exista, ese CAE
+     * cuenta como emitido y sin registrar, y el próximo intento de facturar la
+     * venta lo reusa. Si esta transacción se deshace, el vínculo se deshace
+     * con ella y el CAE vuelve a quedar disponible para rescatar — que es
+     * exactamente lo que se quiere.
+     */
+    if (intentoId) {
+      await ArcaIntento.update({ invoiceId: invoice.id }, { where: { id: intentoId }, transaction: t });
+    }
 
     await t.commit();
 

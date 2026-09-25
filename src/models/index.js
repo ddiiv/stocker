@@ -390,6 +390,87 @@ const ArcaToken = db.define('ArcaToken', {
   expiraEn:  { type: DataTypes.DATE, allowNull: false },
 }, { tableName: 'arca_tokens' });
 
+/*
+ * Cada vez que se le pide un CAE a AFIP, anotado ANTES de pedirlo.
+ *
+ * Existe por una sola razón, y es la peor que hay en facturación: si el
+ * proceso se muere entre el pedido y la respuesta —un deploy justo ahí, un
+ * OOM—, nadie sabe si AFIP autorizó el comprobante. El número siguiente se
+ * calcula preguntándole a AFIP cuál fue el último autorizado, así que un
+ * reintento a ciegas pide el SIGUIENTE, y el cliente termina con dos
+ * comprobantes fiscales por una venta. Eso no se corrige después.
+ *
+ * Con la fila escrita antes, el reintento encuentra el número que se había
+ * intentado y puede preguntarle a AFIP qué pasó con ÉSE.
+ *
+ * ── Por qué no hay índice único sobre el número ──────────────────
+ *
+ * Un intento descartado —AFIP no lo tenía— y su reintento piden exactamente
+ * el mismo número: es lo correcto y con un único chocarían. Lo que evita el
+ * duplicado no es un índice, es resolver los intentos abiertos antes de
+ * emitir.
+ */
+const ArcaIntento = db.define('ArcaIntento', {
+  id:         { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
+  businessId: { type: DataTypes.INTEGER, allowNull: false },
+  // Qué venta lo pidió. Es lo que permite devolverle SU CAE al reintento.
+  saleId:     { type: DataTypes.INTEGER, allowNull: true },
+  cuitEmisor: { type: DataTypes.STRING(11), allowNull: false },
+  ambiente:   { type: DataTypes.STRING(20), allowNull: false },
+  ptoVta:     { type: DataTypes.INTEGER, allowNull: false },
+  cbteTipo:   { type: DataTypes.INTEGER, allowNull: false },
+  numero:     { type: DataTypes.INTEGER, allowNull: false },
+
+  /*
+   * Con qué se pidió. Sirve para reconocerlo en AFIP: si el número está
+   * ocupado por otro importe u otro documento, ese comprobante no es éste y
+   * adoptar su CAE sería pegarle nuestra venta a la factura de otro.
+   */
+  total:      { type: DataTypes.DECIMAL(12, 2), allowNull: true },
+  // Hasta once dígitos: no entra en un entero de 32 bits.
+  docNro:     { type: DataTypes.STRING(20), allowNull: true },
+  fecha:      { type: DataTypes.STRING(8), allowNull: true },   // CbteFch, AAAAMMDD
+
+  /*
+   * en_curso   → se pidió y todavía no se sabe. Es el estado peligroso.
+   * autorizado → AFIP lo autorizó; `cae` tiene el que vale.
+   * descartado → AFIP no lo tiene: ese número quedó libre y se puede reintentar.
+   * incierto   → no se pudo averiguar. Lo tiene que mirar una persona.
+   */
+  estado:     { type: DataTypes.STRING(12), allowNull: false, defaultValue: 'en_curso' },
+  /*
+   * La factura que quedó guardada con este CAE, o null.
+   *
+   * Es el campo que de verdad cierra el circuito, y la diferencia importa:
+   * `estado: 'autorizado'` dice lo que hizo AFIP; `invoiceId` dice lo que
+   * quedó registrado de este lado.
+   *
+   * El CAE se pide adentro de la transacción de la venta, pero la factura se
+   * crea DESPUÉS —numeración, renglones, commit—, y cualquier cosa que falle
+   * ahí la deshace. Con el CAE ya emitido. Si el rescate mirara el estado,
+   * ese comprobante autorizado y sin factura no lo volvería a mirar nadie, y
+   * el reintento pediría el número siguiente: dos comprobantes fiscales por
+   * una venta, que es exactamente lo que esta tabla viene a impedir.
+   *
+   * Se escribe DENTRO de la transacción que crea la factura, a propósito: si
+   * la factura se deshace, el vínculo también, y el intento vuelve a quedar
+   * disponible para rescatar.
+   */
+  invoiceId:  { type: DataTypes.INTEGER, allowNull: true },
+  cae:        { type: DataTypes.STRING(20), allowNull: true },
+  caeVencimiento: { type: DataTypes.STRING(10), allowNull: true },
+  error:      { type: DataTypes.STRING(500), allowNull: true },
+  resueltoEn: { type: DataTypes.DATE, allowNull: true },
+}, {
+  tableName: 'arca_intentos',
+  indexes: [
+    // Por donde se busca al empezar una emisión: los abiertos de ese punto de venta.
+    { name: 'ix_arca_intento_abierto', fields: ['cuitEmisor', 'ambiente', 'ptoVta', 'cbteTipo', 'estado'] },
+    { name: 'ix_arca_intento_venta', fields: ['businessId', 'saleId'] },
+    { name: 'ix_arca_intento_sin_factura', fields: ['saleId', 'invoiceId'] },
+  ],
+});
+
 /* ═══════════════════════════════════════════════════════════════════
  * Lista de espera de venta online
  *
@@ -1991,6 +2072,7 @@ module.exports = {
   db,
   Plan, Subscription, SubscriptionPayment, PlatformAdmin, PlatformSetting, AuthAttempt,
   Business, BusinessLocation, BusinessCuit, BusinessArcaConfig, ArcaToken, VariantType, VariantStock,
+  ArcaIntento,
   MercadoLibreAccount,
   JumpsellerAccount, MercadoLibreLink, MercadoLibreMensaje, MercadoLibreReclamo,
   PedidoPlataforma, PedidoPlataformaItem,
