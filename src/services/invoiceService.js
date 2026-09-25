@@ -33,6 +33,23 @@ export async function voidInvoice(id) {
   return data;
 }
 
+/*
+ * La nota de crédito: la única forma de revertir una factura con CAE.
+ *
+ * El comprobante original sigue existiendo en AFIP —eso no se puede
+ * deshacer—; la nota es otro comprobante que lo compensa.
+ */
+export async function emitirNotaDeCredito(id, { motivo, total = null, clase = "nota_credito" } = {}) {
+  const { data } = await http.post(`/invoices/${id}/nota-credito`, { motivo, total, clase });
+  return data;
+}
+
+/* Cuánto de una factura todavía se puede acreditar. */
+export async function fetchSaldoDeNotas(id) {
+  const { data } = await http.get(`/invoices/${id}/saldo-notas`);
+  return data;
+}
+
 // Descarga el PDF de la factura. La cookie de sesión viaja sola en el
 // request, así que no hace falta pasar el token por la URL.
 export async function downloadInvoicePdf(invoice) {

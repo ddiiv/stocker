@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
-import { Receipt, XCircle, Download, Filter } from "lucide-react";
+import { Receipt, XCircle, Download, Filter, Undo2 } from "lucide-react";
 import { fetchInvoices, fetchReceipts, voidInvoice, downloadInvoicePdf } from "../services/invoiceService";
+import NotaCreditoModal from "../components/billing/NotaCreditoModal";
 import { mensajeDeError } from "../utils/errores";
 import { formatCurrency, formatDate } from "../utils/formatters";
 import { PageHeader, EmptyState } from "../components/ui/Layout";
@@ -8,11 +9,28 @@ import BillingTabs from "../components/billing/BillingTabs";
 import { rangoDe, etiquetaDe } from "../utils/periodos";
 import { FiltroPeriodo, ResumenFiltro, DatoResumen } from "../components/ui/Filtros";
 
+/* Cómo se llama cada comprobante en la lista. */
+const NOMBRE_CLASE = {
+  factura: "Factura",
+  nota_credito: "Nota de crédito",
+  nota_debito: "Nota de débito",
+};
+
+/*
+ * Si el comprobante existe de verdad en ARCA.
+ *
+ * Es lo que decide si se puede "anular" acá o si hace falta una nota de
+ * crédito. Un CAE de homologación o uno simulado se ven iguales que uno real y
+ * no existen en AFIP: esos sí se pueden limpiar.
+ */
+const esFiscal = (inv) => Boolean(inv.cae) && inv.ambiente === "produccion" && !inv.simulado;
+
 export default function BillingPage() {
   const [tab, setTab] = useState("facturas");
   const [invoices, setInvoices] = useState([]);
   const [receipts, setReceipts] = useState([]);
   const [resumen, setResumen] = useState(null);
+  const [paraAcreditar, setParaAcreditar] = useState(null);
   const [loading, setLoading] = useState(true);
   const [periodo, setPeriodo] = useState("");
   const [error, setError] = useState("");
@@ -59,6 +77,12 @@ export default function BillingPage() {
 
   return (
     <div>
+      <NotaCreditoModal
+        open={Boolean(paraAcreditar)}
+        factura={paraAcreditar}
+        onClose={() => setParaAcreditar(null)}
+        onEmitida={() => load()}
+      />
       <PageHeader
         title="Facturación"
         subtitle="Facturas para ARCA generadas desde pedidos pagos, y sus recibos asociados"
@@ -84,9 +108,28 @@ export default function BillingPage() {
           <DatoResumen rotulo="Emitidas" valor={resumen.emitidas} />
           <DatoResumen
             rotulo="Facturado"
-            valor={formatCurrency(resumen.totalEmitido)}
-            destacado
+            valor={formatCurrency(resumen.facturado ?? resumen.totalEmitido)}
             nota={periodo ? etiquetaDe(periodo) : "desde siempre"}
+          />
+          {/*
+            * Lo acreditado y el neto van al lado del facturado, no escondidos.
+            * Una nota de crédito no es una factura menos: la factura sigue
+            * existiendo en el libro y lo devuelto se resta aparte. Mostrar sólo
+            * uno de los dos números es la forma más fácil de que las cuentas no
+            * cierren con el contador.
+            */}
+          {resumen.acreditado > 0 && (
+            <DatoResumen
+              rotulo="Acreditado"
+              valor={formatCurrency(resumen.acreditado)}
+              nota="notas de crédito"
+            />
+          )}
+          <DatoResumen
+            rotulo="Neto"
+            valor={formatCurrency(resumen.neto ?? resumen.totalEmitido)}
+            destacado
+            nota="facturado menos notas"
           />
           {resumen.anuladas > 0 && (
             <DatoResumen
@@ -163,7 +206,13 @@ export default function BillingPage() {
                   <tr key={inv.id} className="border-b border-line last:border-0 hover:bg-paper-100/70">
                     <td className="px-4 py-3 font-mono text-xs text-ink-900">{inv.numero}</td>
                     <td className="px-4 py-3">
-                      <span className="tag-chip">Factura {inv.tipo}</span>
+                      {/*
+                        * Qué comprobante es, no sólo su letra: una nota de
+                        * crédito B y una factura B se veían exactamente igual.
+                        */}
+                      <span className={`tag-chip ${inv.clase && inv.clase !== "factura" ? "bg-brass-50 text-brass-700" : ""}`}>
+                        {NOMBRE_CLASE[inv.clase] || "Factura"} {inv.tipo}
+                      </span>
                     </td>
                     <td className="px-4 py-3 text-ink-700">{formatDate(inv.fechaEmision?.slice(0, 10))}</td>
                     <td className="px-4 py-3 text-ink-700">
@@ -224,8 +273,24 @@ export default function BillingPage() {
                         >
                           <Download size={14} />
                         </button>
-                        {inv.estado === "emitida" && (
-                          <button className="btn-ghost px-2 py-1.5" title="Anular" onClick={() => handleVoid(inv.id)}>
+                        {/*
+                          * Un comprobante fiscal no se anula marcándolo acá:
+                          * existe en ARCA. Para esos el botón es la nota de
+                          * crédito, que es la única salida real. "Anular" queda
+                          * para lo que no es fiscal —homologación y simulados—,
+                          * que es lo único que se puede limpiar de verdad.
+                          */}
+                        {inv.estado === "emitida" && (inv.clase || "factura") === "factura" && esFiscal(inv) && (
+                          <button
+                            className="btn-ghost px-2 py-1.5"
+                            title="Emitir nota de crédito"
+                            onClick={() => setParaAcreditar(inv)}
+                          >
+                            <Undo2 size={14} />
+                          </button>
+                        )}
+                        {inv.estado === "emitida" && !esFiscal(inv) && (
+                          <button className="btn-ghost px-2 py-1.5" title="Anular (comprobante de prueba)" onClick={() => handleVoid(inv.id)}>
                             <XCircle size={14} />
                           </button>
                         )}
