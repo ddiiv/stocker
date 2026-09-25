@@ -420,6 +420,15 @@ r.get('/arca/cuit/:cuit', requireAuth, requireAnyPermission(['clientes', 'factur
 
 // ── ARCA / config por CUIT del negocio ───────────────────────────
 r.get ('/arca/status',                  requireAuth, requirePermission('facturacion','ver'), arcaConfigCtrl.status);
+/*
+ * Los pedidos de CAE que quedaron sin resolver.
+ *
+ * Es lo único del circuito que una máquina no puede cerrar sola: cuando no se
+ * pudo averiguar si AFIP autorizó un comprobante, reintentar a ciegas es
+ * exactamente cómo se duplica una factura. Lo mira una persona.
+ */
+r.get ('/arca/intentos',                requireAuth, requirePermission('facturacion','ver'),    arcaConfigCtrl.intentosPendientes);
+r.post('/arca/intentos/:id/resolver',   requireAuth, requirePermission('facturacion','editar'), arcaConfigCtrl.resolverIntentoPendiente);
 // Expone CUIT de Stocker y rutas de certificados: sólo el dueño.
 r.get ('/arca/debug',                   requireAuth, requireOwner, arcaConfigCtrl.debug);
 r.get ('/arca/cuits/:cuitId/config',    requireAuth, requirePermission('facturacion','ver'), arcaConfigCtrl.getConfig);

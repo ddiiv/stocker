@@ -170,4 +170,29 @@ const debug = async (req, res) => {
   }
 };
 
-module.exports = { getConfig, saveConfig, verifyDelegation, status, debug };
+/*
+ * GET /api/arca/intentos — lo que quedó a medias y necesita una persona.
+ *
+ * Son los pedidos de CAE de los que no se pudo averiguar el final. El rescate
+ * automático resuelve el resto solo; estos no puede, porque reintentar sin
+ * saber es exactamente cómo se duplica una factura.
+ */
+const intentosPendientes = async (req, res, next) => {
+  try {
+    res.json(await arcaService.intentosSinResolver({ businessId: req.auth.businessId }));
+  } catch (e) { next(e); }
+};
+
+/* POST /api/arca/intentos/:id/resolver — volver a preguntarle a AFIP. */
+const resolverIntentoPendiente = async (req, res, next) => {
+  try {
+    res.json(await arcaService.resolverIntento({
+      businessId: req.auth.businessId, id: Number(req.params.id),
+    }));
+  } catch (e) { next(e); }
+};
+
+module.exports = {
+  getConfig, saveConfig, verifyDelegation, status, debug,
+  intentosPendientes, resolverIntentoPendiente,
+};

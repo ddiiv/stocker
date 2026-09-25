@@ -227,6 +227,24 @@ async function solicitarCAE({
   const yaEmitido = await rescatarSinFactura({ businessId, saleId, esperado, ptoVta: Number(puntoVenta), cbteTipo });
   if (yaEmitido) return { ...yaEmitido, ambiente };
 
+  /*
+   * Si ARCA viene cayéndose, no se le pregunta: se contesta rápido.
+   *
+   * Va DESPUÉS del rescate —lo que ya quedó a medias hay que resolverlo igual—
+   * pero antes de numerar y de anotar un intento nuevo, que es lo que llenaría
+   * la tabla de pendientes durante una caída.
+   */
+  const espera = descansando(ambiente);
+  if (espera > 0) {
+    throw Object.assign(
+      new Error(`ARCA no está respondiendo. Probá de nuevo en ${Math.ceil(espera / 1000)} segundos: no se emitió nada.`),
+      {
+        status: 503, codigo: 'ARCA_CAIDO', reintentable: true,
+        detalles: { codigo: 'ARCA_CAIDO', reintentable: true, segundos: Math.ceil(espera / 1000) },
+      },
+    );
+  }
+
   const rescatado = await resolverIntentosAbiertos({
     cli, cert, key, ambiente, cuitEmisor,
     ptoVta: Number(puntoVenta), cbteTipo, saleId, esperado,
@@ -314,6 +332,7 @@ async function solicitarCAE({
      * llamada que se cortó.
      */
     if (esCorteDeRed(msg)) {
+      anotarCorte(ambiente);
       let enAfip;
       try {
         enAfip = await buscarComprobante({
@@ -371,6 +390,8 @@ async function solicitarCAE({
       await cerrarIntento(intento, { estado: 'descartado', error: msg });
       throw Object.assign(new Error('El certificado de Stocker no está autorizado para wsfe en AFIP. Contactar soporte.'), { status: 502 });
     } else {
+      // Contestó, aunque haya sido que no: está en pie.
+      anotarRespuesta(ambiente);
       /*
        * AFIP contestó que no. Es una respuesta: el comprobante no existe y ese
        * número queda libre. Cerrarlo acá evita que la próxima emisión gaste una
@@ -381,6 +402,7 @@ async function solicitarCAE({
     }
   }
 
+  anotarRespuesta(ambiente);
   await cerrarIntento(intento, {
     estado: 'autorizado', cae: result.CAE, caeVencimiento: result.CAEFchVto,
   });
@@ -411,6 +433,171 @@ async function solicitarCAE({
      */
     recuperado,
     respuesta: { ...result, ambiente, puntoVenta, cbteTipo, numero, ...(recuperado ? { recuperado: true } : {}) },
+  };
+}
+
+/*
+ * ══ Cuando ARCA se cae ═══════════════════════════════════════════
+ *
+ * AFIP se cae seguido, y cuando se cae el pedido no falla: se cuelga hasta el
+ * timeout de 30 segundos. Con una cola de facturas eso es medio minuto de
+ * espera por cada una, todas fallando igual, y un intento anotado por cada
+ * una que después hay que mirar.
+ *
+ * Después de unos cuantos cortes seguidos se deja de preguntar por un rato y
+ * se contesta rápido. No es una optimización: es la diferencia entre "ARCA no
+ * responde, probá en un minuto" —que se entiende y se puede esperar— y una
+ * pantalla trabada medio minuto que al final dice lo mismo.
+ */
+const CORTES_PARA_ABRIR = 3;
+const DESCANSO_MS = 60_000;
+const cortes = new Map();   // ambiente → { seguidos, hasta }
+
+function anotarCorte(ambiente) {
+  const est = cortes.get(ambiente) || { seguidos: 0, hasta: 0 };
+  est.seguidos += 1;
+  if (est.seguidos >= CORTES_PARA_ABRIR) {
+    est.hasta = Date.now() + DESCANSO_MS;
+    log.warn('arca', 'se deja de consultar a AFIP por un rato', {
+      ambiente, cortesSeguidos: est.seguidos, segundos: DESCANSO_MS / 1000,
+    });
+  }
+  cortes.set(ambiente, est);
+}
+
+/* Cualquier respuesta de AFIP —incluso un rechazo— significa que está en pie. */
+function anotarRespuesta(ambiente) {
+  if (cortes.has(ambiente)) cortes.delete(ambiente);
+}
+
+function descansando(ambiente) {
+  const est = cortes.get(ambiente);
+  if (!est?.hasta) return 0;
+  const faltan = est.hasta - Date.now();
+  if (faltan <= 0) {
+    /*
+     * Se terminó el descanso: se deja pasar UNA para ver si volvió. Si vuelve
+     * a cortarse, el contador ya está en el tope y se abre de nuevo enseguida.
+     */
+    est.hasta = 0;
+    est.seguidos = CORTES_PARA_ABRIR - 1;
+    cortes.set(ambiente, est);
+    return 0;
+  }
+  return faltan;
+}
+
+/*
+ * ══ Lo que quedó a medias y necesita una persona ═════════════════
+ *
+ * El rescate automático resuelve casi todo solo, pero hay un final que no
+ * puede: cuando no se pudo averiguar qué pasó con un comprobante. Eso queda
+ * 'incierto' y ahí se termina lo que una máquina puede decidir — reintentar a
+ * ciegas es exactamente cómo se duplica una factura.
+ *
+ * Hasta ahora esos intentos no se veían en ningún lado. Un problema que sólo
+ * existe en una tabla es un problema que nadie va a resolver.
+ */
+
+/* Un 'en_curso' más viejo que esto ya no es una emisión en vuelo: se colgó. */
+const COLGADO_MS = 10 * 60_000;
+
+async function intentosSinResolver({ businessId = null, limite = 100 } = {}) {
+  const { ArcaIntento, Business } = require('../models');
+  const { Op } = require('sequelize');
+
+  const where = {
+    [Op.or]: [
+      { estado: 'incierto' },
+      { estado: 'en_curso', createdAt: { [Op.lt]: new Date(Date.now() - COLGADO_MS) } },
+    ],
+  };
+  if (businessId) where.businessId = businessId;
+
+  const filas = await ArcaIntento.findAll({
+    where, order: [['id', 'DESC']], limit: Math.min(Number(limite) || 100, 300),
+  });
+  if (!filas.length) return { intentos: [] };
+
+  /*
+   * Si la venta terminó facturada, el intento ya no importa: alguien reintentó
+   * y salió bien. Se muestra igual, pero dicho — así se puede cerrar sin
+   * ponerse a mirar AFIP.
+   */
+  const { Invoice } = require('../models');
+  const ventas = [...new Set(filas.map((f) => f.saleId).filter(Boolean))];
+  const facturadas = ventas.length
+    ? await Invoice.findAll({ where: { saleId: ventas, clase: 'factura' }, attributes: ['saleId', 'numero'] })
+    : [];
+  const porVenta = new Map(facturadas.map((i) => [i.saleId, i.numero]));
+
+  const negocios = businessId ? [] : await Business.findAll({
+    where: { id: [...new Set(filas.map((f) => f.businessId))] },
+    attributes: ['id', 'nombreNegocio'],
+  });
+  const porNegocio = new Map(negocios.map((n) => [n.id, n.nombreNegocio]));
+
+  return {
+    intentos: filas.map((f) => ({
+      id: f.id,
+      businessId: f.businessId,
+      negocio: porNegocio.get(f.businessId) || null,
+      saleId: f.saleId,
+      /* Dónde buscarlo en AFIP: los tres datos, juntos. */
+      comprobante: { cuitEmisor: f.cuitEmisor, ambiente: f.ambiente, ptoVta: f.ptoVta, cbteTipo: f.cbteTipo, numero: f.numero },
+      total: Number(f.total),
+      estado: f.estado,
+      error: f.error,
+      desde: f.createdAt,
+      /* La venta ya tiene factura: este intento quedó viejo y se puede cerrar. */
+      ventaYaFacturada: f.saleId ? (porVenta.get(f.saleId) || null) : null,
+    })),
+  };
+}
+
+/**
+ * Vuelve a preguntarle a AFIP por un intento que quedó sin resolver.
+ *
+ * Es lo mismo que hace el rescate automático, pero a pedido: sirve para cuando
+ * AFIP volvió y alguien quiere cerrar el pendiente sin esperar a que se emita
+ * otra factura de ese punto de venta.
+ */
+async function resolverIntento({ businessId, id }) {
+  const { ArcaIntento } = require('../models');
+  const intento = await ArcaIntento.findOne({ where: { id, ...(businessId ? { businessId } : {}) } });
+  if (!intento) throw Object.assign(new Error('Ese intento no existe.'), { status: 404 });
+  if (!['incierto', 'en_curso'].includes(intento.estado)) {
+    return { estado: intento.estado, sinCambios: true };
+  }
+  if (isMock) return { estado: intento.estado, omitido: 'mock' };
+
+  const { cert, key } = loadCert(intento.ambiente);
+  const cli = loadClient();
+  let enAfip;
+  try {
+    enAfip = await cli.feCompConsultar({
+      cert, key, ambiente: intento.ambiente, cuitEmisor: intento.cuitEmisor,
+      PtoVta: intento.ptoVta, CbteTipo: intento.cbteTipo, CbteNro: intento.numero,
+    });
+  } catch (e) {
+    await cerrarIntento(intento, { estado: 'incierto', error: e.message, resuelto: false });
+    throw Object.assign(
+      new Error(`AFIP sigue sin contestar la consulta (${e.message}). El intento queda pendiente.`),
+      { status: 503, detalles: { codigo: 'ARCA_INCIERTO' } },
+    );
+  }
+
+  if (!enAfip) {
+    await cerrarIntento(intento, { estado: 'descartado', error: 'AFIP no tiene ese comprobante.' });
+    return { estado: 'descartado', mensaje: 'AFIP no tiene ese comprobante: el número quedó libre y se puede volver a facturar.' };
+  }
+
+  await cerrarIntento(intento, { estado: 'autorizado', cae: enAfip.CAE, caeVencimiento: enAfip.CAEFchVto });
+  return {
+    estado: 'autorizado',
+    cae: enAfip.CAE,
+    mensaje: `AFIP lo tiene autorizado con el CAE ${enAfip.CAE}. Si la venta no quedó facturada, `
+      + 'al facturarla se va a reusar este CAE en vez de emitir otro.',
   };
 }
 
@@ -1114,6 +1301,8 @@ module.exports = {
   solicitarCAE, determineInvoiceType, calcularIVA,
   CBTE_TIPO, CLASES, tipoDeComprobante,
   checkStatus, verifyDelegation, debugConfig,
+  intentosSinResolver, resolverIntento,
+  __cortes: { anotarCorte, anotarRespuesta, descansando, CORTES_PARA_ABRIR, DESCANSO_MS },
   sincronizarDelegaciones,
   sincronizarTodasLasDelegaciones,
 };

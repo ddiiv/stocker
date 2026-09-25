@@ -356,6 +356,77 @@ const fallo = async (fn) => { try { await fn(); return null; } catch (e) { retur
   chk('y queda anotado como incierto para que alguien lo mire', 'incierto',
     (await intentos()).find((i) => i.saleId === 999)?.estado);
 
+
+  await limpiar();
+  tit('10. CUANDO ARCA SE CAE');
+  /*
+   * AFIP se cae seguido y el pedido no falla: se cuelga hasta el timeout. Con
+   * una cola de facturas eso es medio minuto de espera por cada una —todas
+   * fallando igual— y un intento anotado por cada una.
+   */
+  const { __cortes: cortes } = arca;
+  AFIP.solicitar = 'corte'; AFIP.comprobante = null;
+
+  for (let i = 0; i < cortes.CORTES_PARA_ABRIR; i++) await fallo(emitir);
+  AFIP.llamadas = [];
+  const cortado = await fallo(emitir);
+  chk('después de varios cortes seguidos, contesta sin preguntar', 'ARCA_CAIDO', cortado?.codigo);
+  chk('y no le pregunta nada a AFIP', [], AFIP.llamadas);
+  chk('dice en cuántos segundos reintentar', true, Number(cortado?.detalles?.segundos) > 0);
+  chk('y que no se emitió nada', true, cortado?.detalles?.reintentable);
+
+  /*
+   * Que AFIP conteste —aunque sea que no— significa que está en pie: el
+   * contador se borra y se vuelve a preguntar normalmente.
+   */
+  cortes.anotarRespuesta('produccion');
+  AFIP.solicitar = 'ok'; AFIP.llamadas = [];
+  const despuesDeVolver = await emitir();
+  chk('cuando vuelve, se emite normal', true, Boolean(despuesDeVolver.cae));
+
+  await limpiar();
+  tit('11. LO QUE NECESITA UNA PERSONA');
+  /*
+   * Un intento del que no se pudo averiguar el final no lo puede cerrar una
+   * máquina. Hasta ahora no se veía en ningún lado: un problema que sólo
+   * existe en una tabla es un problema que nadie va a resolver.
+   */
+  const { ArcaIntento: Tabla } = require(path.join(__dirname, '..', 'src', 'models'));
+  const pendiente = await Tabla.create({
+    businessId: 39, saleId: 4242, cuitEmisor: CUIT_QA, ambiente: 'produccion',
+    ptoVta: 8, cbteTipo: 6, numero: 77, total: TOTAL, docNro: String(DOC), fecha: HOY,
+    estado: 'incierto', error: 'AFIP no contestó la consulta',
+  });
+  const recien = await Tabla.create({
+    businessId: 39, saleId: 4243, cuitEmisor: CUIT_QA, ambiente: 'produccion',
+    ptoVta: 8, cbteTipo: 6, numero: 78, total: TOTAL, docNro: String(DOC), fecha: HOY,
+    estado: 'en_curso',
+  });
+
+  const lista = await arca.intentosSinResolver({ businessId: 39 });
+  const mios = lista.intentos.filter((i) => [pendiente.id, recien.id].includes(i.id));
+  chk('el incierto aparece; el recién hecho todavía no', [pendiente.id], mios.map((i) => i.id));
+  chk('con los tres datos para buscarlo en AFIP', [8, 6, 77],
+    [mios[0]?.comprobante.ptoVta, mios[0]?.comprobante.cbteTipo, mios[0]?.comprobante.numero]);
+
+  /*
+   * Volver a preguntar, a pedido: sirve cuando AFIP volvió y alguien quiere
+   * cerrar el pendiente sin esperar a la próxima factura de ese punto de venta.
+   */
+  AFIP.comprobante = { numero: 77, total: TOTAL, docNro: DOC, fecha: HOY, cae: '75000000000077' };
+  const resuelto = await arca.resolverIntento({ businessId: 39, id: pendiente.id });
+  chk('al volver a preguntar, se cierra con su CAE', ['autorizado', '75000000000077'],
+    [resuelto.estado, resuelto.cae]);
+
+  AFIP.comprobante = null;
+  const otro = await Tabla.create({
+    businessId: 39, saleId: 4244, cuitEmisor: CUIT_QA, ambiente: 'produccion',
+    ptoVta: 8, cbteTipo: 6, numero: 79, total: TOTAL, docNro: String(DOC), fecha: HOY,
+    estado: 'incierto', error: 'no se supo',
+  });
+  const libre = await arca.resolverIntento({ businessId: 39, id: otro.id });
+  chk('si AFIP no lo tiene, el número queda libre', 'descartado', libre.estado);
+
   } finally {
     await limpiar();
   }
