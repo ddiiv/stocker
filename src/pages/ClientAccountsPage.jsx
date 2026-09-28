@@ -19,6 +19,19 @@ import ClientTabs from "../components/clients/ClientTabs";
  * alguien vende o cobra en esta misma pantalla, así que se recarga al entrar y
  * con el botón de actualizar.
  */
+/*
+ * Qué fue cada movimiento.
+ *
+ * Una nota de crédito baja la deuda igual que un pago, pero no es un pago: el
+ * cliente no trajo plata. Mostrarla como "Pago" deja el extracto diciendo algo
+ * que no pasó, justo en la pantalla que se usa para discutir un saldo.
+ */
+const ETIQUETA_MOVIMIENTO = {
+  cargo: "Venta",
+  pago: "Pago",
+  nota: "Nota de crédito",
+};
+
 export default function ClientAccountsPage() {
   const { user } = useAuth();
   const puedeCobrar   = canEdit(user, "clientes");
@@ -234,7 +247,7 @@ function DetalleModal({ detalle, onClose }) {
                 <tr key={m.id} className="border-b border-line last:border-0">
                   <td className="py-2 text-xs text-ink-600">{formatDateTime(m.fecha)}</td>
                   <td className="py-2">
-                    {m.tipo === "cargo" ? "Venta" : "Pago"}
+                    {ETIQUETA_MOVIMIENTO[m.tipo] || "Pago"}
                     {m.venta?.numero && <span className="ml-1 text-xs text-ink-500">{m.venta.numero}</span>}
                     {m.medioPago && <span className="ml-1 text-xs text-ink-500">({m.medioPago})</span>}
                     {m.empleado && <p className="text-xs text-ink-500">{m.empleado.nombre} {m.empleado.apellido}</p>}

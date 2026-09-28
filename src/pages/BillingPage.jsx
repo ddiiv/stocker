@@ -32,6 +32,7 @@ export default function BillingPage() {
   const [receipts, setReceipts] = useState([]);
   const [resumen, setResumen] = useState(null);
   const [paraAcreditar, setParaAcreditar] = useState(null);
+  const [avisoNota, setAvisoNota] = useState("");
   const [loading, setLoading] = useState(true);
   const [periodo, setPeriodo] = useState("");
   const [error, setError] = useState("");
@@ -82,7 +83,18 @@ export default function BillingPage() {
         open={Boolean(paraAcreditar)}
         factura={paraAcreditar}
         onClose={() => setParaAcreditar(null)}
-        onEmitida={() => load()}
+        onEmitida={(nota) => {
+          /*
+           * Lo que no se pudo hacer se dice acá y no en un log: la nota ya se
+           * emitió, y si el stock no volvió o la plata no salió de la caja,
+           * eso lo tiene que terminar una persona hoy.
+           */
+          const quedo = Object.entries(nota?.efectos || {})
+            .filter(([, v]) => v && v.hecho === false)
+            .map(([k, v]) => `${{ stock: "Stock", caja: "Caja", cuentaCorriente: "Cuenta corriente" }[k]}: ${v.motivo}`);
+          setAvisoNota(quedo.length ? quedo.join(" · ") : "");
+          load();
+        }}
       />
       <PageHeader
         title="Facturación"
@@ -95,6 +107,13 @@ export default function BillingPage() {
         * verlo cuando pasa. No se muestra nada si no hay nada.
         */}
       <IntentosPendientes />
+
+      {avisoNota && (
+        <div className="mb-4 flex items-start justify-between gap-3 rounded-md border border-brass-500 bg-brass-50 px-4 py-3 text-sm text-ink-900">
+          <span>La nota se emitió, pero quedó algo sin hacer — {avisoNota}</span>
+          <button className="btn-ghost px-2 py-0.5 text-xs" onClick={() => setAvisoNota("")}>Entendido</button>
+        </div>
+      )}
 
       <div className="mb-4 flex flex-wrap items-center gap-3">
         <FiltroPeriodo valor={periodo} onChange={setPeriodo} />

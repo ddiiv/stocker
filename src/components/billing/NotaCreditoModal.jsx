@@ -25,12 +25,15 @@ export default function NotaCreditoModal({ open, factura, onClose, onEmitida }) 
   const [motivo, setMotivo] = useState("");
   const [parcial, setParcial] = useState(false);
   const [importe, setImporte] = useState("");
+  const [devolverStock, setDevolverStock] = useState(true);
+  const [egresoCaja, setEgresoCaja] = useState(true);
   const [emitiendo, setEmitiendo] = useState(false);
   const [error, setError] = useState("");
 
   useEffect(() => {
     if (!open || !factura) return;
     setSaldo(null); setMotivo(""); setParcial(false); setImporte(""); setError("");
+    setDevolverStock(true); setEgresoCaja(true);
     fetchSaldoDeNotas(factura.id)
       .then(setSaldo)
       .catch((e) => setError(mensajeDeError(e, "No se pudo ver cuánto queda por acreditar.")));
@@ -46,6 +49,13 @@ export default function NotaCreditoModal({ open, factura, onClose, onEmitida }) 
       const nota = await emitirNotaDeCredito(factura.id, {
         motivo,
         total: parcial ? montoPedido : null,
+        /*
+         * Una nota parcial acredita plata, no unidades: de $50.000 sobre una
+         * factura de $121.000 no se deduce qué prendas volvieron. Por eso el
+         * tilde de stock ni se ofrece ahí.
+         */
+        devolverStock: !parcial && devolverStock,
+        egresoCaja,
       });
       onEmitida?.(nota);
       onClose?.();
@@ -123,6 +133,34 @@ export default function NotaCreditoModal({ open, factura, onClose, onEmitida }) 
               Se acredita todo lo que queda: {saldo ? formatCurrency(disponible) : "…"}.
             </p>
           )}
+        </div>
+
+        {/*
+          * Qué más mueve la nota además del comprobante.
+          *
+          * No se deciden solos a propósito: si la prenda volvió a la percha lo
+          * sabe quien la recibió —una fallada no vuelve, un talle equivocado
+          * sí— y de dónde sale la plata depende de cómo se devuelva.
+          */}
+        <div className="space-y-2 rounded-md border border-line bg-paper-100 px-3 py-2">
+          <p className="text-xs uppercase tracking-wide text-ink-600">Además de emitir el comprobante</p>
+          {parcial ? (
+            <p className="text-xs text-ink-500">
+              Una nota parcial acredita plata, no unidades: la devolución de mercadería se carga aparte.
+            </p>
+          ) : (
+            <label className="flex items-center gap-2 text-sm text-ink-800">
+              <input type="checkbox" checked={devolverStock} onChange={(e) => setDevolverStock(e.target.checked)} />
+              Devolver la mercadería al stock
+            </label>
+          )}
+          <label className="flex items-center gap-2 text-sm text-ink-800">
+            <input type="checkbox" checked={egresoCaja} onChange={(e) => setEgresoCaja(e.target.checked)} />
+            Registrar la salida de plata en la caja
+          </label>
+          <p className="text-xs text-ink-500">
+            Si la venta era a cuenta corriente, la deuda del cliente baja sola.
+          </p>
         </div>
 
         {error && (

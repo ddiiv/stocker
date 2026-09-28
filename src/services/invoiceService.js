@@ -39,8 +39,12 @@ export async function voidInvoice(id) {
  * El comprobante original sigue existiendo en AFIP —eso no se puede
  * deshacer—; la nota es otro comprobante que lo compensa.
  */
-export async function emitirNotaDeCredito(id, { motivo, total = null, clase = "nota_credito" } = {}) {
-  const { data } = await http.post(`/invoices/${id}/nota-credito`, { motivo, total, clase });
+export async function emitirNotaDeCredito(id, {
+  motivo, total = null, clase = "nota_credito", devolverStock = false, egresoCaja = false,
+} = {}) {
+  const { data } = await http.post(`/invoices/${id}/nota-credito`, {
+    motivo, total, clase, devolverStock, egresoCaja,
+  });
   return data;
 }
 
