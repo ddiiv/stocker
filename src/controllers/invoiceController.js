@@ -550,6 +550,13 @@ const emitirNotaDeCredito = async (req, res, next) => {
       total: req.body?.total ?? null,
       motivo: req.body?.motivo,
       employeeId: req.auth.employeeId || null,
+      /*
+       * Los dos los decide quien emite, no el sistema: si la prenda volvió a
+       * la percha lo sabe el que la recibió, y de dónde sale la plata depende
+       * de cómo se devuelva. La cuenta corriente no se pregunta.
+       */
+      devolverStock: req.body?.devolverStock === true,
+      egresoCaja: req.body?.egresoCaja === true,
     });
     res.status(201).json(nota);
   } catch (e) { next(e); }

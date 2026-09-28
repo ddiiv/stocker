@@ -69,6 +69,18 @@ async function saldoParaNotas(facturaId, clase = 'nota_credito', transaction = n
  */
 async function emitirNota({
   businessId, facturaId, clase = 'nota_credito', total = null, motivo, employeeId = null,
+  /*
+   * Los efectos, que NO se deciden acá.
+   *
+   * Si la mercadería vuelve a la percha lo sabe quien la recibe: una prenda
+   * fallada no vuelve y un talle equivocado sí. Y si la plata sale de la caja
+   * depende de cómo se devuelva —efectivo del cajón o una transferencia de
+   * otro lado—. Adivinarlo es descuadrar el arqueo o inventar stock.
+   *
+   * La cuenta corriente no se pregunta: si se le acreditó la factura, seguir
+   * cobrándole es cobrarle algo que ya se le devolvió.
+   */
+  devolverStock = false, egresoCaja = false,
 }) {
   if (!CLASES_NOTA.includes(clase)) throw error(`Clase inválida: ${clase}.`);
   const texto = String(motivo || '').trim().slice(0, 300);
@@ -250,11 +262,27 @@ async function emitirNota({
       await ArcaIntento.update({ invoiceId: nota.id }, { where: { id: arca.intentoId }, transaction: t2 });
     }
 
+    /*
+     * Los efectos van DENTRO de esta transacción: si la nota no se puede
+     * guardar, tampoco vuelve el stock ni sale la plata. El CAE ya está pedido
+     * y de eso se encarga el rescate, pero mercadería y caja no pueden quedar
+     * movidas por un comprobante que no existe.
+     *
+     * Ninguno voltea la nota si falla: el comprobante fiscal es lo que no se
+     * puede perder, y lo que no se pudo hacer se devuelve dicho para que una
+     * persona lo termine.
+     */
+    const efectos = await aplicarEfectos({
+      factura, nota, importe, esTotal, businessId, employeeId,
+      devolverStock, egresoCaja, transaction: t2,
+    });
+
     await t2.commit();
     log.info('arca', 'nota emitida', {
-      businessId, clase, facturaId: factura.id, notaId: nota.id, importe,
+      businessId, clase, facturaId: factura.id, notaId: nota.id, importe, ...efectos.resumen,
     });
-    return Invoice.findByPk(nota.id, { include: [{ model: InvoiceItem, as: 'items' }] });
+    const completa = await Invoice.findByPk(nota.id, { include: [{ model: InvoiceItem, as: 'items' }] });
+    return Object.assign(completa.toJSON(), { efectos: efectos.detalle });
   } catch (e) {
     await t2.rollback().catch(() => {});
     /*
@@ -267,6 +295,132 @@ async function emitirNota({
     });
     throw e;
   }
+}
+
+/*
+ * Lo que la nota mueve además del comprobante.
+ *
+ * Los tres se intentan y ninguno voltea la nota: el comprobante fiscal ya
+ * existe en AFIP y perderlo por no poder devolver stock sería cambiar un
+ * problema chico por uno que no se arregla. Lo que no se pudo hacer se
+ * devuelve dicho, con su motivo, para que alguien lo termine a mano.
+ */
+async function aplicarEfectos({
+  factura, nota, importe, esTotal, businessId, employeeId, devolverStock, egresoCaja, transaction,
+}) {
+  const { Sale, SaleItem, Client, CashMovement } = require('../models');
+  const detalle = { stock: null, caja: null, cuentaCorriente: null };
+  const resumen = {};
+
+  const venta = factura.saleId
+    ? await Sale.findOne({
+      where: { id: factura.saleId, businessId },
+      include: [{ model: SaleItem, as: 'items' }],
+      transaction,
+    })
+    : null;
+
+  /* ── La mercadería ───────────────────────────────────────────── */
+  if (devolverStock) {
+    /*
+     * Sólo con la nota total. Una parcial acredita plata, no unidades: de
+     * $50.000 sobre una factura de $121.000 no se deduce qué prendas
+     * volvieron, y repartirlo a ojo mete stock que nadie contó.
+     */
+    if (!esTotal) {
+      detalle.stock = { hecho: false, motivo: 'Una nota parcial no dice qué unidades volvieron: cargá la devolución a mano.' };
+    } else if (!venta) {
+      detalle.stock = { hecho: false, motivo: 'La factura no tiene venta asociada.' };
+    } else {
+      try {
+        const { devolverStockVenta } = require('./saleStockService');
+        const hecho = await devolverStockVenta(venta, transaction, {
+          employeeId, motivo: `Nota de crédito ${nota.numero}`,
+        });
+        detalle.stock = hecho
+          ? { hecho: true }
+          : { hecho: false, motivo: 'La venta no tenía stock descontado: no había nada que devolver.' };
+        resumen.stock = hecho;
+      } catch (e) {
+        detalle.stock = { hecho: false, motivo: e.message };
+      }
+    }
+  }
+
+  /* ── La plata ────────────────────────────────────────────────── */
+  if (egresoCaja) {
+    try {
+      const caja = require('./cashService');
+      const turno = employeeId ? await caja.turnoAbierto(employeeId, businessId, transaction) : null;
+      if (employeeId && !turno) {
+        /*
+         * Sin turno abierto el egreso no tiene contra qué arquearse. No se
+         * frena la nota: se dice, y la plata se registra cuando se abra.
+         */
+        detalle.caja = { hecho: false, motivo: 'No hay un turno de caja abierto: registrá la salida cuando lo abras.' };
+      } else {
+        await CashMovement.create({
+          businessId,
+          cashShiftId: turno?.id || null,
+          employeeId: employeeId || null,
+          tipo: 'egreso',
+          monto: importe,
+          motivo: `Nota de crédito ${nota.numero} (factura ${factura.numero})`,
+        }, { transaction });
+        detalle.caja = { hecho: true, turno: turno?.id || null };
+        resumen.caja = true;
+      }
+    } catch (e) {
+      detalle.caja = { hecho: false, motivo: e.message };
+    }
+  }
+
+  /* ── La deuda ────────────────────────────────────────────────── */
+  /*
+   * No se pregunta: si se le acreditó la factura, seguir cobrándole es
+   * cobrarle algo que ya se le devolvió. Se baja hasta lo que debe y nada
+   * más — dejar el saldo en negativo sería inventarle un crédito que el
+   * sistema no sabe manejar.
+   */
+  if (venta && venta.condicionPago === 'cuenta_corriente' && factura.clientId) {
+    try {
+      const cliente = await Client.findOne({
+        where: { id: factura.clientId, businessId }, transaction, lock: transaction.LOCK.UPDATE,
+      });
+      const debe = Number(cliente?.saldoCuenta || 0);
+      if (!cliente || debe <= 0) {
+        detalle.cuentaCorriente = { hecho: false, motivo: 'El cliente no tiene deuda pendiente.' };
+      } else {
+        const baja = Math.min(Math.round(importe * 100) / 100, Math.round(debe * 100) / 100);
+        const credito = require('./creditService');
+        await credito.registrarMovimiento({
+          businessId, clientId: cliente.id,
+          /*
+           * 'nota' y no 'nota_credito': la columna es de diez caracteres y el
+           * proyecto sólo migra agregando columnas, no cambiando tipos. El
+           * nombre largo se trunca en silencio en SQL Server y el asiento
+           * quedaría con un tipo que no es ninguno de los conocidos.
+           */
+          tipo: 'nota', monto: baja,
+          saleId: venta.id, employeeId,
+          notas: `Nota de crédito ${nota.numero}`,
+        }, transaction);
+        detalle.cuentaCorriente = {
+          hecho: true, monto: baja,
+          parcial: baja < importe - 0.01 ? 'Se bajó sólo hasta lo que debía.' : null,
+        };
+        resumen.cuentaCorriente = baja;
+
+        /* El saldo de ESTA venta también baja: es de donde salió la deuda. */
+        const pendiente = Math.max(0, Math.round((Number(venta.saldoPendiente || 0) - baja) * 100) / 100);
+        await venta.update({ saldoPendiente: pendiente }, { transaction });
+      }
+    } catch (e) {
+      detalle.cuentaCorriente = { hecho: false, motivo: e.message };
+    }
+  }
+
+  return { detalle, resumen };
 }
 
 module.exports = { emitirNota, saldoParaNotas, acreditado, CLASES_NOTA };

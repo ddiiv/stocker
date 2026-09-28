@@ -93,8 +93,8 @@ const QA = 'QA-NC-';
    * Una venta por factura: el único parcial no deja dos facturas de la misma
    * venta, que es justamente lo que tiene que seguir protegiendo.
    */
-  const ventas = await Sale.findAll({ where: { businessId: negocio.id }, order: [['id', 'DESC']], limit: 10 });
-  if (ventas.length < 8) { console.log('Hacen falta al menos 8 ventas en', negocio.nombreNegocio); process.exit(1); }
+  const ventas = await Sale.findAll({ where: { businessId: negocio.id }, order: [['id', 'DESC']], limit: 30 });
+  if (ventas.length < 16) { console.log('Hacen falta al menos 16 ventas en', negocio.nombreNegocio); process.exit(1); }
   let proxima = 0;
   const venta = ventas[0];
 
@@ -116,6 +116,14 @@ const QA = 'QA-NC-';
       await Invoice.destroy({ where: { id: filas.map((f) => f.id) } });
     }
     await ArcaIntento.destroy({ where: { cuitEmisor: '30999999911' } });
+    /* Lo que movieron los efectos: caja, asientos y el cliente de prueba. */
+    const { CashMovement, Client, ClientAccountEntry } = require(path.join(__dirname, '..', 'src', 'models'));
+    await CashMovement.destroy({ where: { motivo: { [Op.like]: '%Nota de crédito%' } } });
+    const deudor = await Client.findOne({ where: { businessId: negocio.id, nombre: 'QA Deudor NC' } });
+    if (deudor) {
+      await ClientAccountEntry.destroy({ where: { clientId: deudor.id } });
+      await deudor.destroy();
+    }
   };
   await limpiar();
 
@@ -260,6 +268,93 @@ const QA = 'QA-NC-';
     chk('el emisor y el ambiente también', ['30-99999991-1', 'produccion'],
       [parcial.emisorCuit, parcial.ambiente]);
     chk('y sale del mismo punto de venta', 8, parcial.ptoVtaArca);
+
+    tit('7. LO QUE LA NOTA MUEVE ADEMÁS DEL COMPROBANTE');
+    /*
+     * Ninguno de los tres se decide solo: si la prenda volvió a la percha lo
+     * sabe quien la recibió, y de dónde sale la plata depende de cómo se
+     * devuelva. La cuenta corriente sí es automática — seguir cobrándole algo
+     * que ya se le devolvió no es una preferencia, es un error.
+     */
+    const { Sale, CashMovement, Client, ClientAccountEntry, VariantStock } = require(path.join(__dirname, '..', 'src', 'models'));
+
+    const factura5 = await crearFactura({ numero: `${QA}efe` });
+    const sinEfectos = await notas.emitirNota({
+      businessId: negocio.id, facturaId: factura5.id, motivo: 'Sin tocar nada',
+    });
+    chk('por omisión no toca stock ni caja', [undefined, undefined],
+      [sinEfectos.efectos?.stock?.hecho, sinEfectos.efectos?.caja?.hecho]);
+
+    const factura6 = await crearFactura({ numero: `${QA}caja` });
+    const cajaAntes = await CashMovement.count({ where: { businessId: negocio.id, tipo: 'egreso' } });
+    const conCaja = await notas.emitirNota({
+      businessId: negocio.id, facturaId: factura6.id, motivo: 'Devolvimos la plata', egresoCaja: true,
+    });
+    chk('con el tilde, la plata sale de la caja', [true, cajaAntes + 1],
+      [conCaja.efectos?.caja?.hecho, await CashMovement.count({ where: { businessId: negocio.id, tipo: 'egreso' } })]);
+    const egreso = await CashMovement.findOne({ where: { businessId: negocio.id, tipo: 'egreso' }, order: [['id', 'DESC']] });
+    chk('por el importe de la nota y con su número', [121000, true],
+      [Number(egreso.monto), String(egreso.motivo).includes(conCaja.numero)]);
+
+    /*
+     * Una nota parcial acredita plata, no unidades: de $50.000 sobre una
+     * factura de $121.000 no se deduce qué prendas volvieron, y repartirlo a
+     * ojo mete stock que nadie contó.
+     */
+    const factura7 = await crearFactura({ numero: `${QA}parcst` });
+    const parcialConStock = await notas.emitirNota({
+      businessId: negocio.id, facturaId: factura7.id, total: 50000,
+      motivo: 'Parcial', devolverStock: true,
+    });
+    chk('una nota parcial no devuelve stock, y lo dice', [false, true],
+      [parcialConStock.efectos?.stock?.hecho,
+        String(parcialConStock.efectos?.stock?.motivo || '').includes('parcial')]);
+
+    tit('8. LA DEUDA DEL CLIENTE');
+    /*
+     * Si la venta era a cuenta corriente y se le acredita la factura, seguir
+     * cobrándole es cobrarle algo que ya se le devolvió.
+     */
+    const [clienteQA] = await Client.findOrCreate({
+      where: { businessId: negocio.id, nombre: 'QA Deudor NC' },
+      defaults: {
+        businessId: negocio.id, nombre: 'QA Deudor NC',
+        cuentaHabilitada: true, limiteCredito: 500000, saldoCuenta: 121000,
+      },
+    });
+    await clienteQA.update({ saldoCuenta: 121000, cuentaHabilitada: true, limiteCredito: 500000 });
+
+    /*
+     * De la última, no de la próxima: `crearFactura` avanza el contador, y con
+     * ella la factura de esta sección caería sobre una venta que ya tiene la
+     * suya — que es justo lo que el único parcial impide.
+     */
+    const ventaFiada = await Sale.findByPk(ventas[ventas.length - 1].id);
+    const condicionPrevia = ventaFiada.condicionPago;
+    const saldoPrevio = ventaFiada.saldoPendiente;
+    await ventaFiada.update({ condicionPago: 'cuenta_corriente', saldoPendiente: 121000 });
+
+    const facturaFiada = await crearFactura({
+      numero: `${QA}fiada`, clientId: clienteQA.id, saleId: ventaFiada.id,
+    });
+    const notaFiada = await notas.emitirNota({
+      businessId: negocio.id, facturaId: facturaFiada.id, motivo: 'Devolución de una venta fiada',
+    });
+    await clienteQA.reload();
+    chk('la deuda del cliente baja sola', [true, 0],
+      [notaFiada.efectos?.cuentaCorriente?.hecho, Number(clienteQA.saldoCuenta)]);
+    const asiento = await ClientAccountEntry.findOne({
+      where: { clientId: clienteQA.id }, order: [['id', 'DESC']],
+    });
+    /*
+     * Y queda como nota de crédito, no como pago: el cliente no trajo plata.
+     * Guardarlo como pago deja el extracto diciendo algo que no pasó.
+     */
+    chk('y queda como nota de crédito, no como pago', ['nota', 121000],
+      [asiento?.tipo, Number(asiento?.monto)]);
+    await ventaFiada.reload();
+    chk('el saldo de esa venta también baja', 0, Number(ventaFiada.saldoPendiente));
+    await ventaFiada.update({ condicionPago: condicionPrevia, saldoPendiente: saldoPrevio });
   } finally {
     tit('Limpieza');
     await limpiar();

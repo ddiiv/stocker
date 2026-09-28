@@ -52,10 +52,18 @@ async function registrarMovimiento(datos, t) {
   });
   if (!cliente) throw new ErrorCredito('El cliente no pertenece a este negocio.', 404);
 
+  /*
+   * Los tipos que bajan la deuda son 'pago' y 'nota'. Son distintos a
+   * propósito: la nota la baja igual que un pago, pero el cliente no trajo
+   * plata —se le devolvió mercadería—. Guardarla como pago dejaría el extracto
+   * diciendo que pagó algo que nunca pagó, y el día que alguien concilie la
+   * caja contra la cuenta corriente no va a cerrar.
+   */
   const saldoPrevio = redondear(cliente.saldoCuenta || 0);
   const saldoNuevo  = tipo === 'cargo'
     ? redondear(saldoPrevio + importe)
     : redondear(saldoPrevio - importe);
+
 
   if (tipo === 'cargo') {
     if (!cliente.cuentaHabilitada) {
@@ -73,7 +81,9 @@ async function registrarMovimiento(datos, t) {
     throw new ErrorCredito(`${nombreCliente(cliente)} no tiene deuda pendiente.`);
   } else if (saldoNuevo < 0) {
     throw new ErrorCredito(
-      `El pago supera la deuda: ${nombreCliente(cliente)} debe $${saldoPrevio.toLocaleString('es-AR')}.`
+      tipo === 'nota'
+        ? `La nota supera la deuda: ${nombreCliente(cliente)} debe $${saldoPrevio.toLocaleString('es-AR')}.`
+        : `El pago supera la deuda: ${nombreCliente(cliente)} debe $${saldoPrevio.toLocaleString('es-AR')}.`
     );
   }
 
