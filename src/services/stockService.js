@@ -378,7 +378,52 @@ async function mover({
     } catch { /* avisarle a ML nunca puede tumbar un movimiento de stock */ }
   }
 
+  /*
+   * Y a la tienda, que escucha en vivo.
+   *
+   * Va DENTRO de la transacción a propósito: en Postgres el aviso se entrega
+   * recién al commit, así que la tienda nunca pregunta por un número que
+   * todavía no se guardó, y un rollback se lleva el aviso con él.
+   */
+  await avisarCambioDeStock(businessId, variantId, t);
+
   return { stockAnterior, stockNuevo, total, locationId: local };
+}
+
+/*
+ * Le avisa a la tienda que una variante cambió.
+ *
+ * La tienda comparte la base y escucha con LISTEN: junta los avisos de un par
+ * de segundos y pide las cantidades nuevas. Se manda el aviso y no el número
+ * —el canal no garantiza orden ni entrega— así que lo único que dice es "mirá
+ * esta variante de nuevo".
+ *
+ * En SQL Server no existe LISTEN/NOTIFY y no hace falta: la tienda corre sobre
+ * el Postgres compartido. Acá simplemente no se avisa, y el desarrollo local
+ * de Stocker sigue andando igual.
+ */
+async function avisarCambioDeStock(businessId, variantId, t = null) {
+  try {
+    const db = require('../config/database');
+    if (db.getDialect() !== 'postgres') return false;
+    await db.query('SELECT pg_notify($1, $2)', {
+      bind: ['stock_cambio', `${businessId}:${variantId}`],
+      transaction: t,
+    });
+    return true;
+  } catch (e) {
+    /*
+     * Un aviso que no sale no puede voltear un movimiento de stock: la
+     * mercadería ya se movió. La tienda tiene además su conciliación cada diez
+     * minutos, que es justamente la red para esto.
+     */
+    // El logger se pide acá: este archivo no lo tiene arriba.
+    const { log } = require('../utils/logger');
+    log.warn('stock', 'no se pudo avisar el cambio a la tienda', {
+      businessId, variantId, motivo: e.message,
+    });
+    return false;
+  }
 }
 
 /** Cuánto hay de una variante en un local. */
@@ -685,6 +730,7 @@ async function transferir({ variantId, businessId, desde, hacia, cantidad, emplo
 }
 
 module.exports = {
+  avisarCambioDeStock,
   // Reservas: apartar al vender, consumir al despachar. Ver el bloque de arriba.
   disponibleEn, reservar, liberarReserva, consumirReserva,
   mover, stockEn, desglosePorVariante, transferir, localPorDefecto, resolverLocal,

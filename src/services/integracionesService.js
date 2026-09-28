@@ -19,7 +19,7 @@ const { IntegracionExterna } = require('../models');
 // 32 bytes de azar. No hay diccionario que probar contra esto, así que SHA-256
 // alcanza y bcrypt sólo costaría tiempo en cada pedido que entra.
 const BYTES = 32;
-const ORIGENES = ['isuwaya'];
+const ORIGENES = ['isuwaya', 'tienda'];
 
 const hash = (token) => crypto.createHash('sha256').update(String(token)).digest('hex');
 

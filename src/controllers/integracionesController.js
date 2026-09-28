@@ -79,6 +79,93 @@ const preciosPorSku = async (req, res, next) => {
   } catch (e) { next(e); }
 };
 
+/*
+ * ══ La tienda minorista ══════════════════════════════════════════
+ *
+ * Pregunta catálogo y stock; no los calcula. Las dos rutas devuelven la MISMA
+ * cantidad publicable que se les manda a Mercado Libre y a Jumpseller: el que
+ * decide qué se publica es uno solo.
+ */
+
+/* GET /api/integraciones/tienda/catalogo */
+const catalogoTienda = async (req, res, next) => {
+  try {
+    const tienda = require('../services/tiendaService');
+    res.json(await tienda.catalogo({ businessId: req.integracion.businessId }));
+  } catch (e) { next(e); }
+};
+
+/*
+ * GET /api/integraciones/tienda/stock?skus=A,B,C
+ *
+ * La consulta del carrito y del checkout: se pregunta por lo que el cliente
+ * tiene en la mano, no por el catálogo entero.
+ */
+const stockTienda = async (req, res, next) => {
+  try {
+    const tienda = require('../services/tiendaService');
+    const crudo = req.query.skus;
+    const skus = Array.isArray(crudo) ? crudo : String(crudo || '').split(',');
+    res.json(await tienda.stockDeSkus({ businessId: req.integracion.businessId, skus }));
+  } catch (e) { next(e); }
+};
+
+/*
+ * POST /api/integraciones/tienda/pedidos
+ *
+ * Entra por la misma cola que la venta online de las otras plataformas: aparta
+ * en orden de llegada y es idempotente por el número de pedido de la tienda.
+ * Dos canales no pueden llevarse la misma última unidad.
+ */
+const pedidoDeTienda = async (req, res, next) => {
+  try {
+    const cola = require('../services/colaVentasOnlineService');
+    const r = await cola.encolarYProcesar({
+      businessId: req.integracion.businessId,
+      plataforma: 'tienda',
+      pedidoExterno: req.body?.pedidoExterno,
+      items: req.body?.items,
+      comprador: req.body?.comprador,
+      total: req.body?.total ?? null,
+    });
+    /*
+     * El código dice qué pasó sin tener que leer estados: 201 lo tomé ahora,
+     * 200 ya lo tenía, 409 no hay stock. La tienda reintenta sobre cualquier
+     * cosa que no sea 2xx, así que un pedido repetido tiene que dar 200.
+     */
+    const estado = r.pedido?.estado;
+    const codigo = r.repetido ? 200 : (estado === 'rechazado' ? 409 : 201);
+    res.status(codigo).json({
+      pedidoExterno: r.pedido?.pedidoExterno,
+      estado,
+      motivo: r.pedido?.motivo || null,
+      repetido: Boolean(r.repetido),
+    });
+  } catch (e) { next(e); }
+};
+
+/* POST /api/integraciones/tienda/pedidos/:pedidoExterno/cancelar — libera la reserva. */
+const cancelarPedidoDeTienda = async (req, res, next) => {
+  try {
+    const cola = require('../services/colaVentasOnlineService');
+    const { PedidoPlataforma } = require('../models');
+    /*
+     * La tienda cancela por SU número de pedido: el id interno de la cola no
+     * lo conoce ni tiene por qué. Se busca acá, acotado al negocio de la
+     * credencial, que es lo que impide cancelar el pedido de otro.
+     */
+    const pedido = await PedidoPlataforma.findOne({
+      where: {
+        businessId: req.integracion.businessId,
+        plataforma: 'tienda',
+        pedidoExterno: String(req.params.pedidoExterno || '').trim(),
+      },
+    });
+    if (!pedido) return res.status(404).json({ message: 'Ese pedido no está en la cola.' });
+    res.json(await cola.cancelarPorPlataforma(pedido.id, req.body?.motivo || 'Cancelado en la tienda'));
+  } catch (e) { next(e); }
+};
+
 /** GET /api/integraciones — las credenciales del negocio, sin los tokens. */
 const listar = async (req, res, next) => {
   try {
@@ -120,4 +207,7 @@ const revocar = async (req, res, next) => {
   } catch (e) { next(e); }
 };
 
-module.exports = { recibirPedido, resolucionesDePedidos, preciosPorSku, listar, emitir, revocar };
+module.exports = {
+  recibirPedido, resolucionesDePedidos, preciosPorSku, listar, emitir, revocar,
+  catalogoTienda, stockTienda, pedidoDeTienda, cancelarPedidoDeTienda,
+};

@@ -40,7 +40,12 @@ const packService = require('./packService');
 const { partesDeItem } = require('../utils/repartoItem');
 const { log } = require('../utils/logger');
 
-const PLATAFORMAS = ['mercadolibre', 'jumpseller'];
+/*
+ * `tienda` es la tienda minorista propia. Entra por la misma cola que Mercado
+ * Libre y Jumpseller a propósito: el que aparta mercadería es uno solo, en
+ * orden de llegada, y así dos canales no pueden vender la misma última unidad.
+ */
+const PLATAFORMAS = ['mercadolibre', 'jumpseller', 'tienda'];
 
 const error = (mensaje, status = 400, extra = {}) =>
   Object.assign(new Error(mensaje), { status, ...extra });

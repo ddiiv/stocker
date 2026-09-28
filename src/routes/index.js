@@ -290,6 +290,18 @@ r.get('/integraciones/isuwaya/pedidos/resoluciones', requireIntegracion('isuwaya
 r.get('/integraciones/isuwaya/precios',              requireIntegracion('isuwaya'), integracionesCtrl.preciosPorSku);
 
 /*
+ * ── La tienda minorista ───────────────────────────────────────────
+ *
+ * Un canal online más: pregunta catálogo y stock, y sus pedidos entran por la
+ * misma cola que Mercado Libre y Jumpseller. Que el que aparta mercadería sea
+ * uno solo es lo que impide que dos canales vendan la última unidad.
+ */
+r.get ('/integraciones/tienda/catalogo', requireIntegracion('tienda'), integracionesCtrl.catalogoTienda);
+r.get ('/integraciones/tienda/stock',    requireIntegracion('tienda'), integracionesCtrl.stockTienda);
+r.post('/integraciones/tienda/pedidos',  requireIntegracion('tienda'), integracionesCtrl.pedidoDeTienda);
+r.post('/integraciones/tienda/pedidos/:pedidoExterno/cancelar', requireIntegracion('tienda'), integracionesCtrl.cancelarPedidoDeTienda);
+
+/*
  * ── La bandeja de pedidos mayoristas ──────────────────────────────
  *
  * Aceptar crea una venta, así que pide el permiso de ventas: es exactamente lo
