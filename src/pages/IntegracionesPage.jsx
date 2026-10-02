@@ -22,6 +22,13 @@ import { Card, PageHead, Aviso, Cargando, Vacio, Tabla, Modal, Campo } from "../
 
 const ORIGENES = [
   { valor: "isuwaya", etiqueta: "Portal mayorista (ISUWAYA)" },
+  /*
+   * La etiqueta dice "Tienda online minorista" porque así la nombra el paso a
+   * paso de instalación de la tienda, que es lo que el dueño va a tener abierto
+   * al lado cuando venga a emitir el token. Que la pantalla y el instructivo
+   * usen el mismo nombre es la diferencia entre encontrarlo y trabarse acá.
+   */
+  { valor: "tienda", etiqueta: "Tienda online minorista (isu)" },
 ];
 
 function Copiable({ valor, etiqueta = "Copiar" }) {
