@@ -78,7 +78,7 @@ Igual para los cinco tipos:
 |---|---|
 | `contrato` | `1`. Si falta, Stocker asume 1. |
 | `tipo` | `venta` · `cancelacion` · `devolucion` · `compra` · `cobro` |
-| `id` | **El id del movimiento**: `<plataforma>:<su número>` — `ml:2000123456`, `isu:ISU-1042`, `may:P-311`. Hasta 60 caracteres. |
+| `id` | **El id del movimiento**: `<plataforma>:<su número>` — `ml:2000123456`, `isu:ISU-1042`, `may:P-311`. **El tope de 60 caracteres es del número de pedido, no del `id` entero**: el prefijo se saca antes de medir, así que `ml:` + 60 entra. Un `id` sin prefijo también entra y se usa tal cual. |
 | `ocurrioEn` | Cuándo pasó **en la plataforma**, ISO 8601 con zona. No cuándo se mandó. Hoy Stocker lo acepta pero **no lo guarda**: la fecha que queda es la de recepción. Mandalo igual, para cuando se use. |
 | `datos` | Lo propio del tipo (§ 3). |
 
@@ -203,6 +203,7 @@ ventas:
 | `contrato` que no entendemos | — | `400` | Nada. No lo interpreta con otra versión. |
 | `tipo` que no es el de la ruta | — | `400` | Nada. Es el error más caro: se corta acá. |
 | Credencial que no sirve | — | `401` | Nada. No distingue «no existe» de «revocada». |
+| **Demasiados pedidos seguidos** | — | `429` | Nada. Ver abajo: este es el único que hay que reintentar con espera creciente. |
 
 ```json
 { "pedidoExterno": "ISU-1042", "estado": "parcial",
@@ -213,6 +214,13 @@ ventas:
   saber qué prenda faltó. Mostralo tal cual; no lo parsees.
 - **Reintentá sobre cualquier cosa que no sea 2xx.** Un `409` sí: el stock puede volver. Un `400` no
   tiene sentido reintentarlo sin arreglar el cuerpo primero.
+- **El `429` se reintenta con espera creciente, nunca al toque.** Stocker tiene dos límites por IP:
+  **60 pedidos cada 2 segundos** y **600 por minuto**, y los comparte todo lo que salga de tu
+  servicio. El caso donde esto aparece es el que más importa: tu worker vaciando una cola de
+  doscientos pedidos después de que Stocker estuvo caído por un deploy. Si en el `429` reintentás sin
+  esperar, te quedás afuera solo. Esperá 1s, 2s, 4s, 8s (hasta un techo de un minuto) y **no mandes
+  más de ~10 por segundo sostenidos**. Los pedidos no se pierden: están en tu base hasta que Stocker
+  conteste 2xx.
 - `parcial` **no** es un error. Si tu plataforma lo trata como fallo y reintenta, el `200` del segundo
   intento te va a decir que ya estaba.
 
