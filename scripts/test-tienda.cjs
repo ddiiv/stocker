@@ -219,6 +219,88 @@ function llamar({ token, origen = 'tienda', handler, query = {}, params = {}, bo
     chk('se puede cancelar para liberar la reserva', 200, cancelado.status);
     chk('cancelar uno que no existe da 404', 404,
       (await llamar({ token, handler: ctrl.cancelarPedidoDeTienda, params: { pedidoExterno: `${QA}nada` } })).status);
+
+    /*
+     * ── El sobre del contrato de movimientos ──────────────────────
+     *
+     * `docs/contrato-movimientos.md` define una forma igual para los cinco
+     * tipos. Las dos formas —la plana, con la que la tienda ya integró, y el
+     * sobre— tienen que caer en LA MISMA clave de idempotencia: si no, el
+     * mismo pedido mandado de las dos maneras se descontaría dos veces.
+     */
+    tit('El sobre del contrato');
+    const fallo = (e) => ({ status: e.status, json: null, mensaje: e.message || '' });
+    const enSobre = await llamar({
+      token, handler: ctrl.pedidoDeTienda,
+      body: {
+        contrato: 1, tipo: 'venta', id: `isu:${QA}002`,
+        ocurrioEn: new Date().toISOString(),
+        datos: { items: [{ sku: unaVariante.sku, cantidad: 1 }], total: 1000 },
+      },
+    }).catch(fallo);
+    chk('un pedido en sobre entra', true, [201, 409].includes(enSobre.status));
+    chk('y el número sale del id, sin el prefijo de la plataforma', `${QA}002`,
+      (await PedidoPlataforma.findOne({
+        where: { businessId: negocio.id, plataforma: 'tienda', pedidoExterno: `${QA}002` },
+      }))?.pedidoExterno);
+
+    /*
+     * El prefijo se corta en el PRIMER dos puntos: los de más atrás son parte
+     * del número del pedido. Cortar en el último uniría dos pedidos distintos
+     * de la misma plataforma bajo la misma clave, y el segundo volvería como
+     * "ya lo tenía" sin apartar nada.
+     */
+    const conDosPuntos = await llamar({
+      token, handler: ctrl.pedidoDeTienda,
+      body: {
+        contrato: 1, tipo: 'venta', id: `isu:${QA}005:B`,
+        datos: { items: [{ sku: unaVariante.sku, cantidad: 1 }], total: 1000 },
+      },
+    }).catch(fallo);
+    chk('un número de pedido con dos puntos adentro llega entero', [true, `${QA}005:B`],
+      [[201, 409].includes(conDosPuntos.status),
+        (await PedidoPlataforma.findOne({
+          where: { businessId: negocio.id, plataforma: 'tienda', pedidoExterno: `${QA}005:B` },
+        }))?.pedidoExterno]);
+
+    const mismoPlano = await llamar({
+      token, handler: ctrl.pedidoDeTienda,
+      body: { pedidoExterno: `${QA}002`, items: [{ sku: unaVariante.sku, cantidad: 1 }], total: 1000 },
+    }).catch(fallo);
+    chk('el mismo pedido en plano es el mismo pedido, no otro', [200, true],
+      [mismoPlano.status, mismoPlano.json?.repetido]);
+    chk('y sigue habiendo uno solo', 1,
+      await PedidoPlataforma.count({
+        where: { businessId: negocio.id, plataforma: 'tienda', pedidoExterno: `${QA}002` },
+      }));
+
+    /*
+     * Una versión que no conocemos se rechaza en vez de interpretarse, y un
+     * tipo equivocado también: una devolución entrando por la ruta de ventas
+     * descontaría stock en vez de devolverlo.
+     */
+    const vieja = await llamar({
+      token, handler: ctrl.pedidoDeTienda,
+      body: { contrato: 99, tipo: 'venta', id: `isu:${QA}003`, datos: { items: [{ sku: unaVariante.sku, cantidad: 1 }] } },
+    }).catch(fallo);
+    chk('un contrato que no entendemos se rechaza, y lo dice', [400, true],
+      [vieja.status, /contrato de movimientos/.test(vieja.mensaje)]);
+    const cruzado = await llamar({
+      token, handler: ctrl.pedidoDeTienda,
+      body: { contrato: 1, tipo: 'devolucion', id: `isu:${QA}004`, datos: { items: [{ sku: unaVariante.sku, cantidad: 1 }] } },
+    }).catch(fallo);
+    chk('una devolución mandada a la ruta de ventas se rechaza por el tipo', [400, true],
+      [cruzado.status, /devolucion/.test(cruzado.mensaje)]);
+    chk('y ninguno de los dos dejó un pedido en la cola', 0,
+      await PedidoPlataforma.count({
+        where: { businessId: negocio.id, plataforma: 'tienda', pedidoExterno: { [Op.in]: [`${QA}003`, `${QA}004`] } },
+      }));
+
+    chk('se puede cancelar en sobre', 200,
+      (await llamar({
+        token, handler: ctrl.cancelarPedidoDeTienda, params: { pedidoExterno: `${QA}002` },
+        body: { contrato: 1, tipo: 'cancelacion', id: `isu:${QA}002`, datos: { motivo: 'Pago vencido' } },
+      }).catch(fallo)).status);
   } finally {
     tit('Limpieza');
     await limpiar();

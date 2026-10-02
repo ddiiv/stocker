@@ -8,6 +8,7 @@
 
 const integraciones = require('../services/integracionesService');
 const solicitudes = require('../services/solicitudMayoristaService');
+const { abrirSobre } = require('../utils/sobreMovimiento');
 
 /*
  * POST /api/integraciones/:origen/pedidos
@@ -20,7 +21,9 @@ const solicitudes = require('../services/solicitudMayoristaService');
 const recibirPedido = async (req, res, next) => {
   try {
     const { businessId, origen } = req.integracion;
-    const r = await solicitudes.recibir({ businessId, origen, cuerpo: req.body });
+    const r = await solicitudes.recibir({
+      businessId, origen, cuerpo: abrirSobre(req.body, 'venta'),
+    });
 
     res.status(r.creada ? 201 : 200).json({
       ok: true,
@@ -120,13 +123,14 @@ const stockTienda = async (req, res, next) => {
 const pedidoDeTienda = async (req, res, next) => {
   try {
     const cola = require('../services/colaVentasOnlineService');
+    const datos = abrirSobre(req.body, 'venta');
     const r = await cola.encolarYProcesar({
       businessId: req.integracion.businessId,
       plataforma: 'tienda',
-      pedidoExterno: req.body?.pedidoExterno,
-      items: req.body?.items,
-      comprador: req.body?.comprador,
-      total: req.body?.total ?? null,
+      pedidoExterno: datos.pedidoExterno,
+      items: datos.items,
+      comprador: datos.comprador,
+      total: datos.total ?? null,
     });
     /*
      * El código dice qué pasó sin tener que leer estados: 201 lo tomé ahora,
@@ -162,7 +166,8 @@ const cancelarPedidoDeTienda = async (req, res, next) => {
       },
     });
     if (!pedido) return res.status(404).json({ message: 'Ese pedido no está en la cola.' });
-    res.json(await cola.cancelarPorPlataforma(pedido.id, req.body?.motivo || 'Cancelado en la tienda'));
+    const datos = abrirSobre(req.body, 'cancelacion');
+    res.json(await cola.cancelarPorPlataforma(pedido.id, datos.motivo || 'Cancelado en la tienda'));
   } catch (e) { next(e); }
 };
 
