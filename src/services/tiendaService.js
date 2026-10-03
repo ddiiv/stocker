@@ -85,7 +85,15 @@ async function catalogo({ businessId }) {
       precioMinorista: precioMinorista(v, p),
       precioMayorista: precioMayorista(v, p),
       /* El mismo número que se le manda a Mercado Libre y a Jumpseller. */
-      publicable: Number(cantidades.get(v.id) || 0),
+      /*
+       * `cantidadesPublicables` devuelve { disponible, margen, cantidad } por
+       * variante, no un número. Pasar el objeto por Number() da NaN, y NaN
+       * serializado a JSON sale `null`: la tienda recibía null en cada SKU que
+       * SÍ existe, que es peor que un cero porque no está en `desconocidos` y no
+       * hay forma de distinguirlo de un dato faltante. Mercado Libre y Jumpseller
+       * leen `.cantidad` desde siempre; esto no lo hacía.
+       */
+      publicable: Number(cantidades.get(v.id)?.cantidad || 0),
       activo: v.activo !== false,
     });
   }
@@ -129,7 +137,8 @@ async function stockDeSkus({ businessId, skus }) {
     : new Map();
 
   const stock = {};
-  for (const v of variantes) stock[v.sku] = Number(cantidades.get(v.id) || 0);
+  // `.cantidad`, no el objeto: ver el comentario en `catalogo`.
+  for (const v of variantes) stock[v.sku] = Number(cantidades.get(v.id)?.cantidad || 0);
 
   /*
    * Lo que no se encontró se devuelve aparte y NO como cero.

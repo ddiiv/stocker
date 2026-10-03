@@ -135,20 +135,32 @@ function llamar({ token, origen = 'tienda', handler, query = {}, params = {}, bo
     const esperadas = locales.length
       ? await cantidadesPublicables(negocio.id, locales, variantes)
       : new Map();
-    const unaVariante = variantes.find((v) => esperadas.get(v.id) > 0) || variantes[0];
+    const cuanto = (id) => Number(esperadas.get(id)?.cantidad || 0);
+    const unaVariante = variantes.find((v) => cuanto(v.id) > 0) || variantes[0];
     const enCatalogo = (catalogo.json.productos || [])
       .flatMap((p) => p.variantes)
       .find((v) => v.sku === unaVariante?.sku);
     chk('la cantidad publicable es la misma que la de Mercado Libre y Jumpseller',
-      Number(esperadas.get(unaVariante.id) || 0), enCatalogo?.publicable);
+      cuanto(unaVariante.id), enCatalogo?.publicable);
+    /*
+     * Y es un número de verdad.
+     *
+     * Sin esto la prueba pasaba con el bug puesto: el servicio devolvía NaN, la
+     * prueba esperaba NaN, y los dos se comparaban iguales. Un valor que no es
+     * un entero finito es un defecto por sí mismo, sin importar si coincide.
+     */
+    chk('y es un número, no un null ni un NaN', true,
+      Number.isInteger(enCatalogo?.publicable));
 
     tit('3. EL STOCK DE UNOS SKU');
     const skus = variantes.slice(0, 3).map((v) => v.sku).filter(Boolean);
     const consulta = await llamar({ token, handler: ctrl.stockTienda, query: { skus: skus.join(',') } });
     chk('devuelve una cantidad por SKU', [200, skus.length],
       [consulta.status, Object.keys(consulta.json?.stock || {}).length]);
-    chk('y coincide con el catálogo', Number(esperadas.get(unaVariante.id) || 0),
-      (await llamar({ token, handler: ctrl.stockTienda, query: { skus: unaVariante.sku } })).json?.stock?.[unaVariante.sku]);
+    const unoSolo = (await llamar({ token, handler: ctrl.stockTienda, query: { skus: unaVariante.sku } }))
+      .json?.stock?.[unaVariante.sku];
+    chk('y coincide con el catálogo', cuanto(unaVariante.id), unoSolo);
+    chk('y también es un número de verdad', true, Number.isInteger(unoSolo));
 
     /*
      * Un SKU que Stocker no conoce NO puede volver como cero: cero es "no
