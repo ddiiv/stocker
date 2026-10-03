@@ -106,7 +106,7 @@ Igual para los cinco tipos:
 - La plataforma manda **cantidades**; Stocker calcula el stock. No mandes stock ya calculado.
 
 > **Compatibilidad:** las rutas que ya existen (§ 3.1, § 3.2) aceptan **las dos formas**: el cuerpo
-> plano de `datos` en la raíz, con el que la tienda y el portal mayorista ya integraron, y el sobre.
+> plano de `datos` en la raíz —la forma contra la que se escribió el portal mayorista— y el sobre.
 > Las dos caen en **la misma clave de idempotencia**, así que el mismo pedido mandado de las dos
 > maneras es un solo pedido y se descuenta una sola vez (está probado: `scripts/test-tienda.cjs`).
 > El sobre es la forma recomendada de acá en adelante; quien ya integró no tiene que cambiar nada.
@@ -170,6 +170,22 @@ POST /api/integraciones/<origen>/devoluciones
 Stocker la guarda y la aplica después. La devolución **no** emite la nota de crédito sola: deja el
 movimiento para que el dueño lo confirme, porque la nota quema un CAE y eso no se deshace.
 
+**Tres cosas hay que resolver antes de construir esto, y ninguna es chica.** Las dejo escritas acá
+para que el día que se encare no se descubran a mitad de camino:
+
+1. **Un pedido de plataforma nunca llega a ser venta.** `PedidoPlataforma.saleId` existe en el modelo
+   y no se escribe en ningún lado: despachar convierte la reserva en egreso y no crea una `Sale`. Y
+   `Invoice.saleId` no admite nulo, así que un pedido de la cola **no se puede facturar**. Sin factura
+   no hay nota de crédito contra la cual acreditar la devolución. O se registra la venta y se factura
+   antes, o la devolución de un canal online no puede pasar por la maquinaria fiscal.
+2. **Una devolución parcial no reingresa stock sola.** `aplicarEfectos` devuelve stock sólo con la nota
+   total; si es parcial contesta «una nota parcial no dice qué unidades volvieron: cargá la devolución
+   a mano» y no mueve nada. El ejemplo de acá arriba —una unidad de un pedido de varias— es justamente
+   ese caso.
+3. **No hay dónde guardar una devolución pendiente.** No existe tabla ni estado para «llegó la
+   devolución y todavía nadie la confirmó». El `estado` de un pedido de plataforma va de `pendiente` a
+   `aceptado`/`parcial`/`rechazado` (más `cancelado`) y no tiene lugar para esto.
+
 ### 3.4 `compra` — **no corresponde a una plataforma de venta** ⛔
 
 La compra es mercadería que entra: la carga el negocio en Stocker, con su proveedor, su remito y su
@@ -181,6 +197,17 @@ escribirlo.
 
 Hoy el dinero de la venta online entra **con la venta** (campo `total`). No hay ruta para un cobro
 como movimiento propio.
+
+**Y para un canal que reserva antes de cobrar, eso no alcanza.** La tienda minorista hace exactamente
+eso: crea el pedido en Stocker con el pago pendiente —manda `pagoPendiente: true` y un `pagoDetalle`
+del tipo «Transferencia · vence 02/10 14:00»— y recién después levanta la marca cuando el dinero
+entra. **Stocker descarta esos dos campos**: `encolar` guarda sólo los de su lista, y no existe
+columna de cobro pendiente. El `total` que viaja es lo que se espera cobrar, no lo cobrado.
+
+La consecuencia es operativa y no de documentación: un pedido con transferencia pendiente entra
+idéntico a uno pagado, aparece en Envíos del Día como cualquier otro, y el depósito lo despacha sin
+que nadie haya pagado. **Hasta que el cobro exista como movimiento propio, un canal que reserva antes
+de cobrar tiene que retener el pedido de su lado** y mandarlo a Stocker cuando el dinero entró.
 
 Forma prevista cuando se construya:
 
@@ -215,10 +242,31 @@ ventas:
 | **Lo tengo pero no lo resolví** | `pendiente` | `202` | **Nada apartado todavía.** Pasa si el procesamiento no llegó a correr. No lo reenvíes como si se hubiera perdido: ya está guardado y Stocker lo resuelve solo (como máximo 15 minutos después). Lo que NO podés es decirle al cliente que está reservado. |
 | **Demasiados pedidos seguidos** | — | `429` | Nada. Ver abajo: este es el único que hay que reintentar con espera creciente. |
 
-> **Esta tabla es de la ruta de la tienda** (`/integraciones/tienda/pedidos`). La del portal
-> mayorista (`/integraciones/isuwaya/pedidos`) **no da 409 nunca**: ahí el pedido no se resuelve
-> contra el stock sino contra una persona, así que contesta 201 la primera vez, 200 el reenvío, y el
-> resultado se pregunta después por resoluciones (§ 5 b).
+> **Esta tabla es de la ruta de la tienda** (`/integraciones/tienda/pedidos`) y de cualquier otra
+> plataforma que entre por la cola de ventas online.
+
+**La ruta del portal mayorista es otra cosa y conviene verla aparte.** Ahí el pedido no se resuelve
+contra el stock sino contra una persona, así que no hay 409 ni estados de stock:
+
+| Caso | Estado | HTTP | Qué pasa |
+|---|---|---|---|
+| Entró la solicitud | `pendiente` | `201` | Queda para que alguien la acepte o la rechace. **No aparta stock.** |
+| Ya la tenía | el que tuviera | `200` | Nada. |
+| Llegó una entrega vieja, fuera de orden | — | `200` con `ignorado: true` | Se descartó a propósito. |
+| El pedido cambió después de que acá se revisó | — | `200` con `cambioTardio: true` | No se puede aplicar solo; hay que mirarlo en el panel. |
+
+- Los estados son **en femenino** —`pendiente`, `aceptada`, `rechazada`, `cancelada`— porque es una
+  solicitud y no un pedido. **No existen `parcial` ni `rechazado`.**
+- El cuerpo de la respuesta es `{ ok, id, pedidoExterno, estado, creada, repetido, ignorado,
+  cambioTardio }` y **no trae `motivo`**: el motivo del rechazo se lee por resoluciones (§ 5 b).
+- **Un SKU que Stocker no conoce no deja la solicitud `parcial`: la deja imposible de aceptar.** La
+  línea entra sin variante y la solicitud queda `pendiente`, pero al apretar aceptar Stocker corta con
+  `409` y código `SIN_IDENTIFICAR`, con la lista de los SKU que no reconoce. No hay media aceptación:
+  o se corrige el catálogo del origen y se manda de nuevo, o esa solicitud no avanza. **Es la
+  diferencia más importante con la ruta de la tienda**, que sí acepta en parte y aparta lo que conoce.
+- Aceptar **no mueve stock**: sólo se queda con la solicitud, con un UPDATE condicionado para que dos
+  personas apretando a la vez no generen dos ventas. El stock lo mueve la venta que se crea después, y
+  ahí es donde puede ir sin stock (stock fantasma): se suma lo que falta y se retira con la venta.
 
 ```json
 { "pedidoExterno": "ISU-1042", "estado": "parcial",
@@ -297,8 +345,14 @@ mal. **La plataforma no guarda el precio ni el stock como dato propio.**
 |---|---|---|---|---|---|
 | Tienda `isu` | ⚠️ la ruta está, **el cliente de la tienda no entra todavía** | ⚠️ ídem | ❌ | ⛔ | hoy viaja con la venta |
 | Pedidos Mayoristas | ✅ HTTP, a revisión — **no aparta stock** | desde la pantalla de Stocker | ❌ | ⛔ | en Stocker |
-| Mercado Libre | Stocker los va a buscar | — | en Stocker | ⛔ | en Stocker |
-| Jumpseller | Stocker los va a buscar | — | en Stocker | ⛔ | en Stocker |
+| Mercado Libre | ✅ webhook + el barrido busca lo nuevo | — | en Stocker | ⛔ | en Stocker |
+| Jumpseller | ⚠️ **sólo si alguien aprieta importar** | — | en Stocker | ⛔ | en Stocker |
+
+Los dos no están igual, y la diferencia importa. Mercado Libre avisa por webhook
+(`POST /api/mercadolibre/notificaciones`) y además el barrido de 15 minutos busca órdenes nuevas, así
+que una venta de ML entra sola. **Jumpseller no entra solo**: `importarPedidos` existe pero el barrido
+no lo llama, y el único camino es que alguien abra Stocker y apriete importar. Una venta de Jumpseller
+no aparta stock hasta que eso pasa.
 
 **Lo que le falta a la tienda para entrar.** La ruta de Stocker está y probada; el cliente de `isu`
 no coincide con ella en cinco puntos, y mientras siga así **todo checkout termina en un 400**:
@@ -313,8 +367,28 @@ no coincide con ella en cinco puntos, y mientras siga así **todo checkout termi
 5. Lee el catálogo y el stock con otros nombres (`generado`, `precio`, `cantidad`) que los que esta
    ruta devuelve (`generadoEn`, `precioMinorista`/`precioMayorista`, § 5).
 
+6. **Escucha dos canales de avisos que Stocker no emite.** Hace `LISTEN stocker_stock` esperando
+   `{"b": <negocio>, "s": ["SKU", …]}` en JSON, y `LISTEN stocker_tienda_envios` esperando
+   `{"b", "p": "ISU-1234", "e": "despachado"|"faltante"}`. Stocker emite **un solo** aviso y es otro:
+   `stock_cambio` con el texto `<negocio>:<variante>` (§ 5 c). Tres desajustes a la vez —el nombre del
+   canal, el formato y el identificador, que acá es la variante y allá el SKU—, así que **el aviso en
+   vivo no funciona en ninguna dirección** y no hay ningún aviso de despacho.
+7. **Espera un ciclo de pedido que este contrato no cubre**: marcar pagado, cargar el envío, consultar
+   el estado y dar de alta el cliente. Eso es el punto 4 visto desde el otro lado: no es que falten
+   cuatro rutas sueltas, es que la tienda da por hecho un ciclo completo que acá no está definido.
+   Antes de escribir esas rutas hay que decidir si Stocker las va a tener, porque dos de ellas —el
+   cobro y el alta de cliente— tocan dinero y datos personales.
+
 Arreglar sólo el punto 1 sería peor que no arreglar nada: el pedido entraría y el envío se perdería
-callado. Van los cinco juntos, y después se saca el ⚠️ de la tabla.
+callado. Van todos juntos, y después se saca el ⚠️ de la tabla.
+
+**Qué nombre cede y qué nombre no.** Para que la discusión no se repita: los precios se llaman
+`precioMinorista` y `precioMayorista` **a propósito** y eso no se negocia —en la ruta del portal
+mayorista `precio` ya significa el mayorista, y dos rutas con el mismo campo diciendo cosas distintas
+se descubre cobrando mal—. En cambio `generadoEn` contra `generado` es sólo la convención de Stocker
+(`recibidoEn`, `sincronizadoEn`, `ultimoUsoEn`): si al otro lado molesta, se discute. Y el `id` de la
+variante y el del producto padre, que la tienda pide y esta ruta no manda, son un pedido razonable:
+una tienda necesita una clave estable que no cambie si se corrige un SKU.
 
 **Mercado Libre y Jumpseller son el caso donde una cola sí tendría sentido**, y vale decirlo: la
 venta pasa del lado de ellos y Stocker se entera cuando importa pedidos o cuando corre el barrido de
