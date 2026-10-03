@@ -577,7 +577,19 @@ async function reservar(variantId, locationId, businessId, cantidad, t = null) {
       transaction: t,
     },
   );
-  if (tocadas > 0) await avisarAMercadoLibre(variantId, businessId, t);
+  /*
+   * Reservar BAJA lo publicable sin tocar `stock`.
+   *
+   * Lo que se publica es `stock - reservado` (stockPublicableService), así que
+   * apartar una prenda para un pedido online cambia lo que tiene que decir la
+   * vidriera igual que una venta en el mostrador. Mercado Libre ya se enteraba
+   * acá; la tienda no, y quedaba ofreciendo una prenda apartada hasta que algún
+   * otro movimiento la despertara.
+   */
+  if (tocadas > 0) {
+    await avisarAMercadoLibre(variantId, businessId, t);
+    await avisarCambioDeStock(businessId, variantId, t);
+  }
   return tocadas > 0;
 }
 
@@ -596,7 +608,11 @@ async function liberarReserva(variantId, locationId, businessId, cantidad, t = n
       transaction: t,
     },
   );
-  if (tocadas > 0) await avisarAMercadoLibre(variantId, businessId, t);
+  // Liberar es el mismo cambio al revés: vuelve a haber para vender.
+  if (tocadas > 0) {
+    await avisarAMercadoLibre(variantId, businessId, t);
+    await avisarCambioDeStock(businessId, variantId, t);
+  }
   return tocadas > 0;
 }
 

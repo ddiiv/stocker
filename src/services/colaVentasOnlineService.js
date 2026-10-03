@@ -152,6 +152,21 @@ async function encolar({ businessId, plataforma, pedidoExterno, items, comprador
     return { pedido: completo, repetido: false };
   } catch (e) {
     await t.rollback().catch(() => {});
+    /*
+     * Perdió la carrera contra el índice único, y ése es un final correcto.
+     *
+     * El SELECT de arriba no lo encontró porque el otro todavía no había
+     * commiteado. Ahora sí está: contestar "ya lo tenía" es exactamente lo que
+     * la plataforma necesita oír, y lo contrario —un 500— la haría reintentar
+     * para siempre contra un pedido que ya entró.
+     */
+    if (e?.name === 'SequelizeUniqueConstraintError') {
+      const ganador = await PedidoPlataforma.findOne({
+        where: { businessId, plataforma: cual, pedidoExterno: externo },
+        include: [{ model: PedidoPlataformaItem, as: 'items' }],
+      });
+      if (ganador) return { pedido: ganador, repetido: true };
+    }
     throw e;
   }
 }
@@ -596,6 +611,59 @@ async function procesarCola(businessId, { tope = 50 } = {}) {
   return resultado;
 }
 
+/*
+ * La red de abajo: los pedidos que quedaron 'pendiente' y nadie volvió a tocar.
+ *
+ * Un pedido se queda así cuando la fila se commiteó y el procesamiento no llegó
+ * a correr: un deploy de Railway en el medio, un deadlock, el pool agotado. El
+ * reenvío de la plataforma ahora lo levanta, pero no todas reenvían, y la
+ * plataforma puede no volver nunca. Sin esto, ese pedido no existe para nadie:
+ * no está en Envíos del Día —que sólo lista aceptado y parcial— y no hay botón
+ * que lo rescate.
+ *
+ * La gracia existe para no pelearle el lock al pedido que se está procesando en
+ * este mismo momento. `procesarUno` relee con lock y sale si ya no está
+ * 'pendiente', así que tomarlo de más sería correcto igual, sólo que inútil.
+ */
+const GRACIA_PENDIENTE_MS = Number(process.env.COLA_GRACIA_MS) || 2 * 60 * 1000;
+
+async function rescatarPendientes({ gracia = GRACIA_PENDIENTE_MS, tope = 200 } = {}) {
+  const { Op } = require('sequelize');
+  const colgados = await PedidoPlataforma.findAll({
+    where: {
+      estado: 'pendiente',
+      recibidoEn: { [Op.lt]: new Date(Date.now() - gracia) },
+    },
+    order: [['recibidoEn', 'ASC'], ['id', 'ASC']],
+    limit: tope,
+    attributes: ['id', 'businessId'],
+  });
+  if (!colgados.length) return { negocios: 0, procesados: 0 };
+
+  const porNegocio = new Set(colgados.map((p) => p.businessId));
+  let procesados = 0;
+  /*
+   * De a uno, y SÓLO los que pasaron la gracia.
+   *
+   * Pasarle el negocio a `procesarCola` sería más corto pero se llevaría puesta
+   * la gracia: esa función toma todos los pendientes del negocio, incluido el
+   * que está entrando en este segundo. La consulta de arriba ya viene ordenada
+   * por fecha de llegada, así que recorrerla en orden respeta la regla de toda
+   * la cola —el que entró primero se lleva la última unidad— dentro de cada
+   * negocio y entre negocios.
+   */
+  for (const p of colgados) {
+    const r = await procesarUno(p.id);
+    if (r) procesados += 1;
+  }
+  if (procesados) {
+    log.warn('cola-online', 'pedidos rescatados de pendiente', {
+      negocios: porNegocio.size, procesados,
+    });
+  }
+  return { negocios: porNegocio.size, procesados };
+}
+
 /**
  * Encola y procesa en el mismo pedido HTTP.
  *
@@ -605,12 +673,26 @@ async function procesarCola(businessId, { tope = 50 } = {}) {
  */
 async function encolarYProcesar(datos) {
   const { pedido, repetido } = await encolar(datos);
-  if (repetido || pedido.estado !== 'pendiente') return { pedido, repetido };
+  /*
+   * Lo que decide si hay que procesar es el ESTADO, no si el pedido es nuevo.
+   *
+   * Antes alcanzaba con que fuera un reenvío para devolverlo sin tocar: si el
+   * primer intento había commiteado la fila 'pendiente' y se moría ahí —un
+   * deploy de Railway en el medio, un deadlock, el pool agotado—, el reintento
+   * contestaba "ya lo tenía" y nadie volvía a mirar ese pedido nunca. La
+   * plataforma lo daba por entregado, en Stocker no había una sola unidad
+   * apartada, y el pedido no aparecía en ninguna pantalla.
+   *
+   * `procesarUno` relee con lock y sale solo si ya no está 'pendiente', así que
+   * llamarlo de más no cuesta nada ni aparta dos veces.
+   */
+  if (pedido.estado !== 'pendiente') return { pedido, repetido };
   const procesado = await procesarUno(pedido.id);
-  return { pedido: procesado || pedido, repetido: false };
+  return { pedido: procesado || pedido, repetido };
 }
 
 module.exports = {
   encolar, procesarUno, procesarCola, encolarYProcesar, reprocesar, PLATAFORMAS,
+  rescatarPendientes,
   partesDeItem, cancelarPorPlataforma,
 };

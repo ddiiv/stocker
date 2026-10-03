@@ -41,9 +41,12 @@ const chk = (t, e, o) => {
 const tit = (t) => console.log(`\n\x1b[1m${t}\x1b[0m`);
 
 const QA = 'QA-TIENDA-';
+// Lo que había en la fila de stock antes de la prueba, para devolverlo al final.
+let restaurarStock = null;
 
 const { requireIntegracion } = require('../src/middleware/integracion');
 const ctrl = require('../src/controllers/integracionesController');
+const cola = require('../src/services/colaVentasOnlineService');
 
 /*
  * Una llamada completa: primero la puerta —el mismo middleware que monta la
@@ -174,6 +177,23 @@ function llamar({ token, origen = 'tienda', handler, query = {}, params = {}, bo
 
     tit('5. EL PEDIDO ENTRA POR LA MISMA COLA');
     /*
+     * Stock conocido antes de empezar.
+     *
+     * Sin esto la suite depende de lo que haya en la base del que la corre: con
+     * cero, TODOS los pedidos salen rechazados y las pruebas del camino normal
+     * pasan o fallan por el inventario y no por el código. Se restaura al final.
+     */
+    const filaStock = await VariantStock.findOne({
+      where: { productVariantId: unaVariante.id },
+      order: [['locationId', 'ASC']],
+    });
+    const stockOriginal = filaStock
+      ? { id: filaStock.id, stock: filaStock.stock, reservado: filaStock.reservado }
+      : null;
+    if (filaStock) await filaStock.update({ stock: 20, reservado: 0 });
+    restaurarStock = stockOriginal;
+    chk('la prueba arranca con stock para apartar', true, Boolean(filaStock));
+    /*
      * Por la cola de siempre y no por una propia: el que aparta mercadería
      * tiene que ser uno solo, en orden de llegada, o dos canales se llevan la
      * misma última unidad.
@@ -207,6 +227,7 @@ function llamar({ token, origen = 'tienda', handler, query = {}, params = {}, bo
     });
     chk('reenviarlo no crea otro ni aparta de nuevo', [200, true],
       [repetido.status, repetido.json?.repetido]);
+    chk('y el pedido quedó apartado, no rechazado', 'aceptado', repetido.json?.estado);
     chk('y sigue habiendo un solo pedido', 1,
       await PedidoPlataforma.count({
         where: { businessId: negocio.id, plataforma: 'tienda', pedidoExterno: `${QA}001` },
@@ -301,9 +322,112 @@ function llamar({ token, origen = 'tienda', handler, query = {}, params = {}, bo
         token, handler: ctrl.cancelarPedidoDeTienda, params: { pedidoExterno: `${QA}002` },
         body: { contrato: 1, tipo: 'cancelacion', id: `isu:${QA}002`, datos: { motivo: 'Pago vencido' } },
       }).catch(fallo)).status);
+
+    /*
+     * ── El pedido que quedó a mitad de camino ─────────────────────
+     *
+     * Una fila 'pendiente' significa que la venta entró y el stock NO se
+     * apartó: el primer intento commiteó la fila y se murió antes de procesar
+     * —un deploy de Railway en el medio, un deadlock—. Antes el reenvío
+     * contestaba "ya lo tenía" sin mirar el estado, la plataforma lo daba por
+     * entregado, y ese pedido no volvía a existir para nadie.
+     */
+    tit('El pedido que quedó pendiente');
+    const colgado = await PedidoPlataforma.create({
+      businessId: negocio.id, plataforma: 'tienda', pedidoExterno: `${QA}010`,
+      estado: 'pendiente', recibidoEn: new Date(),
+    });
+    await PedidoPlataformaItem.create({
+      pedidoId: colgado.id, sku: unaVariante.sku, cantidad: 1, precioUnitario: 1000,
+    });
+    chk('arranca pendiente, sin nada apartado', 'pendiente', colgado.estado);
+
+    const reenvio = await llamar({
+      token, handler: ctrl.pedidoDeTienda,
+      body: { pedidoExterno: `${QA}010`, items: [{ sku: unaVariante.sku, cantidad: 1 }], total: 1000 },
+    }).catch(fallo);
+    await colgado.reload();
+    chk('el reenvío lo procesa en vez de devolverlo sin tocar', true,
+      colgado.estado !== 'pendiente');
+    chk('y contesta 2xx, no un error', true, [200, 201, 409].includes(reenvio.status));
+
+    /*
+     * Y si la plataforma no reenvía nunca, lo levanta el rescate del reloj. La
+     * gracia existe para no pelearle el lock al que se está procesando ahora.
+     */
+    const viejo = await PedidoPlataforma.create({
+      businessId: negocio.id, plataforma: 'tienda', pedidoExterno: `${QA}011`,
+      estado: 'pendiente', recibidoEn: new Date(Date.now() - 10 * 60 * 1000),
+    });
+    await PedidoPlataformaItem.create({
+      pedidoId: viejo.id, sku: unaVariante.sku, cantidad: 1, precioUnitario: 1000,
+    });
+    const recien = await PedidoPlataforma.create({
+      businessId: negocio.id, plataforma: 'tienda', pedidoExterno: `${QA}012`,
+      estado: 'pendiente', recibidoEn: new Date(),
+    });
+    await PedidoPlataformaItem.create({
+      pedidoId: recien.id, sku: unaVariante.sku, cantidad: 1, precioUnitario: 1000,
+    });
+    await cola.rescatarPendientes();
+    await viejo.reload(); await recien.reload();
+    chk('el rescate levanta el que quedó colgado', true, viejo.estado !== 'pendiente');
+    chk('y no toca el que acaba de entrar', 'pendiente', recien.estado);
+
+    /*
+     * ── El reenvío de un pedido RECHAZADO ─────────────────────────
+     *
+     * Antes el código lo decidía el reenvío: un pedido que se había rechazado
+     * por falta de stock contestaba 200 la segunda vez, y la tienda se quedaba
+     * creyendo que estaba apartado. Ahora el estado manda sobre el reenvío.
+     */
+    tit('El reenvío de un rechazado');
+    if (filaStock) await filaStock.update({ stock: 0, reservado: 0 });
+    const sinStock = await llamar({
+      token, handler: ctrl.pedidoDeTienda,
+      body: { pedidoExterno: `${QA}020`, items: [{ sku: unaVariante.sku, cantidad: 3 }], total: 3000 },
+    }).catch(fallo);
+    chk('sin stock se rechaza con 409', [409, 'rechazado'], [sinStock.status, sinStock.json?.estado]);
+    const otraVez = await llamar({
+      token, handler: ctrl.pedidoDeTienda,
+      body: { pedidoExterno: `${QA}020`, items: [{ sku: unaVariante.sku, cantidad: 3 }], total: 3000 },
+    }).catch(fallo);
+    chk('y el reenvío sigue diciendo 409, no 200', 409, otraVez.status);
+    if (filaStock) await filaStock.update({ stock: 20, reservado: 0 });
+
+    /*
+     * ── La idempotencia, en la base y no sólo en el código ────────
+     *
+     * Dos reintentos que entran JUNTOS no se ven entre sí en el SELECT previo.
+     * Lo que los ordena es el índice único: uno entra y el otro recibe "ya lo
+     * tenía", nunca un 500 ni una segunda reserva.
+     */
+    tit('Dos reintentos a la vez');
+    const juntos = await Promise.all([
+      cola.encolar({ businessId: negocio.id, plataforma: 'tienda', pedidoExterno: `${QA}013`,
+        items: [{ sku: unaVariante.sku, cantidad: 1 }], total: 1000 }).catch((e) => ({ error: e.name })),
+      cola.encolar({ businessId: negocio.id, plataforma: 'tienda', pedidoExterno: `${QA}013`,
+        items: [{ sku: unaVariante.sku, cantidad: 1 }], total: 1000 }).catch((e) => ({ error: e.name })),
+    ]);
+    chk('ninguno de los dos falla', [undefined, undefined],
+      [juntos[0].error, juntos[1].error]);
+    chk('queda UN solo pedido', 1,
+      await PedidoPlataforma.count({
+        where: { businessId: negocio.id, plataforma: 'tienda', pedidoExterno: `${QA}013` },
+      }));
+    chk('y uno de los dos se enteró de que ya estaba', true,
+      Boolean(juntos[0].repetido) !== Boolean(juntos[1].repetido));
   } finally {
     tit('Limpieza');
     await limpiar();
+    if (restaurarStock) {
+      await VariantStock.update(
+        { stock: restaurarStock.stock, reservado: restaurarStock.reservado },
+        { where: { id: restaurarStock.id } },
+      );
+    }
+    chk('el stock quedó como estaba', true, !restaurarStock || Boolean(
+      (await VariantStock.findByPk(restaurarStock.id))?.stock === restaurarStock.stock));
     chk('no queda nada de la prueba', [0, 0],
       [await IntegracionExterna.count({ where: { nombre: { [Op.like]: 'QA tienda%' } } }),
         await PedidoPlataforma.count({ where: { pedidoExterno: { [Op.like]: `${QA}%` } } })]);

@@ -24,10 +24,16 @@ desmentirlo. Eso no es una mejora de transporte, es sacar la autorización del m
 
 **2. Dos caminos para el mismo movimiento es como se descuenta dos veces.** La regla 5 de
 `REDIS-COMPARTIDO.md` dice —y tiene razón— que el canal que puede reservar al vender lo sigue
-haciendo. La tienda y el portal mayorista son justamente esos: ya mandan la venta por HTTP y Stocker
-aparta el stock en el momento, en orden de llegada. Si además publicaran el mismo movimiento en una
-cola, el segundo camino no agrega nada y sí agrega el riesgo de que las dos claves de idempotencia no
-coincidan por un guion de diferencia.
+haciendo. La ruta de la tienda es ésa: entra por HTTP y Stocker aparta el stock en el momento, en
+orden de llegada. Si además publicara el mismo movimiento en una cola, el segundo camino no agrega
+nada y sí agrega el riesgo de que las dos claves de idempotencia no coincidan por un guion.
+
+Dos precisiones que una auditoría de este documento corrigió, porque la versión anterior decía de más:
+**el portal mayorista no aparta nada** —deja una solicitud que una persona acepta o rechaza, y puede
+aceptarse sin stock (§ 3.1)—, y **la tienda todavía no entra**: su cliente no habla este contrato
+(§ 6). Así que hoy el argumento del doble camino vale para la ruta, no para un tráfico que ya exista.
+No cambia la conclusión, porque la razón 1 sola alcanza, pero quien lea esto tiene que saber qué está
+andando y qué no.
 
 **Lo que sí hace falta, y es lo que este documento define, es que los cinco tipos de movimiento
 tengan UNA forma igual para todos los canales.** Eso era el valor real de la propuesta y acá está.
@@ -87,6 +93,9 @@ Igual para los cinco tipos:
 - Fijo y único: el mismo movimiento reenviado lleva **el mismo `id`**, siempre, para siempre.
 - Si llega dos veces, Stocker lo procesa **una sola vez** y en la segunda contesta `200` con el
   estado que ya tenía. Nunca descuenta dos veces.
+- Esto lo sostiene un **índice único en la base** sobre (negocio, plataforma, número de pedido), no
+  sólo una consulta previa: dos reintentos que entran en el mismo instante no se ven entre sí, y el
+  que pierde recibe `200` «ya lo tenía». Antes de la auditoría esta garantía era una carrera.
 - No lo armes con la hora, un azar ni un contador del reintento: eso rompe la idempotencia justo en
   el caso que la necesita.
 - **El prefijo se corta en el primer `:`**, y lo de atrás viaja entero. `ml:2000:123` es el pedido
@@ -203,7 +212,13 @@ ventas:
 | `contrato` que no entendemos | — | `400` | Nada. No lo interpreta con otra versión. |
 | `tipo` que no es el de la ruta | — | `400` | Nada. Es el error más caro: se corta acá. |
 | Credencial que no sirve | — | `401` | Nada. No distingue «no existe» de «revocada». |
+| **Lo tengo pero no lo resolví** | `pendiente` | `202` | **Nada apartado todavía.** Pasa si el procesamiento no llegó a correr. No lo reenvíes como si se hubiera perdido: ya está guardado y Stocker lo resuelve solo (como máximo 15 minutos después). Lo que NO podés es decirle al cliente que está reservado. |
 | **Demasiados pedidos seguidos** | — | `429` | Nada. Ver abajo: este es el único que hay que reintentar con espera creciente. |
+
+> **Esta tabla es de la ruta de la tienda** (`/integraciones/tienda/pedidos`). La del portal
+> mayorista (`/integraciones/isuwaya/pedidos`) **no da 409 nunca**: ahí el pedido no se resuelve
+> contra el stock sino contra una persona, así que contesta 201 la primera vez, 200 el reenvío, y el
+> resultado se pregunta después por resoluciones (§ 5 b).
 
 ```json
 { "pedidoExterno": "ISU-1042", "estado": "parcial",
@@ -255,6 +270,11 @@ NOTIFY stock_cambio, '<businessId>:<variantId>'
 Llega al `commit`; un `rollback` se lo lleva, así que no avisa cambios que no pasaron. Es **sólo un
 aviso para invalidar caché**: la cantidad se pregunta siempre a Stocker.
 
+«Cada movimiento» incluye **apartar y liberar una reserva**, y eso hay que decirlo porque hasta la
+auditoría no era cierto: lo publicable es `stock - reservado`, así que un pedido online que aparta una
+prenda cambia lo que la vidriera tiene que decir sin tocar `stock`. Mercado Libre se enteraba de eso y
+la tienda no, que es justo el canal que mira este aviso.
+
 ```
 GET /api/integraciones/tienda/catalogo          — todo, con precios y publicable
 GET /api/integraciones/tienda/stock?skus=A,B,C  — lo del carrito
@@ -275,10 +295,26 @@ mal. **La plataforma no guarda el precio ni el stock como dato propio.**
 
 | Canal | venta | cancelación | devolución | compra | cobro |
 |---|---|---|---|---|---|
-| Tienda `isu` | ✅ HTTP, aparta en el momento | ✅ | ❌ | ⛔ | con la venta |
-| Pedidos Mayoristas | ✅ HTTP, a revisión | desde la pantalla | ❌ | ⛔ | en Stocker |
+| Tienda `isu` | ⚠️ la ruta está, **el cliente de la tienda no entra todavía** | ⚠️ ídem | ❌ | ⛔ | hoy viaja con la venta |
+| Pedidos Mayoristas | ✅ HTTP, a revisión — **no aparta stock** | desde la pantalla de Stocker | ❌ | ⛔ | en Stocker |
 | Mercado Libre | Stocker los va a buscar | — | en Stocker | ⛔ | en Stocker |
 | Jumpseller | Stocker los va a buscar | — | en Stocker | ⛔ | en Stocker |
+
+**Lo que le falta a la tienda para entrar.** La ruta de Stocker está y probada; el cliente de `isu`
+no coincide con ella en cinco puntos, y mientras siga así **todo checkout termina en un 400**:
+
+1. Manda el número de pedido en `pedido` y esta ruta lo lee en `pedidoExterno` (§ 3.1). Es el que
+   corta: `encolar` rechaza antes de tocar la base.
+2. Valida la respuesta con un esquema que pide `id`, `pagoPendiente`, `estadoEnvio`, `despachadoEn`,
+   `canceladoEn` y `faltantes`; esta ruta devuelve `{ pedidoExterno, estado, motivo, repetido }`.
+3. Manda `pagoPendiente`, `pagoDetalle` y `envio`, y **esta ruta los ignora**: el tipo de envío y el
+   corte del día no llegan, así que el pedido entraría invisible para Envíos del Día.
+4. Llama a `/pedidos/:n`, `/pedidos/:n/pagado`, `/pedidos/:n/envio` y `/clientes`, que no existen.
+5. Lee el catálogo y el stock con otros nombres (`generado`, `precio`, `cantidad`) que los que esta
+   ruta devuelve (`generadoEn`, `precioMinorista`/`precioMayorista`, § 5).
+
+Arreglar sólo el punto 1 sería peor que no arreglar nada: el pedido entraría y el envío se perdería
+callado. Van los cinco juntos, y después se saca el ⚠️ de la tabla.
 
 **Mercado Libre y Jumpseller son el caso donde una cola sí tendría sentido**, y vale decirlo: la
 venta pasa del lado de ellos y Stocker se entera cuando importa pedidos o cuando corre el barrido de

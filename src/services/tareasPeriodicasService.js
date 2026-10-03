@@ -31,6 +31,7 @@ const jumpseller = require('./jumpsellerService');
 const arca = require('./arcaService');
 const postventa = require('./mercadolibrePostventaService');
 const mlPedidos = require('./mercadolibrePedidosService');
+const cola = require('./colaVentasOnlineService');
 const { MercadoLibreAccount, JumpsellerAccount } = require('../models');
 const { log } = require('../utils/logger');
 
@@ -226,6 +227,22 @@ async function tick() {
     if (process.env.ARCA_DELEGACIONES !== 'off') await arca.sincronizarTodasLasDelegaciones();
   } catch (e) {
     log.warn('arca', 'el barrido de delegaciones se cayó entero', { motivo: e.message });
+  }
+  /*
+   * Los pedidos online que quedaron a mitad de camino.
+   *
+   * Es la red debajo de la cola: una fila 'pendiente' significa que la venta
+   * entró y el stock no se apartó. Hasta que alguien la procese, el inventario
+   * sigue ofreciendo mercadería vendida, y esa fila no aparece en ninguna
+   * pantalla —Envíos del Día sólo lista aceptado y parcial—. Si la plataforma
+   * reenvía, se arregla sola en el reenvío; si no reenvía, se arregla acá.
+   *
+   * Cuesta una consulta por vuelta cuando no hay nada colgado, que es siempre.
+   */
+  try {
+    if (process.env.COLA_RESCATE !== 'off') await cola.rescatarPendientes();
+  } catch (e) {
+    log.warn('cola-online', 'el rescate de pendientes se cayó entero', { motivo: e.message });
   } finally {
     corriendo = false;
   }

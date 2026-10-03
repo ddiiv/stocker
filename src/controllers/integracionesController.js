@@ -133,12 +133,23 @@ const pedidoDeTienda = async (req, res, next) => {
       total: datos.total ?? null,
     });
     /*
-     * El código dice qué pasó sin tener que leer estados: 201 lo tomé ahora,
-     * 200 ya lo tenía, 409 no hay stock. La tienda reintenta sobre cualquier
-     * cosa que no sea 2xx, así que un pedido repetido tiene que dar 200.
+     * El código lo decide el ESTADO primero, y recién después si es un reenvío.
+     *
+     * 201 lo tomé ahora · 200 ya lo tenía y está resuelto · 409 no hay stock ·
+     * 202 lo tengo pero todavía no lo resolví.
+     *
+     * El orden importa por dos casos que antes contestaban mal. Un reenvío que
+     * ahora se rechaza por falta de stock daba 200, y la tienda se quedaba
+     * creyendo que estaba apartado. Y un pedido que quedó 'pendiente' —el
+     * primer intento commiteó la fila y se murió antes de apartar— también daba
+     * 200: la plataforma lo sacaba de su cola y el pedido quedaba sin una sola
+     * unidad reservada. El 202 dice las dos cosas que hacen falta: lo tengo
+     * guardado, no lo resuelvas de nuevo, y todavía no hay nada apartado.
      */
     const estado = r.pedido?.estado;
-    const codigo = r.repetido ? 200 : (estado === 'rechazado' ? 409 : 201);
+    const codigo = estado === 'rechazado' ? 409
+      : estado === 'pendiente' ? 202
+      : r.repetido ? 200 : 201;
     res.status(codigo).json({
       pedidoExterno: r.pedido?.pedidoExterno,
       estado,

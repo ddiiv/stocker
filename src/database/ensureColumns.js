@@ -296,6 +296,33 @@ const COLUMNAS_ESPERADAS = {
  */
 const INDICES = [
   /*
+   * La idempotencia de las ventas online, en la base y no sólo en el código.
+   *
+   * `colaVentasOnlineService.encolar` busca el pedido antes de crearlo y, si lo
+   * encuentra, contesta "ya lo tenía" sin apartar de nuevo. Eso alcanza para el
+   * reintento normal —el webhook que llega dos veces, una después de la otra—,
+   * pero no para dos que entren JUNTOS: los dos SELECT no encuentran nada, los
+   * dos INSERT pasan, y la misma venta descuenta dos veces. El caso real es el
+   * worker de una plataforma vaciando una cola después de un corte, con dos
+   * trabajos del mismo pedido en vuelo.
+   *
+   * El modelo decía en un comentario que este índice existía. No existía: el
+   * contrato de movimientos promete "si llega dos veces, se procesa una sola
+   * vez", y hasta acá eso lo sostenía una carrera.
+   *
+   * Si ya hubiera duplicados de antes, no se crea y se avisa: hay que resolverlos
+   * a mano, porque elegir cuál de dos ventas sobrevive no es decisión de un
+   * arranque.
+   */
+  {
+    tabla: 'plataforma_pedidos',
+    nombre: 'uq_plataforma_pedido_externo',
+    columnas: ['businessId', 'plataforma', 'pedidoExterno'],
+    unico: true,
+    requiere: 'SELECT COUNT(*) AS faltan FROM (SELECT 1 AS x FROM plataforma_pedidos GROUP BY businessId, plataforma, pedidoExterno HAVING COUNT(*) > 1) d',
+    requierePg: 'SELECT COUNT(*) AS faltan FROM (SELECT 1 AS x FROM plataforma_pedidos GROUP BY "businessId", plataforma, "pedidoExterno" HAVING COUNT(*) > 1) d',
+  },
+  /*
    * El SKU de un producto es único DENTRO del negocio, no en todo Stocker.
    *
    * Las bases viejas traen `uq_products_sku` sobre la columna sola, de cuando
