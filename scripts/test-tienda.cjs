@@ -152,6 +152,22 @@ function llamar({ token, origen = 'tienda', handler, query = {}, params = {}, bo
     chk('y es un número, no un null ni un NaN', true,
       Number.isInteger(enCatalogo?.publicable));
 
+    /*
+     * Los ids, que son la clave con la que la tienda engancha lo suyo.
+     *
+     * Un SKU se corrige —alguien le arregla un typo— y la tienda perdería el
+     * enganche con sus fotos y su texto si hubiera guardado el SKU como
+     * identidad. Además el aviso `stock_cambio` viaja por id de variante, así
+     * que sin esto la tienda no puede traducirlo a un SKU suyo.
+     */
+    const padreDelCatalogo = (catalogo.json.productos || []).find((p) => (p.variantes || []).length);
+    chk('el producto trae su id, no sólo el SKU', true,
+      Number.isInteger(padreDelCatalogo?.id) && padreDelCatalogo.id > 0);
+    chk('y cada variante trae el suyo', true,
+      (padreDelCatalogo?.variantes || []).every((v) => Number.isInteger(v.id) && v.id > 0));
+    chk('y el id de la variante es el de Stocker, el mismo que viaja en stock_cambio',
+      true, variantes.some((v) => v.id === padreDelCatalogo.variantes[0].id));
+
     tit('3. EL STOCK DE UNOS SKU');
     const skus = variantes.slice(0, 3).map((v) => v.sku).filter(Boolean);
     const consulta = await llamar({ token, handler: ctrl.stockTienda, query: { skus: skus.join(',') } });
@@ -385,6 +401,51 @@ function llamar({ token, origen = 'tienda', handler, query = {}, params = {}, bo
     await viejo.reload(); await recien.reload();
     chk('el rescate levanta el que quedó colgado', true, viejo.estado !== 'pendiente');
     chk('y no toca el que acaba de entrar', 'pendiente', recien.estado);
+
+    /*
+     * ── El envío, que la jornada del depósito necesita ────────────
+     *
+     * Las columnas ya existían para Mercado Libre y `encolar` las descartaba, así
+     * que un pedido de la tienda entraba sin tipo y sin corte: un paquete sin
+     * reloj, al final de una lista que se ordena por el corte.
+     */
+    tit('El envío del pedido');
+    const corte = new Date(Date.now() + 6 * 3600 * 1000);
+    const conEnvio = await llamar({
+      token, handler: ctrl.pedidoDeTienda,
+      body: {
+        contrato: 1, tipo: 'venta', id: `isu:${QA}030`,
+        datos: {
+          items: [{ sku: unaVariante.sku, cantidad: 1 }], total: 1000,
+          envio: { tipo: 'correo_argentino', despacharAntesDe: corte.toISOString() },
+        },
+      },
+    }).catch(fallo);
+    chk('el pedido con envío entra', true, [201, 409].includes(conEnvio.status));
+    const guardado = await PedidoPlataforma.findOne({
+      where: { businessId: negocio.id, plataforma: 'tienda', pedidoExterno: `${QA}030` },
+    });
+    chk('y el tipo de envío se guarda tal cual', 'correo_argentino', guardado?.envioTipo);
+    chk('y el corte del día también', corte.toISOString().slice(0, 16),
+      guardado?.despacharAntesDe ? new Date(guardado.despacharAntesDe).toISOString().slice(0, 16) : null);
+
+    /*
+     * Una fecha que no se entiende no puede voltear una venta: se descarta y el
+     * paquete queda sin reloj, pero el pedido entra.
+     */
+    const fechaMala = await llamar({
+      token, handler: ctrl.pedidoDeTienda,
+      body: {
+        pedidoExterno: `${QA}031`, items: [{ sku: unaVariante.sku, cantidad: 1 }], total: 1000,
+        envio: { tipo: 'retiro', despacharAntesDe: 'el jueves a la tarde' },
+      },
+    }).catch(fallo);
+    chk('una fecha de corte ilegible no tira el pedido', true, [201, 409].includes(fechaMala.status));
+    const conMala = await PedidoPlataforma.findOne({
+      where: { businessId: negocio.id, plataforma: 'tienda', pedidoExterno: `${QA}031` },
+    });
+    chk('entra igual, con el tipo puesto y sin corte', ['retiro', null],
+      [conMala?.envioTipo, conMala?.despacharAntesDe ?? null]);
 
     /*
      * ── El reenvío de un pedido RECHAZADO ─────────────────────────

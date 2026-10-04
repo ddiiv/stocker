@@ -131,6 +131,9 @@ const pedidoDeTienda = async (req, res, next) => {
       items: datos.items,
       comprador: datos.comprador,
       total: datos.total ?? null,
+      // Con qué sale y hasta cuándo hay para despacharlo: es lo que arma la
+      // jornada del depósito. Sin esto el paquete entra sin reloj.
+      envio: datos.envio ?? null,
     });
     /*
      * El código lo decide el ESTADO primero, y recién después si es un reenvío.

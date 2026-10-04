@@ -51,6 +51,20 @@ const error = (mensaje, status = 400, extra = {}) =>
   Object.assign(new Error(mensaje), { status, ...extra });
 
 /** Recorta un texto al largo de su columna. Vacío se guarda como null. */
+/*
+ * El corte del día, o nada.
+ *
+ * Viene de afuera y es un texto. Una fecha inválida guardada tal cual hace
+ * fallar el INSERT con un error de base que no dice qué pasó, y el pedido —que
+ * es una venta real— se perdería por un campo que sólo sirve para ordenar una
+ * lista. Si no se entiende, se descarta y el paquete queda sin reloj.
+ */
+function fechaDeCorte(valor) {
+  if (!valor) return null;
+  const d = new Date(valor);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
 const recortar = (v, largo) => {
   const t = String(v ?? '').trim();
   return t ? t.slice(0, largo) : null;
@@ -63,7 +77,9 @@ const recortar = (v, largo) => {
  * plataforma —Jumpseller corta a los 15 segundos— y procesar después con
  * calma, en orden y de a uno.
  */
-async function encolar({ businessId, plataforma, pedidoExterno, items, comprador = {}, total = null }) {
+async function encolar({
+  businessId, plataforma, pedidoExterno, items, comprador = {}, total = null, envio = null,
+}) {
   const cual = String(plataforma || '').toLowerCase();
   if (!PLATAFORMAS.includes(cual)) {
     throw error(`Plataforma desconocida: ${plataforma}. Las válidas son ${PLATAFORMAS.join(', ')}.`);
@@ -135,6 +151,24 @@ async function encolar({ businessId, plataforma, pedidoExterno, items, comprador
       compradorDocumento: recortar(comprador.documento, 20),
       compradorEmail:     recortar(comprador.email, 150),
       total: total != null ? total : null,
+      /*
+       * Con qué sale, si la plataforma lo sabe al vender.
+       *
+       * Las columnas ya existían para Mercado Libre y `encolar` las ignoraba, así
+       * que un pedido de la tienda entraba sin tipo de envío y sin corte: para el
+       * depósito era un paquete sin reloj y sin forma de despacho, al final de
+       * una lista que se ordena justamente por el corte.
+       *
+       * `envioTipo` es texto libre a propósito: la pantalla sólo le da un
+       * significado especial a 'flex' (el de Mercado Libre, que tiene reloj) y
+       * deja pasar el resto. Así los de la tienda —retiro, envio,
+       * correo_argentino, andreani, oca, mercado_envios, cabify— entran sin que
+       * haya que tocar nada allá.
+       */
+      envioTipo:        recortar(envio?.tipo, 30),
+      despacharAntesDe: fechaDeCorte(envio?.despacharAntesDe),
+      // El seguimiento normalmente llega después, cuando se genera la etiqueta.
+      envioId:          recortar(envio?.seguimiento, 60),
       recibidoEn: new Date(),
     }, { transaction: t });
 

@@ -62,6 +62,18 @@ async function catalogo({ businessId }) {
 
     if (!porPadre.has(clave)) {
       porPadre.set(clave, {
+        /*
+         * El id del producto, además del SKU.
+         *
+         * Es la clave con la que la tienda engancha sus propias filas, y existe
+         * porque un SKU se corrige: alguien le arregla un typo y, si la tienda
+         * guardó el SKU como identidad, pierde el enganche con sus fotos, su
+         * texto y su categoría. El id no cambia nunca.
+         *
+         * Va el del producto padre que agrupa, que es el que la tienda muestra
+         * como una ficha.
+         */
+        id: p.id,
         skuAgrupador: clave,
         titulo: p.titulo,
         descripcion: p.descripcion || null,
@@ -72,6 +84,10 @@ async function catalogo({ businessId }) {
       });
     }
     porPadre.get(clave).variantes.push({
+      // El id de la variante, por lo mismo que el del producto. Y además es lo
+      // que viaja en el aviso `stock_cambio` (<negocio>:<variante>), así que sin
+      // esto la tienda no puede traducir el aviso a un SKU suyo.
+      id: v.id,
       sku: v.sku,
       color: v.color || null,
       talle: v.talle || null,
