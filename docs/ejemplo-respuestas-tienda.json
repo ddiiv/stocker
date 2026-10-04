@@ -1,11 +1,14 @@
 {
   "_leeme": "Respuestas reales de un Stocker de desarrollo, recortadas a dos productos. Los nombres y los precios son del negocio de demo. Se generó para que la tienda escriba su cliente contra la forma real y no contra una adivinanza.",
   "GET /api/integraciones/tienda/catalogo": {
+    "negocio": 2,
     "productos": [
       {
         "id": 16,
         "skuAgrupador": "ISUABEPAN",
         "titulo": "Abel Pantalón Hombre",
+        "precioMinorista": 32000,
+        "precioMayorista": 20000,
         "descripcion": null,
         "categoria": "Pantalones",
         "modelo": "ABEL",
@@ -267,6 +270,8 @@
         "id": 17,
         "skuAgrupador": "ISUABYCAM",
         "titulo": "Abyys Campera Hombre",
+        "precioMinorista": 32000,
+        "precioMayorista": 20000,
         "descripcion": null,
         "categoria": "Camperas",
         "modelo": "ABYYS",
@@ -387,7 +392,7 @@
     ],
     "truncado": false,
     "sinLocalesOnline": false,
-    "generadoEn": "2026-10-04T04:51:46.621Z"
+    "generadoEn": "2026-10-04T06:14:01.806Z"
   },
   "GET /api/integraciones/tienda/stock?skus=ISUABEPANNEGS,ISUABEPANNEGM,ISUABEPANNEGL,ISUABEPANNEGXL,NO-EXISTE-EN-STOCKER": {
     "stock": {
@@ -399,6 +404,6 @@
     "desconocidos": [
       "NO-EXISTE-EN-STOCKER"
     ],
-    "generadoEn": "2026-10-04T04:51:46.642Z"
+    "generadoEn": "2026-10-04T06:14:01.826Z"
   }
 }

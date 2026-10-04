@@ -76,6 +76,16 @@ async function catalogo({ businessId }) {
         id: p.id,
         skuAgrupador: clave,
         titulo: p.titulo,
+        /*
+         * El precio del producto, además del de cada variante.
+         *
+         * Es el que una ficha muestra antes de que el cliente elija talle. Las
+         * variantes pueden tener el suyo —nulo significa "usa el del producto"—,
+         * así que sin este número una ficha cuyas variantes no lo pisan no tiene
+         * precio que mostrar.
+         */
+        precioMinorista: precioMinorista(null, p),
+        precioMayorista: precioMayorista(null, p),
         descripcion: p.descripcion || null,
         categoria: p.categoria || null,
         modelo: p.modelo || null,
@@ -115,6 +125,16 @@ async function catalogo({ businessId }) {
   }
 
   return {
+    /*
+     * De qué negocio es este catálogo.
+     *
+     * La credencial ya lo determina del lado de Stocker, pero la tienda lo
+     * necesita del suyo: guarda los productos contra un negocio, y si algún día
+     * una credencial se reemplaza por la de otro negocio sin que nadie lo note,
+     * el dato en la respuesta es lo único que lo delata antes de mezclar dos
+     * catálogos en la misma base.
+     */
+    negocio: businessId,
     productos: [...porPadre.values()],
     truncado,
     /*

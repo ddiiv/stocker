@@ -168,6 +168,23 @@ function llamar({ token, origen = 'tienda', handler, query = {}, params = {}, bo
     chk('y el id de la variante es el de Stocker, el mismo que viaja en stock_cambio',
       true, variantes.some((v) => v.id === padreDelCatalogo.variantes[0].id));
 
+    /*
+     * El negocio y el precio del padre, que el importador de la tienda exige.
+     *
+     * El negocio existe porque la tienda guarda los productos contra uno: si
+     * algún día una credencial se reemplaza por la de otro negocio sin que nadie
+     * lo note, este dato es lo único que lo delata antes de mezclar dos catálogos
+     * en la misma base. Y el precio del padre es el que la ficha muestra antes de
+     * que el cliente elija talle: una variante con precio nulo usa el del
+     * producto, así que sin este número esa ficha no tiene nada que mostrar.
+     */
+    chk('el catálogo dice de qué negocio es', negocio.id, catalogo.json?.negocio);
+    chk('y el producto trae su propio precio, además del de cada variante', true,
+      typeof padreDelCatalogo?.precioMinorista === 'number'
+        && typeof padreDelCatalogo?.precioMayorista === 'number');
+    chk('que no es NaN ni negativo', true,
+      Number.isFinite(padreDelCatalogo?.precioMinorista) && padreDelCatalogo.precioMinorista >= 0);
+
     tit('3. EL STOCK DE UNOS SKU');
     const skus = variantes.slice(0, 3).map((v) => v.sku).filter(Boolean);
     const consulta = await llamar({ token, handler: ctrl.stockTienda, query: { skus: skus.join(',') } });
