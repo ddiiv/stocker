@@ -27,12 +27,30 @@ require('dotenv').config({ path: __dirname + '/../.env' });
 const { Op } = require('sequelize');
 const db = require('../src/config/database');
 const {
-  Business, ProductVariant, VariantStock, PedidoPlataforma, PedidoPlataformaItem,
+  Business, ProductVariant, VariantStock, PedidoPlataforma, PedidoPlataformaItem, PlataformaCobro, IntegracionExterna,
 } = require('../src/models');
 const envios = require('../src/services/enviosDelDiaService');
 const cola = require('../src/services/colaVentasOnlineService');
 const { variantesPublicables, cantidadesPublicables } = require('../src/services/stockPublicableService');
 const { localesQueAbastecenOnline } = require('../src/services/stockService');
+
+const { requireIntegracion } = require('../src/middleware/integracion');
+const ctrl = require('../src/controllers/integracionesController');
+const integraciones = require('../src/services/integracionesService');
+
+/* Entra por la puerta de verdad: credencial + controlador, sin HTTP. */
+function llamar({ token, handler, params = {}, body = {}, query = {} }) {
+  return new Promise((resolve, reject) => {
+    const req = { headers: token ? { authorization: `Bearer ${token}` } : {}, query, params, body, ip: '127.0.0.1' };
+    const res = {
+      statusCode: 200,
+      status(c) { this.statusCode = c; return this; },
+      json(payload) { resolve({ status: this.statusCode, json: payload }); },
+    };
+    const seguir = () => Promise.resolve(handler(req, res, reject)).catch(reject);
+    Promise.resolve(requireIntegracion('tienda')(req, res, seguir)).catch(reject);
+  });
+}
 
 let ok = 0;
 let ko = 0;
@@ -56,6 +74,7 @@ let restaurarStock = null;
       where: { pedidoExterno: { [Op.like]: `${QA}%` } }, attributes: ['id'],
     });
     if (filas.length) {
+      await PlataformaCobro.destroy({ where: { pedidoId: filas.map((f) => f.id) } });
       await PedidoPlataformaItem.destroy({ where: { pedidoId: filas.map((f) => f.id) } });
       await PedidoPlataforma.destroy({ where: { id: filas.map((f) => f.id) } });
     }
@@ -158,6 +177,173 @@ let restaurarStock = null;
       })());
     chk('el pagado se despacha', 'pasó', await despachar(pagado));
     chk('y el de Mercado Libre también', 'pasó', await despachar(deMl));
+
+    tit('3. EL COBRO');
+    /*
+     * El caso simple: cubre el total y abre la puerta.
+     */
+    const aCobrar = await entrar('010', {
+      plataforma: 'tienda', pagoPendiente: true, pagoDetalle: 'Transferencia · vence mañana',
+    });
+    const cobrar = (datos) => cola.registrarCobro({
+      businessId: negocio.id, plataforma: 'tienda', ...datos,
+    });
+    const uno = await cobrar({
+      movimientoExterno: `${QA}010-C1`, pedidoExterno: `${QA}010`,
+      importe: 1000, medio: 'mercadopago', operacion: 'MP-1',
+    });
+    chk('un cobro que cubre el total deja el pedido pagado', ['pagado', true],
+      [uno.pedido.pagoEstado, Boolean(uno.cobro.aplicado)]);
+    chk('y el texto del pago se limpia', null, uno.pedido.pagoDetalle);
+    chk('y ya no hay plazo que vencer', null, uno.pedido.pagoVenceEn);
+    let seDespacha = null;
+    try {
+      await envios.despachar({ businessId: negocio.id, pedidoId: aCobrar.id, employeeId: null });
+      seDespacha = 'pasó';
+    } catch (e) { seDespacha = `cortó ${e.status} ${e.codigo || ''}`.trim(); }
+    chk('y el depósito ya lo puede despachar', 'pasó', seDespacha);
+
+    /*
+     * El mismo cobro reenviado no cobra dos veces. Es la garantía que el contrato
+     * promete y la que un aviso repetido de la pasarela pone a prueba.
+     */
+    const otraVez = await cobrar({
+      movimientoExterno: `${QA}010-C1`, pedidoExterno: `${QA}010`,
+      importe: 1000, medio: 'mercadopago', operacion: 'MP-1',
+    });
+    chk('reenviar el mismo cobro no suma de nuevo', [true, 1000],
+      [Boolean(otraVez.repetido), Number(otraVez.pedido.cobrado)]);
+
+    /*
+     * La seña y el resto: dos cobros del mismo pedido que suman. Es la razón por la
+     * que los cobros son una tabla y no dos columnas en el pedido.
+     */
+    const conSeña = await entrar('011', { plataforma: 'tienda', pagoPendiente: true });
+    const senia = await cobrar({
+      movimientoExterno: `${QA}011-C1`, pedidoExterno: `${QA}011`, importe: 400, medio: 'transferencia',
+    });
+    chk('una seña deja el pedido pendiente y lo dice', ['pendiente', true],
+      [senia.pedido.pagoEstado, /Cobrado 400 de 1000/.test(senia.pedido.pagoDetalle || '')]);
+    let siguePendiente = null;
+    try {
+      await envios.despachar({ businessId: negocio.id, pedidoId: conSeña.id, employeeId: null });
+      siguePendiente = 'PASÓ';
+    } catch (e) { siguePendiente = e.codigo; }
+    chk('y con la seña sola NO se despacha', 'SIN_PAGAR', siguePendiente);
+    const resto = await cobrar({
+      movimientoExterno: `${QA}011-C2`, pedidoExterno: `${QA}011`, importe: 600, medio: 'transferencia',
+    });
+    chk('el resto completa y pasa a pagado', ['pagado', 1000],
+      [resto.pedido.pagoEstado, Number(resto.pedido.cobrado)]);
+
+    /*
+     * Pagar de más no retiene el paquete: el cliente puso unos pesos extra y eso no
+     * es razón para que su pedido no salga.
+     */
+    const deMas = await entrar('012', { plataforma: 'tienda', pagoPendiente: true });
+    const conVuelto = await cobrar({
+      movimientoExterno: `${QA}012-C1`, pedidoExterno: `${QA}012`, importe: 1500, medio: 'efectivo',
+    });
+    chk('pagar de más deja el pedido pagado igual', 'pagado', conVuelto.pedido.pagoEstado);
+
+    tit('4. EL COBRO QUE LLEGA CUANDO YA NO HAY NADA QUE COBRAR');
+    /*
+     * Lo más importante de esta suite. Vence el plazo, la tienda cancela, y el
+     * aviso de Mercado Pago llega dos segundos tarde. Con transferencias a 48 h es
+     * rutina, no un caso raro.
+     *
+     * Si Stocker contestara un error, la tienda —que reintenta sobre todo lo que no
+     * sea 2xx— pegaría para siempre y el pago no quedaría anotado en ninguna parte:
+     * el cliente pagó y nadie sabría que hay que devolverle la plata.
+     */
+    const cancelado = await entrar('020', { plataforma: 'tienda', pagoPendiente: true });
+    await cola.cancelarPorPlataforma(cancelado.id, 'Venció el plazo');
+    /*
+     * Se atrapa a propósito: si Stocker contestara un error acá, la prueba tiene
+     * que decir QUÉ error y seguir, no morirse y dejar el resto sin correr.
+     */
+    const tarde = await cobrar({
+      movimientoExterno: `${QA}020-C1`, pedidoExterno: `${QA}020`, importe: 1000, medio: 'mercadopago',
+    }).catch((e) => ({ cobro: { aplicado: null, motivo: `RECHAZADO con ${e.status}` }, pedido: {} }));
+    /* Estricto: un `null` significaría que no se guardó, y `Boolean(null)` lo
+     * dejaría pasar como si se hubiera guardado sin aplicar. */
+    chk('un cobro sobre un pedido cancelado se GUARDA, sin aplicarse', false,
+      tarde.cobro.aplicado === true ? true : tarde.cobro.aplicado);
+    chk('con el motivo escrito, que es lo único que avisa que hay que devolver', true,
+      /devolver/i.test(tarde.cobro.motivo || ''));
+    chk('y el pedido no vuelve a quedar pagado', true,
+      tarde.pedido.pagoEstado !== 'pagado');
+
+    /*
+     * La misma referencia de pasarela con otro id de movimiento: puede ser un doble
+     * cobro, o dos transferencias que alguien anotó igual. Se guarda sin aplicar en
+     * vez de rechazarse, porque un índice único acá rechazaría un cobro real.
+     */
+    const conRefeRepetida = await entrar('021', { plataforma: 'tienda', pagoPendiente: true });
+    const repetida = await cobrar({
+      movimientoExterno: `${QA}021-C1`, pedidoExterno: `${QA}021`,
+      importe: 1000, medio: 'mercadopago', operacion: 'MP-1',
+    });
+    chk('una operación ya usada no se aplica sola', [false, true],
+      [Boolean(repetida.cobro.aplicado), /ya estaba registrada/.test(repetida.cobro.motivo || '')]);
+
+    tit('5. LO QUE SÍ SE RECHAZA');
+    const malo = async (datos) => {
+      try { await cobrar(datos); return 'PASÓ'; } catch (e) { return e.status; }
+    };
+    chk('un importe en cero se rechaza', 400,
+      await malo({ movimientoExterno: `${QA}x1`, pedidoExterno: `${QA}012`, importe: 0, medio: 'x' }));
+    chk('un importe que no es número, también', 400,
+      await malo({ movimientoExterno: `${QA}x2`, pedidoExterno: `${QA}012`, importe: 'mil', medio: 'x' }));
+    chk('sin medio de pago, también', 400,
+      await malo({ movimientoExterno: `${QA}x3`, pedidoExterno: `${QA}012`, importe: 10, medio: '' }));
+    chk('un pedido que no existe da 404', 404,
+      await malo({ movimientoExterno: `${QA}x4`, pedidoExterno: `${QA}no-existe`, importe: 10, medio: 'x' }));
+
+    tit('5b. EL SOBRE DEL CONTRATO, POR LA RUTA DE VERDAD');
+    /*
+     * Acá está la trampa que una revisión de diseño encontró antes de que se
+     * escribiera esto, y que el resto de la suite no ve porque llama al servicio
+     * directo.
+     *
+     * `abrirSobre` rellena `pedidoExterno` con el `id` del sobre sin prefijo, que
+     * para un cobro es el id DEL COBRO ("ISU-1042-C1") y no el del pedido. Un
+     * controlador que buscara el pedido con eso daría 404 SIEMPRE y ningún cobro de
+     * la tienda se registraría nunca. El pedido tiene que salir de `datos.ventaId`,
+     * y encima hay que sacarle el prefijo a mano porque abrirSobre no lo toca.
+     */
+    const { token } = await integraciones.emitir({
+      businessId: negocio.id, origen: 'tienda', nombre: 'QA pago cobros',
+    });
+    const porSobre = await entrar('040', { plataforma: 'tienda', pagoPendiente: true });
+    const r = await llamar({
+      token, handler: ctrl.cobroDeTienda,
+      body: {
+        contrato: 1, tipo: 'cobro', id: `isu:${QA}040-C1`,
+        datos: { ventaId: `isu:${QA}040`, importe: 1000, medio: 'mercadopago', operacion: 'MP-SOBRE-1' },
+      },
+    }).catch((e) => ({ status: e.status, json: null }));
+    chk('un cobro en sobre encuentra su pedido y no da 404', 201, r.status);
+    chk('y lo deja pagado', ['pagado', true], [r.json?.pagoEstado, Boolean(r.json?.aplicado)]);
+    chk('el movimiento se guarda sin el prefijo de la plataforma', `${QA}040-C1`,
+      r.json?.movimientoExterno);
+    await porSobre.reload();
+    chk('y es ESE pedido el que quedó pagado, no otro', 'pagado', porSobre.pagoEstado);
+
+    tit('6. EL RELOJ PROPIO DE STOCKER');
+    /*
+     * La plataforma dice que va a cancelar cuando el plazo venza. Esto es para el
+     * día que no lo haga: si no, la mercadería queda apartada para siempre y
+     * desaparece de la vidriera sin que nadie sepa por qué.
+     */
+    const vencido = await entrar('030', { plataforma: 'tienda', pagoPendiente: true });
+    await vencido.update({ pagoVenceEn: new Date(Date.now() - 60 * 60 * 1000) });
+    const aTiempo = await entrar('031', { plataforma: 'tienda', pagoPendiente: true });
+    await aTiempo.update({ pagoVenceEn: new Date(Date.now() + 60 * 60 * 1000) });
+    await cola.liberarPagosVencidos();
+    await vencido.reload(); await aTiempo.reload();
+    chk('el vencido se cancela y libera la mercadería', 'cancelado', vencido.estado);
+    chk('y el que todavía tiene plazo no se toca', 'aceptado', aTiempo.estado);
   } finally {
     tit('Limpieza');
     await limpiar();
@@ -167,6 +353,7 @@ let restaurarStock = null;
         { where: { id: restaurarStock.id } },
       );
     }
+    await IntegracionExterna.destroy({ where: { nombre: 'QA pago cobros' } });
     chk('no queda nada de la prueba', 0,
       await PedidoPlataforma.count({ where: { pedidoExterno: { [Op.like]: `${QA}%` } } }));
     await db.close();

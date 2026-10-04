@@ -33,7 +33,7 @@
 
 const db = require('../config/database');
 const {
-  PedidoPlataforma, PedidoPlataformaItem, ProductVariant, Product, BusinessLocation,
+  PedidoPlataforma, PedidoPlataformaItem, PlataformaCobro, ProductVariant, Product, BusinessLocation,
 } = require('../models');
 const stockService = require('./stockService');
 const packService = require('./packService');
@@ -57,6 +57,10 @@ const PLATAFORMAS = ['mercadolibre', 'jumpseller', 'tienda'];
  */
 const PAGO_PENDIENTE = 'pendiente';
 const PAGO_PAGADO = 'pagado';
+
+// La misma que usa paymentService para que dos partes del sistema no discutan por
+// un centavo de redondeo.
+const TOLERANCIA_COBRO = 0.02;
 
 /*
  * Qué estado de pago le corresponde a un pedido que entra.
@@ -788,6 +792,237 @@ async function rescatarPendientes({ gracia = GRACIA_PENDIENTE_MS, tope = 200 } =
   return { negocios: porNegocio.size, procesados };
 }
 
+/*
+ * ══ El cobro de un pedido que entró sin pagar ════════════════════
+ *
+ * La tienda minorista aparta la prenda y cobra después. Esta función registra
+ * ese cobro y, si alcanza, abre la puerta del depósito.
+ *
+ * ── Lo que esto NO es ───────────────────────────────────────────
+ *
+ * No es un asiento contable. El dinero no entra a la caja ni a una venta, porque
+ * un pedido de plataforma no llega a ser `Sale`. Es un registro de recepción y
+ * una compuerta de despacho: alcanza para no despachar sin cobrar y para
+ * conciliar contra el resumen de la pasarela, y no alcanza para ningún reporte
+ * de facturación. Está dicho así en el contrato, § 3.5.
+ *
+ * ── Por qué nunca contesta un error cuando entiende el cobro ─────
+ *
+ * La plataforma reintenta sobre cualquier cosa que no sea 2xx. Un cobro que
+ * llega sobre un pedido ya cancelado —el plazo venció y el webhook de la pasarela
+ * llegó dos segundos tarde, que con transferencias a 48 h es rutina— se guarda
+ * con `aplicado: false` y el motivo escrito. Contestarle 409 la haría reintentar
+ * para siempre y el pago no quedaría anotado en ninguna parte: el cliente pagó y
+ * nadie sabría que hay que devolverle la plata.
+ */
+async function registrarCobro({
+  businessId, plataforma, movimientoExterno, pedidoExterno,
+  importe, medio, operacion = null, ocurrioEn = null,
+}) {
+  const cual = String(plataforma || '').toLowerCase();
+  if (!PLATAFORMAS.includes(cual)) throw error(`Plataforma desconocida: ${plataforma}.`);
+
+  const mov = String(movimientoExterno || '').trim();
+  if (!mov) throw error('El cobro necesita el id del movimiento.');
+  if (mov.length > 60) throw error('El id del movimiento no puede pasar de 60 caracteres.');
+  const externo = String(pedidoExterno || '').trim();
+  if (!externo) throw error('El cobro tiene que nombrar el pedido (ventaId).');
+
+  /*
+   * El importe es lo único que se valida de verdad, y sólo como número.
+   *
+   * No se compara contra el `total` del pedido: ese número llega crudo de la
+   * plataforma —nunca se verifica contra la suma de las líneas— y la tienda le
+   * aplica sus descuentos y le suma el envío. Rechazar la diferencia frenaría un
+   * despacho por un número que nunca fue autoridad.
+   */
+  const monto = Number(importe);
+  if (!Number.isFinite(monto) || monto <= 0) {
+    throw error(`El importe del cobro tiene que ser un número mayor a cero y llegó "${importe}".`);
+  }
+  const comoSeCobro = String(medio || '').trim().slice(0, 30);
+  if (!comoSeCobro) throw error('El cobro necesita decir con qué medio se pagó.');
+  const refe = operacion == null ? null : String(operacion).trim().slice(0, 60) || null;
+
+  const t = await db.transaction();
+  try {
+    /*
+     * El pedido se relee con lock antes de decidir cualquier cosa.
+     *
+     * Es la misma carrera que cuida `cancelarPorPlataforma`: el vencimiento del
+     * plazo y un aviso tardío de la pasarela pueden llegar en el mismo segundo, y
+     * sin el candado el pedido podría quedar cancelado y pagado a la vez, con la
+     * reserva ya liberada.
+     */
+    const pedido = await PedidoPlataforma.findOne({
+      where: { businessId, plataforma: cual, pedidoExterno: externo },
+      transaction: t, lock: t.LOCK.UPDATE,
+    });
+    if (!pedido) {
+      await t.rollback();
+      throw error('Ese pedido no está en la cola.', 404);
+    }
+
+    // El mismo cobro reenviado: se contesta lo de antes y no se toca nada.
+    const yaEstaba = await PlataformaCobro.findOne({
+      where: { businessId, plataforma: cual, movimientoExterno: mov }, transaction: t,
+    });
+    if (yaEstaba) {
+      await t.commit();
+      return { cobro: yaEstaba, pedido, repetido: true };
+    }
+
+    const avisos = [];
+    let aplicado = true;
+
+    /*
+     * La misma referencia de pasarela con otro id de movimiento.
+     *
+     * Puede ser un doble cobro de verdad, o dos transferencias que una persona
+     * anotó con la misma referencia. Se guarda sin aplicar y con el motivo, que es
+     * lo que permite revisarlo; una restricción de unicidad acá rechazaría un
+     * cobro real y la plataforma reintentaría para siempre.
+     */
+    if (refe) {
+      const mismaRefe = await PlataformaCobro.findOne({
+        where: { businessId, operacion: refe }, transaction: t,
+      });
+      if (mismaRefe) {
+        aplicado = false;
+        avisos.push(`La operación ${refe} ya estaba registrada en otro cobro (${mismaRefe.movimientoExterno}): revisar antes de dar por cobrado.`);
+      }
+    }
+
+    /*
+     * Un cobro sobre un pedido que ya no espera plata se anota igual.
+     *
+     * Y NO se vuelve a reservar: la mercadería ya se liberó y re-reservarla le
+     * robaría stock a otro pedido que sí está esperando.
+     */
+    if (pedido.estado === 'cancelado') {
+      aplicado = false;
+      avisos.push('Cobró sobre un pedido cancelado: la mercadería ya se liberó y hay que devolver el dinero.');
+    } else if (pedido.estado === 'rechazado') {
+      aplicado = false;
+      avisos.push('Cobró sobre un pedido rechazado por falta de stock: hay que devolver el dinero.');
+    }
+
+    const cobro = await PlataformaCobro.create({
+      businessId, pedidoId: pedido.id, plataforma: cual,
+      movimientoExterno: mov,
+      importe: monto, medio: comoSeCobro, operacion: refe,
+      recibidoEn: new Date(),
+      ocurrioEn: fechaDeCorte(ocurrioEn),
+      aplicado,
+      estadoPedidoAlCobrar: pedido.estado,
+      motivo: avisos.join(' ').slice(0, 500) || null,
+    }, { transaction: t });
+
+    if (aplicado) {
+      const cobradoAhora = Number(pedido.cobrado || 0) + monto;
+      const total = pedido.total == null ? null : Number(pedido.total);
+      /*
+       * Alcanza si no hay con qué comparar, o si llega al total con la misma
+       * tolerancia que usa el resto del sistema. Si pagó de más, paga igual: nunca
+       * se retiene un paquete porque el cliente puso unos pesos extra.
+       */
+      const alcanza = total == null || cobradoAhora >= total - TOLERANCIA_COBRO;
+      const detalle = alcanza
+        ? null
+        : `Cobrado ${cobradoAhora} de ${total}`.slice(0, 120);
+      await pedido.update({
+        cobrado: cobradoAhora,
+        pagoEstado: alcanza ? PAGO_PAGADO : PAGO_PENDIENTE,
+        // Deja de haber plazo que vencer cuando ya está pagado.
+        pagoVenceEn: alcanza ? null : pedido.pagoVenceEn,
+        pagoDetalle: alcanza ? null : (detalle || pedido.pagoDetalle),
+        // La novedad, para que la plataforma lo vea en el feed.
+        novedadEn: new Date(),
+      }, { transaction: t });
+    }
+
+    await t.commit();
+    if (!aplicado) {
+      log.warn('cola-online', 'cobro registrado sin aplicar', {
+        pedido: externo, movimiento: mov, motivo: avisos.join(' '),
+      });
+    }
+    return { cobro, pedido: await PedidoPlataforma.findByPk(pedido.id), repetido: false };
+  } catch (e) {
+    await t.rollback().catch(() => {});
+    /*
+     * Perdió la carrera contra el índice único: dos avisos de la pasarela en
+     * vuelo al mismo tiempo. El otro ya lo registró, así que se contesta eso.
+     */
+    if (e?.name === 'SequelizeUniqueConstraintError') {
+      const ganador = await PlataformaCobro.findOne({
+        where: { businessId, plataforma: cual, movimientoExterno: mov },
+      });
+      if (ganador) {
+        return {
+          cobro: ganador,
+          pedido: await PedidoPlataforma.findByPk(ganador.pedidoId),
+          repetido: true,
+        };
+      }
+    }
+    throw e;
+  }
+}
+
+/*
+ * ══ Los pedidos a los que se les venció el plazo de pago ═════════
+ *
+ * Es la contracara de guardar el pago pendiente. Mientras un pedido espera, la
+ * mercadería está apartada y lo publicable es `stock - reservado`: la prenda ya
+ * desapareció de la vidriera, de Mercado Libre y de Jumpseller.
+ *
+ * La plataforma dice que va a cancelar cuando el plazo venza, y seguramente lo
+ * haga. Pero si se cae, se desconecta o se le pierde el trabajo del vencimiento,
+ * esa reserva queda para siempre y el stock desaparece sin que nadie sepa por
+ * qué. Esto es el reloj propio de Stocker, que no depende de que nadie cumpla.
+ *
+ * `cancelarPorPlataforma` ya hace todo lo necesario: traba el pedido, sale
+ * temprano si ya estaba cancelado —así que correr en varias instancias no
+ * duplica nada—, libera la reserva o el pack, y escribe la cancelación. Y el
+ * pedido aparece en la pestaña Cancelados el día que venció.
+ */
+const GRACIA_VENCIMIENTO_MS = Number(process.env.PAGO_GRACIA_MS) || 5 * 60 * 1000;
+
+async function liberarPagosVencidos({ gracia = GRACIA_VENCIMIENTO_MS, tope = 200 } = {}) {
+  const { Op } = require('sequelize');
+  const vencidos = await PedidoPlataforma.findAll({
+    where: {
+      pagoEstado: PAGO_PENDIENTE,
+      pagoVenceEn: { [Op.ne]: null, [Op.lt]: new Date(Date.now() - gracia) },
+      canceladoEn: null,
+    },
+    order: [['pagoVenceEn', 'ASC'], ['id', 'ASC']],
+    limit: tope,
+    attributes: ['id', 'pedidoExterno'],
+  });
+  if (!vencidos.length) return { liberados: 0 };
+
+  let liberados = 0;
+  for (const p of vencidos) {
+    try {
+      await cancelarPorPlataforma(p.id, 'Venció el plazo de pago: se liberó la mercadería apartada');
+      liberados += 1;
+    } catch (e) {
+      /*
+       * Uno que falla no se lleva a los demás: cada pedido vencido es mercadería
+       * distinta esperando volver a la vidriera.
+       */
+      log.warn('cola-online', 'no se pudo liberar un pago vencido', {
+        pedido: p.pedidoExterno, motivo: e.message,
+      });
+    }
+  }
+  if (liberados) {
+    log.warn('cola-online', 'pagos vencidos liberados', { liberados });
+  }
+  return { liberados };
+}
 /**
  * Encola y procesa en el mismo pedido HTTP.
  *
@@ -818,5 +1053,6 @@ async function encolarYProcesar(datos) {
 module.exports = {
   encolar, procesarUno, procesarCola, encolarYProcesar, reprocesar, PLATAFORMAS,
   rescatarPendientes, PAGO_PENDIENTE, PAGO_PAGADO, __estadoDePago: estadoDePago,
+  registrarCobro, liberarPagosVencidos,
   partesDeItem, cancelarPorPlataforma,
 };

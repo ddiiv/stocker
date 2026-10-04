@@ -268,6 +268,58 @@ const envioDeTienda = async (req, res, next) => {
   } catch (e) { next(e); }
 };
 
+/*
+ * POST /api/integraciones/tienda/cobros
+ *
+ * { contrato: 1, tipo: "cobro", id: "isu:ISU-1042-C1",
+ *   datos: { ventaId: "isu:ISU-1042", importe: 36000, medio: "mercadopago",
+ *            operacion: "1234567890" } }
+ *
+ * ── El id de acá NO es el del pedido, y es fácil equivocarse ─────
+ *
+ * `abrirSobre` rellena `pedidoExterno` con el `id` del sobre sin prefijo, que
+ * para un cobro es el id DEL COBRO ("ISU-1042-C1") y no el del pedido. Buscar el
+ * pedido con eso daría 404 siempre, y el cobro no se registraría nunca. Por eso
+ * acá el pedido sale de `datos.ventaId` —al que hay que sacarle el prefijo a
+ * mano, porque abrirSobre no lo toca— y el movimiento sale del `id` del sobre.
+ */
+const cobroDeTienda = async (req, res, next) => {
+  try {
+    const cola = require('../services/colaVentasOnlineService');
+    const { abrirSobre, sinPrefijo } = require('../utils/sobreMovimiento');
+    const datos = abrirSobre(req.body, 'cobro');
+
+    const r = await cola.registrarCobro({
+      businessId: req.integracion.businessId,
+      plataforma: 'tienda',
+      // El id del movimiento, del sobre. Sin sobre, de `movimientoExterno`.
+      movimientoExterno: sinPrefijo(req.body?.id ?? datos.movimientoExterno),
+      // Y el pedido, del ventaId, con su prefijo quitado.
+      pedidoExterno: sinPrefijo(datos.ventaId),
+      importe: datos.importe,
+      medio: datos.medio,
+      operacion: datos.operacion ?? null,
+      ocurrioEn: req.body?.ocurrioEn ?? null,
+    });
+
+    /*
+     * 201 lo tomé ahora, 200 ya lo tenía. Nunca un 4xx cuando el cobro se
+     * entendió: la tienda reintenta sobre todo lo que no sea 2xx, así que un 409
+     * permanente sería plata que Stocker se niega a recordar para siempre. Si el
+     * pedido estaba cancelado, la respuesta lo dice en `aplicado` y `motivo`.
+     */
+    res.status(r.repetido ? 200 : 201).json({
+      movimientoExterno: r.cobro.movimientoExterno,
+      pedidoExterno: r.pedido?.pedidoExterno ?? null,
+      aplicado: Boolean(r.cobro.aplicado),
+      // Lo que hay que mirar cuando `aplicado` viene en false.
+      motivo: r.cobro.motivo || null,
+      pagoEstado: r.pedido?.pagoEstado ?? null,
+      cobrado: r.pedido?.cobrado ?? null,
+      repetido: Boolean(r.repetido),
+    });
+  } catch (e) { next(e); }
+};
 /** GET /api/integraciones — las credenciales del negocio, sin los tokens. */
 const listar = async (req, res, next) => {
   try {
@@ -312,5 +364,5 @@ const revocar = async (req, res, next) => {
 module.exports = {
   recibirPedido, resolucionesDePedidos, preciosPorSku, listar, emitir, revocar,
   catalogoTienda, stockTienda, pedidoDeTienda, cancelarPedidoDeTienda,
-  resolucionesDeTienda, envioDeTienda,
+  resolucionesDeTienda, envioDeTienda, cobroDeTienda,
 };

@@ -307,6 +307,7 @@ r.post('/integraciones/tienda/pedidos',  requireIntegracion('tienda'), integraci
 r.get ('/integraciones/tienda/pedidos/resoluciones', requireIntegracion('tienda'), integracionesCtrl.resolucionesDeTienda);
 r.post('/integraciones/tienda/pedidos/:pedidoExterno/cancelar', requireIntegracion('tienda'), integracionesCtrl.cancelarPedidoDeTienda);
 r.post('/integraciones/tienda/pedidos/:pedidoExterno/envio',    requireIntegracion('tienda'), integracionesCtrl.envioDeTienda);
+r.post('/integraciones/tienda/cobros',   requireIntegracion('tienda'), integracionesCtrl.cobroDeTienda);
 
 /*
  * ── La bandeja de pedidos mayoristas ──────────────────────────────

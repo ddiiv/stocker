@@ -18,6 +18,20 @@
 
 const VERSION = 1;
 
+/*
+ * Le saca el prefijo de plataforma a un id.
+ *
+ * Se corta en el PRIMER dos puntos: los de más atrás son parte del número.
+ * Existe aparte porque la ruta de cobros la necesita para el `ventaId` que viene
+ * adentro de `datos`, donde abrirSobre no la aplica.
+ */
+function sinPrefijo(valor) {
+  const id = String(valor == null ? '' : valor).trim();
+  const corte = id.indexOf(':');
+  return corte === -1 ? id : id.slice(corte + 1);
+}
+
+
 const error = (mensaje) => Object.assign(new Error(mensaje), { status: 400 });
 
 /**
@@ -72,4 +86,4 @@ function abrirSobre(cuerpo, tipoEsperado = null) {
   return datos;
 }
 
-module.exports = { abrirSobre, VERSION_CONTRATO: VERSION };
+module.exports = { abrirSobre, sinPrefijo, VERSION_CONTRATO: VERSION };

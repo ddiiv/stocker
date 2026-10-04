@@ -243,6 +243,20 @@ async function tick() {
     if (process.env.COLA_RESCATE !== 'off') await cola.rescatarPendientes();
   } catch (e) {
     log.warn('cola-online', 'el rescate de pendientes se cayó entero', { motivo: e.message });
+  }
+  /*
+   * Los pedidos a los que se les venció el plazo de pago.
+   *
+   * Es la contracara de guardar el pago pendiente: mientras un pedido espera, la
+   * mercadería está apartada y ya no está en la vidriera. La plataforma dice que
+   * va a cancelar cuando el plazo venza, y seguramente lo haga; esto es para el
+   * día que no lo haga, porque si no esa reserva queda para siempre y el stock
+   * desaparece sin que nadie sepa por qué.
+   */
+  try {
+    if (process.env.PAGO_VENCIMIENTO !== 'off') await cola.liberarPagosVencidos();
+  } catch (e) {
+    log.warn('cola-online', 'la liberación de pagos vencidos se cayó entera', { motivo: e.message });
   } finally {
     corriendo = false;
   }
