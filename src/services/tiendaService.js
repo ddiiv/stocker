@@ -187,4 +187,149 @@ async function stockDeSkus({ businessId, skus }) {
   return { stock, desconocidos, generadoEn: new Date() };
 }
 
-module.exports = { catalogo, stockDeSkus, TOPE_SKUS_CONSULTA };
+/*
+ * ── Qué le pasó a los pedidos que mandó la tienda ─────────────────
+ *
+ * La tienda necesita enterarse de lo que ocurre DESPUÉS de la respuesta del
+ * POST: que el depósito despachó (y con qué seguimiento), que no encontró la
+ * prenda, que el pedido se canceló. Con eso le manda el mail y el WhatsApp al
+ * comprador.
+ *
+ * Pregunta la tienda en vez de avisar Stocker, igual que en el portal mayorista:
+ * la tienda ya tiene reloj y reintentos escritos, y si se cae no se pierde nada
+ * —cuando vuelve, pregunta desde donde quedó—. Un webhook perdido, en cambio, se
+ * pierde callado.
+ */
+
+// Tope de lo que se devuelve por vuelta, para que una tienda que estuvo semanas
+// sin preguntar no se traiga la tabla entera en una sola respuesta.
+const TOPE_RESOLUCIONES = 500;
+
+/*
+ * El rezago del cursor, y por qué no puede ser cero.
+ *
+ * El cursor avanza hasta la última fila devuelta. Si se devolviera una fila cuya
+ * transacción commiteó recién, otra que empezó antes y commitea un milisegundo
+ * después quedaría con una `novedadEn` ANTERIOR al cursor y nunca se devolvería:
+ * ese cambio se perdería para siempre. Con el rezago, para cuando la ventana se
+ * abre ya commitearon todas las transacciones de ese instante —acá duran
+ * milisegundos—.
+ */
+const REZAGO_MS = 5000;
+
+/*
+ * Qué cambió, en una palabra, derivada de los hechos y no guardada.
+ *
+ * El orden importa: un pedido cancelado que YA había salido existe —se cancela
+ * y le queda `despachadoEn`—, y decirle "cancelado" a un cliente que tiene el
+ * paquete en camino es peor que no decirle nada. Despachado gana.
+ */
+function queCambio(p) {
+  if (p.despachadoEn) return 'despachado';
+  if (p.estadoEnvio === 'con_faltante') return 'faltante';
+  if (p.canceladoEn) return 'cancelado';
+  return p.estado;
+}
+
+/**
+ * Los cambios de los pedidos de una plataforma, en orden y sin perder ninguno.
+ *
+ * @param desde   el cursor de la vuelta anterior, o null para arrancar de ahora.
+ * @param limite  cuántos como máximo.
+ */
+async function resoluciones({ businessId, plataforma, desde = null, limite = 100 }) {
+  const { Op } = require('sequelize');
+  const { PedidoPlataforma } = require('../models');
+
+  const tope = Math.min(Math.max(Number(limite) || 100, 1), TOPE_RESOLUCIONES);
+  const hasta = new Date(Date.now() - REZAGO_MS);
+
+  /*
+   * Sin cursor no se devuelve historia.
+   *
+   * Una tienda que pregunta por primera vez no quiere enterarse de los cambios
+   * de los últimos seis meses y mandarle un mail al comprador de cada uno. Se le
+   * da el cursor de ahora y desde la próxima vuelta ve lo nuevo.
+   */
+  if (!desde) return { cursor: cursorDe(hasta, 0), cambios: [] };
+
+  const leido = leerCursor(desde);
+  if (!leido) {
+    const e = new Error('El cursor no se entiende. Mandá el que devolvió la vuelta anterior, o ninguno para empezar.');
+    e.status = 400;
+    throw e;
+  }
+
+  const filas = await PedidoPlataforma.findAll({
+    where: {
+      businessId,
+      plataforma,
+      novedadEn: { [Op.ne]: null, [Op.lte]: hasta },
+      /*
+       * Cursor compuesto: la fecha sola no alcanza.
+       *
+       * Dos pedidos pueden tener la MISMA `novedadEn` al milisegundo —un despacho
+       * de varios paquetes del mismo envío lo hace—. Con un cursor de fecha sola,
+       * o se repiten los dos en cada vuelta o se saltea el segundo. El id
+       * desempata.
+       */
+      [Op.or]: [
+        { novedadEn: { [Op.gt]: leido.en } },
+        { novedadEn: leido.en, id: { [Op.gt]: leido.id } },
+      ],
+    },
+    order: [['novedadEn', 'ASC'], ['id', 'ASC']],
+    limit: tope,
+  });
+
+  const cambios = filas.map((p) => ({
+    pedidoExterno: p.pedidoExterno,
+    // La palabra, para decidir rápido.
+    cambio: queCambio(p),
+    /*
+     * Y los hechos, porque una palabra sola miente.
+     *
+     * Las dos fechas viajan siempre: con un pedido cancelado que ya había salido,
+     * sólo con la palabra la tienda le avisaría "cancelado" a alguien que tiene
+     * el paquete en camino.
+     */
+    estado: p.estado,
+    estadoEnvio: p.estadoEnvio || null,
+    pagoEstado: p.pagoEstado || null,
+    seguimiento: p.seguimiento || null,
+    envioTipo: p.envioTipo || null,
+    despachadoEn: p.despachadoEn || null,
+    canceladoEn: p.canceladoEn || null,
+    motivo: p.motivo || null,
+    en: p.novedadEn,
+  }));
+
+  /*
+   * El cursor sale de la última fila devuelta y NO del reloj: si saliera del
+   * reloj y el tope cortó la lista, lo que quedó afuera se perdería.
+   */
+  const ultima = filas[filas.length - 1];
+  return {
+    cursor: ultima ? cursorDe(ultima.novedadEn, ultima.id) : desde,
+    cambios,
+    // Para que la tienda sepa que conviene volver a preguntar ya mismo.
+    hayMas: filas.length === tope,
+  };
+}
+
+// El cursor es opaco a propósito: así se le puede cambiar la forma sin romperle
+// la integración a nadie.
+const cursorDe = (fecha, id) => `${new Date(fecha).toISOString()}|${id}`;
+
+function leerCursor(valor) {
+  const partes = String(valor).split('|');
+  if (partes.length !== 2) return null;
+  const en = new Date(partes[0]);
+  const id = Number(partes[1]);
+  if (Number.isNaN(en.getTime()) || !Number.isInteger(id) || id < 0) return null;
+  return { en, id };
+}
+module.exports = {
+  catalogo, stockDeSkus, resoluciones,
+  TOPE_SKUS_CONSULTA, TOPE_RESOLUCIONES, __queCambio: queCambio, __cursorDe: cursorDe,
+};

@@ -299,7 +299,14 @@ r.get('/integraciones/isuwaya/precios',              requireIntegracion('isuwaya
 r.get ('/integraciones/tienda/catalogo', requireIntegracion('tienda'), integracionesCtrl.catalogoTienda);
 r.get ('/integraciones/tienda/stock',    requireIntegracion('tienda'), integracionesCtrl.stockTienda);
 r.post('/integraciones/tienda/pedidos',  requireIntegracion('tienda'), integracionesCtrl.pedidoDeTienda);
+/*
+ * Esta va ANTES de cualquier /pedidos/:algo: si algún día se agrega un
+ * GET /pedidos/:numero, "resoluciones" entraría por ahí como si fuera un número
+ * de pedido y devolvería 404 para siempre.
+ */
+r.get ('/integraciones/tienda/pedidos/resoluciones', requireIntegracion('tienda'), integracionesCtrl.resolucionesDeTienda);
 r.post('/integraciones/tienda/pedidos/:pedidoExterno/cancelar', requireIntegracion('tienda'), integracionesCtrl.cancelarPedidoDeTienda);
+r.post('/integraciones/tienda/pedidos/:pedidoExterno/envio',    requireIntegracion('tienda'), integracionesCtrl.envioDeTienda);
 
 /*
  * ── La bandeja de pedidos mayoristas ──────────────────────────────

@@ -1144,6 +1144,8 @@ async function despachar({ pedidoId, businessId, employeeId = null }) {
     for (const p of aDespachar) {
       await p.update({
         estadoEnvio: 'despachado',
+        // La novedad, para que la plataforma pueda avisarle al cliente.
+        novedadEn: new Date(),
         despachadoEn: new Date(),
         despachadoPorEmployeeId: employeeId,
       }, { transaction: t });
@@ -1182,6 +1184,12 @@ async function marcarFaltante({ pedidoId, businessId, nota = null, employeeId = 
   const texto = String(nota || '').trim().slice(0, 400);
   await pedido.update({
     estadoEnvio: 'con_faltante',
+    /*
+     * También acá, y es el que más fácil se olvida: un faltante no tiene fecha
+     * propia, así que sin esta marca el único cambio que la plataforma necesita
+     * para avisarle al cliente que su pedido no salió quedaría invisible.
+     */
+    novedadEn: new Date(),
     motivo: [pedido.motivo, texto ? `Faltante en depósito: ${texto}` : 'Faltante en depósito.']
       .filter(Boolean).join(' ').slice(0, 500),
   });

@@ -341,6 +341,24 @@ const COLUMNAS_ESPERADAS = {
  */
 const INDICES = [
   /*
+   * El cursor del feed de resoluciones de la tienda.
+   *
+   * La plataforma pregunta "qué cambió desde acá" cada uno o dos minutos. Sin
+   * índice, cada vuelta recorre todos los pedidos del negocio para devolver casi
+   * siempre cero filas, y son decenas de vueltas por hora.
+   *
+   * Va acá y no en el `indexes` del modelo porque `novedadEn` la agrega
+   * ensureColumns, que corre DESPUÉS de db.sync: declarado en el modelo, sync
+   * intentaría crearlo sobre una columna que todavía no existe y el arranque se
+   * caería entero.
+   */
+  {
+    tabla: 'plataforma_pedidos',
+    nombre: 'idx_plataforma_pedidos_novedad',
+    columnas: ['businessId', 'plataforma', 'novedadEn', 'id'],
+    unico: false,
+  },
+  /*
    * La idempotencia de las ventas online, en la base y no sólo en el código.
    *
    * `colaVentasOnlineService.encolar` busca el pedido antes de crearlo y, si lo

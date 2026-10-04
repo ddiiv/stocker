@@ -194,6 +194,80 @@ const cancelarPedidoDeTienda = async (req, res, next) => {
   } catch (e) { next(e); }
 };
 
+/*
+ * GET /api/integraciones/tienda/pedidos/resoluciones?desde=&limite=
+ *
+ * Qué pasó con los pedidos DESPUÉS de la respuesta del POST: que el depósito
+ * despachó y con qué seguimiento, que no encontró la prenda, que se canceló. Es
+ * con lo que la tienda le manda el mail al comprador.
+ *
+ * Sin `desde` no devuelve historia: una tienda que pregunta por primera vez no
+ * tiene que enterarse de seis meses de cambios y mandar un mail por cada uno. Se
+ * lleva el cursor y desde la próxima vuelta ve lo nuevo.
+ */
+const resolucionesDeTienda = async (req, res, next) => {
+  try {
+    const tienda = require('../services/tiendaService');
+    res.json(await tienda.resoluciones({
+      businessId: req.integracion.businessId,
+      plataforma: 'tienda',
+      desde: req.query.desde || null,
+      limite: req.query.limite,
+    }));
+  } catch (e) { next(e); }
+};
+
+/*
+ * POST /api/integraciones/tienda/pedidos/:pedidoExterno/envio
+ *
+ * El número de la etiqueta, y de paso el tipo y el corte si recién ahora se
+ * saben. Es ruta propia y no parte del cobro por dos razones: un pedido con pago
+ * al retirar nunca manda un cobro y entonces nunca podría mandar su etiqueta, y
+ * el cobro está documentado como una sola vez por pedido mientras la etiqueta se
+ * puede corregir.
+ *
+ * Escribir el mismo valor dos veces no hace nada: la tienda puede reintentar.
+ */
+const envioDeTienda = async (req, res, next) => {
+  try {
+    const { PedidoPlataforma } = require('../models');
+    const { abrirSobre } = require('../utils/sobreMovimiento');
+    const datos = abrirSobre(req.body, 'envio');
+    const pedido = await PedidoPlataforma.findOne({
+      where: {
+        businessId: req.integracion.businessId,
+        plataforma: 'tienda',
+        pedidoExterno: String(req.params.pedidoExterno || '').trim(),
+      },
+    });
+    if (!pedido) return res.status(404).json({ message: 'Ese pedido no está en la cola.' });
+
+    const recortar = (v, largo) => (v == null ? null : String(v).slice(0, largo));
+    const cambios = {};
+    if (datos.seguimiento != null) cambios.seguimiento = recortar(datos.seguimiento, 60);
+    if (datos.tipo != null) cambios.envioTipo = recortar(datos.tipo, 30);
+    if (datos.despacharAntesDe != null) {
+      const d = new Date(datos.despacharAntesDe);
+      if (!Number.isNaN(d.getTime())) cambios.despacharAntesDe = d;
+    }
+    if (!Object.keys(cambios).length) {
+      return res.status(400).json({ message: 'No vino nada que guardar: mandá seguimiento, tipo o despacharAntesDe.' });
+    }
+    /*
+     * La novedad va en el mismo update: así la tienda puede enterarse por el feed
+     * de que la etiqueta quedó cargada, sin tener que acordarse de que la mandó.
+     */
+    await pedido.update({ ...cambios, novedadEn: new Date() });
+
+    res.json({
+      pedidoExterno: pedido.pedidoExterno,
+      seguimiento: pedido.seguimiento || null,
+      envioTipo: pedido.envioTipo || null,
+      despacharAntesDe: pedido.despacharAntesDe || null,
+    });
+  } catch (e) { next(e); }
+};
+
 /** GET /api/integraciones — las credenciales del negocio, sin los tokens. */
 const listar = async (req, res, next) => {
   try {
@@ -238,4 +312,5 @@ const revocar = async (req, res, next) => {
 module.exports = {
   recibirPedido, resolucionesDePedidos, preciosPorSku, listar, emitir, revocar,
   catalogoTienda, stockTienda, pedidoDeTienda, cancelarPedidoDeTienda,
+  resolucionesDeTienda, envioDeTienda,
 };

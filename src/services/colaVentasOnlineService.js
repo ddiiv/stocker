@@ -473,6 +473,15 @@ async function procesarUno(pedidoId) {
       estado: avisos.length ? 'parcial' : 'aceptado',
       motivo: avisos.join(' ') || null,
       procesadoEn: new Date(),
+      /*
+       * La novedad, en el MISMO update que el cambio.
+       *
+       * Es el cursor del feed de resoluciones. Va acá y no en un update aparte
+       * porque un segundo update vuelve a abrir la carrera que la transacción
+       * cierra: el cambio commitearía sin su marca y la plataforma no se
+       * enteraría nunca de ese pedido.
+       */
+      novedadEn: new Date(),
     }, { transaction: t });
 
     await t.commit();
@@ -561,6 +570,15 @@ async function reprocesar(pedidoId) {
       estado: avisos.length ? 'parcial' : 'aceptado',
       motivo: avisos.join(' ') || null,
       procesadoEn: new Date(),
+      /*
+       * La novedad, en el MISMO update que el cambio.
+       *
+       * Es el cursor del feed de resoluciones. Va acá y no en un update aparte
+       * porque un segundo update vuelve a abrir la carrera que la transacción
+       * cierra: el cambio commitearía sin su marca y la plataforma no se
+       * enteraría nunca de ese pedido.
+       */
+      novedadEn: new Date(),
     }, { transaction: t });
 
     await t.commit();
@@ -646,6 +664,8 @@ async function cancelarPorPlataforma(pedidoId, motivo = 'Cancelado en la platafo
         ? `${motivo}. Ya se había despachado: si vuelve, entra por devolución.`
         : motivo).slice(0, 500),
       canceladoEn: new Date(),
+      // El cursor del feed: ver la nota de arriba.
+      novedadEn: new Date(),
     }, { transaction: t });
     await t.commit();
 
@@ -671,6 +691,8 @@ async function rechazar(pedidoId, motivo) {
       estado: 'rechazado',
       motivo: String(motivo).slice(0, 500),
       procesadoEn: new Date(),
+      // El cursor del feed: ver la nota de arriba.
+      novedadEn: new Date(),
     }, { transaction: t });
     await t.commit();
   } catch (e) {
