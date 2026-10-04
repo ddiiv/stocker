@@ -20,7 +20,7 @@ const { Op } = require('sequelize');
 const { Product, ProductVariant } = require('../models');
 const { variantesPublicables, cantidadesPublicables } = require('./stockPublicableService');
 const { localesQueAbastecenOnline } = require('./stockService');
-const { precioMinorista, precioMayorista } = require('./precioService');
+const { precioMinorista, precioMayorista, tieneValor } = require('./precioService');
 
 /*
  * Un catálogo de indumentaria entra holgado; el tope existe para que una
@@ -84,8 +84,8 @@ async function catalogo({ businessId }) {
          * así que sin este número una ficha cuyas variantes no lo pisan no tiene
          * precio que mostrar.
          */
-        precioMinorista: precioMinorista(null, p),
-        precioMayorista: precioMayorista(null, p),
+        precioMinorista: precioParaPublicar(precioMinorista(null, p), null, p, 'precioMinorista'),
+        precioMayorista: precioParaPublicar(precioMayorista(null, p), null, p, 'precioMayorista'),
         descripcion: p.descripcion || null,
         categoria: p.categoria || null,
         modelo: p.modelo || null,
@@ -99,8 +99,8 @@ async function catalogo({ businessId }) {
       // esto la tienda no puede traducir el aviso a un SKU suyo.
       id: v.id,
       sku: v.sku,
-      color: v.color || null,
-      talle: v.talle || null,
+      // Del par genérico que Stocker guarda de verdad, no de un campo que no existe.
+      ...ejesDe(v),
       /*
        * Los dos precios, con nombre completo y sin un `precio` a secas.
        *
@@ -108,8 +108,8 @@ async function catalogo({ businessId }) {
        * significa el mayorista. Dos rutas con el mismo campo queriendo decir
        * cosas distintas es la clase de detalle que se descubre cobrando mal.
        */
-      precioMinorista: precioMinorista(v, p),
-      precioMayorista: precioMayorista(v, p),
+      precioMinorista: precioParaPublicar(precioMinorista(v, p), v, p, 'precioMinorista'),
+      precioMayorista: precioParaPublicar(precioMayorista(v, p), v, p, 'precioMayorista'),
       /* El mismo número que se le manda a Mercado Libre y a Jumpseller. */
       /*
        * `cantidadesPublicables` devuelve { disponible, margen, cantidad } por
@@ -187,6 +187,66 @@ async function stockDeSkus({ businessId, skus }) {
   return { stock, desconocidos, generadoEn: new Date() };
 }
 
+/*
+ * ── El color y el talle de una variante ───────────────────────────
+ *
+ * En Stocker una variante NO tiene campos 'color' ni 'talle': tiene dos pares
+ * genéricos, variante1Nombre/variante1Valor y variante2Nombre/variante2Valor,
+ * porque un negocio puede querer eje "Color"/"Talle" y otro "Sabor"/"Tamaño".
+ *
+ * Leerlos por el NOMBRE y no por la posición es lo correcto: hay productos con
+ * un solo eje y no siempre es el mismo. El respaldo por posición existe para los
+ * que tengan las etiquetas vacías.
+ *
+ * Y se recortan a propósito. La tienda valida el catálogo con un esquema que
+ * acepta hasta 60 caracteres de color y 40 de talle, mientras acá la columna
+ * admite 80: un valor más largo haría que la tienda descarte el catálogo ENTERO
+ * y se quede sin productos, en vez de perder un adjetivo.
+ */
+const TOPE_COLOR = 60;
+const TOPE_TALLE = 40;
+
+const esEje = (nombre, palabras) => {
+  const n = String(nombre || '').trim().toLowerCase();
+  return palabras.some((p) => n.includes(p));
+};
+
+function ejesDe(v) {
+  const pares = [
+    { nombre: v.variante1Nombre, valor: v.variante1Valor },
+    { nombre: v.variante2Nombre, valor: v.variante2Valor },
+  ];
+  const color = pares.find((p) => esEje(p.nombre, ['color']));
+  const talle = pares.find((p) => esEje(p.nombre, ['talle', 'talla', 'tama', 'medida']));
+  /*
+   * Si las etiquetas no dicen nada, se cae al orden en que están cargadas, que
+   * es el que usa el resto del sistema (ver depositoService).
+   */
+  const recortar = (x, tope) => {
+    const s = x == null ? null : String(x).trim();
+    return s ? s.slice(0, tope) : null;
+  };
+  return {
+    color: recortar((color || pares[0]).valor, TOPE_COLOR),
+    talle: recortar((talle || (color ? pares[1] : pares[1])).valor, TOPE_TALLE),
+  };
+}
+
+/*
+ * El precio, o nada.
+ *
+ * `precioService.precioMinorista` termina en `Number(...) || 0` porque para
+ * cobrar un cero es un precio válido —una muestra, un regalo, un canje—. Para
+ * publicar no: un producto al que nadie le cargó precio saldría a la vidriera en
+ * cero y se vendería gratis. Acá "sin precio" tiene que viajar como null, para
+ * que la plataforma pueda no publicarlo.
+ */
+function precioParaPublicar(calculado, variante, producto, campo) {
+  const hayPropio = tieneValor(variante?.[campo]);
+  const hayDelPadre = tieneValor(producto?.[campo]) && Number(producto[campo]) > 0;
+  if (!hayPropio && !hayDelPadre) return null;
+  return calculado;
+}
 /*
  * ── Qué le pasó a los pedidos que mandó la tienda ─────────────────
  *
@@ -332,4 +392,6 @@ function leerCursor(valor) {
 module.exports = {
   catalogo, stockDeSkus, resoluciones,
   TOPE_SKUS_CONSULTA, TOPE_RESOLUCIONES, __queCambio: queCambio, __cursorDe: cursorDe,
+  // Expuestas para probarlas sin depender de qué datos tenga la base de turno.
+  __ejesDe: ejesDe, __precioParaPublicar: precioParaPublicar,
 };

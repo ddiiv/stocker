@@ -185,6 +185,76 @@ function llamar({ token, origen = 'tienda', handler, query = {}, params = {}, bo
     chk('que no es NaN ni negativo', true,
       Number.isFinite(padreDelCatalogo?.precioMinorista) && padreDelCatalogo.precioMinorista >= 0);
 
+    /*
+     * ── El color y el talle, que no son campos de la variante ─────
+     *
+     * En Stocker una variante tiene dos pares genéricos
+     * (variante1Nombre/Valor, variante2Nombre/Valor), no campos `color` y
+     * `talle`. Leer `v.color` devuelve undefined siempre, y el catálogo salía con
+     * color y talle en null en TODAS las variantes. La tienda agrupa por color:
+     * con un solo color "Único" y sin talles, su ficha vende nada más que la
+     * primera variante y el resto queda inalcanzable, con stock y todo.
+     */
+    const variantesDelCatalogo = (catalogo.json.productos || []).flatMap((p) => p.variantes || []);
+    chk('alguna variante trae color de verdad, no null en todas', true,
+      variantesDelCatalogo.some((v) => typeof v.color === 'string' && v.color.length > 0));
+    chk('y alguna trae talle', true,
+      variantesDelCatalogo.some((v) => typeof v.talle === 'string' && v.talle.length > 0));
+    /*
+     * Los topes del esquema de la tienda: color 60, talle 40. La columna de
+     * Stocker admite 80, y un valor más largo le hace descartar el catálogo
+     * ENTERO en vez de perder un adjetivo.
+     */
+    chk('ninguno pasa los topes que la tienda acepta', true,
+      variantesDelCatalogo.every((v) => (v.color == null || v.color.length <= 60)
+        && (v.talle == null || v.talle.length <= 40)));
+
+    /*
+     * ── Sin precio es null, no cero ────────────────────────────────
+     *
+     * Para cobrar, un cero es un precio válido —una muestra, un canje—. Para
+     * publicar no: un producto al que nadie le cargó precio saldría a la vidriera
+     * en cero y se vendería gratis. La tienda tiene escrito que un producto sin
+     * precio no se publica, y contra un cero esa defensa no sirve.
+     */
+    /*
+     * Se prueba contra la FUNCIÓN y no contra los datos que haya en la base.
+     *
+     * El negocio de demo puede tener todos sus productos con precio, y entonces un
+     * `every` sobre el catálogo pasa sin probar nada: es la forma más común de que
+     * una prueba quede verde por el motivo equivocado.
+     */
+    const tiendaSvc = require('../src/services/tiendaService');
+    const pp = tiendaSvc.__precioParaPublicar;
+    chk('sin precio en la variante ni en el producto, null',
+      null, pp(0, { precioMinorista: null }, { precioMinorista: 0 }, 'precioMinorista'));
+    chk('con precio en el producto, el número', 32000,
+      pp(32000, { precioMinorista: null }, { precioMinorista: 32000 }, 'precioMinorista'));
+    chk('con precio propio de la variante, el número', 500,
+      pp(500, { precioMinorista: 500 }, { precioMinorista: 0 }, 'precioMinorista'));
+    /*
+     * Y un cero PROPIO de la variante sí es un precio: una muestra, un canje. Lo
+     * que no es precio es que nadie haya cargado nada.
+     */
+    chk('un cero cargado a propósito en la variante se respeta', 0,
+      pp(0, { precioMinorista: 0 }, { precioMinorista: 0 }, 'precioMinorista'));
+
+    chk('y en el catálogo real no hay ningún cero publicado', true,
+      (catalogo.json.productos || []).every((p) => p.precioMinorista === null || p.precioMinorista > 0)
+        && variantesDelCatalogo.every((v) => v.precioMinorista === null || v.precioMinorista > 0));
+
+    /* Los ejes, también contra la función: por nombre, no por posición. */
+    const ejes = tiendaSvc.__ejesDe;
+    chk('lee el color y el talle por su etiqueta', { color: 'Negro', talle: 'M' },
+      ejes({ variante1Nombre: 'Color', variante1Valor: 'Negro', variante2Nombre: 'Talle', variante2Valor: 'M' }));
+    chk('y si vienen al revés, también', { color: 'Azul', talle: 'L' },
+      ejes({ variante1Nombre: 'Talle', variante1Valor: 'L', variante2Nombre: 'Color', variante2Valor: 'Azul' }));
+    chk('sin etiquetas, cae al orden en que están cargadas', { color: 'Rojo', talle: 'XL' },
+      ejes({ variante1Nombre: null, variante1Valor: 'Rojo', variante2Nombre: null, variante2Valor: 'XL' }));
+    chk('y recorta a lo que la tienda acepta', [60, 40],
+      [ejes({ variante1Nombre: 'Color', variante1Valor: 'x'.repeat(80), variante2Nombre: 'Talle', variante2Valor: 'y'.repeat(80) }).color.length,
+        ejes({ variante1Nombre: 'Color', variante1Valor: 'x'.repeat(80), variante2Nombre: 'Talle', variante2Valor: 'y'.repeat(80) }).talle.length]);
+
     tit('3. EL STOCK DE UNOS SKU');
     const skus = variantes.slice(0, 3).map((v) => v.sku).filter(Boolean);
     const consulta = await llamar({ token, handler: ctrl.stockTienda, query: { skus: skus.join(',') } });

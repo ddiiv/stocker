@@ -17,8 +17,8 @@
           {
             "id": 56,
             "sku": "ISUABEPANNEGS",
-            "color": null,
-            "talle": null,
+            "color": "Negro",
+            "talle": "S",
             "precioMinorista": 32000,
             "precioMayorista": 20000,
             "publicable": 0,
@@ -27,8 +27,8 @@
           {
             "id": 57,
             "sku": "ISUABEPANNEGM",
-            "color": null,
-            "talle": null,
+            "color": "Negro",
+            "talle": "M",
             "precioMinorista": 32000,
             "precioMayorista": 20000,
             "publicable": 5,
@@ -37,8 +37,8 @@
           {
             "id": 58,
             "sku": "ISUABEPANNEGL",
-            "color": null,
-            "talle": null,
+            "color": "Negro",
+            "talle": "L",
             "precioMinorista": 32000,
             "precioMayorista": 20000,
             "publicable": 32,
@@ -47,8 +47,8 @@
           {
             "id": 59,
             "sku": "ISUABEPANNEGXL",
-            "color": null,
-            "talle": null,
+            "color": "Negro",
+            "talle": "XL",
             "precioMinorista": 32000,
             "precioMayorista": 20000,
             "publicable": 3,
@@ -57,8 +57,8 @@
           {
             "id": 60,
             "sku": "ISUABEPANNEG2XL",
-            "color": null,
-            "talle": null,
+            "color": "Negro",
+            "talle": "2XL",
             "precioMinorista": 32000,
             "precioMayorista": 20000,
             "publicable": 2,
@@ -67,8 +67,8 @@
           {
             "id": 61,
             "sku": "ISUABEPANNEG3XL",
-            "color": null,
-            "talle": null,
+            "color": "Negro",
+            "talle": "3XL",
             "precioMinorista": 32000,
             "precioMayorista": 20000,
             "publicable": 5,
@@ -77,8 +77,8 @@
           {
             "id": 62,
             "sku": "ISUABEPANMELS",
-            "color": null,
-            "talle": null,
+            "color": "Moline",
+            "talle": "S",
             "precioMinorista": 32000,
             "precioMayorista": 20000,
             "publicable": 4,
@@ -87,8 +87,8 @@
           {
             "id": 63,
             "sku": "ISUABEPANMELM",
-            "color": null,
-            "talle": null,
+            "color": "Moline",
+            "talle": "M",
             "precioMinorista": 32000,
             "precioMayorista": 20000,
             "publicable": 1002,
@@ -97,8 +97,8 @@
           {
             "id": 64,
             "sku": "ISUABEPANMELL",
-            "color": null,
-            "talle": null,
+            "color": "Moline",
+            "talle": "L",
             "precioMinorista": 32000,
             "precioMayorista": 20000,
             "publicable": 44,
@@ -107,8 +107,8 @@
           {
             "id": 65,
             "sku": "ISUABEPANMELXL",
-            "color": null,
-            "talle": null,
+            "color": "Moline",
+            "talle": "XL",
             "precioMinorista": 32000,
             "precioMayorista": 20000,
             "publicable": 0,
@@ -117,8 +117,8 @@
           {
             "id": 66,
             "sku": "ISUABEPANMEL2XL",
-            "color": null,
-            "talle": null,
+            "color": "Moline",
+            "talle": "2XL",
             "precioMinorista": 32000,
             "precioMayorista": 20000,
             "publicable": 3,
@@ -127,8 +127,8 @@
           {
             "id": 67,
             "sku": "ISUABEPANMEL3XL",
-            "color": null,
-            "talle": null,
+            "color": "Moline",
+            "talle": "3XL",
             "precioMinorista": 32000,
             "precioMayorista": 20000,
             "publicable": 45,
@@ -137,8 +137,8 @@
           {
             "id": 68,
             "sku": "ISUABEPANAZUS",
-            "color": null,
-            "talle": null,
+            "color": "Azul Marino",
+            "talle": "S",
             "precioMinorista": 32000,
             "precioMayorista": 20000,
             "publicable": 12,
@@ -147,8 +147,8 @@
           {
             "id": 69,
             "sku": "ISUABEPANAZUM",
-            "color": null,
-            "talle": null,
+            "color": "Azul Marino",
+            "talle": "M",
             "precioMinorista": 32000,
             "precioMayorista": 20000,
             "publicable": 12,
@@ -157,8 +157,8 @@
           {
             "id": 70,
             "sku": "ISUABEPANAZUL",
-            "color": null,
-            "talle": null,
+            "color": "Azul Marino",
+            "talle": "L",
             "precioMinorista": 32000,
             "precioMayorista": 20000,
             "publicable": 6,
@@ -167,8 +167,8 @@
           {
             "id": 71,
             "sku": "ISUABEPANAZUXL",
-            "color": null,
-            "talle": null,
+            "color": "Azul Marino",
+            "talle": "XL",
             "precioMinorista": 32000,
             "precioMayorista": 20000,
             "publicable": 33,
@@ -177,8 +177,8 @@
           {
             "id": 72,
             "sku": "ISUABEPANAZU2XL",
-            "color": null,
-            "talle": null,
+            "color": "Azul Marino",
+            "talle": "2XL",
             "precioMinorista": 32000,
             "precioMayorista": 20000,
             "publicable": 0,
@@ -187,8 +187,8 @@
           {
             "id": 73,
             "sku": "ISUABEPANAZU3XL",
-            "color": null,
-            "talle": null,
+            "color": "Azul Marino",
+            "talle": "3XL",
             "precioMinorista": 32000,
             "precioMayorista": 20000,
             "publicable": 4,
@@ -197,8 +197,8 @@
           {
             "id": 74,
             "sku": "ISUABEPANTOPS",
-            "color": null,
-            "talle": null,
+            "color": "Topo",
+            "talle": "S",
             "precioMinorista": 32000,
             "precioMayorista": 20000,
             "publicable": 6,
@@ -207,8 +207,8 @@
           {
             "id": 75,
             "sku": "ISUABEPANTOPM",
-            "color": null,
-            "talle": null,
+            "color": "Topo",
+            "talle": "M",
             "precioMinorista": 32000,
             "precioMayorista": 20000,
             "publicable": 6,
@@ -217,8 +217,8 @@
           {
             "id": 76,
             "sku": "ISUABEPANTOPL",
-            "color": null,
-            "talle": null,
+            "color": "Topo",
+            "talle": "L",
             "precioMinorista": 32000,
             "precioMayorista": 20000,
             "publicable": 455,
@@ -227,8 +227,8 @@
           {
             "id": 77,
             "sku": "ISUABEPANTOPXL",
-            "color": null,
-            "talle": null,
+            "color": "Topo",
+            "talle": "XL",
             "precioMinorista": 32000,
             "precioMayorista": 20000,
             "publicable": 3,
@@ -237,8 +237,8 @@
           {
             "id": 78,
             "sku": "ISUABEPANTOP2XL",
-            "color": null,
-            "talle": null,
+            "color": "Topo",
+            "talle": "2XL",
             "precioMinorista": 32000,
             "precioMayorista": 20000,
             "publicable": 2,
@@ -247,8 +247,8 @@
           {
             "id": 79,
             "sku": "ISUABEPANTOP3XL",
-            "color": null,
-            "talle": null,
+            "color": "Topo",
+            "talle": "3XL",
             "precioMinorista": 32000,
             "precioMayorista": 20000,
             "publicable": 0,
@@ -257,8 +257,8 @@
           {
             "id": 1383,
             "sku": "ISUABEPANCACM",
-            "color": null,
-            "talle": null,
+            "color": "CAC",
+            "talle": "M",
             "precioMinorista": 32000,
             "precioMayorista": 20000,
             "publicable": 123,
@@ -280,8 +280,8 @@
           {
             "id": 1425,
             "sku": "ISUABYCAMROJS",
-            "color": null,
-            "talle": null,
+            "color": "ROJO",
+            "talle": "S",
             "precioMinorista": 32000,
             "precioMayorista": 20000,
             "publicable": 0,
@@ -290,8 +290,8 @@
           {
             "id": 1426,
             "sku": "ISUABYCAMROJM",
-            "color": null,
-            "talle": null,
+            "color": "ROJO",
+            "talle": "M",
             "precioMinorista": 32000,
             "precioMayorista": 20000,
             "publicable": 0,
@@ -300,8 +300,8 @@
           {
             "id": 1427,
             "sku": "ISUABYCAMROJL",
-            "color": null,
-            "talle": null,
+            "color": "ROJO",
+            "talle": "L",
             "precioMinorista": 32000,
             "precioMayorista": 20000,
             "publicable": 0,
@@ -310,8 +310,8 @@
           {
             "id": 1428,
             "sku": "ISUABYCAMROJXL",
-            "color": null,
-            "talle": null,
+            "color": "ROJO",
+            "talle": "XL",
             "precioMinorista": 32000,
             "precioMayorista": 20000,
             "publicable": 0,
@@ -320,8 +320,8 @@
           {
             "id": 1429,
             "sku": "ISUABYCAMROJ2XL",
-            "color": null,
-            "talle": null,
+            "color": "ROJO",
+            "talle": "2XL",
             "precioMinorista": 32000,
             "precioMayorista": 20000,
             "publicable": 0,
@@ -330,8 +330,8 @@
           {
             "id": 80,
             "sku": "ISUABYCAMNEGS",
-            "color": null,
-            "talle": null,
+            "color": "Unico",
+            "talle": "S",
             "precioMinorista": 32000,
             "precioMayorista": 20000,
             "publicable": 0,
@@ -340,8 +340,8 @@
           {
             "id": 81,
             "sku": "ISUABYCAMNEGM",
-            "color": null,
-            "talle": null,
+            "color": "Unico",
+            "talle": "M",
             "precioMinorista": 32000,
             "precioMayorista": 20000,
             "publicable": 0,
@@ -350,8 +350,8 @@
           {
             "id": 82,
             "sku": "ISUABYCAMNEGL",
-            "color": null,
-            "talle": null,
+            "color": "Unico",
+            "talle": "L",
             "precioMinorista": 32000,
             "precioMayorista": 20000,
             "publicable": 0,
@@ -360,8 +360,8 @@
           {
             "id": 83,
             "sku": "ISUABYCAMNEGXL",
-            "color": null,
-            "talle": null,
+            "color": "Unico",
+            "talle": "XL",
             "precioMinorista": 32000,
             "precioMayorista": 20000,
             "publicable": 0,
@@ -370,8 +370,8 @@
           {
             "id": 84,
             "sku": "ISUABYCAMNEG2XL",
-            "color": null,
-            "talle": null,
+            "color": "Unico",
+            "talle": "2XL",
             "precioMinorista": 32000,
             "precioMayorista": 20000,
             "publicable": 0,
@@ -380,8 +380,8 @@
           {
             "id": 85,
             "sku": "ISUABYCAMNEG3XL",
-            "color": null,
-            "talle": null,
+            "color": "Unico",
+            "talle": "3XL",
             "precioMinorista": 32000,
             "precioMayorista": 20000,
             "publicable": 0,
@@ -392,7 +392,7 @@
     ],
     "truncado": false,
     "sinLocalesOnline": false,
-    "generadoEn": "2026-10-04T06:14:01.806Z"
+    "generadoEn": "2026-10-04T06:48:40.252Z"
   },
   "GET /api/integraciones/tienda/stock?skus=ISUABEPANNEGS,ISUABEPANNEGM,ISUABEPANNEGL,ISUABEPANNEGXL,NO-EXISTE-EN-STOCKER": {
     "stock": {
@@ -404,6 +404,6 @@
     "desconocidos": [
       "NO-EXISTE-EN-STOCKER"
     ],
-    "generadoEn": "2026-10-04T06:14:01.826Z"
+    "generadoEn": "2026-10-04T06:48:40.267Z"
   }
 }
