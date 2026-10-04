@@ -308,6 +308,45 @@ cursor para la próxima vuelta. **Pregunta la plataforma en vez de avisar Stocke
 plataforma ya tiene reloj y reintentos escritos, y porque si se cae no se pierde nada: cuando vuelve,
 pregunta desde donde quedó. Un webhook perdido, en cambio, se pierde callado.
 
+**La tienda tiene el suyo**, con la misma idea y una diferencia importante: una solicitud mayorista se
+resuelve una vez, pero un pedido de tienda cambia varias veces —se cobra, se despacha, se cancela—.
+
+```
+GET /api/integraciones/tienda/pedidos/resoluciones?desde=<cursor>&limite=100
+→ { "cursor": "…", "hayMas": false, "cambios": [
+     { "pedidoExterno": "ISU-1042", "cambio": "despachado",
+       "estado": "aceptado", "estadoEnvio": "despachado", "pagoEstado": "pagado",
+       "seguimiento": "CA123456789AR", "envioTipo": "correo_argentino",
+       "despachadoEn": "…", "canceladoEn": null, "motivo": null, "en": "…" } ] }
+```
+
+Cuatro cosas de este feed que conviene no descubrir en producción:
+
+- **Devuelve hechos, no una palabra.** `cambio` es la lectura rápida, pero las dos fechas viajan
+  siempre. Un pedido **cancelado que ya había salido existe**: si sólo mirás `cambio` le vas a avisar
+  «cancelado» a alguien que tiene el paquete en camino. Por eso `cambio` dice `despachado` en ese
+  caso: el despacho gana.
+- **Sin `desde` no devuelve historia**, sólo el cursor para empezar. Una tienda que pregunta por
+  primera vez no tiene que enterarse de seis meses de cambios y mandar un mail por cada uno.
+- **El cursor es opaco.** No lo parsees ni lo armes: mandá el que devolvió la vuelta anterior. Uno que
+  no se entiende da `400`, no una lista vacía. Si `hayMas` viene en `true`, volvé a preguntar ya.
+- **Un cambio tarda hasta cinco segundos en aparecer.** Es a propósito: el cursor avanza hasta la
+  última fila devuelta, y devolver un cambio recién commiteado haría que otro que empezó antes y
+  commitea un milisegundo después quedara detrás del cursor y se perdiera para siempre.
+
+**La etiqueta va por su propia ruta**, no con el cobro:
+
+```
+POST /api/integraciones/tienda/pedidos/:pedidoExterno/envio
+{ "seguimiento": "CA123456789AR", "tipo": "correo_argentino", "despacharAntesDe": "…" }
+```
+
+Los tres campos son opcionales y se guarda lo que venga; mandar el mismo valor dos veces no hace nada,
+así que se puede reintentar. Es ruta propia porque un pedido con pago al retirar **nunca manda un
+cobro** y entonces nunca podría mandar su etiqueta, y porque el cobro es una vez por pedido mientras la
+etiqueta se corrige. Lo que escribís acá aparece en el feed, así que la tienda confirma que quedó
+cargada sin tener que acordarse de que la mandó.
+
 **c) El aviso de stock, para refrescar la vidriera.** Cada movimiento de stock emite, dentro de la
 transacción que lo hizo:
 
@@ -354,33 +393,44 @@ que una venta de ML entra sola. **Jumpseller no entra solo**: `importarPedidos` 
 no lo llama, y el único camino es que alguien abra Stocker y apriete importar. Una venta de Jumpseller
 no aparta stock hasta que eso pasa.
 
-**Lo que le falta a la tienda para entrar.** La ruta de Stocker está y probada; el cliente de `isu`
-no coincide con ella en cinco puntos, y mientras siga así **todo checkout termina en un 400**:
+**Qué le falta a la tienda para entrar, y qué ya no.** La tienda respondió este contrato y lo aceptó
+entero; Stocker construyó lo que pidió. Esto es el estado real, para que nadie trabaje de más:
+
+**Ya resuelto del lado de Stocker** (la tienda sólo tiene que usarlo):
+
+- El `id` del producto y de cada variante en el catálogo, que era lo que bloqueaba todo: sin eso el
+  importador descartaba el catálogo entero y la tienda arrancaba sin productos. También van ahora el
+  `negocio` y el precio del producto padre, además del de cada variante.
+- El envío: `encolar` acepta `envio: { tipo, despacharAntesDe, seguimiento }` y el pedido entra con su
+  reloj a la jornada del depósito.
+- El pago pendiente: el pedido puede entrar debiendo plata y **el depósito no lo despacha** hasta que
+  esté cobrado, con pestaña propia para que no quede invisible mientras retiene stock.
+- Cargar la etiqueta y enterarse del despacho: las dos rutas del § 5 b. **Reemplazan** tres de las
+  cuatro llamadas que la tienda hacía a rutas inexistentes (`/pedidos/:n`, `/pedidos/:n/envio`)
+  y el canal `stocker_tienda_envios` que esperaba y que nunca existió.
+
+**Lo que falta del lado de la tienda.** Mientras siga así, **todo checkout termina en un 400**:
 
 1. Manda el número de pedido en `pedido` y esta ruta lo lee en `pedidoExterno` (§ 3.1). Es el que
-   corta: `encolar` rechaza antes de tocar la base.
-2. Valida la respuesta con un esquema que pide `id`, `pagoPendiente`, `estadoEnvio`, `despachadoEn`,
-   `canceladoEn` y `faltantes`; esta ruta devuelve `{ pedidoExterno, estado, motivo, repetido }`.
-3. Manda `pagoPendiente`, `pagoDetalle` y `envio`, y **esta ruta los ignora**: el tipo de envío y el
-   corte del día no llegan, así que el pedido entraría invisible para Envíos del Día.
-4. Llama a `/pedidos/:n`, `/pedidos/:n/pagado`, `/pedidos/:n/envio` y `/clientes`, que no existen.
-5. Lee el catálogo y el stock con otros nombres (`generado`, `precio`, `cantidad`) que los que esta
-   ruta devuelve (`generadoEn`, `precioMinorista`/`precioMayorista`, § 5).
+   corta: `encolar` rechaza antes de tocar la base. **Es el único bloqueante que queda.**
+2. Valida la respuesta con un esquema que pide `id`, `pagoPendiente`, `estadoEnvio`, `despachadoEn` y
+   `canceladoEn`; esta ruta devuelve `{ pedidoExterno, estado, motivo, repetido }`. Esos cuatro datos
+   ahora se piden por el feed del § 5 b, que es donde corresponde: cambian después de la respuesta.
+3. Lee el catálogo y el stock con otros nombres. **Los datos ya están todos**; son cinco renombres:
+   `generado`←`generadoEn` (en las dos rutas), `productos[].sku`←`skuAgrupador`,
+   `productos[].precio` y `variantes[].precio`←`precioMinorista`, `variantes[].cantidad`←`publicable`.
+   Comprobado corriendo el esquema Zod de la tienda contra la respuesta real: no falta ningún dato.
+4. Escucha `stocker_stock` con JSON de SKUs; Stocker emite `stock_cambio` con el texto
+   `<negocio>:<variante>` (§ 5 c). La tienda ya dijo que se pasa a ése, y para traducir la variante a
+   su SKU ahora tiene el `id` del catálogo.
 
-6. **Escucha dos canales de avisos que Stocker no emite.** Hace `LISTEN stocker_stock` esperando
-   `{"b": <negocio>, "s": ["SKU", …]}` en JSON, y `LISTEN stocker_tienda_envios` esperando
-   `{"b", "p": "ISU-1234", "e": "despachado"|"faltante"}`. Stocker emite **un solo** aviso y es otro:
-   `stock_cambio` con el texto `<negocio>:<variante>` (§ 5 c). Tres desajustes a la vez —el nombre del
-   canal, el formato y el identificador, que acá es la variante y allá el SKU—, así que **el aviso en
-   vivo no funciona en ninguna dirección** y no hay ningún aviso de despacho.
-7. **Espera un ciclo de pedido que este contrato no cubre**: marcar pagado, cargar el envío, consultar
-   el estado y dar de alta el cliente. Eso es el punto 4 visto desde el otro lado: no es que falten
-   cuatro rutas sueltas, es que la tienda da por hecho un ciclo completo que acá no está definido.
-   Antes de escribir esas rutas hay que decidir si Stocker las va a tener, porque dos de ellas —el
-   cobro y el alta de cliente— tocan dinero y datos personales.
+**Lo que falta todavía del lado de Stocker:** la ruta de cobro del § 3.5 —marcar pagado—, que es lo
+único que impide abrir con transferencia, Pago Fácil y pago al retirar. El alta de clientes se
+descartó: el comprador ya viaja en el pedido y así no queda una ruta de datos personales sólo para eso.
 
-Arreglar sólo el punto 1 sería peor que no arreglar nada: el pedido entraría y el envío se perdería
-callado. Van todos juntos, y después se saca el ⚠️ de la tabla.
+Arreglar sólo el renombre del punto 1 sin el punto 3 sería peor que no arreglar nada: el pedido
+entraría y el catálogo seguiría sin importarse. Van los cuatro juntos, y después se saca el ⚠️ de la
+tabla.
 
 **Qué nombre cede y qué nombre no.** Para que la discusión no se repita: los precios se llaman
 `precioMinorista` y `precioMayorista` **a propósito** y eso no se negocia —en la ruta del portal
