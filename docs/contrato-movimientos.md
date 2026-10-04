@@ -193,33 +193,76 @@ costo. Ninguna de las plataformas de venta la genera, y no hay ruta externa ni s
 que hace falta es dar de alta mercadería desde otro lado, eso es un tema aparte y se habla antes de
 escribirlo.
 
-### 3.5 `cobro` — **parcial** ⚠️
+### 3.5 `cobro` — **existe para la tienda** ✅
 
-Hoy el dinero de la venta online entra **con la venta** (campo `total`). No hay ruta para un cobro
-como movimiento propio.
-
-**Y para un canal que reserva antes de cobrar, eso no alcanza.** La tienda minorista hace exactamente
-eso: crea el pedido en Stocker con el pago pendiente —manda `pagoPendiente: true` y un `pagoDetalle`
-del tipo «Transferencia · vence 02/10 14:00»— y recién después levanta la marca cuando el dinero
-entra. **Stocker descarta esos dos campos**: `encolar` guarda sólo los de su lista, y no existe
-columna de cobro pendiente. El `total` que viaja es lo que se espera cobrar, no lo cobrado.
-
-La consecuencia es operativa y no de documentación: un pedido con transferencia pendiente entra
-idéntico a uno pagado, aparece en Envíos del Día como cualquier otro, y el depósito lo despacha sin
-que nadie haya pagado. **Hasta que el cobro exista como movimiento propio, un canal que reserva antes
-de cobrar tiene que retener el pedido de su lado** y mandarlo a Stocker cuando el dinero entró.
-
-Forma prevista cuando se construya:
+La tienda minorista aparta la prenda y cobra después: el cliente elige Mercado Pago, transferencia,
+Pago Fácil o pago al retirar, y paga en minutos o en días. El pedido entra con el pago pendiente, **el
+depósito no lo despacha** hasta que esté cobrado, y el cobro entra por acá:
 
 ```
-POST /api/integraciones/<origen>/cobros
+POST /api/integraciones/tienda/cobros
 { "contrato": 1, "tipo": "cobro", "id": "isu:ISU-1042-C1",
   "datos": { "ventaId": "isu:ISU-1042", "importe": 36000,
              "medio": "mercadopago", "operacion": "1234567890" } }
+
+→ 201 { "movimientoExterno": "ISU-1042-C1", "pedidoExterno": "ISU-1042",
+        "aplicado": true, "motivo": null, "pagoEstado": "pagado", "cobrado": 36000 }
 ```
 
-`operacion` es el número de la pasarela: es lo que permite conciliar contra el resumen y lo que hace
-que un reintento del webhook de pago no cobre dos veces.
+- **El `id` es del COBRO, no del pedido.** El pedido se nombra en `ventaId`. Los dos llevan el
+  prefijo de la plataforma y Stocker se lo saca. Un segundo cobro del mismo pedido —una seña y el
+  resto— lleva **otro** `id` (`…-C2`): es lo que distingue un cobro nuevo de un reintento.
+- **Mandar el mismo `id` dos veces no cobra dos veces**: contesta `200` con lo que ya había.
+- **`importe` se acumula.** Con una seña el pedido sigue en `pendiente` y `pagoDetalle` dice
+  «Cobrado X de Y»; cuando la suma llega al total pasa a `pagado` y el depósito puede despachar. Si
+  pagás de más, pasa a pagado igual: **nunca se retiene un paquete porque el cliente puso unos pesos
+  extra**. El `total` del pedido no se usa para rechazar nada.
+- **`medio` es texto libre** y se guarda tal cual. Stocker no lo convierte en un medio de pago del
+  negocio, porque de la palabra «mercadopago» no se puede deducir si entra al arqueo ni a qué CUIT se
+  imputa, y eso lo decide el dueño.
+- **`operacion` es el número de la pasarela, o la referencia de la transferencia.** No es único a
+  propósito: esa referencia la tipea una persona y dos clientes pueden dejar la misma. Si llega una
+  `operacion` que ya estaba en otro cobro, el cobro se guarda con `aplicado: false` y el motivo
+  escrito, para que alguien lo mire.
+
+**Si el pedido ya no espera plata, el cobro se guarda igual y la respuesta es 2xx.** Pasa más de lo
+que parece: vence el plazo, la tienda cancela, y el aviso de la pasarela llega dos segundos tarde —con
+transferencias a 48 h eso es rutina—. En ese caso viene `aplicado: false` y un `motivo` que dice
+que hay que devolver el dinero. **Mirá siempre `aplicado`**: un 201 no significa que el pedido quedó
+pagado. Stocker no contesta un error porque la plataforma reintenta sobre todo lo que no sea 2xx, y un
+409 permanente sería plata que nadie anota en ninguna parte.
+
+**El plazo lo controla Stocker también.** El pedido puede traer `pagoVenceEn`; si no lo trae, Stocker
+le pone 72 horas (con un tope duro de 7 días). Cuando vence, **Stocker cancela el pedido solo y libera
+la mercadería**, sin esperar a que la plataforma lo haga. No es desconfianza: mientras un pedido espera
+el pago, su prenda está apartada y ya desapareció de la vidriera, de Mercado Libre y de Jumpseller, y
+el día que la plataforma se caiga esa reserva quedaría para siempre sin que nadie sepa por qué. La
+plataforma puede seguir cancelando por su cuenta con `/cancelar`: el que llegue primero gana y el
+otro no hace nada.
+
+**Lo que este cobro NO es: un asiento contable.** El dinero no entra a la caja ni a una venta de
+Stocker, porque un pedido de plataforma todavía no llega a ser una venta (§ 3.3, punto 1). Es un
+registro de recepción y una compuerta de despacho: alcanza para no despachar sin cobrar y para
+conciliar contra el resumen de la pasarela, y **no aparece en ningún reporte de facturación**. El día
+que haga falta que aparezca, eso es construir la venta, con las decisiones de persona que eso implica.
+
+**Cómo se avisa que un pedido entra sin pagar.** En el cuerpo de la venta (§ 3.1), junto a los items:
+
+```json
+{ "pagoPendiente": true,
+  "pagoDetalle": "Transferencia · vence 04/10 14:00",
+  "pagoVenceEn": "2026-10-04T17:00:00-03:00" }
+```
+
+- `pagoDetalle` es el texto que va a leer una persona en Stocker, tal cual lo manda la plataforma: el
+  vencimiento lo sabe ella, y dos relojes distintos imprimen dos textos distintos.
+- **El default de la tienda es «pendiente».** Si el mensaje no dice nada, Stocker asume que falta
+  cobrar: un paquete retenido se destraba con un clic, uno despachado sin cobrar no vuelve. Para un
+  pedido que ya viene cobrado hay que mandar `pagoPendiente: false` explícitamente.
+- Los canales que llegan cobrados —Mercado Libre, Jumpseller— no mandan nada de esto y **no les cambia
+  nada**: su pedido se despacha como siempre.
+- El `total` que viaja en la venta es lo que se espera cobrar, no lo cobrado. Lo cobrado se acumula con
+  los movimientos de cobro.
 
 ---
 
@@ -382,7 +425,7 @@ mal. **La plataforma no guarda el precio ni el stock como dato propio.**
 
 | Canal | venta | cancelación | devolución | compra | cobro |
 |---|---|---|---|---|---|
-| Tienda `isu` | ⚠️ la ruta está, **el cliente de la tienda no entra todavía** | ⚠️ ídem | ❌ | ⛔ | hoy viaja con la venta |
+| Tienda `isu` | ⚠️ la ruta está, **el cliente de la tienda no entra todavía** | ⚠️ ídem | ❌ | ⛔ | ✅ pago pendiente + `/cobros` |
 | Pedidos Mayoristas | ✅ HTTP, a revisión — **no aparta stock** | desde la pantalla de Stocker | ❌ | ⛔ | en Stocker |
 | Mercado Libre | ✅ webhook + el barrido busca lo nuevo | — | en Stocker | ⛔ | en Stocker |
 | Jumpseller | ⚠️ **sólo si alguien aprieta importar** | — | en Stocker | ⛔ | en Stocker |
@@ -424,9 +467,9 @@ entero; Stocker construyó lo que pidió. Esto es el estado real, para que nadie
    `<negocio>:<variante>` (§ 5 c). La tienda ya dijo que se pasa a ése, y para traducir la variante a
    su SKU ahora tiene el `id` del catálogo.
 
-**Lo que falta todavía del lado de Stocker:** la ruta de cobro del § 3.5 —marcar pagado—, que es lo
-único que impide abrir con transferencia, Pago Fácil y pago al retirar. El alta de clientes se
-descartó: el comprador ya viaja en el pedido y así no queda una ruta de datos personales sólo para eso.
+**Del lado de Stocker no falta nada para que la tienda abra.** La ruta de cobro del § 3.5 ya está, así
+que se puede abrir con transferencia, Pago Fácil y pago al retirar. El alta de clientes se descartó: el
+comprador ya viaja en el pedido y así no queda una ruta de datos personales sólo para eso.
 
 Arreglar sólo el renombre del punto 1 sin el punto 3 sería peor que no arreglar nada: el pedido
 entraría y el catálogo seguiría sin importarse. Van los cuatro juntos, y después se saca el ⚠️ de la
