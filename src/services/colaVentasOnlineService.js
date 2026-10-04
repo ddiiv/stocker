@@ -47,10 +47,55 @@ const { log } = require('../utils/logger');
  */
 const PLATAFORMAS = ['mercadolibre', 'jumpseller', 'tienda'];
 
+/*
+ * ── Los estados de pago, y qué significa que no haya ninguno ──────
+ *
+ * NULL es "este canal no informa pago": Mercado Libre y Jumpseller llegan
+ * cobrados, y todas las filas anteriores a esto también. Un pedido con NULL se
+ * despacha como siempre, así que el filtro del depósito tiene que preguntar por
+ * NULL explícitamente en vez de comparar contra "pagado".
+ */
+const PAGO_PENDIENTE = 'pendiente';
+const PAGO_PAGADO = 'pagado';
+
+/*
+ * Qué estado de pago le corresponde a un pedido que entra.
+ *
+ * Sólo los canales que apartan antes de cobrar tienen estado. Para los demás es
+ * NULL y no se les inventa uno "por simetría": no lo informan, y NULL ya dice lo
+ * correcto.
+ */
+function estadoDePago(plataforma, pagoPendiente) {
+  if (plataforma !== 'tienda') return null;
+  // El default de la tienda es pendiente: falla cerrado.
+  return pagoPendiente === false ? PAGO_PAGADO : PAGO_PENDIENTE;
+}
+
+
 const error = (mensaje, status = 400, extra = {}) =>
   Object.assign(new Error(mensaje), { status, ...extra });
 
 /** Recorta un texto al largo de su columna. Vacío se guarda como null. */
+/*
+ * Hasta cuándo vale una reserva sin pagar.
+ *
+ * La plataforma lo dice; si no lo dice, Stocker pone su propio reloj. El tope
+ * duro existe porque una plataforma podría mandar una fecha a diez años y la
+ * mercadería quedaría apartada sin que nadie lo note: lo publicable es
+ * stock - reservado, así que la prenda desaparece de la vidriera, de Mercado
+ * Libre y de Jumpseller antes de que llegue un peso.
+ */
+const PAGO_VENCE_H = Number(process.env.PAGO_VENCE_H) || 72;
+const PAGO_TOPE_H = 7 * 24;
+
+function vencimientoDePago(valor, desde) {
+  const tope = new Date(desde.getTime() + PAGO_TOPE_H * 3600 * 1000);
+  if (valor) {
+    const d = new Date(valor);
+    if (!Number.isNaN(d.getTime())) return d > tope ? tope : d;
+  }
+  return new Date(desde.getTime() + PAGO_VENCE_H * 3600 * 1000);
+}
 /*
  * El corte del día, o nada.
  *
@@ -79,6 +124,7 @@ const recortar = (v, largo) => {
  */
 async function encolar({
   businessId, plataforma, pedidoExterno, items, comprador = {}, total = null, envio = null,
+  pagoPendiente = null, pagoDetalle = null, pagoVenceEn = null,
 }) {
   const cual = String(plataforma || '').toLowerCase();
   if (!PLATAFORMAS.includes(cual)) {
@@ -135,6 +181,7 @@ async function encolar({
   });
   if (yaEstaba) return { pedido: yaEstaba, repetido: true };
 
+  const ahora = new Date();
   const t = await db.transaction();
   try {
     const pedido = await PedidoPlataforma.create({
@@ -169,7 +216,28 @@ async function encolar({
       despacharAntesDe: fechaDeCorte(envio?.despacharAntesDe),
       // El seguimiento normalmente llega después, cuando se genera la etiqueta.
       envioId:          recortar(envio?.seguimiento, 60),
-      recibidoEn: new Date(),
+      /*
+       * ── El pago, escrito acá y no en un update posterior ──────
+       *
+       * Mercado Libre escribe su envío con un update después de encolar, y para
+       * el envío da igual. Para el pago no: entre el INSERT y ese update el
+       * pedido ya está aceptado, con la mercadería apartada y sin marca de
+       * pago, y en esa ventana el depósito lo ve despachable. Si alguien abre
+       * Envíos del Día justo ahí, o si el proceso se muere entre las dos
+       * escrituras, el paquete queda despachable para siempre sin que nadie
+       * haya pagado: exactamente el agujero que esto viene a cerrar.
+       *
+       * El default de la tienda cuando el mensaje no dice nada es "pendiente",
+       * no NULL. Falla cerrado a propósito: un paquete retenido se destraba con
+       * un clic, uno despachado sin cobrar no vuelve.
+       */
+      pagoEstado:  estadoDePago(cual, pagoPendiente),
+      pagoDetalle: recortar(pagoDetalle, 120),
+      // El reloj propio sólo existe si hay algo que esperar.
+      pagoVenceEn: estadoDePago(cual, pagoPendiente) === PAGO_PENDIENTE
+        ? vencimientoDePago(pagoVenceEn, ahora)
+        : null,
+      recibidoEn: ahora,
     }, { transaction: t });
 
     await PedidoPlataformaItem.bulkCreate(items.map((i) => ({
@@ -727,6 +795,6 @@ async function encolarYProcesar(datos) {
 
 module.exports = {
   encolar, procesarUno, procesarCola, encolarYProcesar, reprocesar, PLATAFORMAS,
-  rescatarPendientes,
+  rescatarPendientes, PAGO_PENDIENTE, PAGO_PAGADO, __estadoDePago: estadoDePago,
   partesDeItem, cancelarPorPlataforma,
 };

@@ -103,6 +103,18 @@ function limitesDelDia(fecha) {
  * pantalla no piensa en dos campos: piensa en "para enviar", "en camino",
  * "entregado", "cancelado".
  */
+/*
+ * Un pedido que entró con la plata sin cobrar.
+ *
+ * Sólo lo informan los canales que apartan antes de cobrar (hoy la tienda
+ * minorista). En Mercado Libre, en Jumpseller y en todo lo anterior a esto la
+ * columna está en NULL, que significa "este canal no gestiona pago" y se
+ * despacha como siempre. Por eso se pregunta por el valor y no por su ausencia:
+ * un `pagoEstado !== 'pagado'` dejaría la pantalla del depósito vacía para
+ * todos.
+ */
+const esperandoPago = (p) => p.pagoEstado === 'pendiente';
+
 const FILTROS = {
   /*
    * Lo que todavía hay que armar y sacar. Es la vista por defecto.
@@ -114,7 +126,18 @@ const FILTROS = {
    * exclusión, el mismo envío aparecía duplicado en dos pestañas a la vez.
    */
   para_enviar: (p) => p.estadoEnvio !== 'despachado' && !esCancelado(p)
-    && p.estadoEnvio !== 'con_faltante' && !esEntregado(p),
+    && p.estadoEnvio !== 'con_faltante' && !esEntregado(p) && !esperandoPago(p),
+  /*
+   * Apartado y sin pagar.
+   *
+   * Tiene pestaña propia porque si no, un pedido impago es invisible: no está
+   * en "para enviar" —que es justo lo que queremos— y no está en ninguna otra.
+   * Y mientras está acá la mercadería SÍ está apartada: lo publicable es
+   * stock - reservado, así que la prenda ya desapareció de la vidriera, de
+   * Mercado Libre y de Jumpseller. Un pedido que retiene stock sin aparecer en
+   * ninguna pantalla es peor que el problema que la retención resuelve.
+   */
+  sin_pagar: (p) => esperandoPago(p) && !esCancelado(p) && p.estadoEnvio !== 'despachado',
   // Salió de acá y todavía no llegó.
   en_camino:   (p) => p.estadoEnvio === 'despachado' && !esEntregado(p) && !esCancelado(p),
   entregado:   (p) => esEntregado(p),
@@ -336,7 +359,7 @@ async function delDia(businessId, {
     return {
       fecha: desde, hasta, dias, diasAtras: atras, filtro: cual,
       porEstado: {
-        para_enviar: 0, en_camino: 0, entregado: 0, cancelado: 0, con_faltante: 0, historial: 0, todos: 0,
+        para_enviar: 0, sin_pagar: 0, en_camino: 0, entregado: 0, cancelado: 0, con_faltante: 0, historial: 0, todos: 0,
       },
       pedidos: [], paquetes: [], consolidado: [], resumen: vacio(),
     };
@@ -500,11 +523,11 @@ async function delDia(businessId, {
    * para descubrir que está vacía.
    */
   const porEstado = {
-    para_enviar: 0, en_camino: 0, entregado: 0, cancelado: 0, con_faltante: 0, historial: 0, todos: 0,
+    para_enviar: 0, sin_pagar: 0, en_camino: 0, entregado: 0, cancelado: 0, con_faltante: 0, historial: 0, todos: 0,
   };
   for (const p of pedidos) {
     porEstado.todos += 1;
-    for (const clave of ['para_enviar', 'en_camino', 'entregado', 'cancelado', 'con_faltante', 'historial']) {
+    for (const clave of ['para_enviar', 'sin_pagar', 'en_camino', 'entregado', 'cancelado', 'con_faltante', 'historial']) {
       if (FILTROS[clave](p)) porEstado[clave] += 1;
     }
   }
@@ -533,6 +556,17 @@ async function delDia(businessId, {
       id: p.id,
       plataforma: p.plataforma,
       pedidoExterno: p.pedidoExterno,
+      /*
+       * El pago, como campos propios y NO dentro de `motivo`.
+       *
+       * `motivoVigente` reescribe `motivo` entero cuando un SKU del pedido se
+       * resolvió después, así que el texto del pago desaparecería justo en los
+       * pedidos parciales, que son los que más se miran.
+       */
+      pagoEstado: p.pagoEstado || null,
+      pagoDetalle: p.pagoDetalle || null,
+      // El número de la etiqueta, para que el depósito no tenga que buscarlo.
+      seguimiento: p.seguimiento || null,
       envioId: p.envioId,
       envioTipo: p.envioTipo,
       despacharAntesDe: p.despacharAntesDe,
@@ -932,6 +966,21 @@ async function despachar({ pedidoId, businessId, employeeId = null }) {
     if (!DESPACHABLES.includes(pedido.estado)) {
       await t.rollback();
       throw error(`Este pedido está ${pedido.estado} y no hay nada que despachar.`, 409);
+    }
+    /*
+     * La puerta del pago va ACÁ, no en el filtro de la lista.
+     *
+     * Las rutas de despachar toman el id del cuerpo y nunca pasan por `delDia`:
+     * sacar el pedido de la lista es una comodidad para el depósito, no una
+     * garantía. Alguien con el id —un reintento viejo, un link guardado, la
+     * pantalla abierta de antes— despacharía mercadería impaga.
+     */
+    if (esperandoPago(pedido)) {
+      await t.rollback();
+      throw Object.assign(
+        new Error(`Este pedido todavía no está pagado${pedido.pagoDetalle ? ` (${pedido.pagoDetalle})` : ''} y no se puede despachar.`),
+        { status: 409, codigo: 'SIN_PAGAR', detalles: { codigo: 'SIN_PAGAR' } },
+      );
     }
     if (pedido.estadoEnvio === 'despachado') {
       /*

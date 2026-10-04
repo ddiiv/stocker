@@ -137,6 +137,51 @@ const COLUMNAS_ESPERADAS = {
     despachadoPorEmployeeId: { type: DataTypes.INTEGER, allowNull: true },
     // Cuándo la canceló la plataforma. Ver el modelo.
     canceladoEn: { type: DataTypes.DATE, allowNull: true },
+    /*
+     * ── El pago, para los canales que apartan antes de cobrar ─────
+     *
+     * La tienda minorista aparta la prenda y cobra después: el cliente elige
+     * transferencia o Pago Fácil y paga en dos o tres días. Mercado Libre y
+     * Jumpseller llegan cobrados y no informan nada de esto.
+     *
+     * pagoEstado en NULL significa "este canal no gestiona pago", y es lo que
+     * tienen todas las filas que ya existen. Esa es la razón por la que la
+     * columna es nullable y por la que el filtro del depósito tiene que
+     * preguntar por NULL explícitamente: un pagoEstado = pagado a secas
+     * dejaría la pantalla de Envíos del Día vacía para todo Mercado Libre.
+     */
+    pagoEstado:   { type: DataTypes.STRING(12), allowNull: true },
+    // El texto para la persona ("Transferencia · vence 04/10 14:00"), tal cual
+    // lo manda la plataforma: el vencimiento lo sabe ella, y dos relojes
+    // distintos imprimen dos textos distintos.
+    pagoDetalle:  { type: DataTypes.STRING(120), allowNull: true },
+    // Acumulado, para que una seña y el resto sumen y el número detrás de
+    // pagoEstado se pueda auditar.
+    cobrado:      { type: DataTypes.DECIMAL(12, 2), allowNull: false, defaultValue: 0 },
+    /*
+     * El reloj PROPIO de Stocker.
+     *
+     * La plataforma dice hasta cuándo vale la reserva. Si no lo dice, Stocker
+     * pone el suyo. Existe porque la alternativa es confiar en que la plataforma
+     * va a cancelar cuando el pago no llegue, y el día que la plataforma se cae
+     * esa mercadería queda apartada para siempre sin que nadie sepa por qué.
+     */
+    pagoVenceEn:  { type: DataTypes.DATE, allowNull: true },
+    /*
+     * ── Para que la plataforma se entere de lo que pasó después ────
+     *
+     * novedadEn es el cursor del feed de resoluciones: se escribe en el MISMO
+     * update que cada cambio, nunca en uno aparte. No sirve updatedAt, que se
+     * mueve con cualquier escritura y haría que la tienda le mande al cliente el
+     * mismo mail dos veces.
+     */
+    novedadEn:    { type: DataTypes.DATE, allowNull: true },
+    /*
+     * El número de la etiqueta. NO va en envioId: ese agrupa cajas de un mismo
+     * envío en la pantalla de despacho y en el PDF de picking, y meterle el
+     * seguimiento taparía el número de pedido justo donde el depósito lo lee.
+     */
+    seguimiento:  { type: DataTypes.STRING(60), allowNull: true },
   },
   variant_stocks: {
     /*

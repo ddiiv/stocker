@@ -134,6 +134,15 @@ const pedidoDeTienda = async (req, res, next) => {
       // Con qué sale y hasta cuándo hay para despacharlo: es lo que arma la
       // jornada del depósito. Sin esto el paquete entra sin reloj.
       envio: datos.envio ?? null,
+      /*
+       * El pago. La tienda aparta antes de cobrar, así que un pedido puede
+       * entrar debiendo plata y el depósito no tiene que despacharlo hasta que
+       * esté cobrado. Si el mensaje no dice nada, la cola lo toma como
+       * pendiente: falla cerrado.
+       */
+      pagoPendiente: datos.pagoPendiente ?? null,
+      pagoDetalle: datos.pagoDetalle ?? null,
+      pagoVenceEn: datos.pagoVenceEn ?? null,
     });
     /*
      * El código lo decide el ESTADO primero, y recién después si es un reenvío.

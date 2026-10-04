@@ -590,7 +590,107 @@ const PedidoPlataforma = db.define('PedidoPlataforma', {
 
   recibidoEn:  { type: DataTypes.DATE, allowNull: false, defaultValue: DataTypes.NOW },
   procesadoEn: { type: DataTypes.DATE, allowNull: true },
+  /*
+   * ── El pago, cuando el canal aparta antes de cobrar ───────────
+   *
+   * Ver ensureColumns para el por qué de cada una. Lo importante acá: NULL en
+   * pagoEstado significa "este canal no informa pago" y el pedido se despacha
+   * como siempre. Es lo que tienen Mercado Libre, Jumpseller y todas las filas
+   * anteriores a esto.
+   *
+   * Ninguna lleva un indexes en el modelo: db.sync corre ANTES de que
+   * ensureColumns las agregue, así que un índice declarado acá intentaría
+   * crearse sobre una columna que todavía no existe y el arranque se caería.
+   */
+  pagoEstado:  { type: DataTypes.STRING(12), allowNull: true },
+  pagoDetalle: { type: DataTypes.STRING(120), allowNull: true },
+  cobrado:     { type: DataTypes.DECIMAL(12, 2), allowNull: false, defaultValue: 0 },
+  pagoVenceEn: { type: DataTypes.DATE, allowNull: true },
+  // El cursor del feed de resoluciones y el número de la etiqueta.
+  novedadEn:   { type: DataTypes.DATE, allowNull: true },
+  seguimiento: { type: DataTypes.STRING(60), allowNull: true },
 }, { tableName: 'plataforma_pedidos' });
+
+/*
+ * Los cobros que informa una plataforma, uno por movimiento.
+ *
+ * Existe como tabla aparte y no como columnas del pedido por una razón
+ * concreta: una seña y el resto son DOS cobros del mismo pedido, y con un solo
+ * importe y una sola referencia en la fila del pedido el segundo pisa al
+ * primero y se pierde la conciliación. Sin una fila por movimiento tampoco hay
+ * forma de distinguir un reintento de un segundo cobro, que es exactamente el
+ * doble cobro que el contrato promete no hacer.
+ *
+ * ── Lo que esta tabla NO es ───────────────────────────────────────
+ *
+ * No es un asiento contable. El dinero de la tienda no entra todavía a la caja
+ * ni a ninguna venta, porque un pedido de plataforma no llega a ser Sale. Esto
+ * es un registro de recepción y una compuerta de despacho: alcanza para no
+ * despachar sin cobrar y para conciliar contra el resumen de la pasarela, y no
+ * alcanza para ningún reporte de facturación. Está dicho así en el contrato.
+ */
+const PlataformaCobro = db.define('PlataformaCobro', {
+  id:         { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
+  businessId: { type: DataTypes.INTEGER, allowNull: false },
+  pedidoId:   { type: DataTypes.INTEGER, allowNull: false },
+  plataforma: { type: DataTypes.STRING(20), allowNull: false },
+  /*
+   * El id del movimiento que mandó la plataforma, sin el prefijo.
+   *
+   * Es la idempotencia, igual que pedidoExterno lo es para el pedido: el mismo
+   * cobro reenviado no cobra dos veces. Va NOT NULL a propósito, porque la
+   * unicidad tiene que apoyarse en algo que siempre esté.
+   */
+  movimientoExterno: { type: DataTypes.STRING(60), allowNull: false },
+  importe:  { type: DataTypes.DECIMAL(12, 2), allowNull: false },
+  /*
+   * El medio, como texto y tal cual llega.
+   *
+   * No se mapea a un PaymentMethod del negocio y no se crea ninguno: esa tabla
+   * decide si el dinero entra al arqueo (esEfectivo) y a qué CUIT se imputa
+   * (destinoCuit), y ninguna de esas dos cosas se puede deducir de la palabra
+   * "mercadopago". Es una decisión del dueño y se le pide cuando haga falta.
+   */
+  medio:    { type: DataTypes.STRING(30), allowNull: false },
+  /*
+   * El número de la pasarela, o la referencia de la transferencia.
+   *
+   * Sin unicidad: la referencia de una transferencia la tipea una persona, y
+   * dos clientes que transfieren el mismo monto el mismo día pueden dejar la
+   * misma. Un índice único acá rechazaría un cobro real. El doble cobro se
+   * detecta con una consulta, no con una restricción.
+   */
+  operacion: { type: DataTypes.STRING(60), allowNull: true },
+  recibidoEn: { type: DataTypes.DATE, allowNull: false },
+  // Cuándo pasó en la plataforma, si lo dice. Puede ser anterior a recibidoEn.
+  ocurrioEn:  { type: DataTypes.DATE, allowNull: true },
+  /*
+   * Si el cobro se aplicó al pedido o sólo quedó registrado.
+   *
+   * Un cobro que llega sobre un pedido ya cancelado se guarda con aplicado en
+   * false y el motivo escrito: el cliente pagó y hay que devolverle la plata, y
+   * la única forma de que alguien se entere es que quede una fila. Contestarle
+   * un error a la plataforma la haría reintentar para siempre y el pago no
+   * quedaría anotado en ninguna parte.
+   */
+  aplicado: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: true },
+  // En qué estado estaba el pedido cuando llegó el cobro, para poder explicarlo.
+  estadoPedidoAlCobrar: { type: DataTypes.STRING(12), allowNull: true },
+  motivo:   { type: DataTypes.STRING(500), allowNull: true },
+}, {
+  tableName: 'plataforma_cobros',
+  /*
+   * Acá sí van declarados: la tabla es NUEVA, así que db.sync la crea con sus
+   * índices en el mismo CREATE TABLE y no hay ninguna columna que todavía no
+   * exista. Lo que no se puede es declarar índices en el modelo de una tabla
+   * que ya existe sobre columnas que agrega ensureColumns después.
+   */
+  indexes: [
+    { name: 'uq_plataforma_cobro', unique: true, fields: ['businessId', 'plataforma', 'movimientoExterno'] },
+    { name: 'ix_plataforma_cobro_pedido', fields: ['pedidoId'] },
+    { name: 'ix_plataforma_cobro_operacion', fields: ['businessId', 'operacion'] },
+  ],
+});
 
 const PedidoPlataformaItem = db.define('PedidoPlataformaItem', {
   id:       { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
@@ -623,6 +723,8 @@ const PedidoPlataformaItem = db.define('PedidoPlataformaItem', {
 }, { tableName: 'plataforma_pedido_items' });
 
 PedidoPlataforma.hasMany(PedidoPlataformaItem, { as: 'items', foreignKey: 'pedidoId' });
+PedidoPlataforma.hasMany(PlataformaCobro, { as: 'cobros', foreignKey: 'pedidoId' });
+PlataformaCobro.belongsTo(PedidoPlataforma, { as: 'pedido', foreignKey: 'pedidoId' });
 PedidoPlataformaItem.belongsTo(PedidoPlataforma, { as: 'pedido', foreignKey: 'pedidoId' });
 
 // ─── MercadoLibreAccount (integración por negocio) ───────────────
@@ -2125,7 +2227,7 @@ module.exports = {
   ArcaIntento,
   MercadoLibreAccount,
   JumpsellerAccount, MercadoLibreLink, MercadoLibreMensaje, MercadoLibreReclamo,
-  PedidoPlataforma, PedidoPlataformaItem,
+  PedidoPlataforma, PedidoPlataformaItem, PlataformaCobro,
   Role, Employee, EmployeeSession, PasswordResetCode, AccountChangeCode, Client,
   Product, ProductVariant, StockMovement,
   Sale, SaleItem, Invoice, InvoiceItem,
