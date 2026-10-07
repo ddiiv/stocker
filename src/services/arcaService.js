@@ -171,6 +171,90 @@ function condicionIvaReceptorId({ tipo, clienteCuit, clienteCondicion }) {
 }
 
 // ── Solicitar CAE ─────────────────────────────────────────────────
+/*
+ * Lo que AFIP contestó, dicho para quien lo tiene que resolver.
+ *
+ * AFIP rechaza con un código y una frase suya, y hasta acá eso se tiraba como
+ * un error pelado: sin `status`, el manejador de errores lo convertía en un 500
+ * "Error interno del servidor" y el motivo real quedaba sólo en el log del
+ * servidor. El dueño veía que el sistema estaba roto cuando AFIP le estaba
+ * diciendo exactamente qué le faltaba hacer.
+ *
+ * Devuelve un Error con `status` —para que el texto llegue— y el código de AFIP
+ * en `detalles`, para que la pantalla pueda decidir qué mostrar.
+ */
+function errorDeAfip(msg, { ambiente, cuitEmisor, puntoVenta } = {}) {
+  const texto = String(msg || '');
+  const codigo = (texto.match(/\[(\d{3,5})\]/) || [])[1] || null;
+  const donde = ambiente === 'produccion' ? 'producción' : 'homologación';
+
+  /*
+   * El código de AFIP va SIEMPRE en el texto, además de en `detalles`. El mensaje
+   * explica qué hacer, pero el número es lo que el dueño le pasa a su contador o
+   * busca en la documentación de AFIP, y sin él la frase amable es un callejón.
+   */
+  const armar = (mensaje, status, clave) => Object.assign(
+    new Error(`${mensaje} — AFIP dijo: ${texto}`), {
+    status,
+    codigo: clave,
+    detalles: { codigo: clave, codigoAfip: codigo, ambiente, textoDeAfip: texto },
+    },
+  );
+
+  /*
+   * El más frecuente de todos, y el que más tiempo hace perder: el titular del
+   * CUIT todavía no le delegó el servicio a Stocker, o lo delegó en el otro
+   * ambiente. Las relaciones de homologación y las de producción son dos listas
+   * distintas.
+   */
+  if (/no aparecio cuit en lista de relaciones|ValidacionDeToken/i.test(texto) || codigo === '600') {
+    return armar(
+      `AFIP no reconoce que este CUIT le haya delegado la facturación a Stocker en ${donde}. `
+      + 'El titular tiene que entrar a AFIP con su Clave Fiscal → Administrador de Relaciones, '
+      + 'y delegarle el servicio "Facturación Electrónica (wsfe)" al CUIT de Stocker. '
+      + 'Si ya lo hizo recién, puede tardar hasta 12 horas en verse: el permiso viaja en un '
+      + 'ticket que dura ese tiempo.',
+      409, 'ARCA_SIN_DELEGACION',
+    );
+  }
+
+  // El punto de venta de prueba no existe en producción: son altas separadas.
+  if (/punto de venta/i.test(texto) || ['10013', '10015', '10018'].includes(codigo)) {
+    return armar(
+      `AFIP no tiene habilitado el punto de venta ${puntoVenta || ''} para este CUIT en ${donde}. `.replace(/\s+/g, ' ')
+      + 'Hay que darlo de alta en AFIP (Comprobantes en línea → ABM Puntos de Venta) y que sea del '
+      + 'tipo "Factura Electrónica - Web Services". Los puntos de venta de prueba no sirven en '
+      + 'producción: se dan de alta aparte.',
+      409, 'ARCA_PUNTO_VENTA',
+    );
+  }
+
+  // Numeración: pidió un número que no sigue al último autorizado.
+  if (/correlativ|numero.*comprobante|10016/i.test(texto) || codigo === '10016') {
+    return armar(
+      'AFIP rechazó el número de comprobante porque no sigue al último autorizado. '
+      + 'Suele pasar al cambiar de ambiente o si alguien emitió por fuera de Stocker. '
+      + 'Volvé a intentar: Stocker relee el último número antes de pedir el CAE.',
+      409, 'ARCA_NUMERACION',
+    );
+  }
+
+  // Condición de IVA del receptor (RG 5616), obligatoria desde 2025.
+  if (/CondicionIVAReceptor/i.test(texto)) {
+    return armar(
+      'AFIP rechazó la condición de IVA del cliente. Revisá que el cliente tenga cargada su '
+      + 'condición frente al IVA, que desde 2025 es obligatoria en el comprobante.',
+      400, 'ARCA_CONDICION_IVA',
+    );
+  }
+
+  /*
+   * Lo que no se reconoce viaja tal cual, pero CON status: es mejor que el dueño
+   * lea la frase de AFIP —aunque sea técnica— a que lea "Error interno del
+   * servidor" y no tenga nada que buscar ni que contarle a su contador.
+   */
+  return armar(`AFIP rechazó el comprobante: ${texto}`, 409, 'ARCA_RECHAZO');
+}
 async function solicitarCAE({
   tipo, total, clienteCuit, clienteCondicion, businessCuit, puntoVenta,
   ambiente = 'homologacion', businessId = null, saleId = null,
@@ -405,7 +489,7 @@ async function solicitarCAE({
        * consulta para enterarse de algo que ya sabemos.
        */
       await cerrarIntento(intento, { estado: 'descartado', error: msg });
-      throw err;
+      throw errorDeAfip(msg, { ambiente, cuitEmisor, puntoVenta });
     }
   }
 

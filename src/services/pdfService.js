@@ -47,8 +47,20 @@ function destinatariosDe(pagos) {
   return [...vistos.values()];
 }
 
+/*
+ * Con centavos, siempre.
+ *
+ * Antes redondeaba a pesos enteros. En un remito da igual; en un comprobante
+ * fiscal no: el CAE se pide por el importe exacto —39456.78— y el papel salía
+ * impreso "$ 39.457", mientras el QR del MISMO papel codifica 39456.78. Quien
+ * escanea el QR, o busca el comprobante en ARCA, ve un número distinto del que
+ * tiene en la mano. Y los renglones dejaban de sumar el total por los redondeos.
+ */
 function money(v) {
-  return new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS', maximumFractionDigits: 0 }).format(Number(v) || 0);
+  return new Intl.NumberFormat('es-AR', {
+    style: 'currency', currency: 'ARS',
+    minimumFractionDigits: 2, maximumFractionDigits: 2,
+  }).format(Number(v) || 0);
 }
 function dateTime(d) {
   // 24 horas: un comprobante se lee de un vistazo y "01:14 p. m." no ayuda.
