@@ -322,11 +322,67 @@ function drawItemsTable(doc, items, startY) {
   return y;
 }
 
+/*
+ * ── El Régimen de Transparencia Fiscal al Consumidor (Ley 27.743) ─
+ *
+ * Desde 2024 la ley obliga a mostrarle al consumidor final cuánto de lo que
+ * pagó es impuesto. En una factura B el precio va con el IVA adentro, así que
+ * sin esta leyenda el comprador no tiene forma de saber cuánto le corresponde a
+ * la AFIP: ve un número y nada más. Es lo que el recuadro dice.
+ *
+ * Va SÓLO en la B, y eso no es una omisión:
+ *   · la A es entre responsables inscriptos y ya lleva el IVA discriminado en su
+ *     propio renglón, así que el dato está dicho;
+ *   · la C la emite un monotributista, que no discrimina IVA porque no lo
+ *     factura. Poner un "IVA contenido: $0" ahí sería afirmar algo falso sobre
+ *     el precio.
+ *
+ * "Otros impuestos nacionales indirectos" va en cero porque Stocker no liquida
+ * impuestos internos ni percepciones: el día que lo haga, el número sale de ahí
+ * y no de esta constante.
+ */
+function drawTransparenciaFiscal(doc, y, { tipo, iva }) {
+  if (String(tipo || '').toUpperCase() !== 'B') return y;
+
+  const x = 50;
+  const ancho = doc.page.width - 100;
+  const alto = 58;
+
+  doc.save()
+    .rect(x, y, ancho, alto)
+    .lineWidth(0.8).strokeColor(COLOR.ink700).stroke()
+    .restore();
+
+  doc.font('Helvetica-Oblique').fontSize(8.5).fillColor(COLOR.ink950)
+    .text('Régimen de Transparencia Fiscal al Consumidor (Ley 27.743)', x + 12, y + 9, {
+      width: ancho - 24, underline: true,
+    });
+
+  const linea = (k, v, cy) => {
+    doc.font('Helvetica-Oblique').fontSize(8.5).fillColor(COLOR.ink700);
+    // El 10 de aire: sin él la etiqueta y el número se tocan.
+    doc.text(k, x + 12, cy, { width: ancho * 0.6 - 10, align: 'right' });
+    doc.font('Helvetica').fontSize(8.5).fillColor(COLOR.ink950);
+    doc.text(v, x + 12 + ancho * 0.6, cy, { width: ancho * 0.4 - 24, align: 'left' });
+  };
+  linea('IVA Contenido:', money(iva || 0), y + 27);
+  linea('Otros Impuestos Nacionales Indirectos:', money(0), y + 41);
+
+  return y + alto + 12;
+}
 function drawTotals(doc, y, { subtotal, descuento, descuentoPct, iva, total, esMayorista }) {
   const right = doc.page.width - 50;
   const boxW = 240, boxX = right - boxW;
 
-  doc.save().roundedRect(boxX, y, boxW, 90 + (iva > 0 ? 14 : 0) + (descuento > 0 ? 14 : 0), 4).fill(COLOR.paper100).restore();
+  /*
+   * El alto se calcula acá y se devuelve abajo.
+   *
+   * Antes la función devolvía el cursor del texto, que queda ARRIBA del fondo del
+   * recuadro: lo que viniera después se dibujaba encima del gris. Se notó cuando
+   * apareció la leyenda de la Ley 27.743 justo debajo.
+   */
+  const alto = 90 + (iva > 0 ? 14 : 0) + (descuento > 0 ? 14 : 0);
+  doc.save().roundedRect(boxX, y, boxW, alto, 4).fill(COLOR.paper100).restore();
   let cy = y + 12;
   const label = (k, v, bold = false) => {
     doc.font(bold ? 'Helvetica-Bold' : 'Helvetica').fontSize(bold ? 11 : 9)
@@ -348,7 +404,8 @@ function drawTotals(doc, y, { subtotal, descuento, descuentoPct, iva, total, esM
        .text('Precio mayorista aplicado (≥ 3 unidades)', boxX + 12, cy, { width: boxW - 24, align: 'right' });
     cy += 12;
   }
-  return cy + 4;
+  // Lo que siga va debajo del recuadro, no encima.
+  return Math.max(cy, y + alto) + 4;
 }
 
 function drawFooter(doc, business) {
@@ -405,13 +462,22 @@ async function generateInvoicePdf(invoice, items, business) {
     y = drawItemsTable(doc, items, y);
     y += 10;
 
-    drawTotals(doc, y, {
+    const finTotales = drawTotals(doc, y, {
       subtotal: invoice.subtotal,
       descuento: 0,
       descuentoPct: 0,
       iva: invoice.iva || 0,
       total: invoice.total,
       esMayorista: invoice.esMayorista,
+    });
+
+    /*
+     * Debajo de los totales, que es donde el comprador acaba de leer cuánto
+     * pagó: la leyenda explica ese número, así que tiene que estar al lado.
+     */
+    drawTransparenciaFiscal(doc, finTotales + 10, {
+      tipo: invoice.tipo,
+      iva: invoice.iva || 0,
     });
 
     /*
@@ -483,12 +549,24 @@ async function generateInvoicePdfBuffer(invoice, items, business) {
     y = drawItemsTable(doc, items, y);
     y += 10;
 
-    drawTotals(doc, y, {
+    const finTotales = drawTotals(doc, y, {
       subtotal: invoice.subtotal,
       descuento: 0, descuentoPct: 0,
       iva: invoice.iva || 0,
       total: invoice.total,
       esMayorista: invoice.esMayorista,
+    });
+
+    /*
+     * La leyenda de la Ley 27.743, también acá.
+     *
+     * Son dos implementaciones separadas del mismo comprobante —ésta arma el
+     * buffer que se descarga y se manda por mail— y es fácil tocar una y
+     * olvidarse de la otra: fue lo que pasó la primera vez con esto.
+     */
+    drawTransparenciaFiscal(doc, finTotales + 10, {
+      tipo: invoice.tipo,
+      iva: invoice.iva || 0,
     });
 
     // Igual que en la versión a disco: éste es el PDF que se descarga desde la
@@ -882,7 +960,7 @@ async function generateSubscriptionReceiptPdf(pago, negocio, plan) {
   return ruta;
 }
 
-module.exports = { destinatariosDe, generateInvoicePdf, generateInvoicePdfBuffer, generateSalePdf, generateSaleTicketPdf, generateSubscriptionReceiptPdf, PDF_DIR, COLOR,
+module.exports = { destinatariosDe, __drawTransparenciaFiscal: drawTransparenciaFiscal, generateInvoicePdf, generateInvoicePdfBuffer, generateSalePdf, generateSaleTicketPdf, generateSubscriptionReceiptPdf, PDF_DIR, COLOR,
   // Expuesto para las pruebas: lo que va adentro del QR y el número de ARCA.
   __qr: { datosQr, urlQr, numeroArca },
 };
