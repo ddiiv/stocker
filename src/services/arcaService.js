@@ -255,6 +255,51 @@ function errorDeAfip(msg, { ambiente, cuitEmisor, puntoVenta } = {}) {
    */
   return armar(`AFIP rechazó el comprobante: ${texto}`, 409, 'ARCA_RECHAZO');
 }
+/*
+ * Lo que falla ANTES de pedir el CAE.
+ *
+ * El primer viaje a AFIP de una emisión no es el pedido del CAE: es el login del
+ * WSAA y la consulta del último número autorizado. Los dos estaban fuera de
+ * cualquier try, así que su error salía crudo y sin `status`, y el manejador lo
+ * convertía en un 500 "Error interno del servidor".
+ *
+ * Eso dejaba sin usar justo el mensaje que más falta hace. El error 600 —que el
+ * CUIT no le delegó la facturación a Stocker— aparece en ESA consulta, no en el
+ * pedido del CAE: AFIP ni siquiera llega a mirar el comprobante si el permiso no
+ * está. Así que el dueño que todavía no delegó veía "Error interno del servidor"
+ * y no tenía nada que buscar ni que contarle a nadie, mientras AFIP le estaba
+ * diciendo exactamente qué le faltaba hacer.
+ *
+ * Acá no hay comprobante en juego: nada se emitió todavía, así que no hay nada
+ * que rescatar ni ningún intento que cerrar. Sólo hay que decir bien qué pasó.
+ */
+function errorAntesDelCae(err, { ambiente, cuitEmisor, puntoVenta }) {
+  const msg = err?.message || '';
+
+  /*
+   * Se cortó la conexión. Es inofensivo en este punto —no se pidió ningún CAE—
+   * pero cuenta para el corte: si AFIP está caído, conviene dejar de intentar.
+   */
+  if (esCorteDeRed(msg)) {
+    anotarCorte(ambiente);
+    return Object.assign(
+      new Error('ARCA no está respondiendo. Probá de nuevo en un momento: no se emitió nada.'),
+      { status: 503, codigo: 'ARCA_CAIDO', reintentable: true, detalles: { codigo: 'ARCA_CAIDO', reintentable: true } },
+    );
+  }
+
+  // Contestó, aunque haya sido que no: el servicio está en pie.
+  anotarRespuesta(ambiente);
+
+  if (/computador no autorizado/i.test(msg)) {
+    return Object.assign(
+      new Error('El certificado de Stocker no está autorizado para wsfe en AFIP. Contactar soporte.'),
+      { status: 502, codigo: 'ARCA_CERT', detalles: { codigo: 'ARCA_CERT' } },
+    );
+  }
+
+  return errorDeAfip(msg, { ambiente, cuitEmisor, puntoVenta });
+}
 async function solicitarCAE({
   tipo, total, clienteCuit, clienteCondicion, businessCuit, puntoVenta,
   ambiente = 'homologacion', businessId = null, saleId = null,
@@ -336,18 +381,34 @@ async function solicitarCAE({
     );
   }
 
-  const rescatado = await resolverIntentosAbiertos({
-    cli, cert, key, ambiente, cuitEmisor,
-    ptoVta: Number(puntoVenta), cbteTipo, saleId, esperado,
-  });
-  if (rescatado) return { ...rescatado, ambiente };
+  /*
+   * Los dos viajes a AFIP previos al CAE, con su error traducido.
+   *
+   * Van juntos porque fallan por lo mismo: los dos empiezan pidiendo el ticket
+   * de acceso, y si la delegación no está, ahí se corta. Ver errorAntesDelCae.
+   */
+  let numero;
+  try {
+    const rescatado = await resolverIntentosAbiertos({
+      cli, cert, key, ambiente, cuitEmisor,
+      ptoVta: Number(puntoVenta), cbteTipo, saleId, esperado,
+    });
+    if (rescatado) return { ...rescatado, ambiente };
 
-  // Consultar último número + 1
-  const ultimo = await cli.feCompUltimoAutorizado({
-    cert, key, ambiente, cuitEmisor,
-    PtoVta: Number(puntoVenta), CbteTipo: cbteTipo,
-  });
-  const numero = ultimo + 1;
+    // Consultar último número + 1
+    const ultimo = await cli.feCompUltimoAutorizado({
+      cert, key, ambiente, cuitEmisor,
+      PtoVta: Number(puntoVenta), CbteTipo: cbteTipo,
+    });
+    numero = ultimo + 1;
+  } catch (err) {
+    /*
+     * Un error que ya viene traducido —el de "esta venta ya se facturó", que
+     * sale del rescate— pasa tal cual: volver a traducirlo lo empeoraría.
+     */
+    if (err?.status) throw err;
+    throw errorAntesDelCae(err, { ambiente, cuitEmisor, puntoVenta });
+  }
 
   const condReceptor = condicionIvaReceptorId({ tipo, clienteCuit, clienteCondicion });
   const FeCAEReq = {

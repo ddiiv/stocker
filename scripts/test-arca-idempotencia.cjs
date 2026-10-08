@@ -33,6 +33,11 @@ const AFIP = {
   comprobante: null,
   /* Si la consulta misma se cae. */
   consultaCae: false,
+  /*
+   * Cómo falla la consulta del ÚLTIMO autorizado, que es el primer viaje a AFIP
+   * de toda emisión: null = anda, o el XML de error que contesta.
+   */
+  ultimoFalla: null,
   llamadas: [],
 };
 
@@ -47,6 +52,7 @@ Module._load = function (pedido) {
         }
         if (/FECompUltimoAutorizado/.test(cuerpo)) {
           AFIP.llamadas.push('ultimo');
+          if (AFIP.ultimoFalla) return { data: AFIP.ultimoFalla };
           return { data: `<FECompUltimoAutorizadoResult><PtoVta>8</PtoVta><CbteNro>${AFIP.ultimo}</CbteNro></FECompUltimoAutorizadoResult>` };
         }
         if (/FECompConsultar/.test(cuerpo)) {
@@ -223,6 +229,49 @@ const fallo = async (fn) => { try { await fn(); return null; } catch (e) { retur
   chk('no se consulta por el rechazo', false,
     AFIP.llamadas.slice(AFIP.llamadas.indexOf('solicitar')).includes('consultar'));
   chk('y se ve el motivo que dio AFIP', true, /10016/.test(String(rechazo?.message)));
+
+  await limpiar();
+  tit('6b. LO QUE FALLA ANTES DE PEDIR EL CAE');
+  /*
+   * El primer viaje a AFIP de una emisión no es el pedido del CAE: es el login
+   * del WSAA y la consulta del último número autorizado. Y el error 600 —que el
+   * CUIT no le delegó la facturación a Stocker— aparece JUSTO ahí: AFIP ni
+   * siquiera llega a mirar el comprobante si el permiso no está.
+   *
+   * Estaba fuera de todo try, así que salía crudo y sin status, y el manejador lo
+   * convertía en un 500 "Error interno del servidor". El dueño que todavía no
+   * había delegado no tenía nada que buscar ni que contarle a nadie.
+   */
+  AFIP.solicitar = 'ok'; AFIP.comprobante = null; AFIP.llamadas = [];
+  AFIP.ultimoFalla = '<FECompUltimoAutorizadoResult><Errors><Err><Code>600</Code>'
+    + '<Msg>ValidacionDeToken: No aparecio CUIT en lista de relaciones: 30999999911</Msg>'
+    + '</Err></Errors></FECompUltimoAutorizadoResult>';
+  const sinDelegacion = await fallo(emitir);
+  AFIP.ultimoFalla = null;
+
+  chk('no sale como error interno: viene con status', true, Number(sinDelegacion?.status) > 0);
+  chk('y el status dice que lo tiene que resolver quien factura', 409, sinDelegacion?.status);
+  chk('con un código que la pantalla puede usar', 'ARCA_SIN_DELEGACION', sinDelegacion?.codigo);
+  chk('el mensaje explica qué hacer y dónde', true,
+    /deleg/i.test(String(sinDelegacion?.message))
+      && /Administrador de Relaciones/i.test(String(sinDelegacion?.message)));
+  /*
+   * Y avisa de las 12 horas: el permiso viaja en un ticket que dura eso, así que
+   * delegar y facturar cinco minutos después no funciona. Sin esa frase, el dueño
+   * delega, reintenta, falla igual y cree que no sirvió.
+   */
+  chk('y avisa que puede tardar', true, /12 horas/.test(String(sinDelegacion?.message)));
+  chk('sin perder lo que dijo AFIP', true, /lista de relaciones/.test(String(sinDelegacion?.message)));
+  chk('no se pidió ningún CAE', false, AFIP.llamadas.includes('solicitar'));
+
+  /* Un punto de venta que no existe cae por el mismo camino. */
+  AFIP.llamadas = [];
+  AFIP.ultimoFalla = '<FECompUltimoAutorizadoResult><Errors><Err><Code>10013</Code>'
+    + '<Msg>El punto de venta no se encuentra habilitado</Msg></Err></Errors></FECompUltimoAutorizadoResult>';
+  const sinPtoVta = await fallo(emitir);
+  AFIP.ultimoFalla = null;
+  chk('un punto de venta inexistente también se traduce', 'ARCA_PUNTO_VENTA', sinPtoVta?.codigo);
+  chk('y nombra el punto de venta que se intentó', true, /\b8\b/.test(String(sinPtoVta?.message)));
 
   tit('7. LEER LO QUE CONTESTA FECompConsultar');
   const existe = cli.__parsearComprobante(`<FECompConsultarResult><ResultGet>
