@@ -156,6 +156,70 @@ async function barrerStockMl() {
 }
 
 /*
+ * ── Las ventas de Jumpseller, que no entran solas ─────────────────
+ *
+ * Mercado Libre avisa por webhook y además el barrido busca órdenes nuevas, así
+ * que una venta de ML entra sola. Jumpseller no: `importarPedidos` existía desde
+ * siempre pero el único que la llamaba era el botón de la pantalla. Una venta de
+ * Jumpseller no apartaba stock hasta que alguien se acordaba de apretarlo, y
+ * mientras tanto esa prenda seguía ofreciéndose en el mostrador, en Mercado Libre
+ * y en la tienda. Es la diferencia entre vender dos veces la última unidad y no.
+ *
+ * La ventana es corta a propósito. El barrido corre cada quince minutos, así que
+ * dos días de margen cubren de sobra una tienda que estuvo caída un rato, sin
+ * recorrer un año de órdenes en cada vuelta. Para traer lo viejo está el botón,
+ * que acepta hasta 365 días.
+ *
+ * Correrlo de más no cuesta ni descuenta dos veces: los pedidos entran por la
+ * cola de ventas online, que es idempotente por (negocio, plataforma, número de
+ * pedido) y lo tiene respaldado con un índice único en la base. Un pedido ya
+ * importado vuelve como `repetido` y no aparta nada.
+ */
+const JUMPSELLER_DIAS_BARRIDO = Number(process.env.JUMPSELLER_DIAS_BARRIDO) || 2;
+
+async function barrerPedidosJumpseller() {
+  const cuentas = await JumpsellerAccount.findAll({ where: { syncActiva: true } });
+  let importados = 0;
+  let fallaron = 0;
+
+  for (const cuenta of cuentas) {
+    try {
+      const r = await jumpseller.importarPedidos(cuenta.businessId, {
+        dias: JUMPSELLER_DIAS_BARRIDO, tope: 200,
+      });
+      importados += r.importados || 0;
+      /*
+       * Sólo se anota cuando entró algo. En una tienda con poco movimiento esto
+       * corre noventa y seis veces por día sin encontrar nada, y un log por vuelta
+       * tapa lo que sí importa.
+       */
+      if (r.importados) {
+        log.info('jumpseller', 'ventas nuevas importadas por el barrido', {
+          businessId: cuenta.businessId,
+          importados: r.importados,
+          sinStock: r.sinStock || 0,
+          conAvisos: r.conAvisos || 0,
+        });
+      }
+      /*
+       * Una venta que no pudo apartar stock es lo que alguien tiene que mirar hoy,
+       * no mañana: la tienda ya le cobró al cliente.
+       */
+      if (r.sinStock) {
+        log.warn('jumpseller', 'ventas que entraron sin poder apartar stock', {
+          businessId: cuenta.businessId, sinStock: r.sinStock,
+        });
+      }
+    } catch (e) {
+      fallaron += 1;
+      log.warn('jumpseller', 'no se pudieron importar las ventas', {
+        businessId: cuenta.businessId, motivo: e.message,
+      });
+    }
+  }
+  return { cuentas: cuentas.length, importados, fallaron };
+}
+/*
  * El mismo barrido para Jumpseller.
  *
  * Va aparte del de Mercado Libre y con su propio try: son dos tiendas
@@ -218,6 +282,18 @@ async function tick() {
     log.warn('jumpseller', 'el barrido periódico se cayó entero', { motivo: e.message });
   }
   /*
+   * Las ventas de Jumpseller, en su propio try.
+   *
+   * Va aparte del barrido de stock de la misma tienda: que no se pueda publicar
+   * una cantidad no es razón para no traer una venta que ya ocurrió, y al revés
+   * tampoco.
+   */
+  try {
+    if (process.env.JUMPSELLER_PEDIDOS !== 'off') await barrerPedidosJumpseller();
+  } catch (e) {
+    log.warn('jumpseller', 'la importación periódica de ventas se cayó entera', { motivo: e.message });
+  }
+  /*
    * Las delegaciones de ARCA: sale del TA que ya está cacheado 12 horas, así
    * que mirarlo en cada vuelta no le agrega ni un pedido a AFIP. Es lo que
    * hace que una delegación recién aceptada se active sola y que una revocada
@@ -278,8 +354,22 @@ function arrancar() {
    * sin el barrido entero y las delegaciones nuevas no se activan nunca.
    */
   const conArca = process.env.ARCA_DELEGACIONES !== 'off';
-  if (!conMl && !conJumpseller && !conArca) {
-    console.log('  Barrido de stock ................. apagado');
+  /*
+   * Y lo mismo para todo lo que se fue colgando de este reloj después.
+   *
+   * Cada tarea tiene su propio interruptor, pero el reloj es uno solo: si la
+   * decisión de arrancarlo mira nada más las tres primeras, apagar los barridos
+   * de stock también apaga —en silencio— la importación de ventas de Jumpseller,
+   * el rescate de los pedidos que quedaron sin procesar y la liberación de la
+   * mercadería de los pagos vencidos. Tres cosas que nadie relacionaría con
+   * haber apagado un barrido de stock.
+   */
+  const conPedidosJs = process.env.JUMPSELLER_PEDIDOS !== 'off';
+  const conCola = process.env.COLA_RESCATE !== 'off';
+  const conVencimientos = process.env.PAGO_VENCIMIENTO !== 'off';
+
+  if (!conMl && !conJumpseller && !conArca && !conPedidosJs && !conCola && !conVencimientos) {
+    console.log('  Tareas periódicas ................ apagadas (todas)');
     return false;
   }
 
@@ -296,7 +386,14 @@ function arrancar() {
   console.log(canales.length
     ? `  Barrido de stock ................. cada ${minutos} min (${canales.join(' y ')})`
     : '  Barrido de stock ................. apagado (ninguna tienda conectada)');
+  if (conPedidosJs) console.log(`  Ventas de Jumpseller ............. cada ${minutos} min`);
   if (conArca) console.log(`  Delegaciones de AFIP ............. cada ${minutos} min`);
+  /*
+   * Estas dos se anuncian porque tocan mercadería: si alguien las apagó, tiene
+   * que verlo en el arranque y no descubrirlo por un pedido que quedó colgado.
+   */
+  if (conCola) console.log(`  Rescate de pedidos online ........ cada ${minutos} min`);
+  if (conVencimientos) console.log(`  Pagos vencidos ................... cada ${minutos} min`);
   return true;
 }
 
@@ -308,4 +405,6 @@ function parar() {
   timer = null;
 }
 
-module.exports = { arrancar, parar, barrerStockMl, barrerStockJumpseller, INTERVALO_MS };
+module.exports = {
+  arrancar, parar, barrerStockMl, barrerStockJumpseller, barrerPedidosJumpseller, INTERVALO_MS,
+};
