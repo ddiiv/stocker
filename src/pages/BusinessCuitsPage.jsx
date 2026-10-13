@@ -210,7 +210,10 @@ function CuitFormModal({ open, onClose, onSaved, cuit, onLogo }) {
           <input className="input" value={form.domicilio || ""} onChange={(e) => setForm({ ...form, domicilio: e.target.value })} />
         </div>
         {/* Los dos van en la cabecera de la factura, al lado del CUIT. ARCA no
-            los informa, así que los carga el dueño; vacíos, no se imprimen. */}
+            los informa, así que los carga el dueño; vacíos, no se imprimen.
+            Cada factura los guarda como estaban al emitirla (una reimpresión
+            dice lo mismo que el original): cambiarlos acá no cambia las viejas,
+            y eso se dice para que nadie las espere distintas. */}
         <div className="grid gap-4 sm:grid-cols-2">
           <div>
             <label className="label" htmlFor="cuit-iibb">Ingresos Brutos</label>
@@ -235,7 +238,8 @@ function CuitFormModal({ open, onClose, onSaved, cuit, onLogo }) {
           </div>
         </div>
         <p className="-mt-2 text-xs text-ink-500">
-          Salen en la cabecera de tus facturas. Si estás en Convenio Multilateral, escribilo adelante (C.M. 901-…).
+          Salen en la cabecera de las facturas que emitas de acá en adelante; las ya emitidas se quedan con lo
+          que decían. Si estás en Convenio Multilateral, escribilo adelante (C.M. 901-…).
         </p>
         {/* El logo también va en la cabecera, en el recuadro del emisor. Es del
             CUIT: necesita que el CUIT exista para guardarse. */}
