@@ -11,6 +11,7 @@ const QRCode = require('qrcode');
 const totp = require('../utils/totp');
 const dosFactores = require('../services/dosFactoresService');
 const { setAuthCookie } = require('../utils/authCookie');
+const { TERMINOS_VERSION } = require('../config/terminos');
 
 /*
  * Cuenta del dueño.
@@ -59,6 +60,13 @@ const obtener = async (req, res, next) => {
     if (!b) return res.status(404).json({ message: 'Cuenta no encontrada.' });
     res.json({
       ...sinPassword(b),
+      /*
+       * La versión vigente, al lado de la que la cuenta aceptó
+       * (`terminosVersion`, que sale del serializador). Sin ella la pantalla
+       * de Configuración sólo podría decir "aceptaste la 2026-09", que no le
+       * dice al dueño si es la que rige hoy.
+       */
+      terminosVigente: TERMINOS_VERSION,
       // El frontend lo usa para mostrar el 2FA como "próximamente" sin tener
       // que conocer qué canales existen del lado del servidor.
       canales: Object.keys(CANALES),

@@ -59,6 +59,25 @@ const getPlanes = async (_req, res, next) => {
   } catch (e) { next(e); }
 };
 
+/*
+ * El período en curso: desde cuándo y hasta cuándo rige lo que se está usando.
+ *
+ * `vence` sola dice cuándo termina, pero no qué cubre: quien pagó hace diez días
+ * y ve "vence el 30" no sabe si eso es lo que pagó o lo anterior. En la prueba
+ * el período es la prueba; con un plan pago, lo último que se acreditó.
+ *
+ * null si no hay un período que mostrar: un Enterprise facturado por fuera
+ * puede estar activo sin fechas, y una cuenta en modo lectura ya no tiene uno
+ * en curso (su `vence` ya pasó y la pantalla lo dice con el estado).
+ */
+function periodoActual({ estado, suscripcion: sub }) {
+  const enPrueba = sub.estado === 'trial';
+  const desde = enPrueba ? sub.trialInicio : sub.periodoInicio;
+  const hasta = enPrueba ? sub.trialFin : sub.periodoFin;
+  if (estado === 'lectura' || estado === 'cancelada' || !desde || !hasta) return null;
+  return { desde, hasta, tipo: enPrueba ? 'prueba' : 'pago' };
+}
+
 // GET /api/billing/suscripcion — estado, uso y topes de la cuenta
 const getSuscripcion = async (req, res, next) => {
   try {
@@ -81,6 +100,7 @@ const getSuscripcion = async (req, res, next) => {
       metodoPago: estado.suscripcion.metodoPago,
       proximoCobroEn: estado.suscripcion.proximoCobroEn,
       ultimoPagoEn: estado.suscripcion.ultimoPagoEn,
+      periodo: periodoActual(estado),
       plan: estado.plan && {
         codigo: estado.plan.codigo, nombre: estado.plan.nombre,
         features: estado.plan.features, requiereCotizacion: estado.plan.requiereCotizacion,

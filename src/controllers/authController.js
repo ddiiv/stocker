@@ -1,17 +1,7 @@
 const bcrypt   = require('bcryptjs');
 
-/*
- * La versión de los términos vigente.
- *
- * Va en el código y no en la base para que cambiarla sea parte de un despliegue
- * y quede en el historial: el día que se discuta qué decía el texto que alguien
- * aceptó, el commit es la respuesta.
- *
- * Al cambiar el texto de /terminos hay que subir esta versión. Si no, las
- * cuentas nuevas quedan registradas aceptando una versión que ya no es la que
- * leyeron.
- */
-const TERMINOS_VERSION = '2026-09';
+// La versión de los términos vigente: ver src/config/terminos.js.
+const { TERMINOS_VERSION } = require('../config/terminos');
 const crypto   = require('node:crypto');
 const { Op }   = require('sequelize');
 const { Business, Employee, Role, EmployeeSession, BusinessCuit, PasswordResetCode, PaymentMethod } = require('../models');
