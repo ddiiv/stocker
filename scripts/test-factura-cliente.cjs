@@ -355,6 +355,38 @@ const CUIT_IMPOSTOR = '27222222228';
     chk('una factura anterior a la foto cae a los del CUIT', true,
       anterior.texto.includes(`ING. BRUTOS: ${IIBB_DESPUES}`) && anterior.texto.includes('Inicio Actividades: 02/04/2020'));
 
+    tit('7. EL FILTRO POR FECHAS: DÍAS DE ARGENTINA Y LA FECHA QUE TIENE ARCA');
+    /*
+     * El "facturado" del mes tiene que coincidir con ARCA. Se mueve una factura
+     * de prueba a una fecha lejana (nadie más factura en 2031) y se la busca por
+     * mes, como lo hace la pantalla.
+     */
+    const delMes = async (desde, hasta) => {
+      const r = await api('GET', `/api/invoices?desde=${desde}&hasta=${hasta}&limit=100`);
+      return { ids: (r.json?.data || []).map((f) => f.id), facturado: r.json?.resumen?.facturado };
+    };
+    const mover = (datos) => Invoice.update(datos, { where: { id: guardada.id } });
+    // El 31/10 a las 22:30 de Argentina, que en el servidor (UTC) ya es 1/11.
+    await mover({ fechaEmision: new Date('2031-11-01T01:30:00Z'), cbteFchArca: '20311031' });
+    const oct = await delMes('2031-10-01', '2031-10-31');
+    const nov = await delMes('2031-11-01', '2031-11-30');
+    chk('una factura del 31/10 a las 22:30 es de octubre, como en ARCA', [true, false],
+      [oct.ids.includes(guardada.id), nov.ids.includes(guardada.id)]);
+    chk('   y el facturado del mes la suma', Number(guardada.total), oct.facturado);
+    await mover({ cbteFchArca: null });
+    chk('sin la fecha de ARCA, la de creación con el día de Argentina', [true, false],
+      [(await delMes('2031-10-31', '2031-10-31')).ids.includes(guardada.id), (await delMes('2031-11-01', '2031-11-01')).ids.includes(guardada.id)]);
+    // Las facturas de antes de v3.41: la fila dice 31/10 a la noche y ARCA, 1/11 (día UTC). Manda ARCA.
+    await mover({ cbteFchArca: '20311101' });
+    chk('si ARCA la tiene el 1/11, va en noviembre aunque la fila diga 31/10', [false, true],
+      [(await delMes('2031-10-01', '2031-10-31')).ids.includes(guardada.id), (await delMes('2031-11-01', '2031-11-30')).ids.includes(guardada.id)]);
+    // El 30/9 a las 22 de Argentina (1/10 01:00 UTC), sin fecha de ARCA: septiembre, no octubre.
+    await mover({ fechaEmision: new Date('2031-10-01T01:00:00Z'), cbteFchArca: null });
+    chk('una del 30/9 a la noche no entra en octubre', [false, true],
+      [(await delMes('2031-10-01', '2031-10-31')).ids.includes(guardada.id), (await delMes('2031-09-01', '2031-09-30')).ids.includes(guardada.id)]);
+    chk('una fecha que no se entiende es un 400, no un 500', 400,
+      (await api('GET', '/api/invoices?desde=2031-13-45&hasta=2031-12-01')).status);
+
   } finally {
     tit('Limpieza');
     // Por la clase y no por la instancia: la instancia todavía tiene los valores

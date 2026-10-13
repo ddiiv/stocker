@@ -25,6 +25,44 @@ const { sendInvoiceEmail, sendInvoiceCopyToBusiness } = require('../services/ema
 const { sendInvoiceWhatsapp } = require('../services/whatsappService');
 const { exigirCupo } = require('../services/planService');
 const { log, sinDatos } = require('../utils/logger');
+const { aaaammddDia, inicioDelDiaArgentina, finDelDiaArgentina } = require('../utils/fechaFiscal');
+
+/*
+ * El filtro por fechas de Facturación: los días son los de Argentina y la
+ * fecha de cada factura es la que tiene en ARCA.
+ *
+ * Antes se cortaba el día en UTC sobre la fecha de creación: filtrando
+ * octubre quedaban afuera las facturas del 31 a la noche —que en ARCA son de
+ * octubre— y entraban las del 30 de septiembre a la noche, así que el
+ * "facturado" del mes no coincidía con el de ARCA, que es contra lo que se
+ * controla. Por eso manda el CbteFch autorizado (AAAAMMDD, que se compara bien
+ * como texto); las que no lo tienen —anteriores a que se guardara, o sin CAE—
+ * caen a la de creación, con los bordes del día en hora argentina.
+ *
+ * Devuelve null si alguna fecha no se entiende.
+ */
+function filtroPorDias(desde, hasta) {
+  const { Op } = require('sequelize');
+  const porArca = {};
+  const porCreacion = {};
+  const valido = (d) => d instanceof Date && !Number.isNaN(d.getTime());
+  if (desde) {
+    porArca[Op.gte] = aaaammddDia(desde);
+    porCreacion[Op.gte] = inicioDelDiaArgentina(desde);
+    if (!porArca[Op.gte] || !valido(porCreacion[Op.gte])) return null;
+  }
+  if (hasta) {
+    porArca[Op.lte] = aaaammddDia(hasta);
+    porCreacion[Op.lte] = finDelDiaArgentina(hasta);
+    if (!porArca[Op.lte] || !valido(porCreacion[Op.lte])) return null;
+  }
+  return {
+    [Op.or]: [
+      { cbteFchArca: porArca },
+      { cbteFchArca: null, fechaEmision: porCreacion },
+    ],
+  };
+}
 
 // GET /api/invoices
 const getInvoices = async (req, res, next) => {
@@ -35,9 +73,9 @@ const getInvoices = async (req, res, next) => {
     if (tipo)   where.tipo   = tipo;
     if (estado) where.estado = estado;
     if (desde || hasta) {
-      where.fechaEmision = {};
-      if (desde) where.fechaEmision[Op.gte] = new Date(desde);
-      if (hasta) where.fechaEmision[Op.lte] = new Date(`${hasta}T23:59:59`);
+      const filtro = filtroPorDias(desde, hasta);
+      if (!filtro) throw Object.assign(new Error('Las fechas del filtro van como AAAA-MM-DD.'), { status: 400 });
+      Object.assign(where, filtro);
     }
 
     const offset = (Math.max(1, Number(page)) - 1) * Math.min(Number(limit), 100);
@@ -667,4 +705,6 @@ const downloadPdf = async (req, res, next) => {
 module.exports = {
   getInvoices, getInvoice, createInvoice, voidInvoice, downloadPdf,
   emitirNotaDeCredito, saldoDeNotas,
+  // Para las pruebas.
+  __filtroPorDias: filtroPorDias,
 };

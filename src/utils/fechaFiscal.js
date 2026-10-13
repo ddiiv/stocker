@@ -93,4 +93,31 @@ function isoArgentina(instante) {
   return p ? p.join('-') : null;
 }
 
-module.exports = { ZONA, aaaammddArgentina, ddmmaaaa, isoDia, ddmmaaaaArgentina, isoArgentina };
+/** "AAAAMMDD" de un día: como se guarda y se compara el CbteFch. */
+function aaaammddDia(dia) {
+  const p = partesDelDia(dia);
+  return p ? p.join('') : null;
+}
+
+/*
+ * El primer y el último instante de un DÍA de Argentina, para filtrar una
+ * columna que guarda instantes (la fecha de creación de una factura).
+ *
+ * `new Date('2026-10-01')` es la medianoche UTC, que acá es el 30 a las 21: un
+ * filtro de octubre armado así deja afuera las facturas del 31 a la noche y
+ * mete las del 30 de septiembre a la noche. El -3 fijo es el de arriba.
+ */
+function inicioDelDiaArgentina(dia) {
+  const iso = isoDia(dia);
+  return iso ? new Date(`${iso}T00:00:00.000-03:00`) : null;
+}
+
+function finDelDiaArgentina(dia) {
+  const iso = isoDia(dia);
+  return iso ? new Date(`${iso}T23:59:59.999-03:00`) : null;
+}
+
+module.exports = {
+  ZONA, aaaammddArgentina, ddmmaaaa, isoDia, ddmmaaaaArgentina, isoArgentina,
+  aaaammddDia, inicioDelDiaArgentina, finDelDiaArgentina,
+};
