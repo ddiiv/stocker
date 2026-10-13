@@ -1,11 +1,12 @@
 const path = require('path');
 const fse = require('fs-extra');
 const sequelize = require('../config/database');
-const { Invoice, InvoiceItem, Sale, SaleItem, Business, Client, BusinessCuit, BusinessArcaConfig, SalePayment, ArcaIntento } = require('../models');
+const { Invoice, InvoiceItem, Sale, SaleItem, Business, Client, BusinessCuit, BusinessArcaConfig, BusinessLocation, SalePayment, ArcaIntento } = require('../models');
 const { nextInvoiceNumber, crearConNumero } = require('../services/invoiceNumberService');
 const { tipoComprobante, solicitarCAE, determineInvoiceType, calcularIVA } = require('../services/arcaService');
 const { lookupCuit } = require('../services/arcaLookupService');
 const { generateInvoicePdf, generateInvoicePdfBuffer, destinatariosDe } = require('../services/pdfService');
+const { contextoDeImpresion, domicilioComercial } = require('../services/facturaPdf');
 
 /*
  * Los destinatarios del cobro, en una línea para guardar en la factura.
@@ -271,9 +272,23 @@ const createInvoice = async (req, res, next) => {
     // La config del emisor ya se leyó arriba para decidir la letra.
     const arcaConfig = configEmisor;
     const ambienteArca = arcaConfig?.ambiente === 'produccion' ? 'produccion' : 'homologacion';
+    /*
+     * El domicilio comercial que va a imprimir la factura: el del local donde
+     * se hizo la venta, no el fiscal (ver facturaPdf.domicilioComercial). Se
+     * guarda en la factura como foto, igual que el nombre del emisor: si el
+     * local se muda, la factura de hoy tiene que seguir diciendo dónde se emitió.
+     */
+    const localDeLaVenta = sale.locationId
+      ? await BusinessLocation.findOne({
+        where: { id: sale.locationId, businessId: req.auth.businessId }, transaction: t,
+      })
+      : null;
+    const emisorDomicilio = domicilioComercial({ local: localDeLaVenta, cuit: emisor });
+
     const {
       cae, caeVencimiento, respuesta: arcaRespuesta, intentoId,
       numero: cbteNroArca, puntoVenta: ptoVtaArca, cbteTipo: cbteTipoArca, cbteFch: cbteFchArca,
+      condicionIvaReceptorId,
     } = await solicitarCAE({
       tipo, total: totalAFacturar, clienteCuit: finalCuit,
       clienteCondicion: condicionReceptor,
@@ -352,6 +367,14 @@ const createInvoice = async (req, res, next) => {
         businessCuitId: emisor?.id || null,
         cobroDestino,
         emisorCuit, emisorNombre,
+        /*
+         * Lo que la factura impresa tiene que decir y antes no se guardaba: el
+         * domicilio del local, la condición del emisor y la del receptor que se
+         * le declaró a ARCA (RG 5616). Ver el modelo.
+         */
+        emisorDomicilio,
+        emisorCondicionIva: condicionEmisor ? String(condicionEmisor).slice(0, 60) : null,
+        condicionIvaReceptorId: condicionIvaReceptorId || null,
         fechaEmision:  new Date(),
         estado:        'emitida',
       }, { transaction: sp || t }),
@@ -409,8 +432,9 @@ const createInvoice = async (req, res, next) => {
     await t.commit();
 
     // Generar PDF (fuera de la transacción)
-    const items = await InvoiceItem.findAll({ where: { invoiceId: invoice.id } });
-    const pdfPath = await generateInvoicePdf(invoice.toJSON(), items, business.toJSON()).catch((err) => {
+    const items = await InvoiceItem.findAll({ where: { invoiceId: invoice.id }, order: [['id', 'ASC']] });
+    const contextoPdf = await contextoDeImpresion(invoice.toJSON());
+    const pdfPath = await generateInvoicePdf(invoice.toJSON(), items, business.toJSON(), contextoPdf).catch((err) => {
       log.error('factura', 'no se pudo generar el PDF', { motivo: sinDatos(err.message, 160) });
       return null;
     });
@@ -620,11 +644,14 @@ const downloadPdf = async (req, res, next) => {
     const invoice = await Invoice.findOne({
       where: { id: req.params.id, businessId: req.auth.businessId },
       include: [{ model: InvoiceItem, as: 'items' }],
+      // Los renglones en el orden en que se cargaron: es el orden de la venta.
+      order: [[{ model: InvoiceItem, as: 'items' }, 'id', 'ASC']],
     });
     if (!invoice) return res.status(404).json({ message: 'Factura no encontrada.' });
 
     const business = await Business.findByPk(req.auth.businessId);
-    const buffer = await generateInvoicePdfBuffer(invoice.toJSON(), invoice.items || [], business.toJSON());
+    const contextoPdf = await contextoDeImpresion(invoice.toJSON());
+    const buffer = await generateInvoicePdfBuffer(invoice.toJSON(), invoice.items || [], business.toJSON(), contextoPdf);
 
     const filename = `factura-${(invoice.numero || invoice.id).toString().replace(/\//g, '-')}.pdf`;
     res.setHeader('Content-Type', 'application/pdf');

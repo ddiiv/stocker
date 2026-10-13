@@ -220,6 +220,21 @@ const COLUMNAS_ESPERADAS = {
     // Si el mail al cliente salió. Antes un fallo quedaba sólo en el log.
     emailEstado:  { type: DataTypes.STRING(20), allowNull: true },
     emailError:   { type: DataTypes.STRING(300), allowNull: true },
+    /*
+     * Lo que la factura impresa necesita y no se guardaba: el domicilio del
+     * local que la emitió, la condición del emisor y la del receptor que se le
+     * declaró a ARCA. Ver el modelo. Las facturas viejas quedan en null y el
+     * PDF las deduce como puede (pdf de la factura, facturaPdf.js).
+     */
+    emisorDomicilio:        { type: DataTypes.STRING(300), allowNull: true },
+    emisorCondicionIva:     { type: DataTypes.STRING(60), allowNull: true },
+    condicionIvaReceptorId: { type: DataTypes.INTEGER, allowNull: true },
+  },
+  business_cuits: {
+    // Ingresos Brutos e Inicio de Actividades: van en la cabecera de la
+    // factura (RG 1415) y ARCA no los da. Los carga el dueño. Ver el modelo.
+    ingresosBrutos:    { type: DataTypes.STRING(40), allowNull: true },
+    inicioActividades: { type: DataTypes.STRING(10), allowNull: true },
   },
   payment_methods: {
     esEfectivo: { type: DataTypes.BOOLEAN, allowNull: true, defaultValue: false },

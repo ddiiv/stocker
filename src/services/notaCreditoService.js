@@ -170,6 +170,11 @@ async function emitirNota({
     total: importe,
     clienteCuit: factura.clienteCuit,
     clienteCondicion: null,
+    /*
+     * El receptor se declara como en la factura. Las facturas anteriores a
+     * que esto se guardara no lo tienen: ahí se recalcula, como siempre.
+     */
+    condicionReceptorId: factura.condicionIvaReceptorId || null,
     businessCuit: factura.emisorCuit,
     puntoVenta: factura.ptoVtaArca,
     ambiente: factura.ambiente,
@@ -230,6 +235,10 @@ async function emitirNota({
         businessCuitId: factura.businessCuitId,
         emisorCuit: factura.emisorCuit,
         emisorNombre: factura.emisorNombre,
+        // El emisor y el receptor de la nota son los de su factura: se heredan.
+        emisorDomicilio: factura.emisorDomicilio,
+        emisorCondicionIva: factura.emisorCondicionIva,
+        condicionIvaReceptorId: arca.condicionIvaReceptorId || factura.condicionIvaReceptorId || null,
         cobroDestino: factura.cobroDestino,
       }, { transaction: sp }),
       { transaction: t2 },

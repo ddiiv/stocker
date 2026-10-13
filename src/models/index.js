@@ -348,6 +348,23 @@ const BusinessCuit = db.define('BusinessCuit', {
   condicionIva: { type: DataTypes.STRING(60) },
   domicilio:    { type: DataTypes.STRING(255) },
   esPrincipal:  { type: DataTypes.BOOLEAN, defaultValue: false },
+  /*
+   * Ingresos Brutos e Inicio de Actividades del CUIT.
+   *
+   * La RG 1415 los pide en la cabecera de la factura, al lado del CUIT, y ARCA
+   * no los devuelve en ninguna consulta que Stocker haga: los carga el dueño.
+   * Mientras estén vacíos el renglón no se imprime —un "—" en un comprobante
+   * fiscal parece un dato que falta, no uno que no se cargó—.
+   *
+   * Texto libre el de Ingresos Brutos: cada provincia tiene su formato, y en
+   * Convenio Multilateral se escribe con la sigla adelante ("C.M. 901-…").
+   *
+   * El inicio de actividades es un DÍA y se guarda como texto AAAA-MM-DD, igual
+   * que `cbteFchArca`: como DATEONLY, SQL Server lo devolvía corrido un día
+   * según la zona horaria de la máquina, y en una factura eso es un dato falso.
+   */
+  ingresosBrutos:    { type: DataTypes.STRING(40), allowNull: true },
+  inicioActividades: { type: DataTypes.STRING(10), allowNull: true },
 }, { tableName: 'business_cuits' });
 
 // ─── BusinessArcaConfig (config ARCA por CUIT del negocio) ───────
@@ -1959,6 +1976,23 @@ const Invoice = db.define('Invoice', {
   cobroDestino: { type: DataTypes.STRING(300), allowNull: true },
   emisorCuit:     { type: DataTypes.STRING(20) },
   emisorNombre:   { type: DataTypes.STRING(150) },
+  /*
+   * El domicilio comercial y la condición frente al IVA del emisor, como foto.
+   *
+   * El domicilio es el del LOCAL donde se hizo la venta, no el fiscal: es lo
+   * que la factura tiene que decir, y un local se puede mudar después sin que
+   * las facturas viejas cambien de dirección. La condición, porque quien hoy
+   * es monotributista mañana puede ser inscripto, y su factura C de ayer tiene
+   * que seguir diciendo monotributo.
+   */
+  emisorDomicilio:    { type: DataTypes.STRING(300), allowNull: true },
+  emisorCondicionIva: { type: DataTypes.STRING(60), allowNull: true },
+  /*
+   * La condición frente al IVA del receptor que se le DECLARÓ a ARCA (RG 5616),
+   * con el código de ARCA. Se calculaba al emitir y se perdía: el papel no la
+   * podía imprimir, y una nota sobre esta factura la recalculaba a ciegas.
+   */
+  condicionIvaReceptorId: { type: DataTypes.INTEGER, allowNull: true },
   pdfPath:      { type: DataTypes.STRING(255) },
   fechaEmision: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
   estado:       { type: DataTypes.STRING(15), defaultValue: 'emitida' }, // emitida|anulada|error

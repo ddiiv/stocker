@@ -1,5 +1,4 @@
 const PDFDocument = require('pdfkit');
-const bwip = require('bwip-js');
 const fs          = require('fs-extra');
 const path        = require('path');
 
@@ -100,172 +99,11 @@ function drawHeaderBar(doc, { titulo, subtitulo, badge, badgeColor = COLOR.brass
 }
 
 /*
- * La franja de "esto no es una factura".
- *
- * Un comprobante de homologación —o uno simulado— sale idéntico a uno real:
- * mismo formato de CAE, mismo número, mismo diseño. Impreso y archivado, nadie
- * puede distinguirlo, y el día que alguien lo busque por CAE en ARCA no va a
- * estar. Un papel que parece una factura y no lo es hace más daño que no tener
- * ninguno, porque se archiva y se deja de pensar en él.
- *
- * Por eso va arriba de todo, en rojo, ocupando el ancho entero: la información
- * más importante de esa hoja no es el total, es que no sirve para respaldar
- * nada.
- *
- * Devuelve la nueva `y`, para que el resto del comprobante baje.
+ * La factura vive en facturaPdf.js: el diseño, el QR, la Ley 27.743 y la
+ * paginación. Acá quedan los comprobantes que NO son fiscales (venta,
+ * cotización, ticket, recibo de suscripción).
  */
-/*
- * ── El comprobante como lo autorizó ARCA ───────────────────────────
- *
- * El número que Stocker lleva adentro (2609-00001) NO es el del comprobante:
- * el que vale es el punto de venta y el número que devolvió ARCA al dar el
- * CAE, y es el que hay que imprimir y el que va adentro del QR. Salen de la
- * respuesta guardada; si el comprobante no llegó a tener CAE, no hay ninguno.
- */
-/*
- * El tipo de comprobante se importa: tener una copia acá fue exactamente lo
- * que hizo que este archivo quedara pensando que todo es una factura.
- */
-const { CBTE_TIPO } = require('./arcaService');
-
-/* Cómo se llama el comprobante, para el papel y para el asunto del mail. */
-const ETIQUETA_CLASE = {
-  factura: 'FACTURA',
-  nota_credito: 'NOTA DE CRÉDITO',
-  nota_debito: 'NOTA DE DÉBITO',
-};
-const etiquetaComprobante = (invoice) => ETIQUETA_CLASE[invoice?.clase] || 'FACTURA';
-// La URL que manda la especificación vigente del QR (RG 4892).
-const URL_QR = 'https://www.arca.gob.ar/fe/qr/';
-
-function comprobanteArca(invoice) {
-  const r = invoice.arcaRespuesta || {};
-  /*
-   * Primero las columnas, después el JSON.
-   *
-   * El tipo NO se adivina por la letra: con notas de crédito en juego, caer al
-   * mapa por letra convertiría una nota en la FACTURA del mismo número, y el
-   * QR de ese papel verificaría contra un comprobante que no es. Si no se sabe
-   * el tipo, va cero y el QR no se dibuja: un papel sin QR es un problema
-   * menor que un papel con el QR de otro.
-   */
-  const porClase = CBTE_TIPO[invoice?.clase || 'factura'] || {};
-  return {
-    ptoVta: Number(invoice.ptoVtaArca || r.puntoVenta || r.PtoVta || 0),
-    nroCmp: Number(invoice.cbteNroArca || r.numero || r.CbteDesde || 0),
-    tipoCmp: Number(invoice.cbteTipoArca || r.cbteTipo || porClase[invoice.tipo] || 0),
-  };
-}
-
-/** "00003-00000123", como se imprime. Null si no tiene número de ARCA. */
-function numeroArca(invoice) {
-  const { ptoVta, nroCmp } = comprobanteArca(invoice);
-  if (!ptoVta || !nroCmp) return null;
-  return `${String(ptoVta).padStart(5, '0')}-${String(nroCmp).padStart(8, '0')}`;
-}
-
-/*
- * El QR que la RG 4892 exige en la representación impresa.
- *
- * Es lo que le permite a cualquiera —el comprador, un inspector— verificar el
- * comprobante contra ARCA sin depender de lo que diga el papel: codifica una
- * URL de AFIP con los datos del comprobante en base64.
- *
- * No se dibuja si el CAE no es real: un QR sobre un comprobante de
- * homologación lleva a una consulta que no existe, y sería peor que no tener
- * QR, porque el papel parecería válido.
- */
-function datosQr(invoice) {
-  if (!invoice.cae || invoice.simulado || invoice.ambiente !== 'produccion') return null;
-  const { ptoVta, nroCmp, tipoCmp } = comprobanteArca(invoice);
-  if (!ptoVta || !nroCmp || !tipoCmp) return null;
-
-  const soloDigitos = (v) => String(v ?? '').replace(/\D/g, '');
-  const cuitEmisor = soloDigitos(invoice.emisorCuit);
-  const docReceptor = soloDigitos(invoice.clienteCuit);
-  if (!cuitEmisor) return null;
-
-  const datos = {
-    ver: 1,
-    fecha: new Date(invoice.fechaEmision || Date.now()).toISOString().slice(0, 10),
-    cuit: Number(cuitEmisor),
-    ptoVta,
-    tipoCmp,
-    nroCmp,
-    importe: Number(Number(invoice.total || 0).toFixed(2)),
-    moneda: 'PES',
-    ctz: 1,
-    // "E" es CAE. "A" sería CAEA, que Stocker no usa.
-    tipoCodAut: 'E',
-    codAut: Number(soloDigitos(invoice.cae)),
-  };
-  /*
-   * El documento del receptor va "de corresponder": en un consumidor final sin
-   * datos no se manda nada, en vez de inventar un 99 con número cero.
-   */
-  if (docReceptor.length === 11) {
-    datos.tipoDocRec = 80;               // CUIT
-    datos.nroDocRec = Number(docReceptor);
-  } else if (docReceptor.length === 7 || docReceptor.length === 8) {
-    datos.tipoDocRec = 96;               // DNI
-    datos.nroDocRec = Number(docReceptor);
-  }
-
-  return datos;
-}
-
-/** El texto que se codifica: la URL de ARCA con los datos en base64. */
-function urlQr(invoice) {
-  const datos = datosQr(invoice);
-  if (!datos) return null;
-  return `${URL_QR}?p=${Buffer.from(JSON.stringify(datos), 'utf8').toString('base64')}`;
-}
-
-async function qrDelComprobante(invoice) {
-  const url = urlQr(invoice);
-  if (!url) return null;
-  try {
-    return await bwip.toBuffer({ bcid: 'qrcode', text: url, scale: 3, includetext: false });
-  } catch {
-    /*
-     * Sin QR se sigue. El comprobante ya está autorizado y el CAE impreso lo
-     * respalda: quedarse sin PDF por no poder dibujar un cuadrito sería peor.
-     */
-    return null;
-  }
-}
-
-/** Dibuja el QR con su leyenda. Devuelve la altura que ocupó. */
-function drawQr(doc, qr, y) {
-  if (!qr) return 0;
-  doc.image(qr, 50, y, { width: 82 });
-  doc.font('Helvetica').fontSize(7.5).fillColor('#666')
-    .text('Comprobante autorizado por ARCA (AFIP). Escaneá el código para verificarlo.',
-      142, y + 24, { width: 260 });
-  doc.fillColor('#000');
-  return 92;
-}
-
-function drawAvisoNoFiscal(doc, invoice, y) {
-  const esProduccion = invoice.ambiente === 'produccion';
-  if (esProduccion && !invoice.simulado) return y;
-
-  const motivo = invoice.simulado
-    ? 'CAE SIMULADO — no se pidió a ARCA'
-    : 'EMITIDO EN HOMOLOGACIÓN (AMBIENTE DE PRUEBA)';
-
-  doc.save();
-  doc.rect(40, y, 515, 34).fill('#f8e9e4');
-  doc.rect(40, y, 4, 34).fill('#b3432d');
-  doc.fillColor('#b3432d').font('Helvetica-Bold').fontSize(11)
-    .text('COMPROBANTE SIN VALIDEZ FISCAL', 54, y + 6, { width: 490 });
-  doc.font('Helvetica').fontSize(8.5)
-    .text(`${motivo}. Este comprobante NO existe en ARCA y no sirve como respaldo `
-      + 'de la operación ante AFIP ni ante el comprador.', 54, y + 20, { width: 490 });
-  doc.restore();
-
-  return y + 44;
-}
+const facturaPdf = require('./facturaPdf');
 
 function drawSectionTitle(doc, text, y) {
   doc.font('Helvetica-Bold').fontSize(10).fillColor(COLOR.brass600).text(text.toUpperCase(), 50, y, { characterSpacing: 1 });
@@ -322,54 +160,6 @@ function drawItemsTable(doc, items, startY) {
   return y;
 }
 
-/*
- * ── El Régimen de Transparencia Fiscal al Consumidor (Ley 27.743) ─
- *
- * Desde 2024 la ley obliga a mostrarle al consumidor final cuánto de lo que
- * pagó es impuesto. En una factura B el precio va con el IVA adentro, así que
- * sin esta leyenda el comprador no tiene forma de saber cuánto le corresponde a
- * la AFIP: ve un número y nada más. Es lo que el recuadro dice.
- *
- * Va SÓLO en la B, y eso no es una omisión:
- *   · la A es entre responsables inscriptos y ya lleva el IVA discriminado en su
- *     propio renglón, así que el dato está dicho;
- *   · la C la emite un monotributista, que no discrimina IVA porque no lo
- *     factura. Poner un "IVA contenido: $0" ahí sería afirmar algo falso sobre
- *     el precio.
- *
- * "Otros impuestos nacionales indirectos" va en cero porque Stocker no liquida
- * impuestos internos ni percepciones: el día que lo haga, el número sale de ahí
- * y no de esta constante.
- */
-function drawTransparenciaFiscal(doc, y, { tipo, iva }) {
-  if (String(tipo || '').toUpperCase() !== 'B') return y;
-
-  const x = 50;
-  const ancho = doc.page.width - 100;
-  const alto = 58;
-
-  doc.save()
-    .rect(x, y, ancho, alto)
-    .lineWidth(0.8).strokeColor(COLOR.ink700).stroke()
-    .restore();
-
-  doc.font('Helvetica-Oblique').fontSize(8.5).fillColor(COLOR.ink950)
-    .text('Régimen de Transparencia Fiscal al Consumidor (Ley 27.743)', x + 12, y + 9, {
-      width: ancho - 24, underline: true,
-    });
-
-  const linea = (k, v, cy) => {
-    doc.font('Helvetica-Oblique').fontSize(8.5).fillColor(COLOR.ink700);
-    // El 10 de aire: sin él la etiqueta y el número se tocan.
-    doc.text(k, x + 12, cy, { width: ancho * 0.6 - 10, align: 'right' });
-    doc.font('Helvetica').fontSize(8.5).fillColor(COLOR.ink950);
-    doc.text(v, x + 12 + ancho * 0.6, cy, { width: ancho * 0.4 - 24, align: 'left' });
-  };
-  linea('IVA Contenido:', money(iva || 0), y + 27);
-  linea('Otros Impuestos Nacionales Indirectos:', money(0), y + 41);
-
-  return y + alto + 12;
-}
 function drawTotals(doc, y, { subtotal, descuento, descuentoPct, iva, total, esMayorista }) {
   const right = doc.page.width - 50;
   const boxW = 240, boxX = right - boxW;
@@ -401,7 +191,12 @@ function drawTotals(doc, y, { subtotal, descuento, descuentoPct, iva, total, esM
   label('TOTAL', money(total), true);
   if (esMayorista) {
     doc.font('Helvetica').fontSize(7.5).fillColor(COLOR.brass600)
-       .text('Precio mayorista aplicado (≥ 3 unidades)', boxX + 12, cy, { width: boxW - 24, align: 'right' });
+       /*
+        * Sin el "≥": las fuentes estándar del PDF no lo tienen y salía basura.
+        * Y sin el "3 unidades": la regla mayorista es de cada local (cantidad,
+        * monto, siempre) y el número escrito acá mentía en todos los demás.
+        */
+       .text('Precio mayorista aplicado', boxX + 12, cy, { width: boxW - 24, align: 'right' });
     cy += 12;
   }
   // Lo que siga va debajo del recuadro, no encima.
@@ -416,172 +211,28 @@ function drawFooter(doc, business) {
 }
 
 // ── PDF de Factura ────────────────────────────────────────────────
-async function generateInvoicePdf(invoice, items, business) {
-  await ensureDir();
-  // El QR se arma antes de abrir el documento: dibujarlo pide un buffer ya listo.
-  const qr = await qrDelComprobante(invoice);
-  const filename = `factura-${invoice.numero.replace(/\//g, '-')}-${invoice.id}.pdf`;
-  const filepath = path.join(PDF_DIR, filename);
-
-  return new Promise((resolve, reject) => {
-    const doc = new PDFDocument({ size: 'A4', margin: 50 });
-    const stream = fs.createWriteStream(filepath);
-    doc.pipe(stream);
-
-    // Emisor: usar snapshot de la factura si existe, sino datos del negocio (legacy)
-    const emisorNombre = invoice.emisorNombre || business.nombreNegocio;
-    const emisorCuit   = invoice.emisorCuit   || business.cuit;
-
-    drawHeaderBar(doc, {
-      titulo: emisorNombre,
-      subtitulo: `CUIT ${emisorCuit}${business.telefono ? ' · Tel ' + business.telefono : ''}`,
-      badge: { top: etiquetaComprobante(invoice), big: invoice.tipo || 'B' },
-    });
-
-    let y = 110;
-    y = drawAvisoNoFiscal(doc, invoice, y);
-    y = drawSectionTitle(doc, 'Comprobante', y);
-    const col1x = 50, col2x = 310;
-    drawKeyValue(doc, col1x, y,     'N° Comprobante',    numeroArca(invoice) || invoice.numero);
-    drawKeyValue(doc, col1x, y+14,  'Fecha emisión', dateTime(invoice.fechaEmision));
-    drawKeyValue(doc, col1x, y+28,  'Tipo',          `Factura ${invoice.tipo}`);
-    drawKeyValue(doc, col2x, y,     'CAE',           invoice.cae || '—');
-    drawKeyValue(doc, col2x, y+14,  'Vto. CAE',      invoice.caeVencimiento ? dateOnly(invoice.caeVencimiento) : '—');
-    drawKeyValue(doc, col2x, y+28,  'Estado',        (invoice.estado || 'emitida').toUpperCase());
-    y += 60;
-
-    y = drawSectionTitle(doc, 'Cliente', y);
-    drawKeyValue(doc, col1x, y,     'Nombre',    invoice.clienteNombre || 'Consumidor final');
-    drawKeyValue(doc, col1x, y+14,  'CUIT/DNI',  invoice.clienteCuit || '—');
-    drawKeyValue(doc, col1x, y+28,  'Email',     invoice.clienteEmail || '—');
-    drawKeyValue(doc, col2x, y,     'Dirección', invoice.clienteDireccion || '—');
-    drawKeyValue(doc, col2x, y+14,  'Precio',    invoice.esMayorista ? 'MAYORISTA' : 'MINORISTA');
-    y += 60;
-
-    y = drawSectionTitle(doc, 'Detalle', y);
-    y = drawItemsTable(doc, items, y);
-    y += 10;
-
-    const finTotales = drawTotals(doc, y, {
-      subtotal: invoice.subtotal,
-      descuento: 0,
-      descuentoPct: 0,
-      iva: invoice.iva || 0,
-      total: invoice.total,
-      esMayorista: invoice.esMayorista,
-    });
-
-    /*
-     * Debajo de los totales, que es donde el comprador acaba de leer cuánto
-     * pagó: la leyenda explica ese número, así que tiene que estar al lado.
-     */
-    drawTransparenciaFiscal(doc, finTotales + 10, {
-      tipo: invoice.tipo,
-      iva: invoice.iva || 0,
-    });
-
-    /*
-     * A qué CUIT del negocio entró el cobro.
-     *
-     * Debajo de los totales y no arriba: no es un dato fiscal del comprobante
-     * —el emisor ya está en la cabecera— sino de a qué cuenta cayó la plata.
-     * Importa cuando el negocio factura con más de un CUIT: sin esto, la
-     * factura sale a nombre de uno y la transferencia pudo entrar en el otro,
-     * y el que concilia no tiene cómo saberlo.
-     */
-    if (invoice.cobroDestino) {
-      doc.font('Helvetica').fontSize(8).fillColor('#666')
-         .text(`Cobro acreditado en: ${invoice.cobroDestino}`, 50, doc.y + 14, { width: 500 });
-      doc.fillColor('#000');
-    }
-
-    drawQr(doc, qr, doc.y + 16);
-
-    drawFooter(doc, business);
-    doc.end();
-    stream.on('finish', () => resolve(path.relative(process.cwd(), filepath)));
-    stream.on('error', reject);
-  });
+/*
+ * Las dos salidas de siempre, ahora con UNA sola implementación debajo.
+ *
+ * Antes eran dos copias del mismo dibujo —una al archivo que adjunta el mail,
+ * otra al buffer que se descarga— y cada cambio tocaba una y olvidaba la otra.
+ * Ahora el archivo es el buffer escrito a disco: no hay forma de que difieran.
+ *
+ * `contexto` trae lo que la factura no guarda en su fila (Ingresos Brutos,
+ * Inicio de Actividades, el local de las facturas viejas); lo arma
+ * `facturaPdf.contextoDeImpresion`. Sin él el PDF sale igual, sin esos datos.
+ */
+async function generateInvoicePdfBuffer(invoice, items, business, contexto = {}) {
+  return facturaPdf.generarFactura(invoice, items || [], business || {}, contexto || {});
 }
 
-// Misma lógica pero devuelve un Buffer en memoria (sin tocar el disco).
-// Usar para servir el PDF directamente desde el endpoint, funciona en
-// cualquier hosting con filesystem efímero (Railway, Render, etc.).
-async function generateInvoicePdfBuffer(invoice, items, business) {
-  const qr = await qrDelComprobante(invoice);
-  const emisorNombre = invoice.emisorNombre || business.nombreNegocio;
-  const emisorCuit   = invoice.emisorCuit   || business.cuit;
-
-  return new Promise((resolve, reject) => {
-    const doc = new PDFDocument({ size: 'A4', margin: 50 });
-    const chunks = [];
-    doc.on('data', (c) => chunks.push(c));
-    doc.on('end',  () => resolve(Buffer.concat(chunks)));
-    doc.on('error', reject);
-
-    drawHeaderBar(doc, {
-      titulo: emisorNombre,
-      subtitulo: `CUIT ${emisorCuit}${business.telefono ? ' · Tel ' + business.telefono : ''}`,
-      badge: { top: etiquetaComprobante(invoice), big: invoice.tipo || 'B' },
-    });
-
-    let y = 110;
-    y = drawAvisoNoFiscal(doc, invoice, y);
-    y = drawSectionTitle(doc, 'Comprobante', y);
-    const col1x = 50, col2x = 310;
-    drawKeyValue(doc, col1x, y,    'N° Comprobante',    numeroArca(invoice) || invoice.numero);
-    drawKeyValue(doc, col1x, y+14, 'Fecha emisión', dateTime(invoice.fechaEmision));
-    drawKeyValue(doc, col1x, y+28, 'Tipo',          `Factura ${invoice.tipo}`);
-    drawKeyValue(doc, col2x, y,    'CAE',           invoice.cae || '—');
-    drawKeyValue(doc, col2x, y+14, 'Vto. CAE',      invoice.caeVencimiento ? dateOnly(invoice.caeVencimiento) : '—');
-    drawKeyValue(doc, col2x, y+28, 'Estado',        (invoice.estado || 'emitida').toUpperCase());
-    y += 60;
-
-    y = drawSectionTitle(doc, 'Cliente', y);
-    drawKeyValue(doc, col1x, y,    'Nombre',    invoice.clienteNombre || 'Consumidor final');
-    drawKeyValue(doc, col1x, y+14, 'CUIT/DNI',  invoice.clienteCuit || '—');
-    drawKeyValue(doc, col1x, y+28, 'Email',     invoice.clienteEmail || '—');
-    drawKeyValue(doc, col2x, y,    'Dirección', invoice.clienteDireccion || '—');
-    drawKeyValue(doc, col2x, y+14, 'Precio',    invoice.esMayorista ? 'MAYORISTA' : 'MINORISTA');
-    y += 60;
-
-    y = drawSectionTitle(doc, 'Detalle', y);
-    y = drawItemsTable(doc, items, y);
-    y += 10;
-
-    const finTotales = drawTotals(doc, y, {
-      subtotal: invoice.subtotal,
-      descuento: 0, descuentoPct: 0,
-      iva: invoice.iva || 0,
-      total: invoice.total,
-      esMayorista: invoice.esMayorista,
-    });
-
-    /*
-     * La leyenda de la Ley 27.743, también acá.
-     *
-     * Son dos implementaciones separadas del mismo comprobante —ésta arma el
-     * buffer que se descarga y se manda por mail— y es fácil tocar una y
-     * olvidarse de la otra: fue lo que pasó la primera vez con esto.
-     */
-    drawTransparenciaFiscal(doc, finTotales + 10, {
-      tipo: invoice.tipo,
-      iva: invoice.iva || 0,
-    });
-
-    // Igual que en la versión a disco: éste es el PDF que se descarga desde la
-    // app, así que si el dato falta acá, en la práctica no está en ningún lado.
-    if (invoice.cobroDestino) {
-      doc.font('Helvetica').fontSize(8).fillColor('#666')
-         .text(`Cobro acreditado en: ${invoice.cobroDestino}`, 50, doc.y + 14, { width: 500 });
-      doc.fillColor('#000');
-    }
-
-    drawQr(doc, qr, doc.y + 16);
-
-    drawFooter(doc, business);
-    doc.end();
-  });
+async function generateInvoicePdf(invoice, items, business, contexto = {}) {
+  await ensureDir();
+  const buffer = await generateInvoicePdfBuffer(invoice, items, business, contexto);
+  const filename = `factura-${String(invoice.numero || invoice.id).replace(/\//g, '-')}-${invoice.id}.pdf`;
+  const filepath = path.join(PDF_DIR, filename);
+  await fs.writeFile(filepath, buffer);
+  return path.relative(process.cwd(), filepath);
 }
 
 // ── PDF de Venta / Pedido ─────────────────────────────────────────
@@ -960,7 +611,10 @@ async function generateSubscriptionReceiptPdf(pago, negocio, plan) {
   return ruta;
 }
 
-module.exports = { destinatariosDe, __drawTransparenciaFiscal: drawTransparenciaFiscal, generateInvoicePdf, generateInvoicePdfBuffer, generateSalePdf, generateSaleTicketPdf, generateSubscriptionReceiptPdf, PDF_DIR, COLOR,
-  // Expuesto para las pruebas: lo que va adentro del QR y el número de ARCA.
-  __qr: { datosQr, urlQr, numeroArca },
+module.exports = {
+  destinatariosDe, generateInvoicePdf, generateInvoicePdfBuffer, generateSalePdf, generateSaleTicketPdf,
+  generateSubscriptionReceiptPdf, PDF_DIR, COLOR,
+  // Expuesto para las pruebas: la leyenda de la Ley 27.743, lo que va adentro del QR y el número de ARCA.
+  __drawTransparenciaFiscal: facturaPdf.drawTransparenciaFiscal,
+  __qr: { datosQr: facturaPdf.datosQr, urlQr: facturaPdf.urlQr, numeroArca: facturaPdf.numeroArca },
 };

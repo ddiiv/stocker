@@ -136,6 +136,46 @@ const enviado = (campo) => {
   chk('sin punto de venta', true, /puntoVenta/.test(await falla({ tipo: 'C', total: 1, businessCuit: '27928813415', ambiente: 'produccion' }) || ''));
   chk('sin CUIT emisor',    true, /businessCuit/.test(await falla({ tipo: 'C', total: 1, puntoVenta: 8, ambiente: 'produccion' }) || ''));
 
+  tit('6. LA FECHA DEL COMPROBANTE ES LA DE ARGENTINA');
+  /*
+   * El servidor corre en UTC. Con el día sacado de `toISOString()`, una venta
+   * de las 23:30 de acá se le declaraba a ARCA con la fecha de mañana. Se
+   * detiene el reloj en ese instante y se mira qué CbteFch sale en el pedido.
+   */
+  const RealDate = Date;
+  const conReloj = async (iso, fn) => {
+    const fijo = new RealDate(iso).getTime();
+    global.Date = class extends RealDate {
+      constructor(...a) { super(...(a.length ? a : [fijo])); }
+      static now() { return fijo; }
+    };
+    try { return await fn(); } finally { global.Date = RealDate; }
+  };
+  const ventaB = { tipo: 'B', total: 1210, clienteCuit: null, businessCuit: '30111111117', puntoVenta: 8, ambiente: 'produccion' };
+  PEDIDOS = [];
+  const deNoche = await conReloj('2026-10-13T02:30:00Z', () => arca.solicitarCAE(ventaB));
+  chk('una venta de las 23:30 de Argentina va con la fecha de ese día', '20261012', enviado('CbteFch'));
+  chk('y es la que se devuelve para guardar e imprimir', '20261012', deNoche.cbteFch);
+  PEDIDOS = [];
+  await conReloj('2026-10-13T03:30:00Z', () => arca.solicitarCAE(ventaB));
+  chk('pasada la medianoche de acá ya es el día siguiente', '20261013', enviado('CbteFch'));
+
+  tit('7. LA CONDICIÓN DEL RECEPTOR SE DEVUELVE, Y UNA NOTA USA LA DE SU FACTURA');
+  PEDIDOS = [];
+  const normal = await arca.solicitarCAE(ventaB);
+  chk('se devuelve lo que se declaró, para guardarlo en la factura', 5, normal.condicionIvaReceptorId);
+  PEDIDOS = [];
+  const nota = await arca.solicitarCAE({
+    ...ventaB, clase: 'nota_credito', clienteCuit: '20111111112', clienteCondicion: null,
+    condicionReceptorId: 6,
+    asociada: { cbteTipo: 6, ptoVta: 8, numero: 5, fecha: '20261012', cuit: '30111111117' },
+  });
+  chk('la nota declara al receptor como lo declaró su factura (6)', '6', enviado('CondicionIVAReceptorId'));
+  chk('y lo devuelve', 6, nota.condicionIvaReceptorId);
+  PEDIDOS = [];
+  await arca.solicitarCAE({ ...ventaB, clienteCuit: '20111111112', clienteCondicion: null });
+  chk('sin condición guardada se calcula como siempre (5)', '5', enviado('CondicionIVAReceptorId'));
+
   console.log(`\n\x1b[1m─────────────────────────────\x1b[0m\n  \x1b[32mPasaron: ${ok}\x1b[0m   \x1b[31mFallaron: ${ko}\x1b[0m`);
   process.exit(ko ? 1 : 0);
 })().catch((e) => { console.error('ERROR', e); process.exit(1); });

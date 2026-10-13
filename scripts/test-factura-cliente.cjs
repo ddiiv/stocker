@@ -30,7 +30,7 @@ const { spawn } = require('child_process');
 const path = require('path');
 const { Op } = require('sequelize');
 const {
-  Business, BusinessLocation, Client, PaymentMethod, Product, ProductVariant,
+  Business, BusinessCuit, BusinessLocation, Client, PaymentMethod, Product, ProductVariant,
   Sale, SaleItem, SalePayment, Invoice, InvoiceItem, StockMovement, VariantStock,
 } = require('../src/models');
 const stock = require('../src/services/stockService');
@@ -49,7 +49,7 @@ const esperar = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function sesion() {
   let cookie = '';
-  return async (m, ruta, cuerpo) => {
+  const api = async (m, ruta, cuerpo) => {
     const r = await fetch(`${API}${ruta}`, {
       method: m,
       headers: { 'Content-Type': 'application/json', ...(cookie ? { Cookie: cookie } : {}) },
@@ -60,6 +60,9 @@ function sesion() {
     let json = null; try { json = JSON.parse(await r.text()); } catch { /* no json */ }
     return { status: r.status, json };
   };
+  // Para lo que no es JSON (el PDF): el pedido crudo, con la misma sesión.
+  api.crudo = (ruta) => fetch(`${API}${ruta}`, { headers: cookie ? { Cookie: cookie } : {} });
+  return api;
 }
 
 const CUIT_CLIENTE = '20111111112';
@@ -143,6 +146,8 @@ const CUIT_IMPOSTOR = '27222222228';
   if (entro.status !== 200) { console.log('No se pudo entrar:', entro.status); cerrar(); process.exit(1); }
 
   const ventas = [];
+  let cuitPrincipal = null;
+  let cuitAntes = null;
   const vender = async (extra = {}) => {
     const r = await api('POST', '/api/sales', {
       tipo: 'venta', estado: 'pagado', locationId: local.id,
@@ -270,8 +275,49 @@ const CUIT_IMPOSTOR = '27222222228';
     chk('el nombre sigue siendo el de entonces', 'QA Cliente Facturado', guardada.clienteNombre);
     chk('y el domicilio también', 'Av. Siempre Viva 742', guardada.clienteDireccion);
 
+    tit('6. LA FACTURA GUARDA LO QUE IMPRIME, Y SE DESCARGA EN UNA HOJA');
+    /*
+     * Ingresos Brutos e Inicio de Actividades se cargan en el CUIT y salen en
+     * la cabecera. Se cargan por la API, como lo haría la pantalla, y al final
+     * se dejan como estaban.
+     */
+    cuitPrincipal = await BusinessCuit.findOne({ where: { businessId: negocio.id, esPrincipal: true } });
+    if (cuitPrincipal) {
+      cuitAntes = { ingresosBrutos: cuitPrincipal.ingresosBrutos, inicioActividades: cuitPrincipal.inicioActividades };
+      const put = await api('PUT', `/api/business-cuits/${cuitPrincipal.id}`, {
+        ingresosBrutos: '  C.M. 901-000000-1 ', inicioActividades: '2019-03-01',
+      });
+      chk('el CUIT acepta Ingresos Brutos e Inicio de Actividades', [200, 'C.M. 901-000000-1', '2019-03-01'],
+        [put.status, put.json?.ingresosBrutos, put.json?.inicioActividades]);
+      const mal = await api('PUT', `/api/business-cuits/${cuitPrincipal.id}`, { inicioActividades: '2019-02-30' });
+      chk('   una fecha que no existe se rechaza', 400, mal.status);
+    }
+    chk('guarda el domicilio del local donde se vendió', true,
+      String(guardada.emisorDomicilio || '').includes(local.direccion));
+    chk('y la condición del receptor que se le declaró a ARCA', true, Number(guardada.condicionIvaReceptorId) > 0);
+
+    const pdf = await api.crudo(`/api/invoices/${guardada.id}/pdf`);
+    const cuerpoPdf = Buffer.from(await pdf.arrayBuffer());
+    chk('el PDF se descarga', [200, '%PDF'], [pdf.status, cuerpoPdf.slice(0, 4).toString()]);
+    chk('   en una hoja', 1, (cuerpoPdf.toString('latin1').match(/\/Type \/Page\b/g) || []).length);
+    const textoDescargado = require('child_process')
+      .execFileSync('pdftotext', ['-layout', '-', '-'], { input: cuerpoPdf }).toString('utf8');
+    chk('   con el formato del modelo y el local que emitió', true,
+      /ORIGINAL/.test(textoDescargado) && /COD\. 0[16]/.test(textoDescargado)
+        && textoDescargado.includes('Domicilio Comercial:') && textoDescargado.includes(local.direccion));
+    if (cuitPrincipal) {
+      chk('   y con Ingresos Brutos e Inicio de Actividades del CUIT', true,
+        textoDescargado.includes('ING. BRUTOS: C.M. 901-000000-1')
+          && textoDescargado.includes('Inicio Actividades: 01/03/2019'));
+    }
+
   } finally {
     tit('Limpieza');
+    // Por la clase y no por la instancia: la instancia todavía tiene los valores
+    // de antes del PUT y `update` no mandaría nada.
+    if (cuitPrincipal && cuitAntes) {
+      await BusinessCuit.update(cuitAntes, { where: { id: cuitPrincipal.id } }).catch(() => {});
+    }
     for (const id of ventas) {
       const fs = await Invoice.findAll({ where: { saleId: id } });
       for (const f of fs) {

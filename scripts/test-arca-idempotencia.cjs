@@ -126,7 +126,11 @@ const chk = (t, esperado, obtuvo) => {
 };
 const tit = (t) => console.log(`\n\x1b[1m${t}\x1b[0m`);
 
-const HOY = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+/*
+ * El día del comprobante es el de Argentina, no el de UTC (ver
+ * utils/fechaFiscal). Con el día UTC esta suite fallaba entre las 21 y las 24.
+ */
+const HOY = require('../src/utils/fechaFiscal').aaaammddArgentina();
 const TOTAL = 121000;
 const DOC = 30999999911;
 

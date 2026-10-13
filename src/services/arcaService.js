@@ -15,6 +15,7 @@
 
 const fs   = require('fs');
 const { log } = require('../utils/logger');
+const { aaaammddArgentina } = require('../utils/fechaFiscal');
 const { loadCredentials } = require('./arcaCredentials');
 
 const isMock = process.env.ARCA_MOCK === 'true';
@@ -86,14 +87,24 @@ function tipoComprobante({ condicionEmisor, condicionReceptor, clienteCuit }) {
    */
   return determineInvoiceType(clienteCuit);
 }
+/*
+ * La alícuota con la que se factura, en un solo lugar.
+ *
+ * Es la que va en el objeto Iva del pedido (Id 5 = 21% en la tabla de AFIP) y
+ * la que la factura impresa muestra en la columna IVA. Si el papel tuviera su
+ * propia copia del 21, el día que cambie una quedaría impreso un porcentaje
+ * distinto del que se le declaró a ARCA.
+ */
+const ALICUOTA_IVA = Object.freeze({ id: 5, porcentaje: 21 });
+
 // Descompone el importe total en neto + IVA (21%).
 // - Factura A: IVA discriminado, precio no incluye IVA por el receptor (aunque el emisor sí).
 // - Factura B: IVA "incluido" en el total, pero AFIP requiere igual el desglose interno.
 // - Factura C: monotributista, sin IVA discriminado.
 function calcularIVA(total, tipoFactura) {
   if (tipoFactura === 'C') return { neto: Number(total), iva: 0 };
-  // A y B: descomponemos total = neto + iva (asumiendo 21%)
-  const neto = Math.round(Number(total) / 1.21 * 100) / 100;
+  // A y B: descomponemos total = neto + iva
+  const neto = Math.round(Number(total) / (1 + ALICUOTA_IVA.porcentaje / 100) * 100) / 100;
   const iva  = Math.round((Number(total) - neto) * 100) / 100;
   return { neto, iva };
 }
@@ -145,6 +156,28 @@ function docTipoFromCliente(clienteCuit) {
 //  13  = Monotributista Social
 //  15  = IVA No Alcanzado
 //  16  = Monotributo Trabajador Independiente Promovido
+/*
+ * Los mismos códigos dichos como los nombra ARCA, para imprimirlos.
+ *
+ * La RG 5616 pide que la condición del receptor esté en el comprobante, y la
+ * que se imprime tiene que ser la que se declaró: por eso sale de este mapa y
+ * del código guardado, y no de volver a consultar el padrón el día que alguien
+ * reimprime la factura.
+ */
+const CONDICIONES_IVA_RECEPTOR = Object.freeze({
+  1: 'IVA Responsable Inscripto',
+  4: 'IVA Sujeto Exento',
+  5: 'Consumidor Final',
+  6: 'Responsable Monotributo',
+  7: 'Sujeto No Categorizado',
+  8: 'Proveedor del Exterior',
+  9: 'Cliente del Exterior',
+  10: 'IVA Liberado - Ley N° 19.640',
+  13: 'Monotributista Social',
+  15: 'IVA No Alcanzado',
+  16: 'Monotributo Trabajador Independiente Promovido',
+});
+
 function condicionIvaReceptorId({ tipo, clienteCuit, clienteCondicion }) {
   // Si el llamador pasa una condición explícita (nombre humano) la mapeamos
   if (clienteCondicion) {
@@ -311,13 +344,32 @@ async function solicitarCAE({
    * suelto que no revierte nada.
    */
   clase = 'factura', asociada = null,
+  /*
+   * La condición del receptor ya decidida, como código de ARCA.
+   *
+   * Una nota la trae de su factura: es el mismo receptor y tiene que ir
+   * declarado igual. Recalcularla sin el padrón —que es lo que se hacía—
+   * podía mandar "Consumidor Final" en la nota de una factura emitida a un
+   * monotributista.
+   */
+  condicionReceptorId = null,
 }) {
+  /*
+   * El día del comprobante, en hora de Argentina (ver utils/fechaFiscal).
+   * Se calcula una sola vez: es el que se pide, el que se anota en el intento
+   * y el que se devuelve para guardar e imprimir.
+   */
+  const hoy = aaaammddArgentina();
+  const condReceptor = Number(condicionReceptorId)
+    || condicionIvaReceptorId({ tipo, clienteCuit, clienteCondicion });
+
   if (isMock) {
     const cae = `${Date.now()}`.slice(0, 14).padEnd(14, '0');
     const vto = new Date(); vto.setDate(vto.getDate() + 10);
     log.info('arca', 'CAE simulado (modo mock)', { tipo });
     return {
       cae, caeVencimiento: vto.toISOString().slice(0, 10), numero: null,
+      cbteFch: hoy, condicionIvaReceptorId: condReceptor,
       respuesta: { mock: true, tipo, total, clienteCuit },
     };
   }
@@ -332,7 +384,6 @@ async function solicitarCAE({
   const { neto, iva } = calcularIVA(total, tipo);
 
   const docNro = clienteCuit ? String(clienteCuit).replace(/\D/g, '') : '0';
-  const hoy = new Date().toISOString().slice(0, 10).replace(/-/g, '');
   const esperado = { total: Number(total), docNro, fecha: hoy };
 
   /*
@@ -361,7 +412,7 @@ async function solicitarCAE({
    * factura.
    */
   const yaEmitido = await rescatarSinFactura({ businessId, saleId, esperado, ptoVta: Number(puntoVenta), cbteTipo });
-  if (yaEmitido) return { ...yaEmitido, ambiente };
+  if (yaEmitido) return { ...yaEmitido, ambiente, condicionIvaReceptorId: condReceptor };
 
   /*
    * Si ARCA viene cayéndose, no se le pregunta: se contesta rápido.
@@ -393,7 +444,7 @@ async function solicitarCAE({
       cli, cert, key, ambiente, cuitEmisor,
       ptoVta: Number(puntoVenta), cbteTipo, saleId, esperado,
     });
-    if (rescatado) return { ...rescatado, ambiente };
+    if (rescatado) return { ...rescatado, ambiente, condicionIvaReceptorId: condReceptor };
 
     // Consultar último número + 1
     const ultimo = await cli.feCompUltimoAutorizado({
@@ -410,7 +461,6 @@ async function solicitarCAE({
     throw errorAntesDelCae(err, { ambiente, cuitEmisor, puntoVenta });
   }
 
-  const condReceptor = condicionIvaReceptorId({ tipo, clienteCuit, clienteCondicion });
   const FeCAEReq = {
     FeCabReq: {
       CantReg: 1, PtoVta: Number(puntoVenta), CbteTipo: cbteTipo,
@@ -447,7 +497,7 @@ async function solicitarCAE({
         } : {}),
         // Objeto IVA obligatorio si ImpNeto > 0 (aplica a factura A y B). Id=5 → 21%.
         ...(iva > 0 ? {
-          Iva: { AlicIva: { Id: 5, BaseImp: neto, Importe: iva } },
+          Iva: { AlicIva: { Id: ALICUOTA_IVA.id, BaseImp: neto, Importe: iva } },
         } : {}),
       },
     },
@@ -576,6 +626,8 @@ async function solicitarCAE({
      * no parsee.
      */
     cbteTipo, cbteFch: hoy, clase,
+    // Lo que se declaró del receptor (RG 5616): la factura lo guarda y lo imprime.
+    condicionIvaReceptorId: condReceptor,
     /*
      * Queda escrito que este CAE se recuperó y no se pidió.
      *
@@ -826,6 +878,13 @@ async function rescatarSinFactura({ businessId, saleId, esperado, ptoVta, cbteTi
     caeVencimiento: intento.caeVencimiento,
     numero: intento.numero,
     puntoVenta: intento.ptoVta,
+    /*
+     * El tipo y la fecha con que se pidió, igual que en una emisión normal.
+     * Sin ellos la factura rescatada quedaba sin `cbteFchArca` y el papel
+     * imprimía la fecha de cuando se guardó, no la que tiene en ARCA.
+     */
+    cbteTipo: intento.cbteTipo,
+    cbteFch: intento.fecha || null,
     recuperado: true,
     intentoId: intento.id,
     respuesta: {
@@ -1009,6 +1068,9 @@ async function resolverIntentosAbiertos({ cli, cert, key, ambiente, cuitEmisor, 
       caeVencimiento: enAfip.CAEFchVto,
       numero: intento.numero,
       puntoVenta: ptoVta,
+      // La fecha la dice AFIP, que es la que vale; la del intento, si no vino.
+      cbteTipo,
+      cbteFch: enAfip.CbteFch || intento.fecha || null,
       recuperado: true,
       intentoId: intento.id,
       respuesta: { ...enAfip, puntoVenta: ptoVta, cbteTipo, numero: intento.numero, recuperado: true },
@@ -1462,6 +1524,8 @@ module.exports = {
   tipoComprobante,
   solicitarCAE, determineInvoiceType, calcularIVA,
   CBTE_TIPO, CLASES, tipoDeComprobante,
+  // Lo que la factura impresa tiene que decir igual que el pedido a ARCA.
+  ALICUOTA_IVA, CONDICIONES_IVA_RECEPTOR, condicionIvaReceptorId, docTipoFromCliente,
   checkStatus, verifyDelegation, debugConfig,
   intentosSinResolver, resolverIntento,
   __cortes: { anotarCorte, anotarRespuesta, descansando, CORTES_PARA_ABRIR, DESCANSO_MS },

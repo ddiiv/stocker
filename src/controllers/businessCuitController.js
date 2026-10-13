@@ -5,6 +5,35 @@ const { exigirCupo } = require('../services/planService');
 
 const MAX_CUITS = 3;
 
+/*
+ * Ingresos Brutos e Inicio de Actividades, como los acepta la base.
+ *
+ * Vacío es null y no "": el PDF de la factura no imprime el renglón cuando el
+ * dato falta, y un string vacío lo dejaría con la etiqueta sola. La fecha se
+ * exige AAAA-MM-DD porque es lo que manda el selector de fecha; otra cosa es
+ * un error de quien llama, y se dice en vez de guardar una fecha inventada.
+ */
+function datosFiscales(body) {
+  const patch = {};
+  if (body.ingresosBrutos !== undefined) {
+    const iibb = String(body.ingresosBrutos ?? '').trim().slice(0, 40);
+    patch.ingresosBrutos = iibb || null;
+  }
+  if (body.inicioActividades !== undefined) {
+    const f = String(body.inicioActividades ?? '').trim();
+    if (!f) patch.inicioActividades = null;
+    else {
+      const m = f.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+      const d = m ? new Date(Date.UTC(+m[1], +m[2] - 1, +m[3])) : null;
+      if (!d || d.getUTCDate() !== +m[3] || d.getUTCMonth() !== +m[2] - 1) {
+        throw Object.assign(new Error('La fecha de inicio de actividades no es válida (AAAA-MM-DD).'), { status: 400 });
+      }
+      patch.inicioActividades = f;
+    }
+  }
+  return patch;
+}
+
 // GET /api/business-cuits
 const list = async (req, res, next) => {
   try {
@@ -34,6 +63,7 @@ const create = async (req, res, next) => {
       await t.rollback();
       return res.status(400).json({ message: 'Nombre y CUIT son obligatorios.' });
     }
+    const fiscales = datosFiscales(req.body);
     /*
      * El CUIT no puede estar en uso en ningún otro negocio — ni como cuenta,
      * ni como principal, ni como secundario. Dos negocios facturando con el
@@ -64,6 +94,7 @@ const create = async (req, res, next) => {
       cuit:         String(cuit).replace(/[^0-9]/g, ''),
       condicionIva: condicionIva || null,
       domicilio:    domicilio || null,
+      ...fiscales,
       esPrincipal:  !!esPrincipal || count === 0,
     }, { transaction: t });
     await t.commit();
@@ -87,6 +118,7 @@ const update = async (req, res, next) => {
     if (req.body.nombre !== undefined)       patch.nombre = String(req.body.nombre).trim();
     if (req.body.condicionIva !== undefined) patch.condicionIva = req.body.condicionIva || null;
     if (req.body.domicilio !== undefined)    patch.domicilio = req.body.domicilio || null;
+    Object.assign(patch, datosFiscales(req.body));
 
     const cuitPedido = req.body.cuit !== undefined ? String(req.body.cuit).replace(/[^0-9]/g, '') : null;
     if (cuitPedido && cuitPedido !== String(row.cuit).replace(/[^0-9]/g, '')) {
@@ -130,4 +162,4 @@ const remove = async (req, res, next) => {
   } catch (e) { next(e); }
 };
 
-module.exports = { list, create, update, remove, MAX_CUITS };
+module.exports = { list, create, update, remove, MAX_CUITS, __datosFiscales: datosFiscales };
