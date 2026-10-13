@@ -8,11 +8,16 @@
  *   · Absoluto (24 h): aunque el usuario esté activo todo el día, a las 24 h
  *     hay que volver a autenticarse. Acota cuánto sirve un token robado.
  *
- * Se implementa sin tabla de sesiones: el `exp` del JWT lleva la ventana de
+ * Los dos viven en el token: el `exp` del JWT lleva la ventana de
  * inactividad y se renueva en cada pedido, mientras que `absExp` viaja firmado
  * adentro y no se mueve. Como el `exp` corto lo valida el propio jsonwebtoken,
  * la inactividad la corta el servidor — no depende de que el navegador borre
  * la cookie, que es lo que haría un atacante con el token en la mano.
+ *
+ * Además cada sesión tiene su fila en `sesiones_cuenta` y el token lleva su
+ * `sid`. La fila es la lista que ve el dueño y el interruptor para cerrar UNA
+ * sesión: ver services/sesionesService.js. Este archivo sólo firma tokens;
+ * quién abre y cierra filas es el servicio.
  */
 
 const { signToken, verifyToken } = require('./jwt');
@@ -30,15 +35,25 @@ const ABSOLUTE_MS = ABSOLUTE_H * 60 * 60 * 1000;
 // así que su `iat` es siempre de hace un segundo. Justamente el token robado
 // que se está usando tendría el `iat` más nuevo de todos, y un corte por `iat`
 // echaría a los legítimos y dejaría entrar al intruso.
-function crearSesion(payload) {
-  const absExp = Math.floor((Date.now() + ABSOLUTE_MS) / 1000); // en segundos, como exp
+//
+// `ahora` se puede pasar para que el tope absoluto del token y el `venceEn` de
+// su fila salgan del MISMO instante: calculados por separado difieren en unos
+// milisegundos, y la lista diría que la sesión vence antes de lo que vence.
+function crearSesion(payload, ahora = Date.now()) {
+  const absExp = Math.floor((ahora + ABSOLUTE_MS) / 1000); // en segundos, como exp
   // En milisegundos, no en segundos como `exp`: con precisión de un segundo,
   // una sesión abierta en el MISMO segundo que el cierre quedaba del lado de
   // adentro. Es una ventana de un segundo, pero también volvía inestable a la
   // prueba que lo cubre —pasaba o fallaba según dónde cayera el borde del
   // segundo—, y una prueba de seguridad que a veces pasa no sirve de nada.
-  const iniciada = Date.now();
+  const iniciada = ahora;
   return signToken({ ...payload, iniciada, absExp }, { expiresIn: `${IDLE_MIN}m` });
+}
+
+// El tope absoluto de una sesión creada en `ahora`, como fecha. Es el mismo
+// número que crearSesion mete en `absExp`, redondeado igual (al segundo).
+function vencimientoAbsoluto(ahora = Date.now()) {
+  return new Date(Math.floor((ahora + ABSOLUTE_MS) / 1000) * 1000);
 }
 
 /*
@@ -95,7 +110,8 @@ function renovarSesion(payload) {
 // Saca los campos que pone jsonwebtoken para que no se dupliquen al re-firmar.
 // `iniciada` NO se saca: es el momento en que empezó la sesión y tiene que
 // sobrevivir a todas las renovaciones, que es lo que hace que el corte por
-// cambio de contraseña funcione.
+// cambio de contraseña funcione. `sid` tampoco: un token renovado sin su sid
+// apuntaría a ninguna fila y requireAuth lo echaría en el pedido siguiente.
 function despojar(payload) {
   const { iat, exp, nbf, absExp, ...resto } = payload;
   return resto;
@@ -103,6 +119,7 @@ function despojar(payload) {
 
 module.exports = {
   crearSesion,
+  vencimientoAbsoluto,
   renovarSesion,
   sesionVigente,
   corteDeSesiones,

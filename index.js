@@ -342,6 +342,18 @@ function resumenConfig() {
   console.log(`    Front (CORS) ...... ${FRONT_URL || '(sin definir)'}`);
   console.log(`    ARCA_STOCKER_CUIT . ${e.ARCA_STOCKER_CUIT ? 'ok' : '(sin definir)'}`);
   console.log(`    Sesión ............ ${e.SESSION_IDLE_MINUTES || 30} min inactividad · ${e.SESSION_ABSOLUTE_HOURS || 24} h máximo`);
+  /*
+   * El límite de sesiones del dueño, como quedó de verdad. Un valor mal
+   * escrito en SESIONES_LIMITE cae en 'sombra' sin romper nada; verlo acá es
+   * la forma de enterarse de que "on" no lo prendió.
+   */
+  const modoSesiones = require('./src/services/sesionesService').modoLimite();
+  const textoModo = {
+    sombra: 'modo SOMBRA: se cuenta y se loguea, no se cierra nada',
+    activo: 'ACTIVO: al pasarse se cierra la del dueño con menos actividad',
+    off: 'apagado',
+  }[modoSesiones];
+  console.log(`    Límite sesiones ... ${textoModo} (SESIONES_LIMITE${e.SESIONES_LIMITE ? `=${e.SESIONES_LIMITE}` : ' sin definir'})`);
   console.log('─────────────────────────────────────────');
 }
 
@@ -369,6 +381,9 @@ async function start() {
       // acá y no con un cron para no depender de otra pieza que puede no correr.
       const { purgar } = require('./src/services/bloqueoService');
       await purgar();
+      // Lo mismo con las sesiones que terminaron hace más de 90 días: son
+      // registros de acceso (IP, navegador) y se guardan lo que dice la política.
+      await require('./src/services/sesionesService').purgar();
     }
 
     // La red privada de Railway es IPv6: si el server sólo escucha en 0.0.0.0,
@@ -420,6 +435,8 @@ async function start() {
 
       console.log('  ── Automático ──');
       require('./src/services/tareasPeriodicasService').arrancar();
+      // Y una vez por día, para el servidor que no se reinicia en meses.
+      require('./src/services/sesionesService').programarPurga();
 
       const { estado: estadoIps, VARIABLE } = require('./src/middleware/ipAllowlist');
       const ips = estadoIps();

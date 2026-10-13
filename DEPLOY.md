@@ -92,6 +92,36 @@ número. El backend además lo avisa en los logs cuando rechaza una IP que parec
 interna, porque desde afuera eso se ve igual que "mi IP no está autorizada" y se
 pierde mucho tiempo ahí.
 
+La IP que se guarda con cada sesión (la que el dueño ve en la lista de
+sesiones de su cuenta) también sale de acá: con el número mal, todas las
+sesiones muestran la IP del proxy.
+
+### Sesiones del dueño por plan
+
+```bash
+SESIONES_LIMITE=sombra   # sombra (por omisión) | activo | off
+```
+
+Cada plan tiene un tope de sesiones **del dueño** abiertas a la vez
+(`plans.maxSesiones`, editable desde el backoffice; vacío = sin tope). Un
+celular cuenta como una más. Las de los empleados no tienen tope: se registran
+y se ven, nada más.
+
+- `sombra`: se cuenta y se deja en el log (`modo sombra: el dueño superó el
+  tope…`) sin cerrar nada. Sirve para ver cuántos dueños topan antes de
+  prenderlo.
+- `activo`: al entrar pasado el tope, se cierra sola la sesión del dueño con
+  **menos actividad reciente** y el ingreso nuevo entra. Nunca se rechaza un
+  login. El dispositivo desplazado ve el motivo (`SESION_DESPLAZADA`).
+- `off`: ni se cuenta.
+
+Un valor mal escrito cae en `sombra`. El modo efectivo se imprime en el
+arranque, en el resumen de configuración.
+
+Al desplegar la versión que trajo la tabla de sesiones, **todos tienen que
+volver a entrar una vez**: los tokens emitidos antes no llevan identificador
+de sesión y dejan de valer.
+
 ### Acceso al backoffice
 
 ```bash

@@ -3,6 +3,7 @@ const { renovarSesion, sesionVigente } = require('../utils/session');
 const { readAuthCookie, setAuthCookie } = require('../utils/authCookie');
 const { motivoDeBloqueo } = require('./plan');
 const { Business, Employee, EmployeeSession, Role } = require('../models');
+const sesiones = require('../services/sesionesService');
 
 // El token vive en una cookie httpOnly. El header Bearer se sigue aceptando
 // para clientes que no son el navegador (scripts, Postman) y para que las
@@ -14,7 +15,8 @@ function extractToken(req) {
   return header.startsWith('Bearer ') ? header.slice(7) : null;
 }
 
-// req.auth = { type:'business'|'employee', businessId, employeeId?, permisos?, roleId? }
+// req.auth = { type:'business'|'employee', businessId, sid, employeeId?, permisos?, roleId? }
+// req.sesion = la fila de SesionCuenta de este token (ver sesionesService)
 async function requireAuth(req, res, next) {
   const token = extractToken(req);
   if (!token) return res.status(401).json({ message: 'Token no proporcionado.' });
@@ -54,13 +56,44 @@ async function requireAuth(req, res, next) {
      * El empleado no paga esta consulta: su fila ya se relee acá abajo por
      * otro motivo, así que la comprobación va pegada a esa lectura.
      */
-    if (req.auth.type === 'business' && req.auth.businessId) {
-      const negocio = await Business.findByPk(req.auth.businessId, {
-        attributes: ['id', 'sesionesDesde'],
-      });
+    /*
+     * Sólo entran tokens de una sesión de la cuenta: del dueño o de un
+     * empleado, con su negocio.
+     *
+     * Antes cualquier token firmado con el secreto pasaba por acá, y el
+     * servidor firma más de una clase: el `state` del OAuth de Mercado Libre
+     * lleva un businessId y servía como credencial para las rutas que sólo
+     * piden requireAuth. Ahora cada sesión tiene su fila, y un token que no
+     * es de sesión no tiene ninguna.
+     */
+    if ((req.auth.type !== 'business' && req.auth.type !== 'employee') || !req.auth.businessId) {
+      return res.status(401).json({ message: 'Token inválido o expirado.' });
+    }
+    // Sin sid: emitido antes de que las sesiones tuvieran tabla. Ver
+    // sesionesService.RECHAZO_SIN_SID.
+    if (!req.auth.sid) {
+      return res.status(401).json(sesiones.RECHAZO_SIN_SID);
+    }
+
+    /*
+     * La fila de la sesión, en paralelo con la lectura del dueño o del
+     * empleado que ya se hacía: es una lectura por índice único y no suma
+     * latencia. Una fila cerrada —desde otro dispositivo, por el límite del
+     * plan, por un cambio de contraseña, por "Salir"— deja afuera a su token
+     * aunque el JWT siga firmado y vigente.
+     */
+    if (req.auth.type === 'business') {
+      const [negocio, fila] = await Promise.all([
+        Business.findByPk(req.auth.businessId, { attributes: ['id', 'sesionesDesde'] }),
+        sesiones.buscar(req.auth.sid),
+      ]);
       if (!negocio) {
         return res.status(401).json({ message: 'La cuenta ya no existe.', codigo: 'SESION_REVOCADA' });
       }
+      const rechazo = sesiones.motivoDeRechazo(fila, req.auth);
+      if (rechazo) return res.status(401).json(rechazo);
+      req.sesion = fila;
+      // La segunda llave: ver el modelo Business.sesionesDesde.
       if (!sesionVigente(req.auth, negocio.sesionesDesde)) {
         return res.status(401).json({
           message: 'Se cambió la contraseña de la cuenta, así que se cerraron las sesiones abiertas. Volvé a entrar.',
@@ -69,11 +102,14 @@ async function requireAuth(req, res, next) {
       }
     }
 
-    if (req.auth.type === 'employee' && req.auth.employeeId) {
-      const empleado = await Employee.findByPk(req.auth.employeeId, {
-        attributes: ['id', 'businessId', 'activo', 'roleId', 'sesionesDesde'],
-        include: [{ model: Role, as: 'cargo', attributes: ['id', 'permisos'] }],
-      });
+    if (req.auth.type === 'employee') {
+      const [empleado, fila] = await Promise.all([
+        Employee.findByPk(req.auth.employeeId, {
+          attributes: ['id', 'businessId', 'activo', 'roleId', 'sesionesDesde'],
+          include: [{ model: Role, as: 'cargo', attributes: ['id', 'permisos'] }],
+        }),
+        sesiones.buscar(req.auth.sid),
+      ]);
 
       /*
        * Borrado, desactivado, o movido a otro negocio: en los tres casos la
@@ -87,6 +123,10 @@ async function requireAuth(req, res, next) {
           codigo: 'SESION_REVOCADA',
         });
       }
+
+      const rechazo = sesiones.motivoDeRechazo(fila, req.auth);
+      if (rechazo) return res.status(401).json(rechazo);
+      req.sesion = fila;
 
       // Le cambiaron la contraseña: las sesiones que esa contraseña había
       // abierto —en ésta y en cualquier otra computadora— dejan de valer.
@@ -114,6 +154,9 @@ async function requireAuth(req, res, next) {
       }
       setAuthCookie(res, renovado, req);
     }
+
+    // La última actividad de la fila, como mucho una vez por minuto.
+    await sesiones.tocar(req.sesion);
 
     /*
      * Cuenta sin pagar: se puede leer, no escribir.
@@ -198,4 +241,4 @@ function requireOwner(req, res, next) {
   next();
 }
 
-module.exports = { requireAuth, requirePermission, requireAnyPermission, requireOwner, esAdministradorTotal };
+module.exports = { requireAuth, requirePermission, requireAnyPermission, requireOwner, esAdministradorTotal, extractToken };

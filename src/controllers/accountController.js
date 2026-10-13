@@ -5,7 +5,8 @@ const { lookupCuit } = require('../services/arcaLookupService');
 const { sendAccountChangeCode } = require('../services/emailService');
 const { log, mask } = require('../utils/logger');
 const identidad = require('../services/identityRegistry');
-const { crearSesion, corteDeSesiones } = require('../utils/session');
+const { corteDeSesiones } = require('../utils/session');
+const sesiones = require('../services/sesionesService');
 const QRCode = require('qrcode');
 const totp = require('../utils/totp');
 const dosFactores = require('../services/dosFactoresService');
@@ -206,14 +207,21 @@ const confirmarCambioPassword = async (req, res, next) => {
      * Menos ésta. Cerrar también la del que está cambiando la contraseña lo
      * echaría de la pantalla en la que está parado, y el que cambia su
      * contraseña por las dudas terminaría creyendo que rompió algo. Se le
-     * emite una sesión nueva —posterior al corte— así que este dispositivo
-     * sigue adentro y todos los demás quedan afuera en su próximo pedido.
+     * firma un token nuevo —posterior al corte— para la misma sesión, así que
+     * este dispositivo sigue adentro y todos los demás quedan afuera en su
+     * próximo pedido.
      */
     const corte = corteDeSesiones();
     await b.update({ passwordHash: await bcrypt.hash(nueva, 10), sesionesDesde: corte });
     await registro.update({ usedAt: new Date() });
 
-    setAuthCookie(res, crearSesion({ type: 'business', businessId: b.id }), req);
+    // Las filas del dueño, menos la de este dispositivo. Las de los empleados
+    // no: entran con su propia contraseña, que no cambió.
+    await sesiones.cerrar({
+      businessId: b.id, tipo: 'business', excepto: req.auth.sid, motivo: 'password', ahora: corte,
+    });
+    // Misma sesión (mismo sid, misma fila), token nuevo posterior al corte.
+    setAuthCookie(res, await sesiones.reemitir(req.auth), req);
 
     log.info('cuenta', 'contraseña de la cuenta actualizada y sesiones cerradas');
     res.json({
@@ -312,18 +320,23 @@ const cerrarTodasLasSesiones = async (req, res, next) => {
       { sesionesDesde: corte },
       { where: { businessId: b.id } },
     );
+    // Y las filas: del dueño y de todos los empleados, menos ésta.
+    const cerradas = await sesiones.cerrar({
+      businessId: b.id, excepto: req.auth.sid, motivo: 'cerrar-todo', ahora: corte,
+    });
 
     /*
      * Menos la de acá: el que aprieta el botón se queda adentro. Echarlo
      * también lo dejaría afuera justo cuando está resolviendo un problema de
      * seguridad, y con la duda de si el botón funcionó o rompió algo.
      */
-    setAuthCookie(res, crearSesion({ type: 'business', businessId: b.id }), req);
+    setAuthCookie(res, await sesiones.reemitir(req.auth), req);
 
-    log.info('cuenta', 'se cerraron todas las sesiones del negocio', { empleados });
+    log.info('cuenta', 'se cerraron todas las sesiones del negocio', { empleados, cerradas });
     res.json({
       message: 'Listo. Se cerraron todas las sesiones abiertas, menos la de este dispositivo.',
       empleadosAfectados: empleados,
+      sesionesCerradas: cerradas,
     });
   } catch (error) { next(error); }
 };

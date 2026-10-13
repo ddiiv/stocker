@@ -5,6 +5,7 @@ const { exigirCupo } = require('../services/planService');
 const bloqueo = require('../services/bloqueoService');
 const { emailValido, soloDigitos } = require('../utils/identificadores');
 const { corteDeSesiones } = require('../utils/session');
+const sesiones = require('../services/sesionesService');
 
 const sanitize = (e) => { const { passwordHash, ...s } = e.toJSON(); return s; };
 
@@ -216,6 +217,14 @@ const updateEmployee = async (req, res, next) => {
     }
 
     await e.update(patch);
+    // Y sus filas, para que la lista no muestre abiertas sesiones que ya no
+    // entran. El corte por fecha de arriba ya las echa; esto es la lista.
+    if (patch.sesionesDesde) {
+      await sesiones.cerrar({
+        businessId: req.auth.businessId, tipo: 'employee', employeeId: e.id,
+        motivo: 'password', ahora: patch.sesionesDesde,
+      });
+    }
     const full = await Employee.findByPk(e.id, { include: [{ association: 'cargo' }, { association: 'local' }] });
     res.json(sanitize(full));
   } catch (error) { next(error); }
@@ -229,6 +238,13 @@ const toggleActive = async (req, res, next) => {
     // Reactivar ocupa un lugar igual que dar de alta: si no, bastaría con
     // desactivar y reactivar para pasarse del tope del plan.
     if (!e.activo) await exigirCupo(req.auth.businessId, 'empleados');
+    /*
+     * Las filas de sus sesiones NO se cierran. requireAuth relee al empleado
+     * en cada pedido, así que desactivado ya no entra; y reactivarlo devuelve
+     * la misma sesión, que es lo que se hacía antes de que hubiera tabla (lo
+     * cubre test-aislamiento). La lista de la cuenta las marca como
+     * suspendidas mientras tanto.
+     */
     await e.update({ activo: !e.activo });
     res.json(sanitize(e));
   } catch (error) { next(error); }
@@ -239,6 +255,9 @@ const deleteEmployee = async (req, res, next) => {
   try {
     const e = await Employee.findOne({ where: { id: req.params.id, businessId: req.auth.businessId } });
     if (!e) return res.status(404).json({ message: 'Empleado no encontrado.' });
+    // Las filas no se borran con él (ver la relación en models): se cierran,
+    // y quedan en el historial de la cuenta hasta la purga.
+    await sesiones.cerrar({ businessId: req.auth.businessId, tipo: 'employee', employeeId: e.id, motivo: 'baja' });
     await e.destroy();
     res.status(204).send();
   } catch (error) { next(error); }

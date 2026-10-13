@@ -20,7 +20,10 @@ const { exigirLibre, normalizar } = require('../services/cuitRegistry');
 const identidad = require('../services/identityRegistry');
 const { iniciarTrial } = require('../services/planService');
 const bloqueo = require('../services/bloqueoService');
-const { crearSesion, corteDeSesiones, IDLE_MIN } = require('../utils/session');
+const { corteDeSesiones, IDLE_MIN } = require('../utils/session');
+const sesiones = require('../services/sesionesService');
+const { decodificarToken } = require('../utils/jwt');
+const { extractToken } = require('../middleware/auth');
 const dosFactores = require('../services/dosFactoresService');
 const codigos = require('../services/codigosCuentaService');
 const { setAuthCookie, clearAuthCookie } = require('../utils/authCookie');
@@ -126,7 +129,9 @@ const register = async (req, res, next) => {
     // en el alta es lo que decide si el negocio llega a probar el sistema.
     await iniciarTrial(business.id);
 
-    const token = crearSesion({ type: 'business', businessId: business.id });
+    // La primera sesión del negocio. Pasa por el mismo camino que el login
+    // —fila, tope del plan— aunque recién creado no tenga nada que contar.
+    const token = await sesiones.abrir(req, { type: 'business', businessId: business.id });
     setAuthCookie(res, token);
     res.status(201).json({ business: sanitizeBusiness(business) });
   } catch (error) { next(error); }
@@ -205,7 +210,14 @@ const login = async (req, res, next) => {
     await bloqueo.registrar({ req, tipo: 'business', identificador: email, exito: true });
     await bloqueo.limpiar({ req, identificador: email });
 
-    const token = crearSesion({ type: 'business', businessId: business.id });
+    /*
+     * La sesión se abre recién acá: con la contraseña Y el segundo factor ya
+     * comprobados, y el código ya gastado. Si el dueño está en el tope de su
+     * plan, abrir le hace lugar cerrando la sesión con menos actividad; nunca
+     * rechaza este ingreso, así que el código que se acaba de usar no se
+     * pierde en un intento que no entra.
+     */
+    const token = await sesiones.abrir(req, { type: 'business', businessId: business.id });
     setAuthCookie(res, token);
     res.json({
       business: sanitizeBusiness(business),
@@ -233,7 +245,9 @@ const employeeLogin = async (req, res, next) => {
     await bloqueo.limpiar({ req, identificador: email });
 
     const permisos = employee.cargo?.permisos || {};
-    const token = crearSesion({
+    // Sin tope (sólo el dueño lo tiene), pero con su fila: el dueño la ve en
+    // la lista de la cuenta y la puede cerrar.
+    const token = await sesiones.abrir(req, {
       type: 'employee', businessId: employee.businessId,
       employeeId: employee.id, roleId: employee.roleId, permisos,
     });
@@ -250,7 +264,15 @@ const employeeLogin = async (req, res, next) => {
 
 // POST /api/auth/logout
 // La cookie es httpOnly, así que sólo el servidor puede borrarla.
+//
+// Y se cierra la fila de la sesión. Sin eso, "Salir" sólo borraba la cookie
+// de ESTE navegador: la sesión seguía figurando como abierta en la lista de la
+// cuenta y contando para el tope del plan. Se lee el token aunque esté vencido
+// (quien sale después de media hora quieto lo tiene vencido), pero con la
+// firma verificada: nadie cierra una sesión ajena inventando un token.
 const logout = async (req, res) => {
+  const token = extractToken(req);
+  if (token) await sesiones.cerrarPorLogout(decodificarToken(token));
   clearAuthCookie(res);
   res.json({ ok: true });
 };
@@ -507,7 +529,14 @@ const resetPassword = async (req, res, next) => {
      * posible: la persona cree que echó al intruso y el intruso sigue adentro
      * con su cookie hasta el tope de 24 h.
      */
-    await result.business.update({ passwordHash, sesionesDesde: corteDeSesiones() });
+    const corte = corteDeSesiones();
+    await result.business.update({ passwordHash, sesionesDesde: corte });
+    // Las filas del dueño también, todas: la lista no puede seguir mostrando
+    // abiertas sesiones que ya no entran. Las de los empleados no se tocan:
+    // entran con SU contraseña, que nadie cambió.
+    await sesiones.cerrar({
+      businessId: result.business.id, tipo: 'business', motivo: 'password', ahora: corte,
+    });
     await result.reset.update({ usedAt: new Date() });
 
     res.json({ ok: true, message: 'Contraseña actualizada. Ya podés iniciar sesión.' });

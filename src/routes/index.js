@@ -41,6 +41,7 @@ const depositoCtrl = require('../controllers/depositoController');
 const soporteCtrl = require('../controllers/soporteController');
 const reposicionCtrl = require('../controllers/reposicionController');
 const accountCtrl = require('../controllers/accountController');
+const sesionesCtrl = require('../controllers/sesionesController');
 const billingCtrl = require('../controllers/billingController');
 const { exigirOperativa, requireFeature } = require('../middleware/plan');
 const backofficeCtrl = require('../controllers/backofficeController');
@@ -186,7 +187,8 @@ r.delete('/backoffice/integraciones/:id', requirePlatformAdmin, backofficeCtrl.r
 r.get ('/backoffice/ajustes',        requirePlatformAdmin, backofficeCtrl.getAjustes);
 r.put ('/backoffice/ajustes',        requirePlatformAdmin, backofficeCtrl.editarAjustes);
 
-// requireOwner en todas: un empleado no toca las credenciales del negocio.
+// requireOwner en todas (salvo las de sesiones, más abajo): un empleado no
+// toca las credenciales del negocio.
 // Los cambios de email y contraseña pasan por el limitador de recuperación,
 // que ya acota los pedidos que disparan un mail.
 r.get ('/account',                   requireAuth, requireOwner, accountCtrl.obtener);
@@ -205,7 +207,26 @@ r.post('/account/password/confirmar', requireAuth, requireOwner, validatePasswor
  * respuesta inmediata—. Los aciertos no cuentan para el límite, así que
  * usarlo de verdad nunca se acerca al tope.
  */
-r.post('/account/sesiones/cerrar', requireAuth, requireOwner, loginLimiter, accountCtrl.cerrarTodasLasSesiones);
+/*
+ * Las sesiones de la cuenta: ver cuáles hay abiertas (y las que terminaron en
+ * los últimos 30 días), cerrar una, cerrar todas menos ésta.
+ *
+ * Son las únicas de /account SIN requireOwner: un empleado ve y cierra las
+ * suyas, y nada más (el filtro está en sesionesService.listar y en el
+ * controlador, siempre por el token). El dueño ve y cierra las de todo el
+ * negocio. "Cerrar todas" del dueño sigue siendo el botón de pánico de
+ * siempre: dueño y empleados.
+ *
+ * Las dos que cierran piden la contraseña, y por eso van con `loginLimiter`:
+ * sin freno, son un oráculo cómodo para adivinarla —una petición por intento,
+ * respuesta inmediata—. Los aciertos no cuentan para el límite.
+ *
+ * Viven bajo /account, que está exenta del modo lectura: una cuenta sin pagar
+ * tiene que poder echar igual a quien no debería estar adentro.
+ */
+r.get ('/account/sesiones',            requireAuth, sesionesCtrl.listar);
+r.post('/account/sesiones/cerrar',     requireAuth, loginLimiter, sesionesCtrl.cerrarOtras);
+r.post('/account/sesiones/:id/cerrar', requireAuth, loginLimiter, sesionesCtrl.cerrarUna);
 
 /*
  * Verificación en dos pasos (TOTP).

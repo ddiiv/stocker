@@ -44,4 +44,22 @@ function verifyToken(token) {
   return jwt.verify(token, SECRET);
 }
 
-module.exports = { signToken, verifyToken };
+/*
+ * La firma sí, el vencimiento no. Para el logout y nada más.
+ *
+ * Quien aprieta "Salir" después de media hora sin tocar nada tiene el token
+ * vencido, y con verifyToken el logout no sabría qué sesión cerrar: la fila
+ * quedaría abierta en la lista de la cuenta. La firma se sigue exigiendo, así
+ * que nadie puede cerrar una sesión ajena inventándose un token.
+ *
+ * Devuelve null en vez de tirar: un logout nunca falla.
+ */
+function decodificarToken(token) {
+  try {
+    return jwt.verify(token, SECRET, { ignoreExpiration: true });
+  } catch {
+    return null;
+  }
+}
+
+module.exports = { signToken, verifyToken, decodificarToken };

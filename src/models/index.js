@@ -30,9 +30,13 @@ const Business = db.define('Business', {
    * Cambiar la contraseña tiene que echar a quien ya esté adentro, en
    * cualquier computadora — si no, cambiarla después de sospechar que alguien
    * entró no sirve de nada: el intruso sigue con su cookie hasta el tope de
-   * 24 h. Como las sesiones son un JWT sin tabla detrás, no hay una lista que
-   * borrar: se guarda desde cuándo valen, y toda sesión iniciada antes deja de
+   * 24 h. Se guarda desde cuándo valen, y toda sesión iniciada antes deja de
    * verificar en el pedido siguiente.
+   *
+   * Hoy las sesiones además tienen tabla (SesionCuenta) y cada corte cierra
+   * también sus filas. Esto se queda como segunda llave: si algún camino
+   * nuevo se olvidara de cerrar las filas, el corte por fecha igual echa a
+   * todos. Las dos lecturas ya ocurren en cada pedido, así que no cuesta nada.
    */
   sesionesDesde: { type: DataTypes.DATE, allowNull: true },
 
@@ -984,6 +988,63 @@ const EmployeeSession = db.define('EmployeeSession', {
   loginAt:    { type: DataTypes.DATE, allowNull: false, defaultValue: DataTypes.NOW },
   lastSeenAt: { type: DataTypes.DATE, allowNull: false, defaultValue: DataTypes.NOW },
 }, { tableName: 'employee_sessions', timestamps: false });
+
+/* ─── SesionCuenta (las sesiones abiertas, del dueño y de los empleados) ──
+ *
+ * El JWT sigue siendo la sesión: lleva la ventana de inactividad y el tope
+ * absoluto, y los valida el servidor sin mirar la base. Esta tabla es la LISTA
+ * y el INTERRUPTOR. Sin ella no había forma de ver qué computadoras tienen la
+ * cuenta abierta ni de cerrar una sola: el único corte era `sesionesDesde`,
+ * que echa a todas juntas.
+ *
+ * El token lleva el `sid` de su fila y requireAuth la lee en cada pedido. Una
+ * fila cerrada deja afuera a su token en el pedido siguiente, aunque el JWT
+ * siga firmado y vigente.
+ *
+ * `sid` es un identificador al azar y no el `id` de la fila a propósito: el id
+ * es el que viaja en las rutas para cerrar una sesión y el que ve la pantalla,
+ * y el sid no tiene por qué salir nunca del token.
+ *
+ * `tipo` es la verdad sobre de quién es la sesión, y no "employeeId nulo":
+ * un empleado borrado deja su employeeId apuntando a nada, y esa fila no
+ * puede pasar a contarse como del dueño.
+ *
+ * Es una tabla NUEVA, así que sus índices van acá y `sync` los crea con la
+ * tabla. Una columna que se le sume más adelante va por ensureColumns y su
+ * índice por INDICES: `sync` corre antes y un índice sobre una columna que
+ * todavía no existe tira abajo el arranque.
+ */
+const SesionCuenta = db.define('SesionCuenta', {
+  id:          { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
+  sid:         { type: DataTypes.STRING(36), allowNull: false },
+  businessId:  { type: DataTypes.INTEGER, allowNull: false },
+  // 'business' (el dueño) | 'employee'
+  tipo:        { type: DataTypes.STRING(10), allowNull: false },
+  employeeId:  { type: DataTypes.INTEGER, allowNull: true },
+  // req.ip, que respeta TRUST_PROXY_HOPS. NO el primer valor de
+  // X-Forwarded-For: ése lo escribe el cliente y puede poner cualquier cosa.
+  ip:          { type: DataTypes.STRING(64), allowNull: true },
+  userAgent:   { type: DataTypes.STRING(300), allowNull: true },
+  // «Chrome · Windows», calculado al entrar. Es lo que reconoce una persona;
+  // el user agent entero no lo lee nadie.
+  dispositivo: { type: DataTypes.STRING(80), allowNull: true },
+  creadaEn:    { type: DataTypes.DATE, allowNull: false },
+  // Se escribe como mucho una vez por minuto, no en cada pedido.
+  ultimaActividadEn: { type: DataTypes.DATE, allowNull: false },
+  // El tope absoluto del token (creadaEn + SESSION_ABSOLUTE_HOURS).
+  venceEn:     { type: DataTypes.DATE, allowNull: false },
+  cerradaEn:   { type: DataTypes.DATE, allowNull: true },
+  // usuario | cerrar-todo | remota | password | limite | baja
+  motivoCierre: { type: DataTypes.STRING(20), allowNull: true },
+}, {
+  tableName: 'sesiones_cuenta',
+  timestamps: false,
+  indexes: [
+    { name: 'uq_sesiones_cuenta_sid', unique: true, fields: ['sid'] },
+    { name: 'idx_sesiones_cuenta_negocio', fields: ['businessId', 'cerradaEn', 'ultimaActividadEn'] },
+    { name: 'idx_sesiones_cuenta_empleado', fields: ['employeeId'] },
+  ],
+});
 
 // ─── BusinessLocation ─────────────────────────────────────────────
 const BusinessLocation = db.define('BusinessLocation', {
@@ -2094,6 +2155,15 @@ VariantType.belongsTo(Business, { foreignKey: 'businessId' });
 Employee.hasMany(EmployeeSession, { foreignKey: 'employeeId', as: 'sesiones', onDelete: 'CASCADE' });
 EmployeeSession.belongsTo(Employee, { foreignKey: 'employeeId' });
 
+// Borrar el negocio se lleva sus sesiones. Con el empleado NO hay restricción
+// en la base: una restricción sin cascada haría fallar el borrado de un
+// empleado, y con cascada SQL Server rechaza la tabla por tener dos caminos de
+// borrado desde businesses. Las filas de un empleado borrado se cierran a
+// mano antes de borrarlo (motivo 'baja') y quedan en el historial.
+Business.hasMany(SesionCuenta, { foreignKey: 'businessId', as: 'sesionesCuenta', onDelete: 'CASCADE' });
+SesionCuenta.belongsTo(Business, { foreignKey: 'businessId' });
+SesionCuenta.belongsTo(Employee, { foreignKey: 'employeeId', as: 'empleado', constraints: false });
+
 Business.hasMany(PasswordResetCode, { foreignKey: 'businessId', as: 'resetCodes', onDelete: 'CASCADE' });
 Business.hasMany(AccountChangeCode, { foreignKey: 'businessId', as: 'codigosCuenta', onDelete: 'CASCADE' });
 AccountChangeCode.belongsTo(Business, { foreignKey: 'businessId' });
@@ -2283,7 +2353,7 @@ module.exports = {
   MercadoLibreAccount,
   JumpsellerAccount, MercadoLibreLink, MercadoLibreMensaje, MercadoLibreReclamo,
   PedidoPlataforma, PedidoPlataformaItem, PlataformaCobro,
-  Role, Employee, EmployeeSession, PasswordResetCode, AccountChangeCode, Client,
+  Role, Employee, EmployeeSession, SesionCuenta, PasswordResetCode, AccountChangeCode, Client,
   Product, ProductVariant, StockMovement,
   Sale, SaleItem, Invoice, InvoiceItem,
   PaymentMethod, SalePayment, CashShift, CashMovement,

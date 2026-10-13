@@ -3,6 +3,9 @@ const db = require('../config/database');
 const { Plan, Subscription, Business, Employee, BusinessCuit, BusinessLocation, Product, ProductVariant, Invoice } = require('../models');
 const { PLANES, PLAN_POR_DEFECTO, DIAS_TRIAL, DIAS_GRACIA } = require('../config/planes');
 const { log } = require('../utils/logger');
+// sesionesService lee el plan desde adentro de una función (estadoDe), no al
+// cargar, así que requerirlo acá no arma un ciclo.
+const sesionesService = require('./sesionesService');
 
 /*
  * Planes y suscripciones.
@@ -222,7 +225,7 @@ async function usoDe(businessId) {
   const { plan } = await estadoDe(businessId);
   const desde = inicioDelMes();
 
-  const [cuits, empleados, locales, skus, comprobantes] = await Promise.all([
+  const [cuits, empleados, locales, skus, comprobantes, sesiones] = await Promise.all([
     BusinessCuit.count({ where: { businessId } }),
     Employee.count({ where: { businessId, activo: true } }),
     BusinessLocation.count({ where: { businessId } }),
@@ -232,6 +235,8 @@ async function usoDe(businessId) {
       include: [{ model: Product, as: 'producto', attributes: [], where: { businessId }, required: true }],
     }),
     Invoice.count({ where: { businessId, createdAt: { [Op.gte]: desde } } }),
+    // Sólo las del dueño: es lo único que el tope de sesiones limita.
+    sesionesService.contarActivasDelDueno(businessId),
   ]);
 
   const medir = (usado, tope, extra = {}) => ({
@@ -251,6 +256,15 @@ async function usoDe(businessId) {
       periodo: 'mes',
       desde,
       reinicia: new Date(desde.getFullYear(), desde.getMonth() + 1, 1),
+    }),
+    /*
+     * Las sesiones del dueño abiertas ahora. No es un tope que frene un alta
+     * (exigirCupo no lo mira): pasarlo cierra la sesión con menos actividad al
+     * entrar. `modo` le dice a la pantalla si eso está prendido o si todavía
+     * se mide en sombra.
+     */
+    sesiones: medir(sesiones, plan?.maxSesiones, {
+      modo: sesionesService.modoLimite(),
     }),
   };
 }
