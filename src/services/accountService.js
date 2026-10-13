@@ -46,6 +46,29 @@ export async function cerrarTodasLasSesiones(passwordActual) {
 }
 
 /*
+ * Las sesiones abiertas y las que terminaron en los últimos 30 días.
+ *
+ * El dueño recibe las de todo el negocio y el límite de su plan; un empleado,
+ * sólo las suyas y `limite: null`. Lo filtra el backend: acá no hay nada que
+ * esconder.
+ */
+export async function listarSesiones() {
+  const { data } = await http.get("/account/sesiones");
+  return data;
+}
+
+/*
+ * Cierra UNA sesión, la de otro dispositivo. Pide la contraseña por lo mismo
+ * que "cerrar todas": con una sesión robada se podría echar al dueño de su
+ * propia cuenta una y otra vez. La de este dispositivo no se cierra por acá
+ * (el backend contesta 400): para eso está "Salir", que además borra la cookie.
+ */
+export async function cerrarSesion(id, passwordActual) {
+  const { data } = await http.post(`/account/sesiones/${id}/cerrar`, { passwordActual });
+  return data;
+}
+
+/*
  * ── Verificación en dos pasos ────────────────────────────────────
  *
  * Activar son DOS llamadas: `iniciar` entrega el secreto para cargar en la app

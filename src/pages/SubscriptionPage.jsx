@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 import {
-  CreditCard, Landmark, Download, Check, X, AlertTriangle, Loader2,
+  CreditCard, Landmark, Download, Check, AlertTriangle, Loader2,
   RefreshCw, ArrowUpRight, Trash2, Users, Building2, Store, Tags, FileText,
-  SearchCheck, Mail, Minus,
+  SearchCheck, Mail, Minus, MonitorSmartphone,
 } from "lucide-react";
 import {
   fetchSuscripcion, fetchPlanes, fetchFeatures, fetchPagos, crearCheckout,
@@ -10,10 +10,11 @@ import {
   solicitarBaja, cancelarBaja, descargarRecibo, verificarPagos,
 } from "../services/billingService";
 import { PageHeader, Card } from "../components/ui/Layout";
-
-
+import CuentaTabs from "../components/cuenta/CuentaTabs";
+import Medidor from "../components/cuenta/Medidor";
 import Modal from "../components/ui/Modal";
 import { formatCurrency, formatDate } from "../utils/formatters";
+import { proximoCobro } from "../utils/cuenta";
 
 /*
  * Suscripción a Stocker.
@@ -168,6 +169,7 @@ export default function SubscriptionPage() {
           </button>
         }
       />
+      <CuentaTabs />
 
       {error && <p className="mb-4 rounded-md bg-brick-50 px-3 py-2 text-sm text-brick-500">{error}</p>}
       {aviso && (
@@ -229,6 +231,16 @@ export default function SubscriptionPage() {
           </div>
 
           <div className="mt-5 grid gap-4 border-t border-line pt-4 sm:grid-cols-3">
+            {/* Qué cubre lo que se está usando: "vence el 30" solo no dice si
+                es lo que se pagó la semana pasada o lo anterior. */}
+            <Dato
+              rotulo={sub.periodo?.tipo === "prueba" ? "Período de prueba" : "Período actual"}
+              valor={sub.periodo
+                ? `${formatDate(sub.periodo.desde)} al ${formatDate(sub.periodo.hasta)}`
+                : "Sin período en curso"}
+              nota={sub.periodo?.tipo === "pago" ? "Pagado" : null}
+            />
+            <Dato {...proximoCobro(sub)} />
             <Dato
               rotulo={sub.estado === "trial" ? "La prueba vence" : "Vence"}
               valor={sub.vence ? formatDate(sub.vence) : "Sin vencimiento"}
@@ -305,6 +317,17 @@ export default function SubscriptionPage() {
             <Medidor icono={Building2} rotulo="CUITs" dato={sub.uso?.cuits} />
             <Medidor icono={Users}     rotulo="Usuarios" dato={sub.uso?.empleados} />
             <Medidor icono={Store}     rotulo="Locales" dato={sub.uso?.locales} />
+            {/* El tope de sesiones no frena un alta como los demás: pasarlo
+                cierra la del dueño con menos actividad, o todavía nada si el
+                límite se está midiendo en modo sombra. */}
+            {sub.uso?.sesiones?.modo !== "off" && (
+              <Medidor icono={MonitorSmartphone} rotulo="Dispositivos del dueño" dato={sub.uso?.sesiones}
+                avisarTope={false}
+                nota={sub.uso?.sesiones?.tope == null ? null
+                  : sub.uso.sesiones.modo === "activo"
+                    ? "Abiertas ahora. Si entrás desde uno más, se cierra la de menos actividad."
+                    : "Abiertas ahora. Por ahora no se cierra ninguna por pasarte."} />
+            )}
           </div>
         </Card>
       </div>
@@ -334,6 +357,7 @@ export default function SubscriptionPage() {
                 <li>{tope(p.maxCuits)} CUIT{p.maxCuits === 1 ? "" : "s"}</li>
                 <li>{tope(p.maxEmpleados)} usuario{p.maxEmpleados === 1 ? "" : "s"}</li>
                 <li>{tope(p.maxLocales)} local{p.maxLocales === 1 ? "" : "es"}</li>
+                <li>{tope(p.maxSesiones)} dispositivo{p.maxSesiones === 1 ? "" : "s"} a la vez para el dueño</li>
               </ul>
 
               {/*
@@ -615,55 +639,4 @@ function DatoBanco({ k, v }) {
 /** "Sin tope" es información, no un dato faltante: se dice con palabras. */
 function tope(v) {
   return v == null ? "Sin tope de" : v.toLocaleString("es-AR");
-}
-
-/*
- * Uso contra el tope del plan. Sin tope no hay barra: no hay nada que llenar.
- *
- * Los comprobantes son un tope por mes, no acumulativo, y el medidor lo aclara
- * con la fecha de reinicio: ver "4.800 / 5000" sin saber que se reinicia el 1
- * suena a que la cuenta se está terminando para siempre.
- */
-function Medidor({ icono: Icono, rotulo, dato }) {
-  if (!dato) return null;
-  const sinTope = dato.tope == null;
-  const pct = sinTope ? 0 : Math.min(100, Math.round((dato.usado / Math.max(1, dato.tope)) * 100));
-  const lleno = !sinTope && dato.usado >= dato.tope;
-  // Amarillo desde el 80%: da margen para pasar de plan antes de quedarse
-  // trabado en la mitad de una jornada de facturación.
-  const cerca = !lleno && pct >= 80;
-
-  return (
-    <div>
-      <div className="flex items-baseline justify-between text-sm">
-        <span className="flex items-center gap-1.5 text-ink-700"><Icono size={14} /> {rotulo}</span>
-        <span className="tabular-nums text-ink-950">
-          {dato.usado.toLocaleString("es-AR")}
-          {sinTope ? "" : ` / ${dato.tope.toLocaleString("es-AR")}`}
-        </span>
-      </div>
-      {sinTope ? (
-        <p className="mt-1 text-xs text-ink-500">Sin límite</p>
-      ) : (
-        <>
-          <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-paper-200">
-            <div
-              className={`h-full rounded-full ${lleno ? "bg-brick-500" : cerca ? "bg-brass-400" : "bg-brass-500"}`}
-              style={{ width: `${pct}%` }}
-            />
-          </div>
-          {dato.periodo === "mes" && (
-            <p className="mt-1 text-[11px] text-ink-500">
-              De este mes · vuelve a cero el {formatDate(dato.reinicia)}
-            </p>
-          )}
-          {lleno && (
-            <p className="mt-1 text-[11px] text-brick-500">
-              Llegaste al tope del plan.
-            </p>
-          )}
-        </>
-      )}
-    </div>
-  );
 }

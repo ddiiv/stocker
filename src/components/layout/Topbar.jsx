@@ -4,6 +4,7 @@ import { Menu, LogOut, UserCog, Sun, Moon } from "lucide-react";
 import { useAuth } from "../../context/AuthContext";
 import { initials } from "../../utils/formatters";
 import { temaEfectivo, elegirTema, seguirAlSistema } from "../../utils/tema";
+import { entradaDeCuenta } from "../../utils/cuenta";
 
 export default function Topbar({ title, onMenuClick }) {
   const { user, negocio: datosNegocio, logout } = useAuth();
@@ -45,8 +46,12 @@ export default function Topbar({ title, onMenuClick }) {
         <div className="flex h-9 w-9 items-center justify-center rounded-full bg-ink-950 text-xs font-semibold text-paper-50">
           {initials(nombre, apellido)}
         </div>
-        {user?.type === "business" && (
-          <Link to="/cuenta" className="rounded-md p-2 text-ink-600 hover:bg-paper-200" title="Mi cuenta">
+        {/* Configuración de la cuenta. El empleado también tiene algo ahí —sus
+            sesiones—, así que el atajo es para todos y lleva a lo que cada uno
+            puede abrir. */}
+        {entradaDeCuenta(user) && (
+          <Link to={entradaDeCuenta(user)} className="rounded-md p-2 text-ink-600 hover:bg-paper-200"
+            title="Configuración de la cuenta" aria-label="Configuración de la cuenta">
             <UserCog size={17} />
           </Link>
         )}

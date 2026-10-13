@@ -8,6 +8,7 @@ import { useAuth } from "../context/AuthContext";
 import PhoneInput from "../components/ui/PhoneInput";
 import PasswordStrength from "../components/ui/PasswordStrength";
 import { evaluatePassword } from "../utils/passwordPolicy";
+import { ENLACES_LEGALES } from "../utils/legales";
 
 // Espejo de las reglas del backend (backend/src/utils/passwordPolicy.js).
 const passwordStrong = z.string().refine((v) => evaluatePassword(v).valid, {
@@ -163,10 +164,10 @@ export default function RegisterPage() {
             <input type="checkbox" className="mt-0.5 shrink-0" {...register("aceptaTerminos")} />
             <span>
               Leí y acepto los{" "}
-              <a className="text-brass-600 underline" href="https://stocker.com.ar/terminos"
+              <a className="text-brass-600 underline" href={ENLACES_LEGALES.terminos}
                 target="_blank" rel="noopener noreferrer">Términos y Condiciones</a>{" "}
               y la{" "}
-              <a className="text-brass-600 underline" href="https://stocker.com.ar/privacidad"
+              <a className="text-brass-600 underline" href={ENLACES_LEGALES.privacidad}
                 target="_blank" rel="noopener noreferrer">Política de Privacidad</a>.
             </span>
           </label>

@@ -1,4 +1,5 @@
 import axios from "axios";
+import { motivoParaLogin } from "../utils/motivosSesion";
 
 // Mismo origen: en dev lo resuelve el proxy de Vite, en producción el
 // servicio web que sirve el build y reenvía /api por la red privada.
@@ -41,15 +42,13 @@ http.interceptors.response.use(
          * El motivo viaja al login.
          *
          * Sin esto, a quien le cerraron la sesión —porque cambiaron la
-         * contraseña de la cuenta, o porque le desactivaron el usuario— lo
-         * escupe a la pantalla de entrar sin ninguna explicación, en la mitad
-         * de lo que estuviera haciendo. Va en la URL y no en un estado de
+         * contraseña de la cuenta, la cerraron desde otro dispositivo o le
+         * desactivaron el usuario— lo escupe a la pantalla de entrar sin
+         * ninguna explicación, en la mitad de lo que estuviera haciendo. Va en la URL y no en un estado de
          * JavaScript porque esto es una recarga completa de la página: no
          * sobrevive nada que no viaje en la dirección.
          */
-        const codigo = err.response?.data?.codigo;
-        const motivo = codigo === "SESION_CERRADA" || codigo === "SESION_REVOCADA"
-          ? `?motivo=${codigo}` : "";
+        const motivo = motivoParaLogin(err.response?.data?.codigo);
         // La cookie es httpOnly: sólo el backend puede borrarla.
         window.location.href = `/login${motivo}`;
       }

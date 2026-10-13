@@ -29,6 +29,9 @@ const PaymentMethodsPage = lazy(() => import("./pages/PaymentMethodsPage"));
 const CashPage = lazy(() => import("./pages/CashPage"));
 const AccountPage = lazy(() => import("./pages/AccountPage"));
 const SubscriptionPage = lazy(() => import("./pages/SubscriptionPage"));
+const SesionesPage = lazy(() => import("./pages/SesionesPage"));
+const SeguridadPage = lazy(() => import("./pages/SeguridadPage"));
+const TerminosCuentaPage = lazy(() => import("./pages/TerminosCuentaPage"));
 const RegisterPage = lazy(() => import("./pages/RegisterPage"));
 const ForgotPasswordPage = lazy(() => import("./pages/ForgotPasswordPage"));
 const DashboardPage = lazy(() => import("./pages/DashboardPage"));
@@ -123,6 +126,14 @@ export default function App() {
             <Route path="/soporte"                      element={<SoportePage />} />
             {/* Suscripción: la ve el dueño, no los empleados. */}
             <Route path="/cuenta/suscripcion"           element={<OwnerRoute><SubscriptionPage /></OwnerRoute>} />
+            {/*
+              Configuración de la cuenta (las pestañas están en utils/cuenta.js).
+              Sesiones va sin puerta: un empleado ve y cierra las suyas, y el
+              backend filtra qué le devuelve a cada uno. El resto es del dueño.
+            */}
+            <Route path="/cuenta/sesiones"              element={<SesionesPage />} />
+            <Route path="/cuenta/seguridad"             element={<OwnerRoute><SeguridadPage /></OwnerRoute>} />
+            <Route path="/cuenta/terminos"              element={<OwnerRoute><TerminosCuentaPage /></OwnerRoute>} />
             <Route path="/pagos"                        element={<PermissionRoute permission="pagos"><PaymentMethodsPage /></PermissionRoute>} />
             <Route path="/caja"                         element={<PermissionRoute permission="caja"><CashPage /></PermissionRoute>} />
             <Route path="/empleados"                    element={<PermissionRoute permission="empleados"><EmployeesPage /></PermissionRoute>} />

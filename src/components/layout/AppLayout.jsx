@@ -49,6 +49,9 @@ const TITLES = {
   "/integraciones/mercadolibre": "Mercado Libre",
   "/cuenta": "Mi cuenta",
   "/cuenta/suscripcion": "Suscripción",
+  "/cuenta/sesiones": "Sesiones",
+  "/cuenta/seguridad": "Seguridad",
+  "/cuenta/terminos": "Términos y condiciones",
   "/soporte": "Soporte",
 };
 

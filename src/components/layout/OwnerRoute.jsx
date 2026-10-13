@@ -1,3 +1,4 @@
+import { Link } from "react-router-dom";
 import { ShieldAlert } from "lucide-react";
 import { useAuth } from "../../context/AuthContext";
 import { esAdministradorTotal } from "../../utils/permissions";
@@ -23,6 +24,11 @@ export default function OwnerRoute({ children }) {
           Los datos de la cuenta y la suscripción los maneja el titular del negocio.
           No es algo que se pueda habilitar desde tu cargo.
         </p>
+        {/* Lo único de la cuenta que sí es suyo: dónde está abierto su
+            usuario. Quien llegó acá buscando cerrar una sesión lo encuentra. */}
+        <Link to="/cuenta/sesiones" className="mt-3 inline-block text-sm text-brass-600 underline">
+          Ver dónde está abierto tu usuario
+        </Link>
       </div>
     </div>
   );

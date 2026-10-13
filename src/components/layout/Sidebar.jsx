@@ -18,9 +18,11 @@ import {
   BadgeCheck,
   LifeBuoy,
   Tag,
+  Settings,
 } from "lucide-react";
 import { useAuth } from "../../context/AuthContext";
 import { canView, esAdministradorTotal } from "../../utils/permissions";
+import { entradaDeCuenta } from "../../utils/cuenta";
 import { useOverlayKeyboard } from "../../hooks/useOverlayKeyboard";
 
 /*
@@ -77,7 +79,13 @@ const GRUPOS = [
     ],
   },
   {
-    titulo: "Configuración",
+    /*
+     * Se llamaba "Configuración", y chocaba con la Configuración de la cuenta
+     * (abajo, en Cuenta): dos opciones con el mismo nombre que llevan a
+     * lugares distintos. Lo que agrupa es cómo funciona el negocio —quién
+     * trabaja, cómo se cobra, por dónde se vende—, de ahí el nombre.
+     */
+    titulo: "Negocio",
     items: [
       { to: "/empleados", label: "Empleados",       icon: Users,      permission: "empleados" },
       { to: "/pagos",     label: "Métodos de pago", icon: CreditCard, permission: "pagos" },
@@ -88,6 +96,22 @@ const GRUPOS = [
   {
     titulo: "Cuenta",
     items: [
+      /*
+       * Configuración de la cuenta: datos, suscripción, sesiones, seguridad y
+       * términos, en pestañas. La ven todos porque los empleados también
+       * tienen ahí sus sesiones; `destino` los lleva directo a la única
+       * pestaña que pueden abrir. No se prende en Suscripción, que tiene su
+       * propio renglón justo abajo: con los dos prendidos no se sabe dónde
+       * se está.
+       */
+      {
+        to: "/cuenta",
+        label: "Configuración",
+        icon: Settings,
+        siempre: true,
+        destino: entradaDeCuenta,
+        activo: (p) => (p === "/cuenta" || p.startsWith("/cuenta/")) && p !== "/cuenta/suscripcion",
+      },
       // La suscripción es del titular de la cuenta: un empleado no decide qué
       // plan paga el negocio, así que se filtra por dueño y no por permiso.
       { to: "/cuenta/suscripcion", label: "Suscripción", icon: BadgeCheck, soloDuenio: true },
@@ -226,7 +250,7 @@ export default function Sidebar({ open, onClose }) {
                       return (
                         <Link
                           key={to}
-                          to={to}
+                          to={(item.destino && item.destino(user)) || to}
                           onClick={onClose}
                           aria-current={activo ? "page" : undefined}
                           className={`flex items-center gap-3 rounded-md px-3 py-2.5 text-sm font-medium transition-colors ${

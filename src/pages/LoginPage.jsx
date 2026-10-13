@@ -6,6 +6,7 @@ import { z } from "../lib/zod";
 import { Tag, AlertCircle, Clock } from "lucide-react";
 import { useAuth } from "../context/AuthContext";
 import { enviarCodigo2FA } from "../services/authService";
+import { avisoDeCierre as textoDelCierre } from "../utils/motivosSesion";
 
 const schema = z.object({
   email: z.string().email("Ingresá un email válido"),
@@ -29,19 +30,9 @@ export default function LoginPage() {
   const [searchParams] = useSearchParams();
   const motivoCierre = searchParams.get("motivo");
   const cerroPorInactividad = motivoCierre === "inactividad";
-  /*
-   * Por qué te sacamos, dicho en la pantalla a la que caés.
-   *
-   * Al que le cerraron la sesión desde otro lado —cambio de contraseña de la
-   * cuenta, o su usuario desactivado— lo escupe acá en la mitad de lo que
-   * estuviera haciendo. Sin una línea que lo explique parece que el sistema se
-   * rompió, y lo primero que hace es reintentar la contraseña vieja.
-   */
-  const AVISOS_DE_CIERRE = {
-    SESION_CERRADA: "Se cambió la contraseña, así que se cerraron las sesiones abiertas. Entrá con la nueva.",
-    SESION_REVOCADA: "Tu usuario ya no tiene acceso. Pedile al dueño de la cuenta que lo revise.",
-  };
-  const avisoDeCierre = AVISOS_DE_CIERRE[motivoCierre] || null;
+  // Por qué te sacamos, dicho en la pantalla a la que caés: ver
+  // utils/motivosSesion.js, que comparte la lista de códigos con http.js.
+  const avisoDeCierre = textoDelCierre(motivoCierre);
   const {
     register,
     handleSubmit,
