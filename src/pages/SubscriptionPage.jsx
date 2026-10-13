@@ -108,7 +108,9 @@ export default function SubscriptionPage() {
   async function avisarTransferencia() {
     setBusy("transf"); setError("");
     try {
-      const r = await informarTransferencia({});
+      // Con el plan elegido: si no, una transferencia del Superior desde
+      // "Cambiar a este plan" quedaba anotada como un pago del plan actual.
+      const r = await informarTransferencia({ plan: modalPago });
       setModalPago(null);
       setAviso(r.message);
       await load();
@@ -210,6 +212,16 @@ export default function SubscriptionPage() {
                 </p>
               )}
               {sub.descuentoNota && <p className="mt-0.5 text-xs text-ink-500">{sub.descuentoNota}</p>}
+              {/* Una bajada ya paga espera al fin del período del plan actual.
+                  Sin este aviso el cliente paga el plan más barato, sigue
+                  viendo el caro y no sabe si el cambio se hizo. */}
+              {sub.planPendiente && (
+                <p className="mt-2 text-sm text-ink-700">
+                  Desde el <strong>{formatDate(sub.planPendiente.desde)}</strong> pasás
+                  al <strong>{sub.planPendiente.nombre}</strong>. Ya está pago; hasta esa fecha
+                  seguís con todo lo de tu plan actual.
+                </p>
+              )}
             </div>
             <span className={`rounded-md border px-3 py-1 text-sm font-medium ${est.clase}`}>
               {est.texto}
@@ -253,7 +265,9 @@ export default function SubscriptionPage() {
           )}
 
           <div className="mt-5 flex flex-wrap gap-2">
-            <button className="btn-accent" onClick={() => abrirPago(sub.plan?.codigo)}>
+            {/* Renovar es pagar el plan con el que se sigue: con una bajada
+                esperando, pagar el actual la cancelaría sin quererlo. */}
+            <button className="btn-accent" onClick={() => abrirPago(sub.planPendiente?.codigo || sub.plan?.codigo)}>
               <CreditCard size={15} />
               {sub.estado === "trial" ? "Activar suscripción" : "Pagar o renovar"}
             </button>
@@ -305,6 +319,9 @@ export default function SubscriptionPage() {
               <div className="flex items-start justify-between gap-2">
                 <p className="font-display font-semibold text-ink-950">{p.nombre}</p>
                 {esActual && <span className="badge badge-ok">Tu plan</span>}
+                {p.codigo === sub.planPendiente?.codigo && (
+                  <span className="badge badge-low">Desde el {formatDate(sub.planPendiente.desde)}</span>
+                )}
               </div>
               <p className="mt-2 font-display text-xl font-semibold text-ink-950">
                 {p.precioMensual != null ? formatCurrency(p.precioMensual) : "A cotizar"}
@@ -390,6 +407,7 @@ export default function SubscriptionPage() {
                     <td className="px-4 py-3 text-ink-700">{formatDate(p.fecha)}</td>
                     <td className="px-4 py-3">
                       <p className="text-ink-900">{p.detalle || "Suscripción a Stocker"}</p>
+                      {p.plan?.nombre && <p className="text-xs text-ink-500">{p.plan.nombre}</p>}
                       {p.periodoDesde && p.periodoHasta && (
                         <p className="text-xs text-ink-500">
                           {formatDate(p.periodoDesde)} → {formatDate(p.periodoHasta)}
@@ -446,10 +464,34 @@ export default function SubscriptionPage() {
           {(() => {
             const p = planes.find((x) => x.codigo === modalPago) || planActual;
             const monto = p?.codigo === sub.plan?.codigo ? sub.precio : p?.precioMensual;
+            /*
+             * Cuándo rige el plan elegido, dicho ANTES de pagar. Subir aplica
+             * apenas se acredita; bajar, al terminar lo que ya pagó con el plan
+             * actual. La lista de planes viene ordenada de menor a mayor.
+             */
+            const iActual = planes.findIndex((x) => x.codigo === sub.plan?.codigo);
+            const iElegido = planes.findIndex((x) => x.codigo === p?.codigo);
+            const cambia = p && sub.plan && p.codigo !== sub.plan.codigo && p.codigo !== sub.planPendiente?.codigo;
+            const periodoEnCurso = sub.estado === "activa" && sub.vence && new Date(sub.vence) > new Date();
             return (
-              <p className="text-sm text-ink-700">
-                {p?.nombre} — <strong>{monto != null ? formatCurrency(monto) : "a cotizar"}</strong> por mes.
-              </p>
+              <>
+                <p className="text-sm text-ink-700">
+                  {p?.nombre} — <strong>{monto != null ? formatCurrency(monto) : "a cotizar"}</strong> por mes.
+                </p>
+                {cambia && iElegido > iActual && (
+                  <p className="text-xs text-ink-600">
+                    Pasás al {p.nombre} apenas se acredite el pago, con sus topes y funciones.
+                  </p>
+                )}
+                {cambia && iElegido < iActual && (
+                  <p className="text-xs text-ink-600">
+                    {periodoEnCurso
+                      ? <>Seguís con el {sub.plan.nombre} hasta el {formatDate(sub.vence)}, que ya
+                          está pago, y desde ahí pasás al {p.nombre}.</>
+                      : <>Pasás al {p.nombre} apenas se acredite el pago.</>}
+                  </p>
+                )}
+              </>
             );
           })()}
 
