@@ -6,6 +6,7 @@ import { lookupCuit } from "../services/clientService";
 import { PageHeader, EmptyState, Card } from "../components/ui/Layout";
 import Modal from "../components/ui/Modal";
 import BillingTabs from "../components/billing/BillingTabs";
+import { LogoEditor, LogoMiniatura } from "../components/billing/LogoFactura";
 
 const CONDICIONES = [
   "Responsable Inscripto",
@@ -91,6 +92,7 @@ export default function BusinessCuitsPage() {
                 <div><dt className="inline text-ink-500">Domicilio:</dt> <dd className="inline">{c.domicilio || "—"}</dd></div>
                 <div><dt className="inline text-ink-500">Ingresos Brutos:</dt> <dd className="inline">{c.ingresosBrutos || "—"}</dd></div>
                 <div><dt className="inline text-ink-500">Inicio de actividades:</dt> <dd className="inline">{fechaCorta(c.inicioActividades) || "—"}</dd></div>
+                <div><dt className="inline text-ink-500">Logo de la factura:</dt> <dd className="inline"><LogoMiniatura cuit={c} /></dd></div>
               </dl>
               <div className="flex flex-wrap gap-1 border-t border-line pt-3">
                 <Link to={`/facturacion/cuits/${c.id}/arca`} className="btn-ghost px-2 py-1.5 text-xs" title="Configurar facturación ARCA">
@@ -104,12 +106,20 @@ export default function BusinessCuitsPage() {
         </div>
       )}
 
-      <CuitFormModal open={modal} onClose={() => setModal(false)} onSaved={() => { setModal(false); load(); }} cuit={editing} />
+      <CuitFormModal
+        open={modal}
+        onClose={() => setModal(false)}
+        onSaved={() => { setModal(false); load(); }}
+        cuit={editing}
+        // El logo se guarda solo (ver LogoEditor): se actualiza la tarjeta sin
+        // tocar `editing`, que reiniciaría el formulario con lo que ya se tipeó.
+        onLogo={(actualizado) => setCuits((prev) => prev.map((x) => (x.id === actualizado.id ? actualizado : x)))}
+      />
     </div>
   );
 }
 
-function CuitFormModal({ open, onClose, onSaved, cuit }) {
+function CuitFormModal({ open, onClose, onSaved, cuit, onLogo }) {
   const [form, setForm] = useState(VACIO);
   const esPrincipal = !!cuit?.esPrincipal;
   const [saving, setSaving] = useState(false);
@@ -227,6 +237,15 @@ function CuitFormModal({ open, onClose, onSaved, cuit }) {
         <p className="-mt-2 text-xs text-ink-500">
           Salen en la cabecera de tus facturas. Si estás en Convenio Multilateral, escribilo adelante (C.M. 901-…).
         </p>
+        {/* El logo también va en la cabecera, en el recuadro del emisor. Es del
+            CUIT: necesita que el CUIT exista para guardarse. */}
+        {cuit ? (
+          <LogoEditor cuit={cuit} onCambio={onLogo} />
+        ) : (
+          <p className="text-xs text-ink-500">
+            El logo que sale en la factura se sube después de agregar el CUIT, desde <strong>Editar</strong>.
+          </p>
+        )}
         {esPrincipal ? (
           <p className="flex items-center gap-2 rounded-md bg-paper-100 px-3 py-2 text-sm text-ink-700">
             <Star size={13} className="shrink-0 text-brass-500" />
