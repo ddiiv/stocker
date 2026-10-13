@@ -230,6 +230,11 @@ const COLUMNAS_ESPERADAS = {
     emisorDomicilio:        { type: DataTypes.STRING(300), allowNull: true },
     emisorCondicionIva:     { type: DataTypes.STRING(60), allowNull: true },
     condicionIvaReceptorId: { type: DataTypes.INTEGER, allowNull: true },
+    // Ingresos Brutos e Inicio de Actividades como estaban al emitir: una
+    // reimpresión dice lo mismo que el original. Vacío = se emitió sin el dato;
+    // null = factura anterior, que cae al CUIT de hoy. Ver el modelo.
+    emisorIngresosBrutos:    { type: DataTypes.STRING(40), allowNull: true },
+    emisorInicioActividades: { type: DataTypes.STRING(10), allowNull: true },
   },
   business_cuits: {
     // Ingresos Brutos e Inicio de Actividades: van en la cabecera de la

@@ -20,7 +20,7 @@
 const PDFDocument = require('pdfkit');
 const bwip = require('bwip-js');
 const {
-  CBTE_TIPO, ALICUOTA_IVA, CONDICIONES_IVA_RECEPTOR, condicionIvaReceptorId, docTipoFromCliente,
+  CBTE_TIPO, ALICUOTA_IVA, CONDICIONES_IVA_RECEPTOR, docTipoFromCliente,
 } = require('./arcaService');
 const { ddmmaaaa, isoDia, ddmmaaaaArgentina, isoArgentina } = require('../utils/fechaFiscal');
 const { leerLogo, LOGO_MAX_GUARDADO } = require('../utils/logoFactura');
@@ -239,6 +239,49 @@ function condicionDelEmisor(condicion, letra) {
   return null;
 }
 
+/*
+ * La condición del receptor de una factura que NO la tiene guardada: las
+ * emitidas antes de que se guardara (v3.41).
+ *
+ * Lo que se imprime tiene que ser lo que se le declaró a ARCA, y de esas
+ * facturas no se sabe: con CUIT, el código de entonces le preguntaba al padrón
+ * y declaraba lo que contestaba —monotributo, exento—, o Consumidor Final si
+ * el padrón no contestaba. Adivinar acá sería imprimir "Consumidor Final" en
+ * una factura que ARCA tiene a nombre de un monotributista.
+ *
+ * Hay sólo dos casos en que se sabe con certeza, porque el código de entonces
+ * no tenía otra salida:
+ *   · sin documento no se consultaba el padrón: se declaraba Consumidor Final;
+ *   · una A sólo se emitía a quien el padrón (o, sin padrón, la regla del
+ *     CUIT) daba como Responsable Inscripto, y se declaraba eso.
+ * En el resto, el renglón del IVA no se imprime: un dato que falta se nota;
+ * uno equivocado en un comprobante fiscal, no.
+ */
+function condicionReceptorSegura(letra, clienteCuit) {
+  if (!clienteCuit) return 5;
+  if (letra === 'A') return 1;
+  return null;
+}
+
+/*
+ * Ingresos Brutos e Inicio de Actividades del emisor, tal como estaban al
+ * emitir. Es lo que se guarda en la factura (ver el modelo de Invoice).
+ *
+ * Un dato que el CUIT no tenía cargado se guarda como texto VACÍO y no como
+ * null: vacío quiere decir "se emitió sin eso" y la reimpresión tampoco lo
+ * lleva; null queda para las facturas anteriores a la foto, que no tienen otra
+ * fuente que el CUIT de hoy.
+ */
+function fotoDelEmisor(cuit) {
+  return {
+    emisorIngresosBrutos: String(cuit?.ingresosBrutos || '').trim().slice(0, 40),
+    emisorInicioActividades: String(cuit?.inicioActividades || '').trim().slice(0, 10),
+  };
+}
+
+/* El dato guardado en la factura si lo tiene (aunque sea vacío); si no, el de hoy. */
+const guardadoOHoy = (guardado, hoy) => (guardado != null ? guardado : hoy);
+
 function descripcion(item) {
   const variantes = [
     item.variante1Valor && `${item.variante1Nombre || 'Variante'}: ${item.variante1Valor}`,
@@ -308,7 +351,7 @@ function armarVista(invoice, items = [], business = {}, contexto = {}) {
   const docTipo = docTipoFromCliente(invoice.clienteCuit);
   const docNro = soloDigitos(invoice.clienteCuit);
   const condReceptor = Number(invoice.condicionIvaReceptorId)
-    || condicionIvaReceptorId({ tipo: letra, clienteCuit: invoice.clienteCuit });
+    || condicionReceptorSegura(letra, invoice.clienteCuit);
 
   const esFiscal = Boolean(invoice.cae) && invoice.ambiente === 'produccion' && !invoice.simulado;
   const asociada = contexto.asociada || null;
@@ -334,8 +377,13 @@ function armarVista(invoice, items = [], business = {}, contexto = {}) {
         invoice.emisorCondicionIva || emisorCtx.condicionIva || business.condicionIva, letra,
       ),
       cuit: cuitConGuiones(invoice.emisorCuit || business.cuit),
-      ingresosBrutos: String(emisorCtx.ingresosBrutos || '').trim() || null,
-      inicioActividades: ddmmaaaa(emisorCtx.inicioActividades),
+      /*
+       * Los de la factura, no los del CUIT de hoy: una reimpresión tiene que
+       * decir lo mismo que el papel que recibió el cliente. Sólo una factura
+       * anterior a la foto (null) cae al CUIT.
+       */
+      ingresosBrutos: String(guardadoOHoy(invoice.emisorIngresosBrutos, emisorCtx.ingresosBrutos) || '').trim() || null,
+      inicioActividades: ddmmaaaa(guardadoOHoy(invoice.emisorInicioActividades, emisorCtx.inicioActividades)),
       logo: Buffer.isBuffer(emisorCtx.logo?.datos) ? emisorCtx.logo : null,
     },
     receptor: {
@@ -654,11 +702,39 @@ function textosDelRenglon(r) {
   };
 }
 
+/*
+ * Cómo va el SKU en su celda.
+ *
+ * Primero se achica, hasta 5,5, para que entre en una línea: partido no se
+ * puede buscar. Pero la columna admite hasta 100 caracteres y con unos 25 ni a
+ * 5,5 entra; ahí se parte en renglones —PDFKit corta en los guiones, o letra
+ * por letra si no hay— y el renglón de la tabla crece lo que ocupe. Antes se
+ * partía igual pero el renglón medía sólo el Producto, y la segunda línea del
+ * SKU quedaba encima del SKU de abajo.
+ *
+ * La medida y el dibujo salen de acá los dos, para que no se desfasen.
+ */
+function celdaSku(doc, col, sku) {
+  const ancho = col.ancho - 4;
+  const tam = tamanoQueEntra(doc, sku, { fuente: 'Helvetica', tamano: 8, minimo: 5.5, ancho });
+  doc.font('Helvetica').fontSize(tam);
+  return {
+    tam,
+    // Centrado en el alto de un renglón de letra 8, como el resto de la fila.
+    arriba: 3 + (8 - tam) / 2,
+    alto: doc.heightOfString(sku, { width: ancho, align: 'center' }),
+  };
+}
+
 function altoDelRenglon(doc, cols, r) {
   const prod = cols.find((c) => c.clave === 'producto');
   doc.font('Helvetica').fontSize(8);
-  const h = doc.heightOfString(r.producto || ' ', { width: prod.ancho - 4 });
-  return Math.max(ALTO_RENGLON, h + 3);
+  const hProducto = doc.heightOfString(r.producto || ' ', { width: prod.ancho - 4 }) + 3;
+  const sku = cols.find((c) => c.clave === 'sku');
+  const celda = r.sku ? celdaSku(doc, sku, r.sku) : null;
+  // Con el mismo aire arriba que el Producto: un SKU de una línea no agranda nada.
+  const hSku = celda ? celda.arriba + celda.alto : 0;
+  return Math.max(ALTO_RENGLON, hProducto, hSku);
 }
 
 function dibujarRenglon(doc, cols, r, y) {
@@ -669,13 +745,13 @@ function dibujarRenglon(doc, cols, r, y) {
     if (c.clave === 'producto') {
       doc.fillColor(NEGRO).font('Helvetica').fontSize(8)
         .text(texto, c.x + 2, y + 3, { width: c.ancho - 4 });
+    } else if (c.clave === 'sku') {
+      const celda = celdaSku(doc, c, texto);
+      doc.fillColor(NEGRO).font('Helvetica').fontSize(celda.tam)
+        .text(texto, c.x + 2, y + celda.arriba, { width: c.ancho - 4, align: 'center' });
     } else {
-      // Un SKU largo se achica antes que partirse: partido no se puede buscar.
-      const tam = c.clave === 'sku'
-        ? tamanoQueEntra(doc, texto, { fuente: 'Helvetica', tamano: 8, minimo: 5.5, ancho: c.ancho - 4 })
-        : 8;
-      doc.fillColor(NEGRO).font('Helvetica').fontSize(tam)
-        .text(texto, c.x + 2, y + 3 + (8 - tam) / 2, { width: c.ancho - 4, align: 'center' });
+      doc.fillColor(NEGRO).font('Helvetica').fontSize(8)
+        .text(texto, c.x + 2, y + 3, { width: c.ancho - 4, align: 'center' });
     }
   }
   return y + altoDelRenglon(doc, cols, r);
@@ -810,12 +886,17 @@ function dibujarCierre(doc, vista, cols, qr, y) {
   }
   if (vista.descuento) {
     y += 14;
+    /*
+     * Como en el modelo: el renglón del descuento lleva el mismo importe en
+     * Precio Unitario y en Precio Total, y la columna IVA vacía. No es un
+     * producto con su neto y su alícuota; es lo que se le restó al Subtotal.
+     */
     y = dibujarRenglon(doc, cols, {
       sku: '',
       producto: vista.descuentoEtiqueta,
       unidades: 1,
-      unitario: r2(-vista.descuento / (vista.conIva ? 1 + ALICUOTA_IVA.porcentaje / 100 : 1)),
-      alicuota: vista.alicuota,
+      unitario: -vista.descuento,
+      alicuota: null,
       total: -vista.descuento,
     }, y);
     y += 14;
@@ -976,10 +1057,11 @@ async function generarFactura(invoice, items, business = {}, contexto = {}) {
 }
 
 /*
- * Lo que la factura necesita y no está en su fila: Ingresos Brutos, Inicio de
- * Actividades y el logo del CUIT, y —para las facturas emitidas antes de que se
- * guardaran— el domicilio del local y la condición del emisor. El negocio sale
- * de la factura, que ya se buscó con el de la sesión.
+ * Lo que la factura necesita y no está en su fila: el logo del CUIT, y —para
+ * las facturas emitidas antes de que se guardaran— Ingresos Brutos, Inicio de
+ * Actividades, el domicilio del local y la condición del emisor. Las que sí los
+ * tienen guardados imprimen los suyos (ver armarVista). El negocio sale de la
+ * factura, que ya se buscó con el de la sesión.
  *
  * Si algo de esto falla, el PDF sale igual con lo que la factura tiene: no
  * poder descargar un comprobante fiscal por un dato de la cabecera sería peor.
@@ -1037,6 +1119,7 @@ module.exports = {
   generarFactura,
   contextoDeImpresion,
   domicilioComercial,
+  fotoDelEmisor,
   drawTransparenciaFiscal,
   numeroArca,
   datosQr,

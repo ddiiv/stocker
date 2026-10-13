@@ -159,7 +159,47 @@ const CUIT_IMPOSTOR = '27222222228';
     return r;
   };
 
+  // Para bajar un PDF y leerlo como texto.
+  const textoDelPdf = async (id) => {
+    const r = await api.crudo(`/api/invoices/${id}/pdf`);
+    const cuerpo = Buffer.from(await r.arrayBuffer());
+    const texto = r.status === 200
+      ? require('child_process').execFileSync('pdftotext', ['-layout', '-', '-'], { input: cuerpo }).toString('utf8')
+      : '';
+    return { status: r.status, cuerpo, texto };
+  };
+  const IIBB_AL_EMITIR = 'C.M. 901-000000-1';
+  const IIBB_DESPUES = 'C.M. 902-000000-2';
+
   try {
+    tit('0. EL NEGOCIO DE PRUEBA TIENE LO QUE ESTA SUITE NECESITA');
+    /*
+     * Sin un CUIT principal no hay dónde cargar Ingresos Brutos, y sin la
+     * dirección del local comparar el domicilio impreso no prueba nada
+     * (''.includes('') es verdadero). Antes esos casos se salteaban en
+     * silencio y la suite seguía en verde con menos pruebas: ahora fallan.
+     */
+    cuitPrincipal = await BusinessCuit.findOne({ where: { businessId: negocio.id, esPrincipal: true } });
+    chk('el negocio demo tiene un CUIT principal', true, Boolean(cuitPrincipal));
+    chk('el local de prueba tiene dirección', true, Boolean(String(local?.direccion || '').trim()));
+    /*
+     * Ingresos Brutos e Inicio de Actividades se cargan en el CUIT ANTES de
+     * emitir, por la API como lo haría la pantalla, y al final se dejan como
+     * estaban.
+     */
+    if (cuitPrincipal) {
+      cuitAntes = { ingresosBrutos: cuitPrincipal.ingresosBrutos, inicioActividades: cuitPrincipal.inicioActividades };
+    }
+    const put = cuitPrincipal
+      ? await api('PUT', `/api/business-cuits/${cuitPrincipal.id}`, { ingresosBrutos: `  ${IIBB_AL_EMITIR} `, inicioActividades: '2019-03-01' })
+      : { status: 0, json: null };
+    chk('el CUIT acepta Ingresos Brutos e Inicio de Actividades', [200, IIBB_AL_EMITIR, '2019-03-01'],
+      [put.status, put.json?.ingresosBrutos, put.json?.inicioActividades]);
+    const mal = cuitPrincipal
+      ? await api('PUT', `/api/business-cuits/${cuitPrincipal.id}`, { inicioActividades: '2019-02-30' })
+      : { status: 0 };
+    chk('   una fecha que no existe se rechaza', 400, mal.status);
+
     tit('1. LA FACTURA SALE CON LOS DATOS DEL CLIENTE DE LA VENTA');
     const venta = await vender({ clientId: cliente.id });
     chk('la venta con cliente entra', 201, venta.status);
@@ -276,40 +316,44 @@ const CUIT_IMPOSTOR = '27222222228';
     chk('y el domicilio también', 'Av. Siempre Viva 742', guardada.clienteDireccion);
 
     tit('6. LA FACTURA GUARDA LO QUE IMPRIME, Y SE DESCARGA EN UNA HOJA');
-    /*
-     * Ingresos Brutos e Inicio de Actividades se cargan en el CUIT y salen en
-     * la cabecera. Se cargan por la API, como lo haría la pantalla, y al final
-     * se dejan como estaban.
-     */
-    cuitPrincipal = await BusinessCuit.findOne({ where: { businessId: negocio.id, esPrincipal: true } });
-    if (cuitPrincipal) {
-      cuitAntes = { ingresosBrutos: cuitPrincipal.ingresosBrutos, inicioActividades: cuitPrincipal.inicioActividades };
-      const put = await api('PUT', `/api/business-cuits/${cuitPrincipal.id}`, {
-        ingresosBrutos: '  C.M. 901-000000-1 ', inicioActividades: '2019-03-01',
-      });
-      chk('el CUIT acepta Ingresos Brutos e Inicio de Actividades', [200, 'C.M. 901-000000-1', '2019-03-01'],
-        [put.status, put.json?.ingresosBrutos, put.json?.inicioActividades]);
-      const mal = await api('PUT', `/api/business-cuits/${cuitPrincipal.id}`, { inicioActividades: '2019-02-30' });
-      chk('   una fecha que no existe se rechaza', 400, mal.status);
-    }
+    const direccionLocal = String(local?.direccion || '').trim();
     chk('guarda el domicilio del local donde se vendió', true,
-      String(guardada.emisorDomicilio || '').includes(local.direccion));
+      Boolean(direccionLocal) && String(guardada.emisorDomicilio || '').includes(direccionLocal));
     chk('y la condición del receptor que se le declaró a ARCA', true, Number(guardada.condicionIvaReceptorId) > 0);
+    chk('y Ingresos Brutos e Inicio de Actividades como estaban en el CUIT al emitir', [IIBB_AL_EMITIR, '2019-03-01'],
+      [guardada.emisorIngresosBrutos, guardada.emisorInicioActividades]);
 
-    const pdf = await api.crudo(`/api/invoices/${guardada.id}/pdf`);
-    const cuerpoPdf = Buffer.from(await pdf.arrayBuffer());
-    chk('el PDF se descarga', [200, '%PDF'], [pdf.status, cuerpoPdf.slice(0, 4).toString()]);
-    chk('   en una hoja', 1, (cuerpoPdf.toString('latin1').match(/\/Type \/Page\b/g) || []).length);
-    const textoDescargado = require('child_process')
-      .execFileSync('pdftotext', ['-layout', '-', '-'], { input: cuerpoPdf }).toString('utf8');
+    /*
+     * Después de emitir, el dueño cambia los datos del CUIT (pasa a Convenio
+     * Multilateral). El papel que ya recibió el cliente no cambia, así que la
+     * reimpresión tampoco puede cambiar.
+     */
+    const cambio = cuitPrincipal
+      ? await api('PUT', `/api/business-cuits/${cuitPrincipal.id}`, { ingresosBrutos: IIBB_DESPUES, inicioActividades: '2020-04-02' })
+      : { status: 0 };
+    chk('el CUIT acepta el cambio', 200, cambio.status);
+
+    const descargada = await textoDelPdf(guardada.id);
+    chk('el PDF se descarga', [200, '%PDF'], [descargada.status, descargada.cuerpo.slice(0, 4).toString()]);
+    chk('   en una hoja', 1, (descargada.cuerpo.toString('latin1').match(/\/Type \/Page\b/g) || []).length);
     chk('   con el formato del modelo y el local que emitió', true,
-      /ORIGINAL/.test(textoDescargado) && /COD\. 0[16]/.test(textoDescargado)
-        && textoDescargado.includes('Domicilio Comercial:') && textoDescargado.includes(local.direccion));
-    if (cuitPrincipal) {
-      chk('   y con Ingresos Brutos e Inicio de Actividades del CUIT', true,
-        textoDescargado.includes('ING. BRUTOS: C.M. 901-000000-1')
-          && textoDescargado.includes('Inicio Actividades: 01/03/2019'));
-    }
+      /ORIGINAL/.test(descargada.texto) && /COD\. 0[16]/.test(descargada.texto)
+        && descargada.texto.includes('Domicilio Comercial:') && Boolean(direccionLocal)
+        && descargada.texto.includes(direccionLocal));
+    chk('   con Ingresos Brutos e Inicio de cuando se emitió, no los de hoy', [true, true, false, false],
+      [descargada.texto.includes(`ING. BRUTOS: ${IIBB_AL_EMITIR}`), descargada.texto.includes('Inicio Actividades: 01/03/2019'),
+        descargada.texto.includes(IIBB_DESPUES), descargada.texto.includes('02/04/2020')]);
+
+    const venta5 = await vender({ clientId: cliente.id });
+    const despues = await api('POST', '/api/invoices', { saleId: venta5.json?.id, enviarEmail: false, enviarWhatsapp: false });
+    chk('una factura emitida después del cambio lleva los datos nuevos', [201, true],
+      [despues.status, (await textoDelPdf(despues.json?.id)).texto.includes(`ING. BRUTOS: ${IIBB_DESPUES}`)]);
+
+    // Una factura anterior a la foto (las columnas en null) no tiene otra fuente que el CUIT de hoy.
+    await Invoice.update({ emisorIngresosBrutos: null, emisorInicioActividades: null }, { where: { id: guardada.id } });
+    const anterior = await textoDelPdf(guardada.id);
+    chk('una factura anterior a la foto cae a los del CUIT', true,
+      anterior.texto.includes(`ING. BRUTOS: ${IIBB_DESPUES}`) && anterior.texto.includes('Inicio Actividades: 02/04/2020'));
 
   } finally {
     tit('Limpieza');

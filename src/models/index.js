@@ -2115,6 +2115,20 @@ const Invoice = db.define('Invoice', {
   emisorDomicilio:    { type: DataTypes.STRING(300), allowNull: true },
   emisorCondicionIva: { type: DataTypes.STRING(60), allowNull: true },
   /*
+   * Ingresos Brutos e Inicio de Actividades del emisor, también como foto.
+   *
+   * Se leían del CUIT cada vez que se pedía el PDF: una factura que salió por
+   * mail sin Ingresos Brutos —todavía no estaba cargado— lo mostraba al volver
+   * a descargarla, y un cambio de número (pasar a Convenio Multilateral)
+   * cambiaba todas las facturas viejas. Dos papeles del mismo CAE no pueden
+   * decir cosas distintas.
+   *
+   * Texto VACÍO = se emitió sin ese dato (y la reimpresión tampoco lo lleva).
+   * null = factura anterior a esta foto: ahí no queda otra que el CUIT de hoy.
+   */
+  emisorIngresosBrutos:    { type: DataTypes.STRING(40), allowNull: true },
+  emisorInicioActividades: { type: DataTypes.STRING(10), allowNull: true },
+  /*
    * La condición frente al IVA del receptor que se le DECLARÓ a ARCA (RG 5616),
    * con el código de ARCA. Se calculaba al emitir y se perdía: el papel no la
    * podía imprimir, y una nota sobre esta factura la recalculaba a ciegas.

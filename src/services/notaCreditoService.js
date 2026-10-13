@@ -30,12 +30,41 @@ const sequelize = require('../config/database');
 const { Invoice, InvoiceItem } = require('../models');
 const { solicitarCAE, calcularIVA } = require('./arcaService');
 const { nextInvoiceNumber, crearConNumero } = require('./invoiceNumberService');
+const { fotoDelEmisor } = require('./facturaPdf');
 const { log } = require('../utils/logger');
 
 const CLASES_NOTA = ['nota_credito', 'nota_debito'];
 
 const error = (mensaje, status = 400, extra = {}) =>
   Object.assign(new Error(mensaje), { status, ...extra });
+
+/*
+ * Ingresos Brutos e Inicio de Actividades para la cabecera de la nota.
+ *
+ * Esto sí se lee del CUIT de HOY, a diferencia de lo de arriba: no identifica
+ * al comprobante que se revierte, es la inscripción del emisor en el momento en
+ * que emite este papel, y la nota es un comprobante nuevo. Se guarda en la
+ * nota como foto, igual que en la factura, para que su reimpresión no cambie.
+ *
+ * Si el CUIT no se puede leer, la nota hereda lo que diga su factura: perder
+ * el renglón de la cabecera no puede trabar una nota con el CAE ya pedido.
+ */
+async function fotoDelEmisorParaLaNota(factura, businessId) {
+  try {
+    const { BusinessCuit } = require('../models');
+    const digitos = String(factura.emisorCuit || '').replace(/\D/g, '');
+    const cuit = factura.businessCuitId
+      ? await BusinessCuit.findOne({ where: { id: factura.businessCuitId, businessId } })
+      : (digitos ? await BusinessCuit.findOne({ where: { businessId, cuit: digitos } }) : null);
+    if (cuit) return fotoDelEmisor(cuit);
+  } catch (e) {
+    log.warn('arca', 'la nota hereda Ingresos Brutos e Inicio de su factura', { facturaId: factura.id, motivo: e.message });
+  }
+  return {
+    emisorIngresosBrutos: factura.emisorIngresosBrutos ?? null,
+    emisorInicioActividades: factura.emisorInicioActividades ?? null,
+  };
+}
 
 /** Lo ya acreditado contra una factura, en pesos. */
 async function acreditado(facturaId, clase, transaction) {
@@ -197,6 +226,7 @@ async function emitirNota({
    * importe— así que lleva una sola línea con el motivo.
    */
   const esTotal = Math.abs(importe - Number(factura.total)) < 0.01;
+  const fotoEmisor = await fotoDelEmisorParaLaNota(factura, businessId);
   const renglonesFactura = esTotal
     ? await InvoiceItem.findAll({ where: { invoiceId: factura.id }, order: [['id', 'ASC']] })
     : [];
@@ -238,6 +268,7 @@ async function emitirNota({
         // El emisor y el receptor de la nota son los de su factura: se heredan.
         emisorDomicilio: factura.emisorDomicilio,
         emisorCondicionIva: factura.emisorCondicionIva,
+        ...fotoEmisor,
         condicionIvaReceptorId: arca.condicionIvaReceptorId || factura.condicionIvaReceptorId || null,
         cobroDestino: factura.cobroDestino,
       }, { transaction: sp }),

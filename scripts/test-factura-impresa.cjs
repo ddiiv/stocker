@@ -11,7 +11,13 @@
  *   · que la fecha sea la que autorizó ARCA, en hora de Argentina,
  *   · que el QR diga, campo por campo, lo que se le mandó a ARCA,
  *   · que la cabecera lleve lo del CUIT y del local, y que no se imprima
- *     basura ("≥") ni rayas en lugar de datos.
+ *     basura ("≥") ni rayas en lugar de datos,
+ *   · que nada se monte sobre otra cosa: el domicilio largo sobre el Email o
+ *     el IVA, un SKU largo sobre el renglón de abajo. Se mira lo que de verdad
+ *     se dibujó (dónde terminó cada texto, y las cajas de cada palabra en el
+ *     PDF), no las constantes del código,
+ *   · que una reimpresión diga lo mismo que el original, y que de una factura
+ *     vieja no se imprima una condición del receptor adivinada.
  *
  * Corre en proceso y sin base: se genera el PDF de verdad con PDFKit y se
  * anota qué texto e imagen se dibujó, dónde y en qué hoja. Los datos son
@@ -55,14 +61,23 @@ function hojaActual(doc) {
   return doc._pageBuffer ? doc._pageBuffer.indexOf(doc.page) + 1 : 0;
 }
 PDFDocument.prototype.text = function (texto, x, y, opciones) {
+  let fila = null;
   if (anotados && this.options.bufferPages) {
     const conXY = typeof x === 'number';
-    anotados.textos.push({
+    fila = {
       s: String(texto ?? ''), x: conXY ? x : this.x, y: conXY ? y : this.y,
       ancho: (conXY ? opciones : x)?.width ?? null, hoja: hojaActual(this),
-    });
+    };
+    anotados.textos.push(fila);
   }
-  return textoOriginal.apply(this, arguments);
+  const r = textoOriginal.apply(this, arguments);
+  /*
+   * Dónde terminó: la `y` que deja PDFKit después de escribirlo, con todos los
+   * renglones en que lo partió. Es lo que permite saber si lo de abajo empieza
+   * después o encima.
+   */
+  if (fila) fila.yFin = this.y;
+  return r;
 };
 PDFDocument.prototype.image = function (src, x, y, opciones) {
   if (anotados && this.options.bufferPages) {
@@ -72,6 +87,31 @@ PDFDocument.prototype.image = function (src, x, y, opciones) {
 };
 
 const contarHojas = (buf) => (buf.toString('latin1').match(/\/Type \/Page\b/g) || []).length;
+
+/*
+ * Las palabras que se encima con otra, mirando el PDF ya hecho: las cajas que
+ * da pdftotext -bbox, hoja por hoja. Un roce de hasta 1,5 pt no cuenta: el
+ * "ARCA" grande del pie y su leyenda chica se rozan 1,3 pt a propósito, como
+ * en el modelo. Dos textos montados de verdad se encima varios puntos.
+ */
+function encimadas(buf) {
+  const html = execFileSync('pdftotext', ['-bbox', '-', '-'], { input: buf }).toString('utf8');
+  const hojas = html.split(/<page /).slice(1);
+  const malas = [];
+  hojas.forEach((h, n) => {
+    const ps = [...h.matchAll(/<word xMin="([\d.]+)" yMin="([\d.]+)" xMax="([\d.]+)" yMax="([\d.]+)">([^<]*)<\/word>/g)]
+      .map((m) => ({ x0: +m[1], y0: +m[2], x1: +m[3], y1: +m[4], s: m[5] }));
+    for (let i = 0; i < ps.length; i++) {
+      for (let j = i + 1; j < ps.length; j++) {
+        const a = ps[i], b = ps[j];
+        const enX = Math.min(a.x1, b.x1) - Math.max(a.x0, b.x0);
+        const enY = Math.min(a.y1, b.y1) - Math.max(a.y0, b.y0);
+        if (enX > 0.5 && enY > 1.5) malas.push(`hoja ${n + 1}: "${a.s}" / "${b.s}"`);
+      }
+    }
+  });
+  return malas;
+}
 
 async function generar(inv, items, ctx = CTX, negocio = NEGOCIO) {
   anotados = { textos: [], imagenes: [] };
@@ -115,6 +155,8 @@ function factura(items, extra = {}) {
     cae: '86400000000017', caeVencimiento: '2026-10-22',
     ambiente: 'produccion', simulado: false,
     ptoVtaArca: 15, cbteNroArca: 7, cbteTipoArca: { A: 1, B: 6, C: 11 }[tipo],
+    // Como toda factura nueva: con la condición del receptor que se declaró.
+    condicionIvaReceptorId: tipo === 'A' ? 1 : 5,
     esMayorista: false,
     ...resto,
   };
@@ -144,9 +186,24 @@ const escribible = (s) => [...s].every((c) => {
   }), dos);
   chk('domicilio y mail muy largos: una hoja', 1, larga.hojas);
 
-  tit('2. EL DOMICILIO NO PISA EL CAMPO DE AL LADO Y EL MAIL NO SE CORTA');
-  const dom = larga.donde('Domicilio: ')[0];
-  chk('el domicilio se parte dentro de su columna', true, Boolean(dom) && dom.x + dom.ancho <= 299.5);
+  tit('2. EL DOMICILIO NO PISA EL CAMPO DE AL LADO NI EL DE ABAJO, Y EL MAIL NO SE CORTA');
+  /*
+   * Con lo que de verdad se dibujó: la x del campo IVA que salió en la hoja
+   * (no la constante del código) y la y donde terminó el domicilio partido,
+   * contra la y del Email. Un renglón de más o de menos en la cuenta de la
+   * fila monta el Email sobre el domicilio, y eso es lo que se mira.
+   */
+  const etiqueta = (g, e) => g.textos.findIndex((t) => t.s === `${e}: `);
+  const dom = larga.textos[etiqueta(larga, 'Domicilio')];
+  const domValor = larga.textos[etiqueta(larga, 'Domicilio') + 1];
+  const ivaCliente = larga.textos[etiqueta(larga, 'IVA')];
+  const emailLargo = larga.textos[etiqueta(larga, 'Email')];
+  chk('el domicilio de la prueba ocupa tres renglones o más', true, Boolean(domValor) && domValor.yFin - dom.y >= 3 * 9);
+  chk('el domicilio se parte antes del IVA que se dibujó al lado', true,
+    Boolean(dom && ivaCliente) && dom.y === ivaCliente.y && dom.x + dom.ancho <= ivaCliente.x);
+  chk('el Email empieza debajo de donde terminó el domicilio', true,
+    Boolean(domValor && emailLargo) && emailLargo.y >= domValor.yFin);
+  chk('ninguna palabra de la hoja se encima con otra', [], encimadas(larga.buf));
   const textoLargo = execFileSync('pdftotext', ['-layout', '-', '-'], { input: larga.buf }).toString('utf8');
   chk('el mail sale entero en un renglón', true,
     textoLargo.split('\n').some((l) => l.includes('maria.de.las.mercedes.fernandez.rodriguez.compras@empresaconnombremuylargo.com.ar')));
@@ -200,6 +257,14 @@ const escribible = (s) => [...s].every((c) => {
   const gD = await generar(fd, dos, { ...CTX, descuentoPct: 10 });
   chk('   y se imprime en negativo, con su porcentaje', true,
     gD.hay('Descuentos') && gD.hay('-4.000,00') && gD.hay('Descuento (10%)'));
+  /*
+   * El renglón, como el del modelo: el mismo importe en Precio Unitario y en
+   * Precio Total, y la columna IVA vacía. No es un producto con su neto.
+   */
+  const renglonDesc = gD.donde('Descuento (10%)')[0];
+  chk('   el renglón del descuento: unidades, el importe dos veces y sin alícuota',
+    ['Descuento (10%)', '1', '-4.000,00', '-4.000,00'],
+    gD.textos.filter((t) => renglonDesc && Math.abs(t.y - renglonDesc.y) < 1).map((t) => t.s));
   const vA = facturaPdf.__vista(fa, dos, NEGOCIO, CTX);
   chk('en la A, neto + IVA = total', vA.total, r2(vA.neto + vA.iva));
 
@@ -264,16 +329,54 @@ const escribible = (s) => [...s].every((c) => {
     [facturaPdf.__vista(factura(dos), dos, NEGOCIO, CTX).emisor.condicionIva,
       facturaPdf.__vista(factura(dos, { tipo: 'C', emisorCondicionIva: 'Monotributo' }), dos, NEGOCIO, CTX).emisor.condicionIva]);
 
+  tit('8b. INGRESOS BRUTOS E INICIO: LOS DE LA FACTURA, NO LOS DEL CUIT DE HOY');
+  /*
+   * Se guardan al emitir. La reimpresión tiene que decir lo mismo que el papel
+   * que recibió el cliente, aunque después se cargue o se cambie el dato del
+   * CUIT (pasar a Convenio Multilateral cambia el número).
+   */
+  const ctxHoy = { ...CTX, emisor: { ...CTX.emisor, ingresosBrutos: 'C.M. 902-999999-9', inicioActividades: '2024-01-01' } };
+  const conFotoIibb = await generar(factura(dos, {
+    emisorIngresosBrutos: 'C.M. 901-000000-1', emisorInicioActividades: '2019-03-01',
+  }), dos, ctxHoy);
+  chk('la reimpresión dice lo que se guardó al emitir, no lo del CUIT de hoy', [true, true, false, false],
+    [conFotoIibb.hay('ING. BRUTOS: C.M. 901-000000-1'), conFotoIibb.hay('Inicio Actividades: 01/03/2019'),
+      conFotoIibb.hay(/902-999999-9/), conFotoIibb.hay(/01\/01\/2024/)]);
+  const emitidaSinIibb = await generar(factura(dos, { emisorIngresosBrutos: '', emisorInicioActividades: '' }), dos, ctxHoy);
+  chk('   una emitida sin esos datos sigue sin ellos aunque después se carguen', [false, false],
+    [emitidaSinIibb.hay(/ING\. BRUTOS/), emitidaSinIibb.hay(/Inicio Actividades/)]);
+  const anteriorALaFoto = await generar(factura(dos, { emisorIngresosBrutos: null, emisorInicioActividades: null }), dos, ctxHoy);
+  chk('   una anterior a la foto (null) cae a los del CUIT, que es lo único que hay', [true, true],
+    [anteriorALaFoto.hay('ING. BRUTOS: C.M. 902-999999-9'), anteriorALaFoto.hay('Inicio Actividades: 01/01/2024')]);
+  chk('la foto: lo del CUIT, y vacío (no null) lo que no tiene cargado',
+    [{ emisorIngresosBrutos: 'C.M. 901-000000-1', emisorInicioActividades: '2019-03-01' },
+      { emisorIngresosBrutos: '', emisorInicioActividades: '' }, { emisorIngresosBrutos: '', emisorInicioActividades: '' }],
+    [facturaPdf.fotoDelEmisor({ ingresosBrutos: ' C.M. 901-000000-1 ', inicioActividades: '2019-03-01' }),
+      facturaPdf.fotoDelEmisor({ ingresosBrutos: null, inicioActividades: null }), facturaPdf.fotoDelEmisor(null)]);
+
   tit('9. EL CLIENTE, CON SU CONDICIÓN FRENTE AL IVA (RG 5616)');
   chk('Apellido y Nombre, DNI, Domicilio e IVA', true,
     corta.hay('Apellido y Nombre: ') && corta.hay('DNI: ') && corta.hay('Domicilio: ') && corta.hay('Consumidor Final'));
   const mono = facturaPdf.__vista(factura(dos, { clienteCuit: '20111111112', condicionIvaReceptorId: 6 }), dos, NEGOCIO, CTX);
   chk('la guardada al emitir', ['Responsable Monotributo', 'CUIT', '20-11111111-2'],
     [mono.receptor.condicionIva, mono.receptor.documento.etiqueta, mono.receptor.documento.valor]);
-  chk('una factura vieja sin el dato la deduce del tipo y del documento',
-    ['Consumidor Final', 'IVA Responsable Inscripto'],
-    [facturaPdf.__vista(factura(dos, { clienteCuit: null }), dos, NEGOCIO, CTX).receptor.condicionIva,
-      facturaPdf.__vista(factura(dos, { tipo: 'A', clienteCuit: '30709998887' }), dos, NEGOCIO, CTX).receptor.condicionIva]);
+  /*
+   * Una factura anterior a que se guardara la condición (null). Con CUIT, el
+   * código de entonces declaraba lo que contestaba el padrón —monotributo,
+   * exento—: imprimir "Consumidor Final" ahí sería un dato fiscal falso. Sólo
+   * se imprime lo que se sabe seguro.
+   */
+  const vieja = (extra) => facturaPdf.__vista(factura(dos, { condicionIvaReceptorId: null, ...extra }), dos, NEGOCIO, CTX)
+    .receptor.condicionIva;
+  chk('una factura vieja sin documento: Consumidor Final, que era lo único posible', 'Consumidor Final',
+    vieja({ clienteCuit: null }));
+  chk('   una A vieja: Responsable Inscripto, que era a lo único que se emitía', 'IVA Responsable Inscripto',
+    vieja({ tipo: 'A', clienteCuit: '30709998887' }));
+  chk('   una B o una C vieja con documento: no se adivina', [null, null, null],
+    [vieja({ clienteCuit: '20111111112' }), vieja({ clienteCuit: '30111222' }), vieja({ tipo: 'C', clienteCuit: '20111111112' })]);
+  const viejaPdf = await generar(factura(dos, { condicionIvaReceptorId: null, clienteCuit: '20111111112' }), dos);
+  chk('   y en el papel no sale el renglón del IVA del cliente', [false, false],
+    [viejaPdf.hay('IVA: '), viejaPdf.hay('Consumidor Final')]);
 
   tit('10. TEXTO QUE LA FUENTE PUEDE ESCRIBIR');
   const may = await generar(factura(dos, { esMayorista: true }), dos);
@@ -308,7 +411,32 @@ const escribible = (s) => [...s].every((c) => {
   chk('una nota de crédito se titula y se codifica como tal, y dice a qué factura revierte', true,
     nc.hay('Nota de Crédito') && nc.hay('COD. 08') && nc.hay('Factura B N° 00015-00000007 del 12/10/2026'));
 
-  tit('12. UNA SOLA IMPLEMENTACIÓN: EL ARCHIVO ES EL MISMO PDF QUE SE DESCARGA');
+  tit('12. UN SKU LARGO NO SE MONTA SOBRE EL RENGLÓN DE ABAJO');
+  /*
+   * La columna admite hasta 100 caracteres y con unos 25 el SKU ya no entra en
+   * una línea ni con la letra más chica: se parte, y el renglón tiene que
+   * crecer lo que ocupe. Se mira que todo lo que se escribe en un renglón
+   * termine antes de que empiece lo del siguiente.
+   */
+  const SKU_30 = 'REMERA-OVERSIZE-NEGRO-XXL-0001';
+  const SKU_100 = `${'REMERAOVERSIZENEGRO'.repeat(5)}XXXXX`;
+  const conSku = (sku, i) => ({ ...renglon(i, 1000, 1), sku, titulo: `Prenda QA ${i}` });
+  const largos = [conSku(SKU_30, 1), conSku(SKU_30.replace(/1$/, '2'), 2), conSku('QA-CORTO', 3), conSku(SKU_100, 4), conSku('QA-ULTIMO', 5)];
+  const gSku = await generar(factura(largos), largos);
+  chk('los SKU de prueba miden lo que tienen que medir', [30, 100], [SKU_30.length, SKU_100.length]);
+  const filas = largos.map((it) => gSku.textos.filter((t) => t.s === it.sku || t.s.startsWith(`${it.titulo} (`)));
+  chk('   cada renglón tiene su SKU entero y su producto', largos.map(() => 2), filas.map((f) => f.length));
+  const pisadas = [];
+  for (let i = 0; i + 1 < filas.length; i++) {
+    const termina = Math.max(...filas[i].map((t) => t.yFin));
+    const empieza = Math.min(...filas[i + 1].map((t) => t.y));
+    if (!(termina <= empieza)) pisadas.push(`${largos[i].sku} termina en ${termina.toFixed(1)} y el de abajo empieza en ${empieza.toFixed(1)}`);
+  }
+  chk('   lo de cada renglón termina antes de que empiece el siguiente', [], pisadas);
+  chk('   ninguna palabra se encima con otra', [], encimadas(gSku.buf));
+  chk('   y sigue entrando en una hoja', 1, gSku.hojas);
+
+  tit('13. UNA SOLA IMPLEMENTACIÓN: EL ARCHIVO ES EL MISMO PDF QUE SE DESCARGA');
   const ruta = await pdfService.generateInvoicePdf(factura(dos), dos, NEGOCIO, CTX);
   const delArchivo = execFileSync('pdftotext', ['-layout', path.resolve(ruta), '-']).toString('utf8');
   const delBuffer = execFileSync('pdftotext', ['-layout', '-', '-'],

@@ -72,7 +72,7 @@ require('dotenv').config({ path: __dirname + '/../.env' });
 process.env.ARCA_MOCK = 'false';
 
 const { Op } = require('sequelize');
-const { Business, Invoice, InvoiceItem, Sale, ArcaIntento } = require(path.join(__dirname, '..', 'src', 'models'));
+const { Business, BusinessCuit, Invoice, InvoiceItem, Sale, ArcaIntento } = require(path.join(__dirname, '..', 'src', 'models'));
 const notas = require(path.join(__dirname, '..', 'src', 'services', 'notaCreditoService.js'));
 
 let ok = 0, ko = 0;
@@ -116,6 +116,7 @@ const QA = 'QA-NC-';
       await Invoice.destroy({ where: { id: filas.map((f) => f.id) } });
     }
     await ArcaIntento.destroy({ where: { cuitEmisor: '30999999911' } });
+    await BusinessCuit.destroy({ where: { businessId: negocio.id, nombre: 'QA Emisor NC' } });
     /* Lo que movieron los efectos: caja, asientos y el cliente de prueba. */
     const { CashMovement, Client, ClientAccountEntry } = require(path.join(__dirname, '..', 'src', 'models'));
     await CashMovement.destroy({ where: { motivo: { [Op.like]: '%Nota de crédito%' } } });
@@ -268,6 +269,30 @@ const QA = 'QA-NC-';
     chk('el emisor y el ambiente también', ['30-99999991-1', 'produccion'],
       [parcial.emisorCuit, parcial.ambiente]);
     chk('y sale del mismo punto de venta', 8, parcial.ptoVtaArca);
+
+    /*
+     * Ingresos Brutos e Inicio de Actividades no identifican al comprobante
+     * revertido: son la inscripción del emisor cuando emite ESTE papel. Van
+     * los del CUIT de hoy, y quedan guardados en la nota para que su
+     * reimpresión no cambie. Si el CUIT no se encuentra, los de la factura.
+     */
+    const cuitNc = await BusinessCuit.create({
+      businessId: negocio.id, nombre: 'QA Emisor NC', cuit: '30999999911', esPrincipal: false,
+      ingresosBrutos: 'C.M. QA-NC-HOY', inicioActividades: '2018-05-05',
+    });
+    const conCuit = await crearFactura({
+      businessCuitId: cuitNc.id, emisorIngresosBrutos: 'C.M. QA-NC-VIEJO', emisorInicioActividades: '2010-01-01',
+    });
+    const notaConCuit = await notas.emitirNota({ businessId: negocio.id, facturaId: conCuit.id, motivo: 'QA inscripción' });
+    chk('Ingresos Brutos e Inicio: los del CUIT al emitir la nota, guardados en ella', ['C.M. QA-NC-HOY', '2018-05-05'],
+      [notaConCuit.emisorIngresosBrutos, notaConCuit.emisorInicioActividades]);
+    await cuitNc.destroy();
+    const sinCuit = await crearFactura({
+      businessCuitId: cuitNc.id, emisorIngresosBrutos: 'C.M. QA-NC-VIEJO', emisorInicioActividades: '2010-01-01',
+    });
+    const notaSinCuit = await notas.emitirNota({ businessId: negocio.id, facturaId: sinCuit.id, motivo: 'QA sin CUIT' });
+    chk('   sin el CUIT, los de su factura', ['C.M. QA-NC-VIEJO', '2010-01-01'],
+      [notaSinCuit.emisorIngresosBrutos, notaSinCuit.emisorInicioActividades]);
 
     tit('7. LO QUE LA NOTA MUEVE ADEMÁS DEL COMPROBANTE');
     /*

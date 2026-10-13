@@ -6,7 +6,7 @@ const { nextInvoiceNumber, crearConNumero } = require('../services/invoiceNumber
 const { tipoComprobante, solicitarCAE, determineInvoiceType, calcularIVA } = require('../services/arcaService');
 const { lookupCuit } = require('../services/arcaLookupService');
 const { generateInvoicePdf, generateInvoicePdfBuffer, destinatariosDe } = require('../services/pdfService');
-const { contextoDeImpresion, domicilioComercial } = require('../services/facturaPdf');
+const { contextoDeImpresion, domicilioComercial, fotoDelEmisor } = require('../services/facturaPdf');
 
 /*
  * Los destinatarios del cobro, en una línea para guardar en la factura.
@@ -375,6 +375,9 @@ const createInvoice = async (req, res, next) => {
         emisorDomicilio,
         emisorCondicionIva: condicionEmisor ? String(condicionEmisor).slice(0, 60) : null,
         condicionIvaReceptorId: condicionIvaReceptorId || null,
+        // Ingresos Brutos e Inicio de Actividades como están HOY en el CUIT:
+        // la reimpresión tiene que decir lo mismo que este papel.
+        ...fotoDelEmisor(emisor),
         fechaEmision:  new Date(),
         estado:        'emitida',
       }, { transaction: sp || t }),
