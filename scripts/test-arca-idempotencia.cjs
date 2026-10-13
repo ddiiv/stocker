@@ -67,10 +67,14 @@ Module._load = function (pedido) {
             <PtoVta>8</PtoVta><CbteTipo>6</CbteTipo><CbteFch>${c.fecha}</CbteFch>
             <ImpTotal>${c.total}</ImpTotal><DocTipo>96</DocTipo><DocNro>${c.docNro}</DocNro>
             <Resultado>A</Resultado><CodAutorizacion>${c.cae}</CodAutorizacion><FchVto>20261130</FchVto>
+            ${c.condicion ? `<CondicionIVAReceptorId>${c.condicion}</CondicionIVAReceptorId>` : ''}
           </ResultGet></FECompConsultarResult>` };
         }
         // FECAESolicitar
         AFIP.llamadas.push('solicitar');
+        // La fecha que se pidió: la primera del pedido (la del CbtesAsoc, si hay, va después).
+        AFIP.cbteFchPedida = (cuerpo.match(/<ar:CbteFch>(\d+)</) || [])[1] || null;
+        AFIP.condicionPedida = Number((cuerpo.match(/<ar:CondicionIVAReceptorId>(\d+)</) || [])[1]) || null;
         if (AFIP.solicitar === 'corte') throw new Error('timeout of 30000ms exceeded');
         if (AFIP.solicitar === 'rechazo') {
           return { data: `<FECAESolicitarResult><FeDetResp><FECAEDetResponse>
@@ -151,6 +155,8 @@ const fallo = async (fn) => { try { await fn(); return null; } catch (e) { retur
   chk('se pide el CAE y se devuelve', ['75000000000009', 24], [normal.cae, normal.numero]);
   chk('no se le pregunta nada de más a AFIP', ['ultimo', 'solicitar'], AFIP.llamadas);
   chk('y no figura como recuperado', false, normal.recuperado);
+  chk('el intento anota la condición del receptor que se pidió', [5, 5],
+    [AFIP.condicionPedida, Number((await intentos())[0]?.condicionIvaReceptorId) || null]);
 
   await limpiar();
   tit('2. SE CORTÓ, Y AFIP NO LO HABÍA AUTORIZADO');
@@ -337,6 +343,22 @@ const fallo = async (fn) => { try { await fn(); return null; } catch (e) { retur
   chk('y se dice cuál es el comprobante que ya existe',
     { ptoVta: 8, cbteTipo: 6, numero: 24, importe: TOTAL }, otroImporte?.detalles?.comprobante);
 
+  /*
+   * La condición del receptor es la que se declaró con ESE CAE. El primer
+   * intento le preguntó al padrón ("Monotributo", 6); en el reintento el
+   * padrón está caído y se calcularía Consumidor Final. La factura tiene que
+   * guardar —e imprimir, y su nota declarar— lo que ARCA tiene.
+   */
+  await limpiar();
+  await intentoHuerfano({ condicionIvaReceptorId: 6 });
+  const conCondicion = await emitir({ saleId: 777 });
+  chk('el CAE rescatado trae la condición con que se pidió, no la de ahora', [true, 6],
+    [conCondicion.recuperado, conCondicion.condicionIvaReceptorId]);
+  await limpiar();
+  await intentoHuerfano({ condicionIvaReceptorId: null });
+  chk('   un intento anterior a que se anotara cae a la de ahora', 5,
+    (await emitir({ saleId: 777 })).condicionIvaReceptorId);
+
   await limpiar();
   await intentoHuerfano({ invoiceId: 12345 });
   AFIP.solicitar = 'ok'; AFIP.llamadas = [];
@@ -368,6 +390,18 @@ const fallo = async (fn) => { try { await fn(); return null; } catch (e) { retur
     [rescatadoEnCurso.cae, rescatadoEnCurso.recuperado]);
   chk('y no se pidió un CAE nuevo', false, AFIP.llamadas.includes('solicitar'));
   chk('el intento queda cerrado como autorizado', 'autorizado', (await intentos())[0]?.estado);
+
+  await limpiar();
+  await enCurso({ createdAt: viejo, condicionIvaReceptorId: 6 });
+  AFIP.solicitar = 'ok'; AFIP.llamadas = [];
+  AFIP.comprobante = { numero: 24, total: TOTAL, docNro: DOC, fecha: HOY, cae: '75000000000024' };
+  chk('   con la condición del receptor que se anotó al pedirlo', 6,
+    (await emitir({ saleId: 777 })).condicionIvaReceptorId);
+  await limpiar();
+  await enCurso({ createdAt: viejo, condicionIvaReceptorId: 6 });
+  AFIP.comprobante = { numero: 24, total: TOTAL, docNro: DOC, fecha: HOY, cae: '75000000000024', condicion: 4 };
+  chk('   y si AFIP la dice, la de AFIP', 4, (await emitir({ saleId: 777 })).condicionIvaReceptorId);
+  AFIP.comprobante = null;
 
   await limpiar();
   await enCurso({ createdAt: viejo });
@@ -479,6 +513,64 @@ const fallo = async (fn) => { try { await fn(); return null; } catch (e) { retur
   });
   const libre = await arca.resolverIntento({ businessId: 39, id: otro.id });
   chk('si AFIP no lo tiene, el número queda libre', 'descartado', libre.estado);
+
+  await limpiar();
+  tit('12. LA FECHA NO VA PARA ATRÁS (LA NOCHE DEL DESPLIEGUE)');
+  /*
+   * Hasta v3.40 la fecha salía en UTC: una venta de las 21 a las 24 se le
+   * declaraba a ARCA con el día siguiente. Si esa noche entra el código nuevo,
+   * la próxima factura de ese punto de venta saldría con "hoy", anterior a la
+   * del último autorizado, y ARCA la rechaza (10016) hasta la medianoche.
+   */
+  const { aaaammddArgentina } = require('../src/utils/fechaFiscal');
+  const masDias = (n) => aaaammddArgentina(new Date(Date.now() + n * 86400e3));
+  const MANANA = masDias(1);
+  const autorizadoAntes = (fecha, extra = {}) => ArcaIntento.create({
+    businessId: 39, saleId: 555, cuitEmisor: CUIT_QA, ambiente: 'produccion',
+    ptoVta: 8, cbteTipo: 6, numero: AFIP.ultimo, total: TOTAL, docNro: String(DOC), fecha,
+    estado: 'autorizado', cae: '75000000000023', caeVencimiento: '2026-11-30', invoiceId: 1, resueltoEn: new Date(),
+    ...extra,
+  });
+  AFIP.solicitar = 'ok'; AFIP.comprobante = null;
+
+  await autorizadoAntes(MANANA);
+  const nocheDelCambio = await emitir();
+  chk('el último autorizado es de mañana (UTC): éste sale con esa fecha, no con una anterior',
+    [MANANA, MANANA], [AFIP.cbteFchPedida, nocheDelCambio.cbteFch]);
+  chk('   y el intento la anota, para reconocerlo si hay que ir a buscarlo', MANANA,
+    (await intentos()).find((i) => i.numero === AFIP.ultimo + 1)?.fecha);
+
+  await limpiar();
+  await autorizadoAntes(HOY);
+  const normalHoy = await emitir();
+  chk('con el último de hoy, hoy', [HOY, HOY], [AFIP.cbteFchPedida, normalHoy.cbteFch]);
+
+  await limpiar();
+  await autorizadoAntes(masDias(3));
+  chk('más de un día para adelante no es la noche del cambio: va hoy y que lo diga ARCA', HOY,
+    (await emitir()).cbteFch);
+
+  await limpiar();
+  await autorizadoAntes(MANANA, { estado: 'descartado', cae: null });
+  chk('un intento que AFIP no autorizó no cuenta', HOY, (await emitir()).cbteFch);
+
+  await limpiar();
+  await autorizadoAntes(MANANA, { cuitEmisor: '30999999922' });
+  chk('el de otro CUIT no cuenta', HOY, (await emitir()).cbteFch);
+  await ArcaIntento.destroy({ where: { cuitEmisor: '30999999922' } });
+
+  await limpiar();
+  /*
+   * Una nota no puede tener fecha anterior a la de la factura que revierte:
+   * la factura de anoche a las 22 quedó con la fecha de hoy UTC.
+   */
+  const nota = await arca.solicitarCAE({
+    tipo: 'B', clase: 'nota_credito', total: 1000, clienteCuit: String(DOC), clienteCondicion: 'Consumidor Final',
+    businessCuit: '30-99999991-1', puntoVenta: 8, ambiente: 'produccion', businessId: 39, saleId: 556,
+    asociada: { cbteTipo: 6, ptoVta: 8, numero: 20, fecha: MANANA, cuit: '30999999911' },
+  });
+  chk('una nota sobre una factura fechada mañana sale con esa fecha', [MANANA, MANANA],
+    [AFIP.cbteFchPedida, nota.cbteFch]);
 
   } finally {
     await limpiar();

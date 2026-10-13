@@ -357,7 +357,8 @@ async function solicitarCAE({
   /*
    * El día del comprobante, en hora de Argentina (ver utils/fechaFiscal).
    * Se calcula una sola vez: es el que se pide, el que se anota en el intento
-   * y el que se devuelve para guardar e imprimir.
+   * y el que se devuelve para guardar e imprimir. Sólo la noche en que se
+   * pasó de UTC a hora argentina puede correrse un día (ver fechaQueNoRetrocede).
    */
   const hoy = aaaammddArgentina();
   const condReceptor = Number(condicionReceptorId)
@@ -412,7 +413,13 @@ async function solicitarCAE({
    * factura.
    */
   const yaEmitido = await rescatarSinFactura({ businessId, saleId, esperado, ptoVta: Number(puntoVenta), cbteTipo });
-  if (yaEmitido) return { ...yaEmitido, ambiente, condicionIvaReceptorId: condReceptor };
+  /*
+   * La condición del receptor es la que se declaró al pedir ESE CAE, no la de
+   * ahora: si el padrón contestó otra cosa la primera vez, la factura tiene que
+   * decir lo que ARCA tiene. La de ahora sólo para un intento anterior a que
+   * se anotara.
+   */
+  if (yaEmitido) return { ...yaEmitido, ambiente, condicionIvaReceptorId: yaEmitido.condicionIvaReceptorId || condReceptor };
 
   /*
    * Si ARCA viene cayéndose, no se le pregunta: se contesta rápido.
@@ -444,7 +451,7 @@ async function solicitarCAE({
       cli, cert, key, ambiente, cuitEmisor,
       ptoVta: Number(puntoVenta), cbteTipo, saleId, esperado,
     });
-    if (rescatado) return { ...rescatado, ambiente, condicionIvaReceptorId: condReceptor };
+    if (rescatado) return { ...rescatado, ambiente, condicionIvaReceptorId: rescatado.condicionIvaReceptorId || condReceptor };
 
     // Consultar último número + 1
     const ultimo = await cli.feCompUltimoAutorizado({
@@ -461,6 +468,12 @@ async function solicitarCAE({
     throw errorAntesDelCae(err, { ambiente, cuitEmisor, puntoVenta });
   }
 
+  const cbteFch = await fechaQueNoRetrocede({
+    hoy, cuitEmisor, ambiente, ptoVta: Number(puntoVenta), cbteTipo, ultimo: numero - 1, asociada,
+  });
+  // Es la fecha con la que se reconoce el comprobante si después hay que ir a buscarlo.
+  esperado.fecha = cbteFch;
+
   const FeCAEReq = {
     FeCabReq: {
       CantReg: 1, PtoVta: Number(puntoVenta), CbteTipo: cbteTipo,
@@ -470,7 +483,7 @@ async function solicitarCAE({
         Concepto:                 1,
         DocTipo:                  docTipoFromCliente(clienteCuit),
         DocNro:                   clienteCuit ? Number(String(clienteCuit).replace(/\D/g, '')) : 0,
-        CbteDesde:                numero, CbteHasta: numero, CbteFch: hoy,
+        CbteDesde:                numero, CbteHasta: numero, CbteFch: cbteFch,
         ImpTotal:                 Number(total), ImpTotConc: 0,
         ImpNeto:                  neto, ImpOpEx: 0,
         ImpIVA:                   iva, ImpTrib: 0,
@@ -510,7 +523,7 @@ async function solicitarCAE({
    */
   const intento = await anotarIntento({
     businessId, saleId, cuitEmisor, ambiente,
-    ptoVta: Number(puntoVenta), cbteTipo, numero, esperado,
+    ptoVta: Number(puntoVenta), cbteTipo, numero, esperado, condicionIvaReceptorId: condReceptor,
   });
 
   let result;
@@ -625,7 +638,7 @@ async function solicitarCAE({
      * depender de un blob opcional para eso es quedarse sin salida el día que
      * no parsee.
      */
-    cbteTipo, cbteFch: hoy, clase,
+    cbteTipo, cbteFch, clase,
     // Lo que se declaró del receptor (RG 5616): la factura lo guarda y lo imprime.
     condicionIvaReceptorId: condReceptor,
     /*
@@ -885,6 +898,8 @@ async function rescatarSinFactura({ businessId, saleId, esperado, ptoVta, cbteTi
      */
     cbteTipo: intento.cbteTipo,
     cbteFch: intento.fecha || null,
+    // La que se le declaró a ARCA con ese CAE (null en un intento anterior a que se anotara).
+    condicionIvaReceptorId: Number(intento.condicionIvaReceptorId) || null,
     recuperado: true,
     intentoId: intento.id,
     respuesta: {
@@ -893,6 +908,60 @@ async function rescatarSinFactura({ businessId, saleId, esperado, ptoVta, cbteTi
       recuperado: true, sinFacturaPrevia: true,
     },
   };
+}
+
+/*
+ * ══ La fecha no puede ir para atrás ══════════════════════════════
+ *
+ * ARCA rechaza (10016) un comprobante con fecha anterior a la del último que
+ * autorizó para ese punto de venta y tipo, y una nota con fecha anterior a la
+ * de la factura que revierte.
+ *
+ * Con la fecha en hora argentina eso no pasa nunca, salvo una noche: la del
+ * despliegue que pasó de UTC a hora argentina (v3.41). Hasta ahí, una venta de
+ * las 21 a las 24 se declaraba con el día SIGUIENTE; si esa misma noche entra
+ * el código nuevo, la próxima factura de ese punto de venta sale con "hoy", que
+ * es anterior, y ARCA la rechaza hasta la medianoche. Con el local abierto.
+ *
+ * En ese caso se usa la fecha del último: es la que el código viejo le habría
+ * puesto, ARCA la acepta (para productos admite hasta cinco días para
+ * adelante) y el papel imprime la que ARCA autorizó. Se adelanta UN día y no
+ * más: más que eso no es la noche del cambio sino otra cosa, y que lo diga ARCA.
+ *
+ * La fecha del último sale de los intentos, que anotan con qué fecha se pidió
+ * cada número: sin un viaje más a AFIP en cada factura. Si no se puede leer,
+ * va la de hoy, que es lo que se hacía.
+ */
+function diaSiguiente(aaaammdd) {
+  const m = String(aaaammdd || '').match(/^(\d{4})(\d{2})(\d{2})$/);
+  if (!m) return null;
+  const d = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]) + 1));
+  return `${d.getUTCFullYear()}${String(d.getUTCMonth() + 1).padStart(2, '0')}${String(d.getUTCDate()).padStart(2, '0')}`;
+}
+
+async function fechaQueNoRetrocede({ hoy, cuitEmisor, ambiente, ptoVta, cbteTipo, ultimo, asociada = null }) {
+  const pisos = [];
+  if (asociada?.fecha) pisos.push(String(asociada.fecha));
+  if (ultimo > 0) {
+    try {
+      const { ArcaIntento } = require('../models');
+      const previo = await ArcaIntento.findOne({
+        where: { cuitEmisor, ambiente, ptoVta, cbteTipo, numero: ultimo, estado: 'autorizado' },
+        attributes: ['id', 'fecha'],
+        order: [['id', 'DESC']],
+      });
+      if (previo?.fecha) pisos.push(String(previo.fecha));
+    } catch (e) {
+      log.warn('arca', 'no se pudo leer la fecha del último comprobante; va la de hoy', { cuitEmisor, ptoVta, motivo: e.message });
+    }
+  }
+  const manana = diaSiguiente(hoy);
+  const piso = pisos.filter((f) => /^\d{8}$/.test(f) && f > hoy && f <= manana).sort().pop();
+  if (!piso) return hoy;
+  log.warn('arca', 'el comprobante anterior tiene la fecha de mañana: este sale con esa para que ARCA no lo rechace', {
+    cuitEmisor, ptoVta, cbteTipo, hoy, fecha: piso,
+  });
+  return piso;
 }
 
 /*
@@ -913,13 +982,16 @@ async function rescatarSinFactura({ businessId, saleId, esperado, ptoVta, cbteTi
  */
 const EN_VUELO_MS = 90_000;
 
-async function anotarIntento({ businessId, saleId, cuitEmisor, ambiente, ptoVta, cbteTipo, numero, esperado }) {
+async function anotarIntento({
+  businessId, saleId, cuitEmisor, ambiente, ptoVta, cbteTipo, numero, esperado, condicionIvaReceptorId = null,
+}) {
   const { ArcaIntento } = require('../models');
   try {
     return await ArcaIntento.create({
       businessId: businessId || 0, saleId: saleId || null,
       cuitEmisor, ambiente, ptoVta, cbteTipo, numero,
       total: esperado.total, docNro: String(esperado.docNro || ''), fecha: esperado.fecha,
+      condicionIvaReceptorId: Number(condicionIvaReceptorId) || null,
       estado: 'en_curso',
     });
   } catch (e) {
@@ -1071,6 +1143,8 @@ async function resolverIntentosAbiertos({ cli, cert, key, ambiente, cuitEmisor, 
       // La fecha la dice AFIP, que es la que vale; la del intento, si no vino.
       cbteTipo,
       cbteFch: enAfip.CbteFch || intento.fecha || null,
+      // Igual que la fecha: la que dice AFIP, y si no vino, la que se anotó al pedirlo.
+      condicionIvaReceptorId: Number(enAfip.CondicionIVAReceptorId) || Number(intento.condicionIvaReceptorId) || null,
       recuperado: true,
       intentoId: intento.id,
       respuesta: { ...enAfip, puntoVenta: ptoVta, cbteTipo, numero: intento.numero, recuperado: true },

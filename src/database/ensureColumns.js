@@ -236,6 +236,11 @@ const COLUMNAS_ESPERADAS = {
     emisorIngresosBrutos:    { type: DataTypes.STRING(40), allowNull: true },
     emisorInicioActividades: { type: DataTypes.STRING(10), allowNull: true },
   },
+  arca_intentos: {
+    // La condición del receptor con que se pidió el CAE: un rescate la
+    // devuelve tal cual en vez de recalcularla. Ver el modelo de ArcaIntento.
+    condicionIvaReceptorId: { type: DataTypes.INTEGER, allowNull: true },
+  },
   business_cuits: {
     // Ingresos Brutos e Inicio de Actividades: van en la cabecera de la
     // factura (RG 1415) y ARCA no los da. Los carga el dueño. Ver el modelo.

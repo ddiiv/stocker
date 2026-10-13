@@ -489,6 +489,8 @@ function parsearComprobante(xml) {
     DocTipo: Number(dato('DocTipo') || 0),
     PtoVta: Number(dato('PtoVta') || 0),
     CbteTipo: Number(dato('CbteTipo') || 0),
+    // La condición del receptor con que se autorizó (RG 5616); null si AFIP no la manda.
+    CondicionIVAReceptorId: Number(dato('CondicionIVAReceptorId') || 0) || null,
   };
 }
 

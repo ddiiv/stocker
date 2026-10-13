@@ -517,6 +517,15 @@ const ArcaIntento = db.define('ArcaIntento', {
   // Hasta once dígitos: no entra en un entero de 32 bits.
   docNro:     { type: DataTypes.STRING(20), allowNull: true },
   fecha:      { type: DataTypes.STRING(8), allowNull: true },   // CbteFch, AAAAMMDD
+  /*
+   * La condición del receptor que se declaró en ESTE pedido (RG 5616).
+   *
+   * Si el CAE se rescata en un reintento, la factura tiene que guardar la que
+   * se le mandó a ARCA, no la que se calcule en el reintento: el padrón puede
+   * haber contestado "Monotributo" la primera vez y estar caído la segunda, y
+   * la factura saldría impresa —y su nota declarada— como Consumidor Final.
+   */
+  condicionIvaReceptorId: { type: DataTypes.INTEGER, allowNull: true },
 
   /*
    * en_curso   → se pidió y todavía no se sabe. Es el estado peligroso.
