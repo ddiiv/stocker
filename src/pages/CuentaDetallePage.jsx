@@ -45,7 +45,16 @@ export default function CuentaDetallePage() {
     try {
       if (accion === "aprobar") {
         const r = await api.aprobarPago(pagoId);
-        setOk(`Pago acreditado. La cuenta queda paga hasta el ${fecha(r.periodo.hasta)}.`);
+        // Qué pasó con el plan: acreditar un pago de otro plan lo cambia, y
+        // quien acredita tiene que verlo en el momento.
+        const cambio = r.plan?.cambio === "sube"
+          ? ` Pasó al ${r.plan.vigente?.nombre} desde ahora.`
+          : r.plan?.cambio === "baja" && r.plan.pendiente
+            ? ` Pasa al ${r.plan.pendiente.nombre} el ${fecha(r.plan.pendiente.desde)}, al terminar lo que ya pagó.`
+            : r.plan?.cambio === "baja"
+              ? ` Pasó al ${r.plan.vigente?.nombre} desde ahora (no tenía un período pago en curso).`
+              : "";
+        setOk(`Pago acreditado. La cuenta queda paga hasta el ${fecha(r.periodo.hasta)}.${cambio}`);
       } else {
         await api.rechazarPago(pagoId, "Rechazado desde el backoffice");
         setOk("Pago marcado como rechazado.");
@@ -122,6 +131,11 @@ export default function CuentaDetallePage() {
               : s.metodoPago === "manual" ? "Acordado" : "Sin definir"
             } />
             <Dato rotulo="Precio cerrado" valor={s.precioAcordado != null ? plata(s.precioAcordado) : "De lista"} />
+            {/* Una bajada ya paga por el cliente, que rige al terminar el
+                período. Poner un plan a mano desde "Editar" la cancela. */}
+            {s.planPendiente && (
+              <Dato rotulo="Cambio programado" valor={s.planPendienteNombre} nota={`desde el ${fecha(s.planPendienteDesde)}`} />
+            )}
           </div>
           {s.descuentoNota && (
             <p className="mt-3 border-t border-line pt-3 text-xs text-dim">{s.descuentoNota}</p>
@@ -165,6 +179,17 @@ export default function CuentaDetallePage() {
                 <td className="td text-dim">{fechaHora(p.fecha)}</td>
                 <td className="td">
                   <p className="text-text">{p.detalle || "Suscripción"}</p>
+                  {/* El plan del pago es el que se aplica al acreditarlo. */}
+                  {p.plan?.nombre && (
+                    <p className="text-xs text-dim">
+                      {p.plan.nombre}
+                      {p.estado === "pendiente" && p.plan.codigo !== s.plan && s.planOrden != null && (
+                        <span className="text-warn">
+                          {p.plan.orden > s.planOrden ? " · sube de plan al acreditar" : " · baja de plan al terminar el período"}
+                        </span>
+                      )}
+                    </p>
+                  )}
                   {p.periodoDesde && (
                     <p className="text-xs text-faint">{fecha(p.periodoDesde)} → {fecha(p.periodoHasta)}</p>
                   )}
