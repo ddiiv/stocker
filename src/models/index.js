@@ -161,6 +161,16 @@ const Plan = db.define('Plan', {
   // se reinicia el día 1: mide consumo, no capacidad.
   maxComprobantes: { type: DataTypes.INTEGER, allowNull: true },
   /*
+   * Cuántas sesiones del DUEÑO puede haber abiertas a la vez (un celular es
+   * una más). Las de los empleados no cuentan: ellos ya tienen su tope en
+   * maxEmpleados, y cortarle la sesión a un cajero en plena venta es peor que
+   * el abuso que esto frena. Null = sin tope, como los demás.
+   *
+   * Pasarse no rechaza el ingreso: cierra la sesión del dueño con menos
+   * actividad (ver sesionesService), y sólo si SESIONES_LIMITE=activo.
+   */
+  maxSesiones:   { type: DataTypes.INTEGER, allowNull: true },
+  /*
    * Funciones habilitadas, como JSON y no como una columna por función: cada
    * módulo nuevo agregaría una migración, y los planes cambian más seguido que
    * el esquema. Las claves las define config/planes.js.

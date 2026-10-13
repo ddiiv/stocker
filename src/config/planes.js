@@ -87,6 +87,9 @@ const PLANES = [
     maxLocales: 2,
     maxSkus: 5000,
     maxComprobantes: 2000,
+    // Sesiones del DUEÑO a la vez; un celular cuenta como una más. Dos alcanzan
+    // para la PC del local y el teléfono, que es el uso normal de un local solo.
+    maxSesiones: 2,
     soporte: 'Email y chat',
     orden: 1,
     features: {
@@ -122,6 +125,7 @@ const PLANES = [
     maxLocales: 4,
     maxSkus: 10000,
     maxComprobantes: 5000,
+    maxSesiones: 3,
     soporte: 'Chat prioritario',
     orden: 2,
     features: {
@@ -149,6 +153,7 @@ const PLANES = [
     maxLocales: 20,
     maxSkus: 20000,
     maxComprobantes: 10000,
+    maxSesiones: 5,
     soporte: 'Chat prioritario y teléfono',
     orden: 3,
     // Todas las funciones. Lo que lo separa del Enterprise no es qué hace el
@@ -166,6 +171,7 @@ const PLANES = [
     maxLocales: null,
     maxSkus: null,
     maxComprobantes: null,
+    maxSesiones: null,
     soporte: 'Ejecutivo dedicado + teléfono',
     orden: 4,
     features: Object.fromEntries(Object.values(FEATURES).map((f) => [f, true])),

@@ -15,6 +15,7 @@
 
 const { DataTypes, Op } = require('sequelize');
 const { sinDatos } = require('../utils/logger');
+const { PLANES } = require('../config/planes');
 
 // tabla → { columna: definición }
 const COLUMNAS_ESPERADAS = {
@@ -325,6 +326,10 @@ const COLUMNAS_ESPERADAS = {
     editadoEn:       { type: DataTypes.DATE, allowNull: true },
     maxSkus:         { type: DataTypes.INTEGER, allowNull: true },
     maxComprobantes: { type: DataTypes.INTEGER, allowNull: true },
+    // Sesiones del dueño a la vez. Ver el modelo Plan y el relleno de abajo:
+    // nulo es "sin tope", así que agregarla sin relleno regalaba sesiones
+    // ilimitadas a los planes editados desde el backoffice.
+    maxSesiones:     { type: DataTypes.INTEGER, allowNull: true },
   },
   subscriptions: {
     renovacionAutomatica: { type: DataTypes.BOOLEAN, allowNull: true, defaultValue: true },
@@ -511,7 +516,39 @@ const INDICES = [
   },
 ];
 
+/*
+ * El tope de sesiones de cada plan, sacado del catálogo y no escrito a mano:
+ * si alguien corrige un número en config/planes.js, el relleno no puede
+ * quedarse con el viejo. Los códigos son nuestros, no vienen de afuera.
+ */
+const PLANES_CON_TOPE_DE_SESIONES = PLANES.filter((p) => Number.isInteger(p.maxSesiones));
+const CASO_SESIONES = PLANES_CON_TOPE_DE_SESIONES
+  .map((p) => `WHEN '${p.codigo}' THEN ${p.maxSesiones}`).join(' ');
+const CODIGOS_CON_TOPE = PLANES_CON_TOPE_DE_SESIONES.map((p) => `'${p.codigo}'`).join(', ');
+
 const RELLENOS = [
+  {
+    /*
+     * El tope de sesiones a los planes que ya existían.
+     *
+     * Los planes que nadie editó los corrige igual la semilla (sembrarPlanes),
+     * pero ésa deja de tocar un plan en cuanto un operador lo edita desde el
+     * backoffice. Sin esto, esos planes quedaban en nulo, que quiere decir SIN
+     * TOPE: el límite no habría existido justo para los planes que alguien se
+     * tomó el trabajo de ajustar.
+     *
+     * NO es reintentable a propósito: corre una sola vez, cuando aparece la
+     * columna. Después, un nulo puesto desde el backoffice es una decisión
+     * ("sin tope para este plan") y un arranque no puede revertirla.
+     */
+    descripcion: 'planes existentes: tope de sesiones del dueño según el catálogo',
+    cuandoSeAgrega: 'plans.maxSesiones',
+    reintentable: false,
+    sql: `UPDATE plans SET "maxSesiones" = CASE codigo ${CASO_SESIONES} END
+           WHERE "maxSesiones" IS NULL AND codigo IN (${CODIGOS_CON_TOPE})`,
+    sqlMssql: `UPDATE plans SET maxSesiones = CASE codigo ${CASO_SESIONES} END
+                WHERE maxSesiones IS NULL AND codigo IN (${CODIGOS_CON_TOPE})`,
+  },
   {
     descripcion: 'locales anteriores a la regla mayorista quedan con las 3 prendas de siempre',
     cuandoSeAgrega: 'business_locations.mayoristaModo',

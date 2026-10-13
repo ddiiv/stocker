@@ -56,6 +56,7 @@ async function sembrarPlanes() {
       fila.maxLocales === (p.maxLocales ?? null) &&
       fila.maxSkus === (p.maxSkus ?? null) &&
       fila.maxComprobantes === (p.maxComprobantes ?? null) &&
+      fila.maxSesiones === (p.maxSesiones ?? null) &&
       // El orden también se compara: al intercalar un plan nuevo, los que
       // vienen después corren un lugar y sin esto quedan empatados.
       fila.orden === (p.orden ?? 0) &&

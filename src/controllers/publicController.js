@@ -86,6 +86,9 @@ const datosLanding = async (_req, res, next) => {
         maxLocales: p.maxLocales,
         maxSkus: p.maxSkus,
         maxComprobantes: p.maxComprobantes,
+        // Sesiones del dueño a la vez. La tabla de la landing lo tiene que
+        // poder decir: es una condición del plan que el cliente acepta.
+        maxSesiones: p.maxSesiones,
         soporte: p.soporte,
         requiereCotizacion: p.requiereCotizacion,
         /*

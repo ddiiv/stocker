@@ -52,6 +52,7 @@ const getPlanes = async (_req, res, next) => {
       precioMensual: p.precioMensual != null ? Number(p.precioMensual) : null,
       moneda: p.moneda, maxCuits: p.maxCuits, maxEmpleados: p.maxEmpleados,
       maxLocales: p.maxLocales, maxSkus: p.maxSkus, maxComprobantes: p.maxComprobantes,
+      maxSesiones: p.maxSesiones,
       features: p.features, soporte: p.soporte,
       requiereCotizacion: p.requiereCotizacion,
     })));

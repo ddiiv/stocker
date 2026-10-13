@@ -434,6 +434,27 @@ const editarPlan = async (req, res, next) => {
         patch[tope] = req.body[tope] === null ? null : Math.max(0, Number(req.body[tope]) || 0);
       }
     }
+    /*
+     * Las sesiones del dueño, aparte: acá cero no es un tope posible.
+     *
+     * Con los otros topes, cero quiere decir "ninguno" y se puede querer. Con
+     * las sesiones, cero haría que cada ingreso cierre todas las demás —el
+     * dueño echándose a sí mismo de su otra computadora en cada login—, y un
+     * campo vacío que se guardara como cero haría eso sin que nadie lo
+     * decidiera. Entero desde 1, o null para sin tope.
+     */
+    if (req.body?.maxSesiones !== undefined) {
+      const valor = req.body.maxSesiones;
+      if (valor === null || valor === '') {
+        patch.maxSesiones = null;
+      } else {
+        const n = Number(valor);
+        if (!Number.isInteger(n) || n < 1) {
+          return res.status(400).json({ message: 'Las sesiones del dueño van de 1 en adelante, o vacío para sin tope.' });
+        }
+        patch.maxSesiones = n;
+      }
+    }
 
     /*
      * Las funciones se validan contra el catálogo, y se mezclan.
