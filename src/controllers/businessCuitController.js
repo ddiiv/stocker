@@ -2,6 +2,7 @@ const { exigirLibre } = require('../services/cuitRegistry');
 const { BusinessCuit, sequelize } = require('../models');
 const seq = require('../config/database');
 const { exigirCupo } = require('../services/planService');
+const { prepararLogo } = require('../utils/logoFactura');
 
 const MAX_CUITS = 3;
 
@@ -162,4 +163,67 @@ const remove = async (req, res, next) => {
   } catch (e) { next(e); }
 };
 
-module.exports = { list, create, update, remove, MAX_CUITS, __datosFiscales: datosFiscales };
+/*
+ * ── El logo de la factura ───────────────────────────────────────────
+ *
+ * Tres caminos (subir o reemplazar, ver, quitar), siempre sobre un CUIT del
+ * negocio de la SESIÓN: el id de la URL sólo elige entre los CUITs propios.
+ * Un CUIT de otro negocio contesta 404, igual que uno que no existe, para no
+ * confirmar que existe.
+ */
+function cuitDeLaSesion(req, { conLogo = false } = {}) {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) return null;
+  const modelo = conLogo ? BusinessCuit.unscoped() : BusinessCuit;
+  return modelo.findOne({ where: { id, businessId: req.auth.businessId } });
+}
+
+// PUT /api/business-cuits/:id/logo  (multipart, campo "logo")
+const subirLogo = async (req, res, next) => {
+  try {
+    const row = await cuitDeLaSesion(req);
+    if (!row) return res.status(404).json({ message: 'CUIT no encontrado.' });
+    // Lo que se guarda no es el archivo que llegó: ver prepararLogo.
+    const logo = prepararLogo(req.file?.buffer);
+    await row.update({ logo: logo.datos, logoTipo: logo.tipo, logoActualizadoEn: new Date() });
+    res.json(row);
+  } catch (e) { next(e); }
+};
+
+// GET /api/business-cuits/:id/logo  → la imagen
+const verLogo = async (req, res, next) => {
+  try {
+    const row = await cuitDeLaSesion(req, { conLogo: true });
+    if (!row?.logo || !row.logoTipo) return res.status(404).json({ message: 'Este CUIT no tiene logo.' });
+    /*
+     * El tipo es el que se comprobó al subirlo, nunca uno que haya mandado el
+     * navegador, y con nosniff el navegador no adivina otro. index.js ya lo
+     * pone en todas las respuestas; acá va igual porque ésta es la que sirve
+     * un archivo subido por un usuario. `no-cache`: al reemplazarlo, la
+     * pantalla tiene que ver el nuevo y no el que quedó guardado.
+     */
+    res.set('Content-Type', row.logoTipo);
+    res.set('X-Content-Type-Options', 'nosniff');
+    res.set('Cache-Control', 'private, no-cache');
+    res.send(Buffer.from(row.logo));
+  } catch (e) { next(e); }
+};
+
+// DELETE /api/business-cuits/:id/logo  → la factura vuelve a llevar el nombre
+const quitarLogo = async (req, res, next) => {
+  try {
+    const row = await cuitDeLaSesion(req);
+    if (!row) return res.status(404).json({ message: 'CUIT no encontrado.' });
+    /*
+     * NULL escrito como SQL y no como parámetro: SQL Server recibe un null de
+     * JavaScript como texto (nvarchar), no lo convierte solo a binario y la
+     * actualización falla. Postgres lo acepta de las dos formas.
+     */
+    await row.update({ logo: seq.literal('NULL'), logoTipo: null, logoActualizadoEn: null });
+    res.json(row);
+  } catch (e) { next(e); }
+};
+
+module.exports = {
+  list, create, update, remove, subirLogo, verLogo, quitarLogo, MAX_CUITS, __datosFiscales: datosFiscales,
+};

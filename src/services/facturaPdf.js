@@ -23,6 +23,7 @@ const {
   CBTE_TIPO, ALICUOTA_IVA, CONDICIONES_IVA_RECEPTOR, condicionIvaReceptorId, docTipoFromCliente,
 } = require('./arcaService');
 const { ddmmaaaa, isoDia, ddmmaaaaArgentina, isoArgentina } = require('../utils/fechaFiscal');
+const { leerLogo, LOGO_MAX_GUARDADO } = require('../utils/logoFactura');
 const { log } = require('../utils/logger');
 
 // ── Medidas y colores del modelo (A4, en puntos, origen arriba a la izquierda) ─
@@ -335,6 +336,7 @@ function armarVista(invoice, items = [], business = {}, contexto = {}) {
       cuit: cuitConGuiones(invoice.emisorCuit || business.cuit),
       ingresosBrutos: String(emisorCtx.ingresosBrutos || '').trim() || null,
       inicioActividades: ddmmaaaa(emisorCtx.inicioActividades),
+      logo: Buffer.isBuffer(emisorCtx.logo?.datos) ? emisorCtx.logo : null,
     },
     receptor: {
       nombre: String(invoice.clienteNombre || 'Consumidor Final').trim(),
@@ -419,6 +421,55 @@ function dibujarFranjaOriginal(doc, y) {
 }
 
 /*
+ * ── El logo del emisor ─────────────────────────────────────────────
+ *
+ * El alto es el del modelo: 45,5 pt (1,6 cm). El ancho, el del recuadro del
+ * emisor menos su margen. Un logo apaisado como el del modelo queda con ese
+ * alto; uno más ancho que eso se achica hasta entrar a lo ancho.
+ */
+const ALTO_LOGO = 45.5;
+
+/*
+ * El logo del CUIT abierto para dibujar, o null.
+ *
+ * Se vuelve a comprobar con lo mismo que al subirlo: lo que hay en la base
+ * pudo llegar por otro camino, y un PNG roto no puede llegar a PDFKit, que lo
+ * decodifica en un callback de zlib FUERA de todo try —se caería el proceso,
+ * no esta descarga—. Si no se puede usar, sale el nombre, como sin logo: no
+ * poder bajar un comprobante por la imagen de la cabecera sería peor.
+ */
+function abrirLogo(doc, logo) {
+  if (!logo?.datos) return null;
+  try {
+    leerLogo(logo.datos, { maxBytes: LOGO_MAX_GUARDADO });
+    return doc.openImage(logo.datos);
+  } catch (e) {
+    log.warn('factura', 'el logo del CUIT no se pudo usar; la factura sale con el nombre', { motivo: e.message });
+    return null;
+  }
+}
+
+/*
+ * Lo dibuja adentro de su caja, centrado y sin deformarlo (`fit` conserva la
+ * proporción). El recorte es la garantía de que, sea cual sea la imagen
+ * —muy alta, muy ancha, o un JPEG que pide girarse—, nada se sale de la caja
+ * ni pisa el texto de abajo.
+ */
+function dibujarLogo(doc, logo, { x, y, ancho, alto }) {
+  doc.save();
+  try {
+    doc.rect(x, y, ancho, alto).clip();
+    doc.image(logo, x, y, { fit: [ancho, alto], align: 'center', valign: 'center' });
+    return true;
+  } catch (e) {
+    log.warn('factura', 'el logo del CUIT no se pudo dibujar; la factura sale con el nombre', { motivo: e.message });
+    return false;
+  } finally {
+    doc.restore();
+  }
+}
+
+/*
  * La cabecera de la primera hoja: ORIGINAL, la letra en su recuadro con el
  * código del comprobante, y los dos recuadros del emisor y del comprobante.
  */
@@ -445,10 +496,12 @@ function dibujarCabecera(doc, vista, y0) {
 
   // ── Izquierda: el emisor ──────────────────────────────────────
   /*
-   * En el modelo arriba va el logo. Stocker todavía no guarda el logo de cada
-   * negocio, así que va su nombre, grande, en el mismo lugar.
+   * En el modelo arriba va el logo. Si el CUIT tiene uno cargado va ahí; si
+   * no —o si no se puede usar—, el nombre del negocio, grande, en el mismo
+   * lugar.
    */
   const anchoTexto = izq.w - pad * 2;
+  const logo = abrirLogo(doc, vista.emisor.logo);
   const tamMarca = tamanoQueEntra(doc, vista.emisor.marca, {
     fuente: 'Helvetica-Bold', tamano: 22, minimo: 12, ancho: anchoTexto,
   });
@@ -463,7 +516,10 @@ function dibujarCabecera(doc, vista, y0) {
   doc.font('Helvetica-Bold').fontSize(8);
   const altosIzq = lineasIzq.map((l) => Math.max(12, doc.heightOfString(l, { width: anchoTexto, align: 'center' }) + 3));
   const altoLineasIzq = altosIzq.reduce((a, b) => a + b, 0);
-  const altoIzq = 8 + altoMarca + 10 + altoLineasIzq + 2;
+  // Con logo, el recuadro es el del modelo: 2 de aire, el logo y las líneas.
+  const altoIzq = logo
+    ? 2 + ALTO_LOGO + altoLineasIzq + 2
+    : 8 + altoMarca + 10 + altoLineasIzq + 2;
 
   // ── Derecha: el comprobante ───────────────────────────────────
   const lineasDer = [
@@ -483,11 +539,21 @@ function dibujarCabecera(doc, vista, y0) {
   doc.rect(izq.x, top, izq.w, alto).stroke();
   doc.rect(der.x, top, der.w, alto).stroke();
 
-  // Marca centrada en el espacio que dejan las líneas de abajo.
-  const espacioMarca = alto - altoLineasIzq - 4;
-  const yMarca = top + Math.max(6, (espacioMarca - altoMarca) / 2);
-  doc.fillColor(NEGRO).font('Helvetica-Bold').fontSize(tamMarca)
-    .text(vista.emisor.marca, izq.x + pad, yMarca, { width: anchoTexto, align: 'center' });
+  /*
+   * El logo, en el espacio que dejan las líneas de abajo: pegado arriba (2 de
+   * aire) cuando el recuadro mide lo del modelo, centrado cuando el de la
+   * derecha lo estira.
+   */
+  const espacioLogo = alto - altoLineasIzq - 2;
+  const yLogo = top + Math.max(2, (espacioLogo - ALTO_LOGO) / 2);
+  const conLogo = logo && dibujarLogo(doc, logo, { x: izq.x + pad, y: yLogo, ancho: anchoTexto, alto: ALTO_LOGO });
+  if (!conLogo) {
+    // Marca centrada en el espacio que dejan las líneas de abajo.
+    const espacioMarca = alto - altoLineasIzq - 4;
+    const yMarca = top + Math.max(6, (espacioMarca - altoMarca) / 2);
+    doc.fillColor(NEGRO).font('Helvetica-Bold').fontSize(tamMarca)
+      .text(vista.emisor.marca, izq.x + pad, yMarca, { width: anchoTexto, align: 'center' });
+  }
 
   let yl = top + alto - altoLineasIzq - 2;
   doc.font('Helvetica-Bold').fontSize(8);
@@ -910,8 +976,8 @@ async function generarFactura(invoice, items, business = {}, contexto = {}) {
 }
 
 /*
- * Lo que la factura necesita y no está en su fila: Ingresos Brutos e Inicio de
- * Actividades del CUIT, y —para las facturas emitidas antes de que se
+ * Lo que la factura necesita y no está en su fila: Ingresos Brutos, Inicio de
+ * Actividades y el logo del CUIT, y —para las facturas emitidas antes de que se
  * guardaran— el domicilio del local y la condición del emisor. El negocio sale
  * de la factura, que ya se buscó con el de la sesión.
  *
@@ -926,11 +992,12 @@ async function contextoDeImpresion(invoice) {
     } = require('../models');
     const businessId = invoice.businessId;
 
+    // unscoped: el logo no se lee por defecto (ver el modelo), y acá sí hace falta.
     let cuit = invoice.businessCuitId
-      ? await BusinessCuit.findOne({ where: { id: invoice.businessCuitId, businessId } })
+      ? await BusinessCuit.unscoped().findOne({ where: { id: invoice.businessCuitId, businessId } })
       : null;
     if (!cuit && invoice.emisorCuit) {
-      cuit = await BusinessCuit.findOne({ where: { businessId, cuit: soloDigitos(invoice.emisorCuit) } });
+      cuit = await BusinessCuit.unscoped().findOne({ where: { businessId, cuit: soloDigitos(invoice.emisorCuit) } });
     }
     const config = cuit ? await BusinessArcaConfig.findOne({ where: { businessCuitId: cuit.id } }) : null;
     const venta = invoice.saleId
@@ -945,6 +1012,11 @@ async function contextoDeImpresion(invoice) {
       inicioActividades: cuit?.inicioActividades || null,
       domicilio: domicilioComercial({ local, cuit }),
       condicionIva: config?.condicionIva || cuit?.condicionIva || null,
+      /*
+       * El logo de HOY del CUIT, también para una factura vieja: como el
+       * domicilio, no es un dato fiscal sino cómo se presenta el emisor.
+       */
+      logo: cuit?.logo && cuit.logoTipo ? { datos: Buffer.from(cuit.logo), tipo: cuit.logoTipo } : null,
     };
     contexto.descuentoPct = Number(venta?.descuentoPct) || 0;
 
@@ -971,5 +1043,5 @@ module.exports = {
   urlQr,
   // Para las pruebas: lo que el papel dice, ya calculado, y cómo se reparte.
   __vista: armarVista,
-  __medidas: { MARCO, LIMITE_DETALLE, LIMITE_CIERRE },
+  __medidas: { MARCO, LIMITE_DETALLE, LIMITE_CIERRE, INTERIOR, ALTO_LOGO },
 };

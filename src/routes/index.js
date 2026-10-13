@@ -4,6 +4,8 @@ const { requireAuth, requirePermission, requireAnyPermission, requireOwner } = r
 const { loginLimiter, passwordResetLimiter, registerLimiter, reporteLimiter } = require('../middleware/rateLimit');
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
+// El mismo multer, con el tope del logo de la factura (300 KB).
+const { recibirLogo } = require('../middleware/subidaLogo');
 
 const {
   register, login, employeeLogin, logout, me,
@@ -567,6 +569,14 @@ r.get   ('/business-cuits',     requireAuth, requireAnyPermission(['facturacion'
 r.post  ('/business-cuits',     requireAuth, requirePermission('facturacion','editar'), businessCuitCtrl.create);
 r.put   ('/business-cuits/:id', requireAuth, requirePermission('facturacion','editar'), businessCuitCtrl.update);
 r.delete('/business-cuits/:id', requireAuth, requirePermission('facturacion','editar'), businessCuitCtrl.remove);
+/*
+ * El logo de la factura de cada CUIT. Subirlo y quitarlo, con el mismo permiso
+ * que editar el CUIT (el de la pantalla); verlo, con el de ver facturación.
+ * La subida pasa por su propio multer, con tope de 300 KB: ver subidaLogo.
+ */
+r.get   ('/business-cuits/:id/logo', requireAuth, requirePermission('facturacion','ver'),    businessCuitCtrl.verLogo);
+r.put   ('/business-cuits/:id/logo', requireAuth, requirePermission('facturacion','editar'), recibirLogo, businessCuitCtrl.subirLogo);
+r.delete('/business-cuits/:id/logo', requireAuth, requirePermission('facturacion','editar'), businessCuitCtrl.quitarLogo);
 
 // ── Products ──────────────────────────────────────────────────────
 r.get   ('/products',                                     requireAuth, requirePermission('stock','ver'),    productCtrl.getProducts);

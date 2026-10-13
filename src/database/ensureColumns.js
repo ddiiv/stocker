@@ -236,6 +236,11 @@ const COLUMNAS_ESPERADAS = {
     // factura (RG 1415) y ARCA no los da. Los carga el dueño. Ver el modelo.
     ingresosBrutos:    { type: DataTypes.STRING(40), allowNull: true },
     inicioActividades: { type: DataTypes.STRING(10), allowNull: true },
+    // El logo de la factura, en la base porque en Railway el disco no dura.
+    // Sin índice: nadie busca por él. Ver el modelo.
+    logo:              { type: DataTypes.BLOB, allowNull: true },
+    logoTipo:          { type: DataTypes.STRING(20), allowNull: true },
+    logoActualizadoEn: { type: DataTypes.DATE, allowNull: true },
   },
   payment_methods: {
     esEfectivo: { type: DataTypes.BOOLEAN, allowNull: true, defaultValue: false },

@@ -390,7 +390,52 @@ const BusinessCuit = db.define('BusinessCuit', {
    */
   ingresosBrutos:    { type: DataTypes.STRING(40), allowNull: true },
   inicioActividades: { type: DataTypes.STRING(10), allowNull: true },
-}, { tableName: 'business_cuits' });
+  /*
+   * El logo que va arriba a la izquierda de la factura, en el recuadro del
+   * emisor, como en el modelo de Farmacity.
+   *
+   * Es del CUIT y no del negocio por lo mismo que Ingresos Brutos: el
+   * encabezado de la factura es del emisor, y un negocio con dos razones
+   * sociales puede tener dos marcas.
+   *
+   * Va EN LA BASE y no en el disco: en Railway el disco del servicio se
+   * pierde en cada deploy si no hay un volumen montado, y el PDF se arma del
+   * lado del servidor y tiene que poder leerlo siempre. BLOB es VARBINARY(MAX)
+   * en SQL Server y BYTEA en Postgres.
+   *
+   * Lo que se guarda ya pasó por utils/logoFactura (sólo PNG o JPEG, firma
+   * verificada, PNG rearmado). `logoTipo` es el tipo de ESE archivo, no el que
+   * dijo el navegador.
+   *
+   * El binario NO se lee por defecto (ver defaultScope abajo): este modelo se
+   * consulta en cada venta y en cada factura, y casi nadie necesita la imagen.
+   */
+  logo:              { type: DataTypes.BLOB, allowNull: true },
+  logoTipo:          { type: DataTypes.STRING(20), allowNull: true },
+  logoActualizadoEn: { type: DataTypes.DATE, allowNull: true },
+}, {
+  tableName: 'business_cuits',
+  /*
+   * Sin el logo, salvo que se pida con BusinessCuit.unscoped(). Así ninguna de
+   * las lecturas que ya existían —ni un include— trae hasta 1 MB por fila, y
+   * el listado de CUITs no le manda la imagen al navegador como un arreglo de
+   * números dentro del JSON.
+   */
+  defaultScope: { attributes: { exclude: ['logo'] } },
+});
+
+/*
+ * Lo que sale en una respuesta: nunca el binario, y sí si hay logo.
+ *
+ * El defaultScope evita LEERLO, pero después de un create o de un update
+ * Sequelize puede traer la fila entera de vuelta (SQL Server usa OUTPUT
+ * INSERTED.*), y un res.json(fila) lo mandaría. La imagen se baja aparte, por
+ * GET /business-cuits/:id/logo.
+ */
+BusinessCuit.prototype.toJSON = function toJSON() {
+  const { logo, ...resto } = this.get({ plain: true }); // eslint-disable-line no-unused-vars
+  return { ...resto, tieneLogo: Boolean(resto.logoTipo) };
+};
 
 // ─── BusinessArcaConfig (config ARCA por CUIT del negocio) ───────
 const BusinessArcaConfig = db.define('BusinessArcaConfig', {
