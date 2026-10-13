@@ -332,6 +332,9 @@ const COLUMNAS_ESPERADAS = {
     descuentoNota:        { type: DataTypes.STRING(200), allowNull: true },
     bajaSolicitadaEn:     { type: DataTypes.DATE, allowNull: true },
     bajaMotivo:           { type: DataTypes.STRING(500), allowNull: true },
+    // La bajada de plan ya paga que rige al terminar el período. Ver el modelo.
+    planPendienteId:      { type: DataTypes.INTEGER, allowNull: true },
+    planPendienteDesde:   { type: DataTypes.DATE, allowNull: true },
   },
   platform_admins: {
     totpSecret:     { type: DataTypes.STRING(64), allowNull: true },

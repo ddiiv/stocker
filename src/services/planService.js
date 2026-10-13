@@ -1,6 +1,8 @@
-const { Op } = require('sequelize');
+const { Op, TableHints } = require('sequelize');
+const db = require('../config/database');
 const { Plan, Subscription, Business, Employee, BusinessCuit, BusinessLocation, Product, ProductVariant, Invoice } = require('../models');
 const { PLANES, PLAN_POR_DEFECTO, DIAS_TRIAL, DIAS_GRACIA } = require('../config/planes');
+const { log } = require('../utils/logger');
 
 /*
  * Planes y suscripciones.
@@ -109,6 +111,17 @@ async function estadoDe(businessId) {
   }
 
   const ahora = new Date();
+
+  // Una bajada de plan ya paga rige desde que llega su fecha, aunque nadie
+  // haya tocado nada: es la "renovación" al plan que el cliente eligió.
+  if (await aplicarPlanPendiente(sub, ahora)) {
+    sub = await Subscription.findOne({
+      where: { businessId },
+      include: [{ model: Plan, as: 'plan' }],
+    });
+  }
+  const planPendiente = sub.planPendienteId ? await Plan.findByPk(sub.planPendienteId) : null;
+
   let estado = sub.estado;
   let vence  = null;
 
@@ -141,6 +154,11 @@ async function estadoDe(businessId) {
     ...precioDeSuscripcion(sub),
     renovacionAutomatica: sub.renovacionAutomatica !== false,
     bajaSolicitadaEn: sub.bajaSolicitadaEn,
+    // La bajada ya paga que todavía no rige. La pantalla la tiene que mostrar:
+    // si no, el cliente paga el plan barato, sigue viendo el caro y no sabe
+    // si el cambio se hizo.
+    planPendiente,
+    planPendienteDesde: planPendiente ? sub.planPendienteDesde : null,
   };
 }
 
@@ -280,24 +298,175 @@ async function exigirCupo(businessId, recurso, cantidad = 1) {
   );
 }
 
-/** Registra un pago acreditado y deja la cuenta activa por 30 días más. */
-async function acreditarPago({ subscription, desde = new Date(), dias = 30 }, transaction = null) {
+/*
+ * Hacia dónde va un cambio de plan: 'sube', 'baja' o 'igual'.
+ *
+ * Se compara por `orden`, que es la escalera comercial (Inicial, Pro, Superior,
+ * Enterprise), y no por precio: el Enterprise no tiene precio de lista y un
+ * precio acordado puede dejar a un plan grande más barato que uno chico. Dos
+ * planes distintos con el mismo orden cuentan como bajada: esperan al fin del
+ * período, que es el lado en el que no se regala nada.
+ */
+function sentidoDelCambio(actual, nuevo) {
+  if (!actual || !nuevo || Number(actual.id) === Number(nuevo.id)) return 'igual';
+  return (Number(nuevo.orden) || 0) > (Number(actual.orden) || 0) ? 'sube' : 'baja';
+}
+
+/*
+ * Aplica la bajada de plan ya paga si llegó su fecha. Devuelve si la aplicó.
+ *
+ * Contra el reloj y no con una tarea programada, por lo mismo que el estado:
+ * si el cron no corre, la cuenta seguiría con los topes del plan caro pagando
+ * el barato.
+ *
+ * La condición entera va en el WHERE y no sólo el id. Si entre que se leyó la
+ * suscripción y se escribe se acreditó un pago que SUBIÓ de plan (y borró lo
+ * pendiente), el UPDATE ya no encuentra la fila y no pisa la subida recién
+ * pagada con la bajada vieja.
+ */
+async function aplicarPlanPendiente(sub, ahora = new Date()) {
+  if (!sub?.planPendienteId || !sub.planPendienteDesde) return false;
+  if (new Date(sub.planPendienteDesde) > ahora) return false;
+
+  const [filas] = await Subscription.update(
+    { planId: sub.planPendienteId, planPendienteId: null, planPendienteDesde: null },
+    {
+      where: {
+        id: sub.id,
+        planPendienteId: sub.planPendienteId,
+        planPendienteDesde: { [Op.lte]: ahora },
+      },
+    },
+  );
+  if (filas > 0) log.info('planes', 'rige la bajada de plan ya paga', { businessId: sub.businessId });
+  return filas > 0;
+}
+
+/*
+ * Opciones para leer una fila TRABADA hasta el fin de la transacción.
+ *
+ * `lock: UPDATE` es el SELECT ... FOR UPDATE de Postgres (producción), pero el
+ * dialecto de SQL Server de Sequelize lo ignora en silencio (no declara soporte
+ * de lock): en la base local no trababa nada y la carrera de dos pagos pasaba
+ * igual. Allá hace falta el hint UPDLOCK, que retiene el bloqueo hasta el
+ * COMMIT. Se mandan los dos porque cada motor ignora la opción del otro.
+ */
+const trabada = (transaction) => ({
+  transaction, lock: transaction.LOCK.UPDATE, tableHint: TableHints.UPDLOCK,
+});
+
+/** La suscripción trabada hasta que termine la transacción. */
+function trabarSuscripcion(id, transaction) {
+  return Subscription.findByPk(id, trabada(transaction));
+}
+
+/*
+ * Acredita un pago: deja la cuenta activa N días más y aplica el plan pagado.
+ *
+ * @param {number|null} planId  el plan que se pagó. `null` = sólo extender, como
+ *   antes de que el pago llevara plan: una cortesía del backoffice, o un débito
+ *   automático que no corresponde a ningún pedido de cambio.
+ *
+ * Antes esto sólo extendía el período: el checkout cobraba el precio del plan
+ * nuevo y la cuenta seguía con los topes del viejo. La regla, del dueño:
+ *   · SUBIR aplica en el momento. Pagó el plan más caro; hacerlo esperar al
+ *     vencimiento sería cobrarle algo que no se le da.
+ *   · BAJAR aplica al terminar el período ya pago con el plan caro. Queda en
+ *     planPendienteId y lo aplica `aplicarPlanPendiente` cuando llega la fecha.
+ *     Si no hay período pago en curso (prueba, vencida) la fecha es hoy.
+ *   · El mismo plan sólo extiende. Si había una bajada esperando se cae: el
+ *     último plan que el cliente eligió y pagó es el que manda.
+ *
+ * La suscripción se relee TRABADA, aunque quien llama ya la tenga en la mano.
+ * Dos pagos que se acreditaban a la vez leían el mismo periodoFin y los dos
+ * sumaban 30 días sobre él: el cliente pagaba dos meses y recibía uno. Con la
+ * fila trabada el segundo espera y suma sobre lo que dejó el primero, y lo
+ * mismo con el plan: nadie decide sobre un plan que otro ya cambió.
+ */
+async function acreditarPago({ subscription, planId = null, desde = new Date(), dias = 30 }, transaction = null) {
+  if (!transaction) {
+    return db.transaction((t) => acreditarPago({ subscription, planId, desde, dias }, t));
+  }
+
+  const sub = await trabarSuscripcion(subscription.id, transaction);
+
   // Si todavía está en curso, el período nuevo arranca cuando termina el
   // anterior: pagar antes de tiempo no puede regalar días.
-  const base = subscription.periodoFin && new Date(subscription.periodoFin) > desde
-    ? new Date(subscription.periodoFin)
+  const base = sub.periodoFin && new Date(sub.periodoFin) > desde
+    ? new Date(sub.periodoFin)
     : desde;
   const hasta = diasDesde(base, dias);
 
-  await subscription.update({
+  let vigenteId = sub.planId;
+  let pendienteId = sub.planPendienteId || null;
+  let pendienteDesde = pendienteId ? sub.planPendienteDesde : null;
+
+  // Lo que ya tenía que regir, rige antes de comparar: si no, un pago llegado
+  // después de la fecha se mediría contra un plan que la cuenta ya no tiene.
+  if (pendienteId && pendienteDesde && new Date(pendienteDesde) <= desde) {
+    vigenteId = pendienteId;
+    pendienteId = null;
+    pendienteDesde = null;
+  }
+
+  let cambio = null;
+  const nuevo = planId != null ? await Plan.findByPk(planId, { transaction }) : null;
+  if (planId != null && !nuevo) {
+    // Un plan borrado no puede dejar a nadie sin el mes que pagó: se acredita
+    // el período y el plan queda como estaba.
+    log.warn('planes', 'pago con un plan que ya no existe: sólo se extiende', { businessId: sub.businessId });
+  } else if (nuevo) {
+    const actual = Number(vigenteId) === Number(nuevo.id)
+      ? nuevo
+      : await Plan.findByPk(vigenteId, { transaction });
+    cambio = sentidoDelCambio(actual, nuevo);
+
+    if (cambio === 'sube') {
+      vigenteId = nuevo.id;
+      pendienteId = null;
+      pendienteDesde = null;
+    } else if (cambio === 'igual') {
+      pendienteId = null;
+      pendienteDesde = null;
+    } else {
+      // Si ya había otra bajada esperando, la fecha no se corre: el período
+      // pagado con el plan caro termina donde terminaba.
+      pendienteDesde = pendienteId ? pendienteDesde : base;
+      pendienteId = nuevo.id;
+      if (new Date(pendienteDesde) <= desde) {
+        vigenteId = nuevo.id;
+        pendienteId = null;
+        pendienteDesde = null;
+      }
+    }
+  }
+
+  await sub.update({
     estado: 'activa',
     periodoInicio: base,
     periodoFin: hasta,
     ultimoPagoEn: desde,
     proximoCobroEn: hasta,
-  }, transaction ? { transaction } : undefined);
+    planId: vigenteId,
+    planPendienteId: pendienteId,
+    planPendienteDesde: pendienteDesde,
+  }, { transaction });
 
-  return { desde: base, hasta };
+  if (cambio === 'sube' || cambio === 'baja') {
+    log.info('planes', `pago acreditado con cambio de plan (${cambio})`, { businessId: sub.businessId });
+  }
+
+  return {
+    desde: base,
+    hasta,
+    cambio,
+    planId: vigenteId,
+    planPendienteId: pendienteId,
+    planPendienteDesde: pendienteDesde,
+    // El plan con el que arranca el período recién pagado: lo que dice el
+    // recibo de un cobro que no vino de ningún pedido de cambio.
+    planDelPeriodo: pendienteId || vigenteId,
+  };
 }
 
 /** Cuentas cuyo trial vence en los próximos N días (para los avisos). */
@@ -314,5 +483,6 @@ async function trialsPorVencer(dias = 2) {
 
 module.exports = {
   sembrarPlanes, iniciarTrial, estadoDe, tieneFeature, heredaFeature, usoDe, exigirCupo,
-  acreditarPago, trialsPorVencer, precioDeSuscripcion, ErrorPlan, DIAS_TRIAL,
+  acreditarPago, aplicarPlanPendiente, trabarSuscripcion, trabada, sentidoDelCambio,
+  trialsPorVencer, precioDeSuscripcion, ErrorPlan, DIAS_TRIAL,
 };

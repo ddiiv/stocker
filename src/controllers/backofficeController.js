@@ -197,7 +197,13 @@ const verCuenta = async (req, res, next) => {
     const [estado, uso, pagos, cuits, empleados, ventas] = await Promise.all([
       planService.estadoDe(negocio.id),
       planService.usoDe(negocio.id),
-      SubscriptionPayment.findAll({ where: { businessId: negocio.id }, order: [['fecha', 'DESC']], limit: 30 }),
+      // Con el plan de cada pago: quien acredita tiene que ver qué plan se va a
+      // aplicar, no sólo el importe.
+      SubscriptionPayment.findAll({
+        where: { businessId: negocio.id },
+        include: [{ model: Plan, as: 'plan', attributes: ['codigo', 'nombre', 'orden'] }],
+        order: [['fecha', 'DESC']], limit: 30,
+      }),
       BusinessCuit.count({ where: { businessId: negocio.id } }),
       Employee.count({ where: { businessId: negocio.id, activo: true } }),
       Sale.count({ where: { businessId: negocio.id } }),
@@ -207,6 +213,10 @@ const verCuenta = async (req, res, next) => {
       negocio,
       suscripcion: {
         estado: estado.estado, plan: estado.plan?.codigo, planNombre: estado.plan?.nombre,
+        planOrden: estado.plan?.orden ?? null,
+        planPendiente: estado.planPendiente?.codigo || null,
+        planPendienteNombre: estado.planPendiente?.nombre || null,
+        planPendienteDesde: estado.planPendienteDesde,
         vence: estado.vence, diasRestantes: estado.diasRestantes,
         precio: estado.precio, precioLista: estado.precioLista,
         descuentoPct: estado.descuentoPct, descuentoNota: estado.suscripcion.descuentoNota,
@@ -231,22 +241,34 @@ const verCuenta = async (req, res, next) => {
  * destrabar una cuenta cuya transferencia todavía no se acreditó.
  */
 const editarSuscripcion = async (req, res, next) => {
-  try {
-    if (!puede(req.admin, 'owner')) {
-      return res.status(403).json({ message: 'Sólo un responsable comercial puede cambiar planes y precios.' });
-    }
+  if (!puede(req.admin, 'owner')) {
+    return res.status(403).json({ message: 'Sólo un responsable comercial puede cambiar planes y precios.' });
+  }
 
+  /*
+   * En una transacción con la suscripción trabada, como los pagos: extender
+   * días mientras se acredita un pago leía el mismo vencimiento que el pago y
+   * uno de los dos se perdía.
+   */
+  const t = await sequelize.transaction();
+  try {
     const { suscripcion } = await planService.estadoDe(req.params.id);
+    await planService.trabarSuscripcion(suscripcion.id, t);
     const patch = {};
 
     if (req.body?.plan) {
-      const plan = await Plan.findOne({ where: { codigo: req.body.plan } });
-      if (!plan) return res.status(400).json({ message: 'Ese plan no existe.' });
+      const plan = await Plan.findOne({ where: { codigo: req.body.plan }, transaction: t });
+      if (!plan) { await t.rollback(); return res.status(400).json({ message: 'Ese plan no existe.' }); }
       patch.planId = plan.id;
+      // El plan que pone una persona manda: una bajada que el cliente había
+      // dejado programada no puede pisarlo semanas después.
+      patch.planPendienteId = null;
+      patch.planPendienteDesde = null;
     }
     if (req.body?.descuentoPct !== undefined) {
       const pct = Number(req.body.descuentoPct);
       if (!Number.isFinite(pct) || pct < 0 || pct > 100) {
+        await t.rollback();
         return res.status(400).json({ message: 'El descuento tiene que estar entre 0 y 100.' });
       }
       patch.descuentoPct = Math.round(pct * 100) / 100;
@@ -259,22 +281,26 @@ const editarSuscripcion = async (req, res, next) => {
     if (req.body?.notas !== undefined) patch.notas = req.body.notas || null;
 
     // Extender el período sin cobrar: sirve para una cortesía o para cubrir
-    // los días que tardó en acreditarse una transferencia.
+    // los días que tardó en acreditarse una transferencia. Sin plan: una
+    // cortesía extiende, no cambia de plan.
     if (req.body?.extenderDias) {
       const dias = Number(req.body.extenderDias);
       if (!Number.isFinite(dias) || dias <= 0 || dias > 365) {
+        await t.rollback();
         return res.status(400).json({ message: 'Los días a extender tienen que ir de 1 a 365.' });
       }
-      const { hasta } = await planService.acreditarPago({ subscription: suscripcion, dias });
-      patch.periodoFin = hasta;
+      await planService.acreditarPago({ subscription: suscripcion, dias }, t);
     }
 
-    await suscripcion.update(patch);
+    if (Object.keys(patch).length) {
+      await Subscription.update(patch, { where: { id: suscripcion.id }, transaction: t });
+    }
+    await t.commit();
     log.info('backoffice', 'suscripción editada', { negocio: req.params.id, admin: req.admin.id });
 
     const actualizado = await planService.estadoDe(req.params.id);
     res.json({ estado: actualizado.estado, plan: actualizado.plan?.codigo, precio: actualizado.precio, vence: actualizado.vence });
-  } catch (e) { next(e); }
+  } catch (e) { await t.rollback().catch(() => {}); next(e); }
 };
 
 /*
@@ -291,15 +317,26 @@ const aprobarPago = async (req, res, next) => {
       return res.status(403).json({ message: 'Sólo un responsable comercial puede acreditar pagos.' });
     }
 
-    const pago = await SubscriptionPayment.findByPk(req.params.id, { transaction: t });
-    if (!pago) { await t.rollback(); return res.status(404).json({ message: 'No existe ese pago.' }); }
+    const visto = await SubscriptionPayment.findByPk(req.params.id, { transaction: t });
+    if (!visto) { await t.rollback(); return res.status(404).json({ message: 'No existe ese pago.' }); }
+
+    /*
+     * Primero la suscripción y después el pago, trabados, y el estado del pago
+     * se mira DESPUÉS de trabar. Dos clics seguidos en "Acreditar" (o dos
+     * operadores a la vez) veían los dos "pendiente" y sumaban dos meses por
+     * una transferencia. El orden es el mismo que usa Mercado Pago —primero
+     * la suscripción— para que dos acreditaciones no se esperen en cruz.
+     */
+    const sub = await planService.trabarSuscripcion(visto.subscriptionId, t);
+    const pago = await SubscriptionPayment.findByPk(visto.id, planService.trabada(t));
     if (pago.estado === 'aprobado') {
       await t.rollback();
       return res.status(409).json({ message: 'Ese pago ya estaba acreditado.' });
     }
 
-    const sub = await Subscription.findByPk(pago.subscriptionId, { transaction: t });
-    const { desde, hasta } = await planService.acreditarPago({ subscription: sub }, t);
+    // El plan es el que figura en el pago: el que eligió el cliente al pagar.
+    const periodo = await planService.acreditarPago({ subscription: sub, planId: pago.planId }, t);
+    const { desde, hasta } = periodo;
     await pago.update({
       estado: 'aprobado',
       periodoDesde: desde, periodoHasta: hasta,
@@ -308,7 +345,21 @@ const aprobarPago = async (req, res, next) => {
 
     await t.commit();
     log.info('backoffice', 'pago acreditado a mano', { pago: pago.id, admin: req.admin.id });
-    res.json({ pago, periodo: { desde, hasta } });
+
+    // Para que quien acreditó vea qué pasó con el plan, no sólo hasta cuándo.
+    const [vigente, pendiente] = await Promise.all([
+      Plan.findByPk(periodo.planId, { attributes: ['codigo', 'nombre'] }),
+      periodo.planPendienteId ? Plan.findByPk(periodo.planPendienteId, { attributes: ['codigo', 'nombre'] }) : null,
+    ]);
+    res.json({
+      pago,
+      periodo: { desde, hasta },
+      plan: {
+        cambio: periodo.cambio,
+        vigente: vigente && { codigo: vigente.codigo, nombre: vigente.nombre },
+        pendiente: pendiente && { codigo: pendiente.codigo, nombre: pendiente.nombre, desde: periodo.planPendienteDesde },
+      },
+    });
   } catch (e) { await t.rollback().catch(() => {}); next(e); }
 };
 

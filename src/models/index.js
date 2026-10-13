@@ -231,6 +231,17 @@ const Subscription = db.define('Subscription', {
   bajaSolicitadaEn: { type: DataTypes.DATE, allowNull: true },
   bajaMotivo:     { type: DataTypes.STRING(500), allowNull: true },
   notas:          { type: DataTypes.STRING(500) },
+  /*
+   * Bajada de plan ya paga que todavía no rige.
+   *
+   * Bajar de plan aplica al terminar el período que el cliente ya pagó con el
+   * plan más caro: cortarle funciones el mismo día sería cobrarle un mes y
+   * prestarle otro. Mientras tanto queda anotado acá, y `planService` lo aplica
+   * contra el reloj apenas llega `planPendienteDesde`. Sin índice a propósito:
+   * la columna se agrega con ensureColumns, que corre DESPUÉS del sync.
+   */
+  planPendienteId:    { type: DataTypes.INTEGER, allowNull: true },
+  planPendienteDesde: { type: DataTypes.DATE, allowNull: true },
 }, { tableName: 'subscriptions' });
 
 /* ─── SubscriptionPayment (historial de cobros) ───────────────────

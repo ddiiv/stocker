@@ -84,6 +84,11 @@ const getSuscripcion = async (req, res, next) => {
         codigo: estado.plan.codigo, nombre: estado.plan.nombre,
         features: estado.plan.features, requiereCotizacion: estado.plan.requiereCotizacion,
       },
+      // Bajada ya paga que rige al terminar el período del plan actual.
+      planPendiente: estado.planPendiente && {
+        codigo: estado.planPendiente.codigo, nombre: estado.planPendiente.nombre,
+        desde: estado.planPendienteDesde,
+      },
       uso,
       // Para que la pantalla sepa qué formas de pago ofrecer.
       mediosDisponibles: {
@@ -110,6 +115,9 @@ const getPagos = async (req, res, next) => {
   try {
     const pagos = await SubscriptionPayment.findAll({
       where: { businessId: req.auth.businessId },
+      // Con el nombre del plan: desde que el pago cambia el plan, "qué pagué"
+      // incluye a qué plan corresponde cada cobro.
+      include: [{ model: Plan, as: 'plan', attributes: ['codigo', 'nombre'] }],
       order: [['fecha', 'DESC']],
       limit: 50,
     });
@@ -134,6 +142,49 @@ function precioDe(sub, plan) {
 }
 
 /*
+ * Qué plan está pagando el cliente. Devuelve { plan } o { rechazo }.
+ *
+ * Sin elegir, paga el plan con el que va a SEGUIR: si ya tiene una bajada paga
+ * esperando, "renovar" es pagar ese plan y no el caro que está por dejar. Si
+ * no, tocar "Pagar o renovar" le cancelaría la bajada sin que lo pidiera.
+ *
+ * Lo comparte el checkout de Mercado Pago con el aviso de transferencia: los
+ * dos dejan una fila con el plan elegido, y esa fila es la que decide qué plan
+ * se aplica cuando el pago se acredita.
+ */
+async function planAPagar({ suscripcion, plan: planActual, planPendiente }, codigo) {
+  const continua = planPendiente || planActual;
+  let plan = continua;
+  if (codigo && codigo !== continua?.codigo) {
+    plan = codigo === planActual?.codigo
+      ? planActual
+      : await Plan.findOne({ where: { codigo, activo: true } });
+    if (!plan) return { rechazo: { status: 400, cuerpo: { message: 'Ese plan no existe.' } } };
+  }
+  if (plan?.requiereCotizacion && suscripcion.precioAcordado == null) {
+    return { rechazo: { status: 409, cuerpo: {
+      motivo: 'cotizacion',
+      message: 'El Plan Enterprise se cotiza según tu operación. Escribinos y armamos la propuesta.',
+    } } };
+  }
+  /*
+   * Con un precio cerrado a mano, el cambio de plan lo hace una persona.
+   *
+   * El precio acordado manda sobre el de CUALQUIER plan (ver precioDe), así que
+   * dejarlo pasar era vender el Superior o el Enterprise al precio que se le
+   * cerró a este cliente por el Pro. Antes daba igual porque el plan no se
+   * aplicaba; ahora que se aplica, sería un agujero.
+   */
+  if (suscripcion.precioAcordado != null && plan && Number(plan.id) !== Number(planActual?.id)) {
+    return { rechazo: { status: 409, cuerpo: {
+      motivo: 'precio_acordado',
+      message: 'Tu cuenta tiene un precio acordado con nosotros. Para cambiar de plan escribinos y lo ajustamos.',
+    } } };
+  }
+  return { plan };
+}
+
+/*
  * POST /api/billing/checkout  { plan?, modo? }
  *
  * Devuelve a dónde mandar al cliente a pagar. `modo`:
@@ -142,20 +193,12 @@ function precioDe(sub, plan) {
  */
 const crearCheckout = async (req, res, next) => {
   try {
-    const { suscripcion, plan: planActual } = await planService.estadoDe(req.auth.businessId);
+    const estado = await planService.estadoDe(req.auth.businessId);
+    const { suscripcion } = estado;
 
     // Permite pagar directamente el plan al que se quiere pasar.
-    let plan = planActual;
-    if (req.body?.plan && req.body.plan !== planActual?.codigo) {
-      plan = await Plan.findOne({ where: { codigo: req.body.plan, activo: true } });
-      if (!plan) return res.status(400).json({ message: 'Ese plan no existe.' });
-    }
-    if (plan?.requiereCotizacion && suscripcion.precioAcordado == null) {
-      return res.status(409).json({
-        motivo: 'cotizacion',
-        message: 'El Plan Enterprise se cotiza según tu operación. Escribinos y armamos la propuesta.',
-      });
-    }
+    const { plan, rechazo } = await planAPagar(estado, req.body?.plan);
+    if (rechazo) return res.status(rechazo.status).json(rechazo.cuerpo);
 
     const monto = precioDe(suscripcion, plan);
     const negocio = await Business.findByPk(req.auth.businessId, { attributes: ['email'] });
@@ -171,7 +214,8 @@ const crearCheckout = async (req, res, next) => {
           plan, monto,
         });
 
-    // Queda pendiente hasta que MP confirme. El webhook la busca por esta fila.
+    // Queda pendiente hasta que MP confirme. El webhook la busca por esta fila,
+    // y de acá sale el plan que se aplica al acreditar.
     await SubscriptionPayment.create({
       businessId: req.auth.businessId,
       subscriptionId: suscripcion.id,
@@ -190,14 +234,22 @@ const crearCheckout = async (req, res, next) => {
 };
 
 /*
- * POST /api/billing/transferencia  { comprobanteUrl?, detalle? }
+ * POST /api/billing/transferencia  { plan?, comprobanteUrl?, detalle? }
  *
  * El cliente avisa que transfirió. NO acredita: deja el pago pendiente para
  * que alguien lo verifique contra el extracto bancario desde el backoffice.
+ *
+ * Lleva el plan elegido igual que el checkout. Antes se anotaba siempre el
+ * plan actual: quien transfería el precio del Superior desde "Cambiar a este
+ * plan" quedaba registrado como un pago del Pro.
  */
 const informarTransferencia = async (req, res, next) => {
   try {
-    const { suscripcion, plan } = await planService.estadoDe(req.auth.businessId);
+    const estado = await planService.estadoDe(req.auth.businessId);
+    const { suscripcion } = estado;
+    const { plan, rechazo } = await planAPagar(estado, req.body?.plan);
+    if (rechazo) return res.status(rechazo.status).json(rechazo.cuerpo);
+
     const monto = req.body?.monto != null ? Number(req.body.monto) : precioDe(suscripcion, plan);
 
     const pago = await SubscriptionPayment.create({
@@ -220,6 +272,69 @@ const informarTransferencia = async (req, res, next) => {
 
 // GET /api/billing/transferencia — a qué cuenta transferir
 const getDatosTransferencia = async (_req, res) => res.json(DATOS_TRANSFERENCIA);
+
+/*
+ * La fila del checkout que corresponde a un cobro de Mercado Pago, o null.
+ *
+ * Se reconoce por el IMPORTE: Mercado Pago cobra exactamente lo que se le pidió
+ * en la preferencia, y es lo único que la fila y el cobro tienen en común. Antes
+ * se tomaba la pendiente más nueva, fuera cual fuera: con un link del Superior y
+ * otro del Pro abiertos, pagar el del Superior acreditaba el Pro. Un cobro que
+ * no coincide con ninguna (un débito automático del mes) no trae pedido de
+ * cambio de plan, y así se lo trata.
+ */
+async function filaDelCobro(sub, pagoMp, t) {
+  const pendientes = await SubscriptionPayment.findAll({
+    where: { subscriptionId: sub.id, estado: 'pendiente', metodo: 'mercadopago' },
+    order: [['fecha', 'DESC'], ['id', 'DESC']],
+    transaction: t,
+  });
+  return pendientes.find((f) => Math.abs(Number(f.monto) - Number(pagoMp.monto)) < 0.01) || null;
+}
+
+/*
+ * Acredita un cobro aprobado de Mercado Pago. Devuelve el período, o null si ya
+ * estaba acreditado.
+ *
+ * Es el camino del webhook y el de "Ya pagué", que antes eran dos copias que no
+ * decían lo mismo: el webhook creaba una fila nueva con el plan VIEJO de la
+ * suscripción y dejaba la del checkout pendiente para siempre. El plan sale de
+ * la fila que dejó el checkout —lo que el dueño eligió y lo que se le cobró—,
+ * nunca de Mercado Pago ni del navegador.
+ *
+ * La suscripción se traba ANTES de mirar si el cobro ya está: el webhook y
+ * "Ya pagué" pueden llegar a la vez con el mismo cobro, y los dos veían "no
+ * está" y los dos acreditaban. Trabada, el segundo espera y ve el primero.
+ */
+async function acreditarCobroMp(subscriptionId, pagoMp, t) {
+  const sub = await planService.trabarSuscripcion(subscriptionId, t);
+
+  const yaEsta = await SubscriptionPayment.findOne({
+    where: { proveedorRef: pagoMp.id }, transaction: t,
+  });
+  if (yaEsta?.estado === 'aprobado') return null;
+
+  const fila = yaEsta || await filaDelCobro(sub, pagoMp, t);
+  const periodo = await planService.acreditarPago({
+    subscription: sub,
+    planId: fila ? fila.planId : null,
+  }, t);
+
+  const datos = {
+    estado: 'aprobado', proveedorRef: pagoMp.id, monto: pagoMp.monto,
+    periodoDesde: periodo.desde, periodoHasta: periodo.hasta,
+    fecha: pagoMp.fecha ? new Date(pagoMp.fecha) : new Date(),
+  };
+  if (fila) {
+    await fila.update(datos, { transaction: t });
+  } else {
+    await SubscriptionPayment.create({
+      businessId: sub.businessId, subscriptionId: sub.id,
+      planId: periodo.planDelPeriodo, metodo: 'mercadopago', ...datos,
+    }, { transaction: t });
+  }
+  return periodo;
+}
 
 /*
  * POST /api/billing/webhook/mercadopago
@@ -256,12 +371,6 @@ const webhookMercadoPago = async (req, res) => {
     const pago = await mp.consultarPago(dataId);
     if (pago.estado !== 'approved') { await t.rollback(); return; }
 
-    // Idempotencia: MP reenvía el mismo aviso varias veces por diseño.
-    const yaEsta = await SubscriptionPayment.findOne({
-      where: { proveedorRef: pago.id }, transaction: t,
-    });
-    if (yaEsta && yaEsta.estado === 'aprobado') { await t.rollback(); return; }
-
     const businessId = pago.referencia?.businessId;
     const sub = businessId
       ? await Subscription.findOne({ where: { businessId }, transaction: t })
@@ -272,19 +381,9 @@ const webhookMercadoPago = async (req, res) => {
       return;
     }
 
-    const { desde, hasta } = await planService.acreditarPago({ subscription: sub }, t);
-
-    if (yaEsta) {
-      await yaEsta.update({
-        estado: 'aprobado', periodoDesde: desde, periodoHasta: hasta, fecha: new Date(),
-      }, { transaction: t });
-    } else {
-      await SubscriptionPayment.create({
-        businessId: sub.businessId, subscriptionId: sub.id, planId: sub.planId,
-        monto: pago.monto, estado: 'aprobado', metodo: 'mercadopago',
-        proveedorRef: pago.id, periodoDesde: desde, periodoHasta: hasta,
-      }, { transaction: t });
-    }
+    // Idempotencia: MP reenvía el mismo aviso varias veces por diseño.
+    const periodo = await acreditarCobroMp(sub.id, pago, t);
+    if (!periodo) { await t.rollback(); return; }
 
     await t.commit();
     log.info('billing', 'suscripción acreditada por Mercado Pago', { businessId: sub.businessId });
@@ -293,6 +392,18 @@ const webhookMercadoPago = async (req, res) => {
     log.error('billing', 'no se pudo procesar el webhook de Mercado Pago', { error: e.message });
   }
 };
+
+/*
+ * Cómo quedó el plan después de acreditar, en palabras para la pantalla.
+ * Sin esto el cliente que pagó un cambio no sabe si se aplicó.
+ */
+function fraseDelPlan({ plan, planPendiente, planPendienteDesde }) {
+  if (planPendiente) {
+    return ` Seguís con el ${plan?.nombre || 'plan actual'} hasta el ` +
+      `${new Date(planPendienteDesde).toLocaleDateString('es-AR')} y desde ahí pasás al ${planPendiente.nombre}.`;
+  }
+  return plan?.nombre ? ` Tu plan es el ${plan.nombre}.` : '';
+}
 
 /*
  * POST /api/billing/verificar
@@ -321,53 +432,22 @@ const verificarPagos = async (req, res, next) => {
       businessId: req.auth.businessId,
       subscriptionId: suscripcion.id,
     });
-    const aprobados = pagos.filter((p) => p.estado === 'approved');
+    /*
+     * Del más viejo al más nuevo. Mercado Pago los devuelve al revés, y con
+     * dos cobros sin acreditar (un Superior y después un Pro) el orden decide
+     * con qué plan queda la cuenta: tiene que ganar el último que pagó.
+     */
+    const aprobados = pagos
+      .filter((p) => p.estado === 'approved')
+      .sort((a, b) => new Date(a.fecha || 0) - new Date(b.fecha || 0));
 
     let acreditados = 0;
     let hasta = null;
 
     for (const pago of aprobados) {
-      const yaEsta = await SubscriptionPayment.findOne({
-        where: { proveedorRef: pago.id }, transaction: t,
-      });
-      if (yaEsta?.estado === 'aprobado') continue;
-
-      const periodo = await planService.acreditarPago({ subscription: suscripcion }, t);
+      const periodo = await acreditarCobroMp(suscripcion.id, pago, t);
+      if (!periodo) continue;
       hasta = periodo.hasta;
-
-      if (yaEsta) {
-        await yaEsta.update({
-          estado: 'aprobado', periodoDesde: periodo.desde, periodoHasta: periodo.hasta,
-        }, { transaction: t });
-      } else {
-        /*
-         * Se reutiliza la fila pendiente que dejó el checkout en vez de crear
-         * otra: si no, quedaría una pendiente para siempre al lado de la
-         * aprobada, y el cliente vería dos cobros por un pago.
-         */
-        const pendiente = await SubscriptionPayment.findOne({
-          where: { subscriptionId: suscripcion.id, estado: 'pendiente', metodo: 'mercadopago' },
-          order: [['fecha', 'DESC']],
-          transaction: t,
-        });
-
-        if (pendiente) {
-          await pendiente.update({
-            estado: 'aprobado', proveedorRef: pago.id, monto: pago.monto,
-            periodoDesde: periodo.desde, periodoHasta: periodo.hasta, fecha: pago.fecha || new Date(),
-          }, { transaction: t });
-        } else {
-          await SubscriptionPayment.create({
-            businessId: req.auth.businessId,
-            subscriptionId: suscripcion.id,
-            planId: suscripcion.planId,
-            monto: pago.monto, estado: 'aprobado', metodo: 'mercadopago',
-            proveedorRef: pago.id,
-            periodoDesde: periodo.desde, periodoHasta: periodo.hasta,
-            fecha: pago.fecha || new Date(),
-          }, { transaction: t });
-        }
-      }
       acreditados++;
     }
 
@@ -375,10 +455,12 @@ const verificarPagos = async (req, res, next) => {
 
     if (acreditados > 0) {
       log.info('billing', 'pago acreditado al verificar a mano', { businessId: req.auth.businessId, acreditados });
+      const despues = await planService.estadoDe(req.auth.businessId);
       return res.json({
         acreditados,
         vence: hasta,
-        message: `Listo, encontramos el pago. Tu cuenta queda activa hasta el ${new Date(hasta).toLocaleDateString('es-AR')}.`,
+        message: `Listo, encontramos el pago. Tu cuenta queda activa hasta el ${new Date(hasta).toLocaleDateString('es-AR')}.` +
+          fraseDelPlan(despues),
       });
     }
 
