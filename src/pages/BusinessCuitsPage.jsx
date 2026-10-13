@@ -16,6 +16,15 @@ const CONDICIONES = [
 
 const MAX = 3;
 
+// "2019-03-01" → "01/03/2019". Se parte a mano: con new Date() el día se corre
+// por la zona horaria.
+function fechaCorta(dia) {
+  const m = String(dia || "").match(/^(\d{4})-(\d{2})-(\d{2})/);
+  return m ? `${m[3]}/${m[2]}/${m[1]}` : "";
+}
+
+const VACIO = { nombre: "", cuit: "", condicionIva: "", domicilio: "", ingresosBrutos: "", inicioActividades: "", esPrincipal: false };
+
 export default function BusinessCuitsPage() {
   const [cuits, setCuits] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -80,6 +89,8 @@ export default function BusinessCuitsPage() {
               <dl className="mb-3 space-y-1 text-xs text-ink-600">
                 <div><dt className="inline text-ink-500">Condición IVA:</dt> <dd className="inline">{c.condicionIva || "—"}</dd></div>
                 <div><dt className="inline text-ink-500">Domicilio:</dt> <dd className="inline">{c.domicilio || "—"}</dd></div>
+                <div><dt className="inline text-ink-500">Ingresos Brutos:</dt> <dd className="inline">{c.ingresosBrutos || "—"}</dd></div>
+                <div><dt className="inline text-ink-500">Inicio de actividades:</dt> <dd className="inline">{fechaCorta(c.inicioActividades) || "—"}</dd></div>
               </dl>
               <div className="flex flex-wrap gap-1 border-t border-line pt-3">
                 <Link to={`/facturacion/cuits/${c.id}/arca`} className="btn-ghost px-2 py-1.5 text-xs" title="Configurar facturación ARCA">
@@ -99,14 +110,16 @@ export default function BusinessCuitsPage() {
 }
 
 function CuitFormModal({ open, onClose, onSaved, cuit }) {
-  const [form, setForm] = useState({ nombre: "", cuit: "", condicionIva: "", domicilio: "", esPrincipal: false });
+  const [form, setForm] = useState(VACIO);
   const esPrincipal = !!cuit?.esPrincipal;
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [cuitStatus, setCuitStatus] = useState(null);
 
   useEffect(() => {
-    setForm(cuit ? { ...cuit, esPrincipal: !!cuit.esPrincipal } : { nombre: "", cuit: "", condicionIva: "", domicilio: "", esPrincipal: false });
+    setForm(cuit
+      ? { ...VACIO, ...cuit, ingresosBrutos: cuit.ingresosBrutos || "", inicioActividades: cuit.inicioActividades || "", esPrincipal: !!cuit.esPrincipal }
+      : VACIO);
     setError("");
     setCuitStatus(null);
   }, [cuit, open]);
@@ -186,6 +199,34 @@ function CuitFormModal({ open, onClose, onSaved, cuit }) {
           <label className="label">Domicilio fiscal</label>
           <input className="input" value={form.domicilio || ""} onChange={(e) => setForm({ ...form, domicilio: e.target.value })} />
         </div>
+        {/* Los dos van en la cabecera de la factura, al lado del CUIT. ARCA no
+            los informa, así que los carga el dueño; vacíos, no se imprimen. */}
+        <div className="grid gap-4 sm:grid-cols-2">
+          <div>
+            <label className="label" htmlFor="cuit-iibb">Ingresos Brutos</label>
+            <input
+              id="cuit-iibb"
+              className="input font-mono"
+              value={form.ingresosBrutos || ""}
+              onChange={(e) => setForm({ ...form, ingresosBrutos: e.target.value.slice(0, 40) })}
+              placeholder="901-123456-7"
+              maxLength={40}
+            />
+          </div>
+          <div>
+            <label className="label" htmlFor="cuit-inicio">Inicio de actividades</label>
+            <input
+              id="cuit-inicio"
+              type="date"
+              className="input"
+              value={form.inicioActividades || ""}
+              onChange={(e) => setForm({ ...form, inicioActividades: e.target.value })}
+            />
+          </div>
+        </div>
+        <p className="-mt-2 text-xs text-ink-500">
+          Salen en la cabecera de tus facturas. Si estás en Convenio Multilateral, escribilo adelante (C.M. 901-…).
+        </p>
         {esPrincipal ? (
           <p className="flex items-center gap-2 rounded-md bg-paper-100 px-3 py-2 text-sm text-ink-700">
             <Star size={13} className="shrink-0 text-brass-500" />
