@@ -34,10 +34,14 @@ function clientIp(req) {
 }
 function userAgent(req) { return String(req.headers['user-agent'] || '').slice(0, 500); }
 
-const sanitizeBusiness = (b) => {
-  const { passwordHash, ...safe } = b.toJSON();
-  return safe;
-};
+/*
+ * Lo que del negocio viaja en el registro, el login y /auth/me.
+ *
+ * Era "todo menos el passwordHash", y así viajaba también el secreto del doble
+ * factor. Ahora es una lista de lo permitido: ver src/utils/serializarCuenta.js.
+ */
+const { serializarCuenta } = require('../utils/serializarCuenta');
+const sanitizeBusiness = (b) => serializarCuenta(b);
 const sanitizeEmployee = (e) => {
   const { passwordHash, ...safe } = e.toJSON();
   return safe;

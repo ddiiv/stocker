@@ -40,7 +40,16 @@ const {
   CANALES, canalesUtilizables, emitirCodigo, validarCodigo, VIGENCIA_MIN,
 } = require('../services/codigosCuentaService');
 
-const sinPassword = (b) => { const { passwordHash, ...safe } = b.toJSON(); return safe; };
+/*
+ * Lo que del negocio viaja en GET /api/account y en las respuestas de cuenta.
+ *
+ * Se llamaba sinPassword porque eso hacía: sacaba la contraseña y mandaba el
+ * resto, secreto del doble factor incluido. Ahora es una lista de lo permitido.
+ * El nombre se queda para no tocar las tres llamadas, pero ya no describe lo que
+ * hace: ver src/utils/serializarCuenta.js.
+ */
+const { serializarCuenta } = require('../utils/serializarCuenta');
+const sinPassword = (b) => serializarCuenta(b);
 
 // GET /api/account
 const obtener = async (req, res, next) => {
