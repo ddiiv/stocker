@@ -28,6 +28,7 @@ export default function CuentaDetallePage() {
   const [ok, setOk] = useState("");
   const [ocupado, setOcupado] = useState("");
   const [modal, setModal] = useState(false);
+  const [acreditando, setAcreditando] = useState(null);   // el pago que se está acreditando
 
   async function cargar() {
     setCargando(true); setError("");
@@ -40,21 +41,35 @@ export default function CuentaDetallePage() {
   }
   useEffect(() => { cargar(); /* eslint-disable-next-line */ }, [id]);
 
+  /*
+   * Acreditar pasa por el modal: quien acredita escribe lo que vio en el banco
+   * y el backend lo compara con lo que corresponde. Si no coincide contesta
+   * 409 con los dos números, y el modal ofrece acreditarlo igual.
+   */
+  function alAcreditar(r) {
+    setAcreditando(null);
+    // Qué pasó con el plan: acreditar un pago de otro plan lo cambia, y
+    // quien acredita tiene que verlo en el momento.
+    const cambio = r.plan?.cambio === "sube"
+      ? ` Pasó al ${r.plan.vigente?.nombre} desde ahora; el vencimiento no se movió.`
+      : r.plan?.cambio === "sigue"
+        ? ` Se canceló la bajada: sigue en el ${r.plan.vigente?.nombre}.`
+        : r.plan?.cambio === "baja" && r.plan.pendiente
+          ? ` Pasa al ${r.plan.pendiente.nombre} el ${fecha(r.plan.pendiente.desde)}, al terminar lo que ya pagó.`
+          : r.plan?.cambio === "baja"
+            ? ` Pasó al ${r.plan.vigente?.nombre} desde ahora (no tenía un período pago en curso).`
+            : "";
+    setOk(`Pago acreditado. La cuenta queda paga hasta el ${fecha(r.periodo.hasta)}.${cambio}` +
+      (r.revisar ? ` Queda anotado: ${r.revisar}` : ""));
+    cargar();
+  }
+
   async function accionPago(pagoId, accion) {
     setOcupado(`pago-${pagoId}`); setError(""); setOk("");
     try {
       if (accion === "aprobar") {
-        const r = await api.aprobarPago(pagoId);
-        // Qué pasó con el plan: acreditar un pago de otro plan lo cambia, y
-        // quien acredita tiene que verlo en el momento.
-        const cambio = r.plan?.cambio === "sube"
-          ? ` Pasó al ${r.plan.vigente?.nombre} desde ahora.`
-          : r.plan?.cambio === "baja" && r.plan.pendiente
-            ? ` Pasa al ${r.plan.pendiente.nombre} el ${fecha(r.plan.pendiente.desde)}, al terminar lo que ya pagó.`
-            : r.plan?.cambio === "baja"
-              ? ` Pasó al ${r.plan.vigente?.nombre} desde ahora (no tenía un período pago en curso).`
-              : "";
-        setOk(`Pago acreditado. La cuenta queda paga hasta el ${fecha(r.periodo.hasta)}.${cambio}`);
+        setAcreditando(pagos.find((p) => p.id === pagoId) || null);
+        return;
       } else {
         await api.rechazarPago(pagoId, "Rechazado desde el backoffice");
         setOk("Pago marcado como rechazado.");
@@ -65,10 +80,12 @@ export default function CuentaDetallePage() {
     } finally { setOcupado(""); }
   }
 
+  const pagos = datos?.pagos || [];
+
   if (cargando) return <Cargando />;
   if (!datos) return <Aviso tono="error">{error || "Cuenta no encontrada."}</Aviso>;
 
-  const { negocio, suscripcion: s, uso, pagos, actividad } = datos;
+  const { negocio, suscripcion: s, uso, actividad } = datos;
 
   return (
     <div>
@@ -136,6 +153,19 @@ export default function CuentaDetallePage() {
             {s.planPendiente && (
               <Dato rotulo="Cambio programado" valor={s.planPendienteNombre} nota={`desde el ${fecha(s.planPendienteDesde)}`} />
             )}
+            {/* El débito automático tiene que cobrar el precio del plan con el
+                que la cuenta sigue: si Mercado Pago no aceptó el monto nuevo,
+                se reintenta solo, pero acá tiene que verse. */}
+            {s.debito?.activo && (
+              <Dato
+                rotulo="Débito automático"
+                valor={s.debito.monto != null ? `${plata(s.debito.monto)} /mes` : "Monto sin confirmar"}
+                nota={s.debito.pendienteDesde
+                  ? `Mercado Pago no aceptó el monto nuevo desde el ${fecha(s.debito.pendienteDesde)}: se reintenta solo`
+                  : "Sigue al plan con el que sigue la cuenta"}
+                notaTono={s.debito.pendienteDesde ? "crit" : undefined}
+              />
+            )}
           </div>
           {s.descuentoNota && (
             <p className="mt-3 border-t border-line pt-3 text-xs text-dim">{s.descuentoNota}</p>
@@ -153,6 +183,11 @@ export default function CuentaDetallePage() {
             <Medida rotulo="SKUs" dato={uso.skus} />
             <Medida rotulo="CUITs" dato={uso.cuits} />
             <Medida rotulo="Usuarios" dato={uso.empleados} />
+            {uso.empleados?.suspendidosPorPlan > 0 && (
+              <p className="-mt-2 text-xs text-warn">
+                {uso.empleados.suspendidosPorPlan} suspendido{uso.empleados.suspendidosPorPlan === 1 ? "" : "s"} por el plan
+              </p>
+            )}
             <Medida rotulo="Locales" dato={uso.locales} />
           </div>
           <div className="mt-4 border-t border-line pt-3 text-xs text-dim">
@@ -196,12 +231,29 @@ export default function CuentaDetallePage() {
                   {p.verificadoPor && (
                     <p className="text-xs text-faint">Verificó {p.verificadoPor}</p>
                   )}
+                  {/* Un cobro que no correspondía a lo cotizado: se acreditó
+                      por lo que vale y alguien tiene que mirarlo. */}
+                  {p.aRevisar && <p className="text-xs text-crit">Revisar: {p.aRevisar}</p>}
                 </td>
                 <td className="td text-dim">
                   {p.metodo === "mercadopago" ? "Mercado Pago"
                    : p.metodo === "transferencia" ? "Transferencia" : "Manual"}
                 </td>
-                <td className="td text-right tabular">{plata(p.monto)}</td>
+                <td className="td text-right tabular">
+                  {plata(p.monto)}
+                  {/* Lo que corresponde HOY a ese plan, al lado de lo informado:
+                      rojo si no alcanza. Así la diferencia se ve antes de acreditar. */}
+                  {p.estado === "pendiente" && p.corresponde && (
+                    <p className={`text-xs ${
+                      p.corresponde.esperado == null || Number(p.monto) + 1 < p.corresponde.esperado ? "text-crit"
+                      : Number(p.monto) > p.corresponde.esperado + 1 ? "text-warn" : "text-faint"
+                    }`}>
+                      {p.corresponde.esperado == null
+                        ? "no se puede aplicar (hay otra bajada)"
+                        : `corresponde ${plata(p.corresponde.esperado)}${p.corresponde.concepto === "diferencia" ? ` (diferencia, ${p.corresponde.dias} días)` : ""}`}
+                    </p>
+                  )}
+                </td>
                 <td className="td"><Estado valor={p.estado} /></td>
                 <td className="td text-right whitespace-nowrap">
                   {/* Acreditar es el paso que a propósito no es automático: el
@@ -232,6 +284,12 @@ export default function CuentaDetallePage() {
         )}
       </Card>
 
+      <ModalAcreditar
+        pago={acreditando}
+        onClose={() => setAcreditando(null)}
+        onAcreditado={alAcreditar}
+      />
+
       <ModalEditar
         open={modal}
         onClose={() => setModal(false)}
@@ -250,8 +308,83 @@ function Dato({ rotulo, valor, nota, notaTono }) {
     <div>
       <p className="eyebrow">{rotulo}</p>
       <p className="mt-0.5 text-sm font-medium text-text">{valor}</p>
-      {nota && <p className={`text-xs ${notaTono === "ok" ? "text-ok" : "text-faint"}`}>{nota}</p>}
+      {nota && <p className={`text-xs ${notaTono === "ok" ? "text-ok" : notaTono === "crit" ? "text-crit" : "text-faint"}`}>{nota}</p>}
     </div>
+  );
+}
+
+/*
+ * Acreditar un cobro.
+ *
+ * Se escribe lo que entró al banco (viene con el importe que se le pidió al
+ * cliente) y el backend lo compara con lo que corresponde HOY a ese plan: el
+ * plan entero o, al subir con un período pago corriendo, la diferencia por los
+ * días que quedan. Si no coincide no acredita: muestra los dos números y quien
+ * acredita decide si lo acepta igual (queda anotado quién) o lo rechaza desde
+ * la tabla. Antes el plan del pago se aplicaba sin mirar el importe.
+ */
+function ModalAcreditar({ pago, onClose, onAcreditado }) {
+  const [monto, setMonto] = useState("");
+  const [desacuerdo, setDesacuerdo] = useState(null);
+  const [error, setError] = useState("");
+  const [enviando, setEnviando] = useState(false);
+
+  useEffect(() => {
+    if (pago) { setMonto(String(Number(pago.monto))); setDesacuerdo(null); setError(""); }
+  }, [pago]);
+
+  async function enviar(aceptarDiferencia) {
+    setEnviando(true); setError("");
+    try {
+      const r = await api.aprobarPago(pago.id, { montoRecibido: Number(monto), aceptarDiferencia });
+      onAcreditado(r);
+    } catch (e) {
+      const d = e.response?.data;
+      if (e.response?.status === 409 && d?.motivo === "monto_no_coincide") setDesacuerdo(d);
+      else setError(mensajeDe(e, "No se pudo acreditar el pago."));
+    } finally { setEnviando(false); }
+  }
+
+  if (!pago) return null;
+  return (
+    <Modal open={Boolean(pago)} onClose={onClose} titulo="Acreditar cobro">
+      <div className="space-y-4">
+        <Aviso tono="error">{error}</Aviso>
+        <p className="text-sm text-dim">
+          {pago.detalle || "Suscripción"}{pago.plan?.nombre ? ` · ${pago.plan.nombre}` : ""}
+          {pago.corresponde?.esperado != null && (
+            <> · corresponde <span className="text-text">{plata(pago.corresponde.esperado)}</span></>
+          )}
+        </p>
+        <Campo etiqueta="Importe que entró" ayuda="Lo que se ve en el extracto del banco.">
+          <input className="input" type="number" min="0" step="0.01" value={monto}
+                 onChange={(e) => { setMonto(e.target.value); setDesacuerdo(null); }} />
+        </Campo>
+
+        {desacuerdo && (
+          <div className="rounded-[3px] border border-crit/40 bg-crit-bg p-3 text-sm text-crit">
+            <p>{desacuerdo.message}</p>
+            <p className="mt-1 text-xs">
+              Entró {plata(desacuerdo.recibido)}
+              {desacuerdo.esperado != null ? ` · corresponde ${plata(desacuerdo.esperado)}` : ""}
+            </p>
+          </div>
+        )}
+
+        <div className="flex justify-end gap-2 pt-1">
+          <button type="button" className="btn-ghost" onClick={onClose}>Cancelar</button>
+          {desacuerdo ? (
+            <button className="btn-primary" disabled={enviando} onClick={() => enviar(true)}>
+              {enviando ? "Acreditando…" : "Acreditar igual"}
+            </button>
+          ) : (
+            <button className="btn-primary" disabled={enviando || monto === "" || Number(monto) < 0} onClick={() => enviar(false)}>
+              <Check size={13} /> {enviando ? "Acreditando…" : "Acreditar"}
+            </button>
+          )}
+        </div>
+      </div>
+    </Modal>
   );
 }
 

@@ -44,7 +44,10 @@ export const revocarIntegracion = (id) =>
   http.delete(`/backoffice/integraciones/${id}`).then((r) => r.data);
 
 // ── Cobros ───────────────────────────────────────────────────────
-export const aprobarPago = (id) => http.post(`/backoffice/pagos/${id}/aprobar`).then((r) => r.data);
+/* { montoRecibido, aceptarDiferencia }: lo que entró al banco, y si se acredita
+   aunque no coincida con lo que corresponde (el backend contesta 409 si no). */
+export const aprobarPago = (id, datos = {}) =>
+  http.post(`/backoffice/pagos/${id}/aprobar`, datos).then((r) => r.data);
 export const rechazarPago = (id, motivo) =>
   http.post(`/backoffice/pagos/${id}/rechazar`, { motivo }).then((r) => r.data);
 
