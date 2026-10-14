@@ -384,17 +384,29 @@ const proporcion = (r) => (r.x1 - r.x0) / (r.y1 - r.y0);
       if (codigo(() => logo.prepararLogo(dobleIhdr)) !== 'LOGO_DANADO') { dosIhdrSiempreCae = false; break; }
     }
     chk('el de dos IHDR se rechaza las 300 veces (antes se colaba ~1 de cada 3)', true, dosIhdrSiempreCae);
-    // Otras variantes del mismo agujero: siempre rechazadas.
-    for (const [nombre, c1, c2, e2] of [
-      ['gris→RGBA', 0, 6, 0], ['RGB→RGBA', 2, 6, 0],
-      ['gris→RGBA con el segundo entrelazado', 0, 6, 1], ['gris 8-bit→gris 16-bit', 0, 0, 0],
-    ]) {
-      const bits2 = nombre.includes('16') ? 16 : 8;
-      const png2 = pngCrudo({
+    /*
+     * Otras variantes del mismo agujero. Cada una con su gemelo de UN solo
+     * IHDR (el primero), que es lo que verían los lectores si la estructura no
+     * se mirara: lo usan las pruebas de cada capa, más abajo. También 300
+     * veces cada una: el código viejo las aceptaba más o menos 1 de cada 3, y
+     * probadas una sola vez el control contra ese código mordía a veces sí y a
+     * veces no.
+     */
+    const variantes = [
+      ['gris→RGBA', 0, 6, 0, 8], ['RGB→RGBA', 2, 6, 0, 8],
+      ['gris→RGBA con el segundo entrelazado', 0, 6, 1, 8], ['gris 8-bit→gris 16-bit', 0, 0, 0, 16],
+    ].map(([nombre, c1, c2, e2, bits2]) => ({
+      nombre,
+      doble: pngCrudo({
         ancho: 20, alto: 10, color: c1, filas: ceros(20, 10, 8, c1),
         previos: [bloque('IHDR', ihdrDeBloque(20, 10, bits2, c2, e2))],
-      });
-      chk(`dos IHDR (${nombre}): LOGO_DANADO`, 'LOGO_DANADO', codigo(() => logo.prepararLogo(png2)));
+      }),
+      solo: pngCrudo({ ancho: 20, alto: 10, color: c1, filas: ceros(20, 10, 8, c1) }),
+    }));
+    for (const { nombre, doble } of variantes) {
+      let siempre = true;
+      for (let i = 0; i < 300 && siempre; i += 1) siempre = codigo(() => logo.prepararLogo(doble)) === 'LOGO_DANADO';
+      chk(`dos IHDR (${nombre}): LOGO_DANADO las 300 veces`, true, siempre);
     }
     // Bloques críticos repetidos o fuera de orden.
     chk('dos PLTE', 'LOGO_DANADO', codigo(() => logo.leerLogo(pngCrudo({
@@ -421,26 +433,109 @@ const proporcion = (r) => (r.x1 - r.x0) / (r.y1 - r.y0);
     // Algo después del IEND.
     chk('bytes después del IEND', 'LOGO_DANADO', codigo(() => logo.leerLogo(
       Buffer.concat([pngCrudo({ ancho: 3, alto: 2, filas: filas3x2 }), bloque('tEXt', Buffer.from('a\0b'))]))));
+    // Un PNG legítimo todo en cero se guarda todo en cero (el invariante de abajo).
+    const todoEnCero = (datos) => leerPixeles(datos).data.every((b, k) => (k % 4 === 3 ? b === 255 : b === 0));
+    chk('   un PNG legítimo todo en cero se guarda todo en cero', true, todoEnCero(logo.prepararLogo(unSoloIhdr).datos));
+
+    tit('2ter. CADA CAPA, SOLA (si una se rompe, la prueba lo dice)');
     /*
-     * Lo que SÍ se acepta no trae bytes ajenos. El IDAT del archivo de dos
-     * IHDR es todo ceros: si en alguna de las 400 subidas se aceptara con
-     * algún byte que no sea cero, eso es memoria del proceso. La invariante es
-     * dura: cada intento o se rechaza, o devuelve una imagen TODA en cero.
-     * Contra el código viejo este control muerde (aceptaba con basura).
+     * La defensa contra el doble IHDR tiene tres capas: (1) la estructura —un
+     * segundo IHDR se rechaza antes de que lo lea nadie—; (2) lo que leyó
+     * pngjs tiene que ser NUESTRO IHDR; (3) lo que leyó PDFKit (png-js),
+     * también. Probadas juntas, alcanza con que ande una para que todo dé
+     * verde: con un solo IHDR los tres lectores leen los mismos 13 bytes y las
+     * comparaciones de (2) y (3) nunca llegan a rechazar nada. Por eso acá se
+     * prueba cada una por su cuenta.
+     *
+     * Para (2) y (3) se reemplaza al lector por un doble: logoFactura llama a
+     * PNG.sync.read y a openImage de PDFKit en el momento de usarlos (no se
+     * los guarda), así que cambiarlos acá es cambiar lo que ve el validador.
+     * Se restauran siempre.
      */
-    let soloCerosOCae = true;
-    for (let i = 0; i < 400; i += 1) {
-      let datos = null;
-      try { datos = logo.prepararLogo(dobleIhdr).datos; } catch { datos = null; }
-      if (datos) {
-        const px = leerPixeles(datos).data;
-        if (!px.every((b, k) => (k % 4 === 3 ? b === 255 : b === 0))) { soloCerosOCae = false; break; }
+    const leerPngjs = PNG.sync.read;
+    const abrirPdfkit = PDFDocument.prototype.openImage;
+    function conLectores({ pngjs, pdfkit }, fn) {
+      if (pngjs) PNG.sync.read = (datos, ...resto) => pngjs((d = datos) => leerPngjs.call(PNG.sync, d, ...resto));
+      if (pdfkit) PDFDocument.prototype.openImage = function (datos) { return pdfkit((d = datos) => abrirPdfkit.call(this, d)); };
+      try { return fn(); } finally {
+        PNG.sync.read = leerPngjs;
+        PDFDocument.prototype.openImage = abrirPdfkit;
       }
     }
-    chk('ninguna de 400 subidas del de dos IHDR trae bytes ajenos', true, soloCerosOCae);
-    // Y un PNG legítimo todo en cero round-trip exacto (control del invariante).
-    chk('   un PNG legítimo todo en cero se guarda todo en cero', true,
-      leerPixeles(logo.prepararLogo(unSoloIhdr).datos).data.every((b, k) => (k % 4 === 3 ? b === 255 : b === 0)));
+
+    // ── Capa 1: el rechazo es por la estructura, antes de que lo lea nadie.
+    let vistos = null;
+    const espiando = (fn) => {
+      vistos = { pngjs: 0, pdfkit: 0 };
+      const r = conLectores({
+        pngjs: (leer) => { vistos.pngjs += 1; return leer(); },
+        pdfkit: (abrir) => { vistos.pdfkit += 1; return abrir(); },
+      }, fn);
+      return [r, vistos.pngjs, vistos.pdfkit];
+    };
+    chk('el espía ve a los dos lectores leer un PNG sano (control del espía)', ['ok', 1, 1],
+      espiando(() => codigo(() => logo.leerLogo(unSoloIhdr))));
+    for (const [nombre, archivo] of [['el del revisor', dobleIhdr], ...variantes.map((v) => [v.nombre, v.doble])]) {
+      chk(`capa 1: dos IHDR (${nombre}) se rechaza por la estructura, sin que pngjs ni PDFKit lo lean`,
+        ['LOGO_DANADO', 0, 0], espiando(() => codigo(() => logo.leerLogo(archivo))));
+    }
+
+    // ── Capa 2: lo que leyó pngjs, comparado campo por campo.
+    const sano = variantes[0].solo;   // 20 × 10, gris de 8 bits, sin entrelazar
+    const pngjsQueLee = (cambio) => (leer) => { const p = leer(); cambio(p); return p; };
+    chk('capa 2: con el doble sin cambiar nada, el PNG sano entra (control del doble)', 'ok',
+      conLectores({ pngjs: pngjsQueLee(() => {}) }, () => codigo(() => logo.prepararLogo(sano))));
+    for (const [leyo, cambio] of [
+      ['otro ancho', (p) => { p.width += 1; }],
+      ['otro alto', (p) => { p.height += 1; }],
+      ['otra profundidad', (p) => { p.depth = 16; }],
+      ['otro tipo de color', (p) => { p.colorType = 6; }],
+      ['otro entrelazado', (p) => { p.interlace = true; }],
+      ['menos píxeles', (p) => { p.data = p.data.subarray(0, p.data.length - 4); }],
+    ]) {
+      chk(`capa 2: si pngjs leyera ${leyo}, LOGO_DANADO`, 'LOGO_DANADO',
+        conLectores({ pngjs: pngjsQueLee(cambio) }, () => codigo(() => logo.prepararLogo(sano))));
+    }
+    /*
+     * Y el caso real con la capa 1 fuera del medio: el validador recibe el
+     * gemelo de un solo IHDR (pasa la estructura y la descompresión), pero
+     * pngjs devuelve lo que lee del archivo de DOS IHDR —el segundo, con
+     * memoria del proceso de relleno—. PDFKit lee el gemelo, así que acá la
+     * capa 2 está sola. 400 veces: o se rechaza, o la imagen es TODA cero (el
+     * IDAT lo es); un byte que no sea cero es memoria del proceso.
+     */
+    let capa2Siempre = true;
+    let capa2SinAjenos = true;
+    for (let i = 0; i < 400; i += 1) {
+      const r = conLectores({ pngjs: (leer) => leer(dobleIhdr) }, () => {
+        try { return logo.prepararLogo(unSoloIhdr).datos; } catch (e) { return e.codigo; }
+      });
+      if (r !== 'LOGO_DANADO') capa2Siempre = false;
+      if (Buffer.isBuffer(r) && !todoEnCero(r)) capa2SinAjenos = false;
+    }
+    chk('capa 2 sola: con lo que pngjs lee del de dos IHDR, LOGO_DANADO las 400 veces', true, capa2Siempre);
+    chk('   y ninguna de esas 400 guarda bytes ajenos', true, capa2SinAjenos);
+
+    // ── Capa 3: lo que leyó PDFKit (png-js), comparado campo por campo.
+    const pdfkitQueLee = (cambio) => (abrir) => { const img = abrir(); cambio(img); return img; };
+    chk('capa 3: con el doble sin cambiar nada, el PNG sano entra (control del doble)', 'ok',
+      conLectores({ pdfkit: pdfkitQueLee(() => {}) }, () => codigo(() => logo.prepararLogo(sano))));
+    for (const [leyo, cambio] of [
+      ['otras medidas (ancho)', (img) => { img.width += 1; }],
+      ['otras medidas (alto)', (img) => { img.height += 1; }],
+      ['otra profundidad', (img) => { img.image.bits = 16; }],
+      ['otro tipo de color', (img) => { img.image.colorType = 6; }],
+      ['otro entrelazado', (img) => { img.image.interlaceMethod = 1; }],
+    ]) {
+      chk(`capa 3: si PDFKit leyera ${leyo}, LOGO_DANADO`, 'LOGO_DANADO',
+        conLectores({ pdfkit: pdfkitQueLee(cambio) }, () => codigo(() => logo.prepararLogo(sano))));
+    }
+    // El caso real: PDFKit lee el archivo de dos IHDR (se queda con el último);
+    // pngjs, el gemelo. La capa 3 está sola.
+    for (const [nombre, doble, solo] of [['el del revisor', dobleIhdr, unSoloIhdr], ...variantes.map((v) => [v.nombre, v.doble, v.solo])]) {
+      chk(`capa 3 sola: PDFKit con el de dos IHDR (${nombre}): LOGO_DANADO`, 'LOGO_DANADO',
+        conLectores({ pdfkit: (abrir) => abrir(doble) }, () => codigo(() => logo.prepararLogo(solo))));
+    }
 
     tit('3. TAMAÑO Y MEDIDAS');
     const pesado = ruido(340, 340);

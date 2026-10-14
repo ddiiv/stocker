@@ -289,8 +289,7 @@ function exigirQuePdfkitLoLea(datos, leido) {
    * que se nos escape: png-js también se queda con el último IHDR.
    */
   if (leido.formato === 'png'
-      && (img.image.bits !== leido.bits || img.image.colorType !== leido.color
-        || img.image.interlaceMethod !== leido.entrelazado)) {
+      && (img.image.bits !== leido.bits || img.image.colorType !== leido.color)) {
     throw danado('PNG');
   }
 }
