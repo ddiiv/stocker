@@ -348,6 +348,100 @@ const proporcion = (r) => (r.x1 - r.x0) / (r.y1 - r.y0);
     chk('un JPEG sin pérdida (no se imprime en un PDF)', 'LOGO_NO_SOPORTADO',
       codigo(() => logo.leerLogo(jpegCon((b) => { b[posSof + 1] = 0xc3; }))));
 
+    tit('2bis. UN SEGUNDO IHDR NO SE CUELA (memoria sin inicializar del proceso)');
+    /*
+     * El agujero comprobado: el validador se quedaba con el PRIMER IHDR —con
+     * el que cuenta cuántos bytes tienen que salir de la descompresión— y
+     * tanto pngjs como el lector de PDFKit, con el ÚLTIMO. Con un primer IHDR
+     * chico (gris) y un segundo grande (RGBA), la descompresión daba menos
+     * datos de los que el segundo espera y pngjs completaba el resto con
+     * memoria sin inicializar del proceso (tokens, claves, datos de otros
+     * negocios), que se guardaba como logo y se imprimía en las facturas. El
+     * mismo archivo de 95 bytes se aceptaba ~1 de cada 3 veces, cada vez con
+     * otros bytes: por eso se sube MUCHAS veces y tiene que caer SIEMPRE.
+     */
+    const ihdrDeBloque = (w, h, bits, color, entre = 0) => {
+      const b = Buffer.alloc(13);
+      b.writeUInt32BE(w, 0); b.writeUInt32BE(h, 4);
+      b[8] = bits; b[9] = color; b[12] = entre;
+      return b;
+    };
+    const ceros = (w, h, bits, color) => Buffer.alloc(logo.__bytesEsperados({ ancho: w, alto: h, bits, color, entrelazado: 0 }));
+    // El archivo del revisor, clavado: 33×8 gris 8-bit + 33×8 RGB 8-bit, un
+    // IDAT con los 272 ceros que pide el PRIMERO, y IEND: 95 bytes.
+    const dobleIhdr = pngCrudo({
+      ancho: 33, alto: 8, color: 0, filas: ceros(33, 8, 8, 0),
+      previos: [bloque('IHDR', ihdrDeBloque(33, 8, 8, 2))],
+    });
+    chk('es el archivo del revisor: 95 bytes y DOS IHDR (control del armador)', [95, 2],
+      [dobleIhdr.length, bloquesDe(dobleIhdr).filter((t) => t === 'IHDR').length]);
+    // Control: el mismo contenido con UN solo IHDR (el primero) entra. Lo
+    // único que cambia y lo hace caer es el IHDR de más.
+    const unSoloIhdr = pngCrudo({ ancho: 33, alto: 8, color: 0, filas: ceros(33, 8, 8, 0) });
+    chk('   con un solo IHDR el mismo contenido entra', 'ok', codigo(() => logo.leerLogo(unSoloIhdr)));
+    let dosIhdrSiempreCae = true;
+    for (let i = 0; i < 300; i += 1) {
+      if (codigo(() => logo.prepararLogo(dobleIhdr)) !== 'LOGO_DANADO') { dosIhdrSiempreCae = false; break; }
+    }
+    chk('el de dos IHDR se rechaza las 300 veces (antes se colaba ~1 de cada 3)', true, dosIhdrSiempreCae);
+    // Otras variantes del mismo agujero: siempre rechazadas.
+    for (const [nombre, c1, c2, e2] of [
+      ['gris→RGBA', 0, 6, 0], ['RGB→RGBA', 2, 6, 0],
+      ['gris→RGBA con el segundo entrelazado', 0, 6, 1], ['gris 8-bit→gris 16-bit', 0, 0, 0],
+    ]) {
+      const bits2 = nombre.includes('16') ? 16 : 8;
+      const png2 = pngCrudo({
+        ancho: 20, alto: 10, color: c1, filas: ceros(20, 10, 8, c1),
+        previos: [bloque('IHDR', ihdrDeBloque(20, 10, bits2, c2, e2))],
+      });
+      chk(`dos IHDR (${nombre}): LOGO_DANADO`, 'LOGO_DANADO', codigo(() => logo.prepararLogo(png2)));
+    }
+    // Bloques críticos repetidos o fuera de orden.
+    chk('dos PLTE', 'LOGO_DANADO', codigo(() => logo.leerLogo(pngCrudo({
+      ancho: 3, alto: 2, color: 3, filas: filas3x2,
+      previos: [bloque('PLTE', Buffer.from([1, 2, 3])), bloque('PLTE', Buffer.from([4, 5, 6]))],
+    }))));
+    chk('PLTE después de los datos (fuera de orden)', 'LOGO_DANADO', codigo(() => logo.leerLogo(Buffer.concat([
+      FIRMA, bloque('IHDR', ihdrDeBloque(3, 2, 8, 3)),
+      bloque('IDAT', zlib.deflateSync(filas3x2)), bloque('PLTE', Buffer.from([1, 2, 3])), bloque('IEND'),
+    ]))));
+    // Un gris con paleta (el estándar la prohíbe para gris): no se acepta.
+    chk('una paleta en un gris (no corresponde)', 'LOGO_DANADO', codigo(() => logo.leerLogo(pngCrudo({
+      ancho: 3, alto: 2, color: 0, filas: filas3x2, previos: [bloque('PLTE', Buffer.from([1, 2, 3]))],
+    }))));
+    // Los IDAT van todos seguidos: uno partido por otro bloque no entra.
+    chk('IDAT cortado por un bloque de texto en el medio', 'LOGO_DANADO', codigo(() => {
+      const d = zlib.deflateSync(filas3x2);
+      logo.leerLogo(Buffer.concat([
+        FIRMA, bloque('IHDR', ihdrDeBloque(3, 2, 8, 0)),
+        bloque('IDAT', d.subarray(0, 4)), bloque('tEXt', Buffer.from('x\0y')),
+        bloque('IDAT', d.subarray(4)), bloque('IEND'),
+      ]));
+    }));
+    // Algo después del IEND.
+    chk('bytes después del IEND', 'LOGO_DANADO', codigo(() => logo.leerLogo(
+      Buffer.concat([pngCrudo({ ancho: 3, alto: 2, filas: filas3x2 }), bloque('tEXt', Buffer.from('a\0b'))]))));
+    /*
+     * Lo que SÍ se acepta no trae bytes ajenos. El IDAT del archivo de dos
+     * IHDR es todo ceros: si en alguna de las 400 subidas se aceptara con
+     * algún byte que no sea cero, eso es memoria del proceso. La invariante es
+     * dura: cada intento o se rechaza, o devuelve una imagen TODA en cero.
+     * Contra el código viejo este control muerde (aceptaba con basura).
+     */
+    let soloCerosOCae = true;
+    for (let i = 0; i < 400; i += 1) {
+      let datos = null;
+      try { datos = logo.prepararLogo(dobleIhdr).datos; } catch { datos = null; }
+      if (datos) {
+        const px = leerPixeles(datos).data;
+        if (!px.every((b, k) => (k % 4 === 3 ? b === 255 : b === 0))) { soloCerosOCae = false; break; }
+      }
+    }
+    chk('ninguna de 400 subidas del de dos IHDR trae bytes ajenos', true, soloCerosOCae);
+    // Y un PNG legítimo todo en cero round-trip exacto (control del invariante).
+    chk('   un PNG legítimo todo en cero se guarda todo en cero', true,
+      leerPixeles(logo.prepararLogo(unSoloIhdr).datos).data.every((b, k) => (k % 4 === 3 ? b === 255 : b === 0)));
+
     tit('3. TAMAÑO Y MEDIDAS');
     const pesado = ruido(340, 340);
     chk(`un PNG válido de ${Math.round(pesado.length / 1024)} KB (más de 300) no entra`, ['LOGO_PESADO', true],

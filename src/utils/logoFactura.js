@@ -109,11 +109,30 @@ function bytesEsperados({ ancho, alto, bits, color, entrelazado }) {
   }, 0);
 }
 
+/*
+ * Recorre los bloques del PNG y los exige EN ORDEN, sin repetir los críticos.
+ *
+ * El estándar fija un único orden: IHDR primero y una sola vez, después (si
+ * hay) una sola PLTE, después uno o más IDAT TODOS SEGUIDOS, y IEND al final,
+ * sin nada atrás. No alcanza con leer el primer IHDR y seguir: un archivo con
+ * DOS IHDR era el agujero. Nuestro validador se quedaba con el PRIMERO (con
+ * el que calcula cuántos bytes tienen que salir de la descompresión), pero
+ * tanto pngjs como el lector de PDFKit se quedan con el ÚLTIMO. Con el primero
+ * chico (gris) y el segundo grande (RGBA), la descompresión da menos datos de
+ * los que el segundo espera y pngjs completa el resto con memoria sin
+ * inicializar del proceso —tokens, claves o datos de otros negocios—, que
+ * terminaba guardada como logo y impresa en las facturas. Comprobado: el mismo
+ * archivo de 95 bytes se aceptaba ~1 de cada 3 veces, cada vez con otros bytes.
+ * Por eso: un solo IHDR, un solo orden, y después se compara lo que leyó cada
+ * lector contra ESTE IHDR, no sólo las medidas.
+ */
 function leerPng(datos) {
   let pos = 8;
   let ihdr = null;
   let paleta = false;
   let fin = false;
+  let idatAbierto = false;   // ya empezaron los IDAT (van todos seguidos)
+  let idatCerrado = false;   // y después vino otro bloque: no pueden volver
   const idat = [];
   while (pos + 12 <= datos.length) {
     const largo = datos.readUInt32BE(pos);
@@ -121,17 +140,39 @@ function leerPng(datos) {
     const tipo = datos.toString('latin1', pos + 4, pos + 8);
     const cuerpo = datos.subarray(pos + 8, pos + 8 + largo);
     if (!ihdr) {
+      // El primer bloque TIENE que ser IHDR, de 13 bytes.
       if (tipo !== 'IHDR' || largo !== 13) throw danado('PNG');
       ihdr = {
         ancho: cuerpo.readUInt32BE(0), alto: cuerpo.readUInt32BE(4),
         bits: cuerpo[8], color: cuerpo[9], compresion: cuerpo[10], filtro: cuerpo[11], entrelazado: cuerpo[12],
       };
-    } else if (tipo === 'PLTE') paleta = true;
-    else if (tipo === 'IDAT') idat.push(cuerpo);
-    else if (tipo === 'IEND') { fin = true; break; }
+    } else if (tipo === 'IHDR') {
+      // Un segundo IHDR es el agujero descrito arriba.
+      throw danado('PNG');
+    } else if (tipo === 'PLTE') {
+      // Una sola paleta, antes de los datos, y sólo en los tipos que la
+      // admiten (indexado la exige; color verdadero la permite; gris no).
+      if (paleta || idatAbierto || ![2, 3, 6].includes(ihdr.color)) throw danado('PNG');
+      paleta = true;
+    } else if (tipo === 'IDAT') {
+      // Los IDAT van todos seguidos: si ya se cortaron, no pueden reaparecer.
+      if (idatCerrado) throw danado('PNG');
+      idatAbierto = true;
+      idat.push(cuerpo);
+    } else if (tipo === 'IEND') {
+      // IEND cierra el archivo: sin cuerpo y sin nada después.
+      if (largo !== 0) throw danado('PNG');
+      fin = true;
+      pos += 12 + largo;
+      break;
+    } else {
+      // Cualquier otro bloque (texto, gamma, etc.) corta la racha de IDAT.
+      if (idatAbierto) idatCerrado = true;
+    }
     pos += 12 + largo;
   }
-  if (!ihdr || !fin || !idat.length) throw danado('PNG');
+  // Tiene que haber terminado en IEND y no quedar ni un byte atrás.
+  if (!ihdr || !fin || !idat.length || pos !== datos.length) throw danado('PNG');
   if (!PROFUNDIDADES[ihdr.color]?.includes(ihdr.bits) || ihdr.compresion !== 0 || ihdr.filtro !== 0
       || ihdr.entrelazado > 1 || (ihdr.color === 3 && !paleta)) {
     throw danado('PNG');
@@ -164,8 +205,23 @@ function leerPng(datos) {
   } catch {
     throw danado('PNG');
   }
-  if (png.width !== ihdr.ancho || png.height !== ihdr.alto) throw danado('PNG');
-  return { formato: 'png', ancho: ihdr.ancho, alto: ihdr.alto, rgba: png.data };
+  /*
+   * Lo que pngjs entendió tiene que ser EXACTAMENTE nuestro IHDR, no sólo las
+   * medidas: si difiere la profundidad, el tipo de color o el entrelazado, los
+   * dos lectores no están viendo la misma imagen y los píxeles no son de fiar.
+   * Y el buffer de píxeles tiene que medir lo que tiene que medir: así ningún
+   * byte del rearmado sale de otro lado que no sea decodificar este archivo.
+   */
+  if (png.width !== ihdr.ancho || png.height !== ihdr.alto
+      || png.depth !== ihdr.bits || png.colorType !== ihdr.color
+      || png.interlace !== Boolean(ihdr.entrelazado)
+      || png.data.length !== ihdr.ancho * ihdr.alto * 4) {
+    throw danado('PNG');
+  }
+  return {
+    formato: 'png', ancho: ihdr.ancho, alto: ihdr.alto,
+    bits: ihdr.bits, color: ihdr.color, entrelazado: ihdr.entrelazado, rgba: png.data,
+  };
 }
 
 // ── JPEG ─────────────────────────────────────────────────────────────
@@ -217,14 +273,25 @@ function leerJpeg(datos) {
  * cabecera; no dibuja nada.
  */
 function exigirQuePdfkitLoLea(datos, leido) {
+  const formato = leido.formato === 'png' ? 'PNG' : 'JPG';
   let img;
   try {
     img = new PDFDocument({ autoFirstPage: false }).openImage(datos);
   } catch {
-    throw danado(leido.formato === 'png' ? 'PNG' : 'JPG');
+    throw danado(formato);
   }
-  if (img.width !== leido.ancho || img.height !== leido.alto) {
-    throw danado(leido.formato === 'png' ? 'PNG' : 'JPG');
+  if (img.width !== leido.ancho || img.height !== leido.alto) throw danado(formato);
+  /*
+   * Para el PNG, además de las medidas: que el lector de PDFKit (png-js) haya
+   * leído la MISMA profundidad, tipo de color y entrelazado que nosotros. Es
+   * el mismo motivo que arriba —si los lectores divergen, lo impreso no es lo
+   * que se comprobó— y cierra cualquier variante del agujero del doble IHDR
+   * que se nos escape: png-js también se queda con el último IHDR.
+   */
+  if (leido.formato === 'png'
+      && (img.image.bits !== leido.bits || img.image.colorType !== leido.color
+        || img.image.interlaceMethod !== leido.entrelazado)) {
+    throw danado('PNG');
   }
 }
 
