@@ -567,13 +567,26 @@ const RELLENOS = [
      * TOPE: el límite no habría existido justo para los planes que alguien se
      * tomó el trabajo de ajustar.
      *
-     * NO es reintentable a propósito: corre una sola vez, cuando aparece la
-     * columna. Después, un nulo puesto desde el backoffice es una decisión
-     * ("sin tope para este plan") y un arranque no puede revertirla.
+     * NO es reintentable a propósito: después de la primera vez, un nulo
+     * puesto desde el backoffice es una decisión ("sin tope para este plan")
+     * y un arranque no puede revertirla.
+     *
+     * Pero tampoco puede depender de ver agregarse la columna en ESE mismo
+     * arranque, como los demás no reintentables: si el proceso se moría entre
+     * el addColumn y el relleno (Railway redespliega con SIGTERM, falta
+     * memoria) o el UPDATE fallaba una vez, el arranque siguiente ya
+     * encontraba la columna, no lo corría nunca más, y cada plan editado
+     * quedaba sin tope para siempre. Por eso lleva `marca`: corre mientras la
+     * marca no exista, y la marca se escribe en la misma transacción que el
+     * UPDATE (ver aplicarRellenos). En una base donde el relleno ya había
+     * corrido sin marca, vuelve a correr una vez: sólo toca nulos de
+     * inicial/pro/superior, y el backoffice todavía no tiene cómo poner ese
+     * nulo a mano.
      */
     descripcion: 'planes existentes: tope de sesiones del dueño según el catálogo',
     cuandoSeAgrega: 'plans.maxSesiones',
     reintentable: false,
+    marca: 'relleno:plans.maxSesiones',
     sql: `UPDATE plans SET "maxSesiones" = CASE codigo ${CASO_SESIONES} END
            WHERE "maxSesiones" IS NULL AND codigo IN (${CODIGOS_CON_TOPE})`,
     sqlMssql: `UPDATE plans SET maxSesiones = CASE codigo ${CASO_SESIONES} END
@@ -870,25 +883,58 @@ async function ensureColumns(sequelize) {
     }
   }
 
-  // Rellenos: corren para las columnas que se acaban de crear. Los marcados
-  // como `reintentable` corren siempre — filtran por IS NULL, así que sólo
-  // completan filas que quedaron a medias y repetirlos no cambia nada.
   const esPostgres = sequelize.getDialect() === 'postgres';
-  for (const relleno of RELLENOS) {
-    if (!relleno.reintentable && !agregadas.includes(relleno.cuandoSeAgrega)) continue;
-    try {
-      await sequelize.query(esPostgres ? relleno.sql : relleno.sqlMssql);
-      console.log(`[schema] ${relleno.descripcion}`);
-    } catch (err) {
-      console.warn(`[schema] No se pudo aplicar "${relleno.descripcion}": ${sinDatos(err.message, 160)}`);
-    }
-  }
+  await aplicarRellenos(sequelize, agregadas);
 
   await liberarNumeroDeCotizaciones(sequelize);
   await heredarFeaturesEnUso(sequelize);
   await asegurarIndices(sequelize, esPostgres);
 
   return agregadas;
+}
+
+/*
+ * Rellenos: corren para las columnas que se acaban de crear. Los marcados
+ * como `reintentable` corren siempre — filtran por IS NULL, así que sólo
+ * completan filas que quedaron a medias y repetirlos no cambia nada.
+ *
+ * Los que llevan `marca` corren hasta que terminan bien UNA vez, se haya
+ * agregado o no su columna en este arranque. La marca es una fila de
+ * platform_settings (la tabla la crea sync antes de llegar acá) que se
+ * escribe en la MISMA transacción que el UPDATE: si el UPDATE falla, o el
+ * proceso se muere en el medio, no queda marca y el próximo arranque lo
+ * vuelve a intentar; si quedó la marca, el UPDATE entró entero. Esas claves
+ * no son ajustes: el backoffice y la página pública leen sólo las suyas por
+ * lista blanca, así que no aparecen en ningún lado.
+ */
+async function aplicarRellenos(sequelize, agregadas, rellenos = RELLENOS) {
+  const { PlatformSetting } = require('../models');
+  const esPostgres = sequelize.getDialect() === 'postgres';
+  for (const relleno of rellenos) {
+    const sql = esPostgres ? relleno.sql : relleno.sqlMssql;
+    try {
+      if (relleno.marca) {
+        if (await PlatformSetting.findByPk(relleno.marca, { attributes: ['clave'] })) continue;
+        await sequelize.transaction(async (transaction) => {
+          await sequelize.query(sql, { transaction });
+          // upsert y no create: dos réplicas arrancando a la vez llegan las
+          // dos acá, y la segunda no tiene por qué avisar un error.
+          await PlatformSetting.upsert({
+            clave: relleno.marca,
+            valor: new Date().toISOString(),
+            descripcion: `Relleno de esquema hecho: ${relleno.descripcion}`.slice(0, 200),
+            actualizadoPor: 'arranque',
+          }, { transaction });
+        });
+      } else {
+        if (!relleno.reintentable && !agregadas.includes(relleno.cuandoSeAgrega)) continue;
+        await sequelize.query(sql);
+      }
+      console.log(`[schema] ${relleno.descripcion}`);
+    } catch (err) {
+      console.warn(`[schema] No se pudo aplicar "${relleno.descripcion}": ${sinDatos(err.message, 160)}`);
+    }
+  }
 }
 
 /*
@@ -1106,4 +1152,4 @@ async function ensureDatosIniciales() {
   return sembrados;
 }
 
-module.exports = { ensureColumns, ensureDatosIniciales, COLUMNAS_ESPERADAS };
+module.exports = { ensureColumns, ensureDatosIniciales, COLUMNAS_ESPERADAS, aplicarRellenos, RELLENOS };

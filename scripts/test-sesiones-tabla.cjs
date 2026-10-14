@@ -40,7 +40,7 @@ const jwt = require('jsonwebtoken');
 const { Op } = require('sequelize');
 const {
   Business, Employee, Role, Subscription, Plan, SesionCuenta, AuthAttempt,
-  AccountChangeCode, PasswordResetCode,
+  AccountChangeCode, PasswordResetCode, PlatformSetting,
 } = require('../src/models');
 const planService = require('../src/services/planService');
 const sesiones = require('../src/services/sesionesService');
@@ -980,6 +980,75 @@ console.warn = (...args) => { avisos.push(args.join(' ')); };
     chk('y la que llegó a su tope hace 90 días y 5 minutos', null, await SesionCuenta.findByPk(alTope90.id));
     chk('no borra la que murió hace 60', true, Boolean(await SesionCuenta.findByPk(muerta60.id)));
     chk('ni la de hace 10 días', true, Boolean(await SesionCuenta.findByPk(normal10.id)));
+
+    tit('23. EL RELLENO DEL TOPE NO DEPENDE DE HABER VISTO AGREGARSE LA COLUMNA');
+    /*
+     * La revisión de v3.43: el relleno de plans.maxSesiones corría UNA vez,
+     * sólo en el arranque que agregaba la columna. Si ese arranque se cortaba
+     * entre el addColumn y el relleno (Railway redespliega con SIGTERM, falta
+     * memoria) o el UPDATE fallaba una vez, el siguiente ya encontraba la
+     * columna y no lo volvía a correr. sembrarPlanes no toca un plan editado
+     * desde el backoffice, así que esos planes quedaban en nulo = SIN TOPE
+     * para siempre. Ahora corre hasta que termina bien una vez, y lo recuerda
+     * con una marca que se escribe en la misma transacción.
+     *
+     * Sobre el plan Pro de la base de verdad (el relleno es por código), y se
+     * deja exactamente como estaba, marca incluida.
+     */
+    const { aplicarRellenos, RELLENOS } = require('../src/database/ensureColumns');
+    const db23 = require('../src/config/database');
+    const relleno23 = RELLENOS.filter((r) => r.cuandoSeAgrega === 'plans.maxSesiones');
+    chk('el relleno del tope existe', 1, relleno23.length);
+    const MARCA23 = relleno23[0]?.marca;
+    chk('y tiene marca', true, typeof MARCA23 === 'string' && MARCA23.length > 0 && MARCA23.length <= 60);
+    const pro23 = await Plan.findOne({ where: { codigo: 'pro' } });
+    if (!pro23) {
+      console.log('  — no hay plan pro en la base: no se prueba el relleno');
+    } else {
+      const antesPro = { maxSesiones: pro23.maxSesiones, editadoEn: pro23.editadoEn };
+      const marcaAntes = MARCA23 ? await PlatformSetting.findByPk(MARCA23) : null;
+      const topePro = PLANES.find((p) => p.codigo === 'pro').maxSesiones;
+      const marcaPuesta = async () => Boolean(MARCA23 && await PlatformSetting.findByPk(MARCA23));
+      const sacarMarca = async () => { if (MARCA23) await PlatformSetting.destroy({ where: { clave: MARCA23 } }); };
+      try {
+        // Editado desde el backoffice y en nulo: como lo dejaba el arranque cortado.
+        await pro23.update({ editadoEn: new Date(), maxSesiones: null });
+        await sacarMarca();
+        // La columna ya existe: este arranque NO la agregó.
+        await aplicarRellenos(db23, [], relleno23);
+        chk('un arranque que no agregó la columna igual le pone el tope al plan editado',
+          topePro, (await pro23.reload()).maxSesiones);
+        chk('y deja la marca', true, await marcaPuesta());
+
+        // Después de la marca, un nulo es una decisión del backoffice ("sin tope").
+        await pro23.update({ maxSesiones: null });
+        await aplicarRellenos(db23, [], relleno23);
+        chk('con la marca puesta, un «sin tope» elegido después se respeta', null, (await pro23.reload()).maxSesiones);
+
+        // El UPDATE falla una vez (corte, error pasajero): no queda marca.
+        await sacarMarca();
+        const caida = new Proxy(db23, {
+          get(obj, prop) {
+            if (prop === 'query') return async () => { throw new Error('corte simulado'); };
+            const v = Reflect.get(obj, prop);
+            return typeof v === 'function' ? v.bind(obj) : v;
+          },
+        });
+        const avisosAntes = avisos.length;
+        await aplicarRellenos(caida, [], relleno23);
+        chk('si el relleno falla, no se pone la marca', false, await marcaPuesta());
+        chk('queda el aviso en el log', true, avisos.slice(avisosAntes).some((a) => /corte simulado/.test(a)));
+        await aplicarRellenos(db23, [], relleno23);
+        chk('y el arranque siguiente lo completa', topePro, (await pro23.reload()).maxSesiones);
+        chk('y recién ahí pone la marca', true, await marcaPuesta());
+      } finally {
+        await pro23.update(antesPro);
+        await sacarMarca();
+        if (marcaAntes) await PlatformSetting.create(marcaAntes.get({ plain: true }));
+      }
+      chk('el plan Pro quedó como estaba', [antesPro.maxSesiones, antesPro.editadoEn && new Date(antesPro.editadoEn).getTime()],
+        [(await pro23.reload()).maxSesiones, pro23.editadoEn && new Date(pro23.editadoEn).getTime()]);
+    }
   } finally {
     if (modoOriginal === undefined) delete process.env.SESIONES_LIMITE;
     else process.env.SESIONES_LIMITE = modoOriginal;
