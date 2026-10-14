@@ -367,6 +367,26 @@ BACKOFFICE_EMAIL=stockerbackofficenoreply@gmail.com
 `BACKOFFICE_EMAIL` recibe los pedidos de baja de cuenta. Es una variable para
 poder mudarla al dominio propio sin tocar código.
 
+### Cotizaciones de desarrollos a medida (Plataformas)
+
+```bash
+COTIZACIONES_EMAIL=          # opcional: si falta, va a la casilla de soporte (MAIL_SOPORTE)
+COTIZACIONES_WHATSAPP=       # opcional: sólo dígitos con código de país (5491100000000)
+```
+
+Cuando un cliente pide cotizar su portal mayorista o conectar su tienda
+propia, el pedido **se guarda primero** (backoffice → Cotizaciones) y el mail
+de aviso sale después, sin esperarlo: si el correo falla, el pedido no se
+pierde y la fila dice que el mail no salió. Sin `COTIZACIONES_WHATSAPP` la
+pantalla no ofrece el botón de WhatsApp (es un enlace wa.me con el texto
+escrito, no la API de Meta).
+
+Tienda propia y portal mayorista son funciones del plan (desde el Pro). Al
+primer arranque de esta versión, todo negocio que ya tenía una credencial viva
+de tienda o de portal la conserva aunque su plan no la incluya: el log dice
+`el negocio N conserva …`. Corre una sola vez (marca
+`herencia:conexionesPropias` en `platform_settings`).
+
 ### ARCA
 
 ```bash
