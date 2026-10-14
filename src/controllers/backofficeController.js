@@ -13,6 +13,7 @@ const bloqueo = require('../services/bloqueoService');
 const { crearSesion } = require('../utils/session');
 const { setAuthCookie, clearAuthCookie } = require('../utils/authCookie');
 const { log, mask } = require('../utils/logger');
+const { urlPaginaPublica } = require('../utils/paginaPublica');
 
 /*
  * Backoffice de Stocker.
@@ -654,12 +655,6 @@ const CLAVES_PUBLICAS = {
   urlSistema:       'A dónde lleva el botón «Entrar» de la página pública',
 };
 
-/** URL pública de la landing, para poder abrirla desde el panel. */
-function urlPaginaPublica() {
-  const bruto = (process.env.LANDING_DOMAIN || '').trim().replace(/\/+$/, '');
-  if (!bruto) return null;
-  return /^https?:\/\//i.test(bruto) ? bruto : `https://${bruto}`;
-}
 
 const getAjustes = async (_req, res, next) => {
   try {

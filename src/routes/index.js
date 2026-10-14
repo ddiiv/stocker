@@ -141,6 +141,8 @@ r.get ('/billing/pagos/:id/recibo', requireAuth, requireOwner, billingCtrl.desca
  * que ya está publicado en la página de precios.
  */
 r.get ('/public/landing',          publicCtrl.datosLanding);
+// Dónde están los textos legales: el registro los enlaza antes de tener sesión.
+r.get ('/public/legales',          publicCtrl.legales);
 
 /*
  * Backoffice de Stocker — administración de la plataforma.

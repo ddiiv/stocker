@@ -1,5 +1,6 @@
 const { Plan, PlatformSetting } = require('../models');
 const { CATALOGO_FEATURES } = require('../config/planes');
+const { enlacesLegales } = require('../utils/paginaPublica');
 
 /*
  * Datos que consume la página pública de Stocker.
@@ -116,4 +117,16 @@ const datosLanding = async (_req, res, next) => {
   } catch (e) { next(e); }
 };
 
-module.exports = { datosLanding, POR_DEFECTO };
+/*
+ * Dónde leer los Términos, la Privacidad y los Reembolsos.
+ *
+ * Lo usan el registro (sin sesión todavía) y Configuración. Sale de
+ * LANDING_DOMAIN (ver utils/paginaPublica): { enlaces: null } si no está, y la
+ * pantalla muestra el nombre del texto sin enlace.
+ */
+const legales = (_req, res) => {
+  res.set('Cache-Control', 'no-cache, must-revalidate');
+  res.json({ enlaces: enlacesLegales() });
+};
+
+module.exports = { datosLanding, legales, POR_DEFECTO };
