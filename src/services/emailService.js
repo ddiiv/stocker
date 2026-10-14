@@ -268,40 +268,6 @@ async function sendSaleReceiptToCustomer({ to, cliente, sale, items, business, p
   log.info('email', 'comprobante de venta enviado', { numero: sale.numero, a: mask.email(to) });
 }
 
-// ── Email VENTA al NEGOCIO (aviso interno) ───────────────────────
-async function sendSaleNotificationToBusiness({ to, cliente, sale, items, business, pdfPath, emisor, empleado }) {
-  if (!mailReady() || !to) return;
-  const emisorNombre = emisor?.nombre || business.nombreNegocio;
-
-  const clienteBloque = cliente
-    ? `${escapeHtml(cliente.nombre)} ${escapeHtml(cliente.apellido || '')} ${cliente.cuit ? ' · CUIT ' + escapeHtml(cliente.cuit) : ''} ${cliente.email ? ' · ' + escapeHtml(cliente.email) : ''}`
-    : 'Consumidor final';
-
-  const body = `
-    <p>Se registró una nueva ${sale.tipo === 'cotizacion' ? 'cotización' : 'venta'}: <strong>${escapeHtml(sale.numero)}</strong>.</p>
-    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border:1px solid ${C.line};border-radius:6px;overflow:hidden;margin:10px 0;">
-      <tr style="background:${C.paper100};"><td style="padding:8px 10px;color:${C.ink600};width:130px;">Cliente</td><td style="padding:8px 10px;color:${C.ink950};">${clienteBloque}</td></tr>
-      <tr><td style="padding:8px 10px;color:${C.ink600};">Fecha</td><td style="padding:8px 10px;color:${C.ink950};">${dateOnly(sale.fecha)}</td></tr>
-      <tr style="background:${C.paper100};"><td style="padding:8px 10px;color:${C.ink600};">Estado</td><td style="padding:8px 10px;color:${C.ink950};">${escapeHtml((sale.estado || '').toUpperCase())}${sale.medioPago ? ' · ' + escapeHtml(sale.medioPago) : ''}</td></tr>
-      <tr><td style="padding:8px 10px;color:${C.ink600};">Tipo de precio</td><td style="padding:8px 10px;color:${C.ink950};">${sale.esMayorista ? 'Mayorista' : 'Minorista'}</td></tr>
-      ${empleado ? `<tr style="background:${C.paper100};"><td style="padding:8px 10px;color:${C.ink600};">Vendedor</td><td style="padding:8px 10px;color:${C.ink950};">${escapeHtml(empleado.nombre)} ${escapeHtml(empleado.apellido || '')}</td></tr>` : ''}
-      <tr><td style="padding:8px 10px;color:${C.ink600};">Emisor</td><td style="padding:8px 10px;color:${C.ink950};">${escapeHtml(emisorNombre)}</td></tr>
-    </table>
-    ${itemsTable(items)}
-    ${totalsBox({ subtotal: sale.subtotal, descuento: sale.descuento, descuentoPct: sale.descuentoPct, total: sale.total })}
-    ${sale.notas ? `<p style="color:${C.ink600};font-size:12px;"><strong>Notas:</strong> ${escapeHtml(sale.notas)}</p>` : ''}
-    <p style="color:${C.ink400};font-size:12px;">Adjuntamos el PDF con el detalle completo.</p>`;
-
-  await transport().sendMail({
-    from: correo.remitente(),
-    to,
-    subject: `[Nueva ${sale.tipo === 'cotizacion' ? 'cotización' : 'venta'}] ${sale.numero} · ${money(sale.total)}`,
-    html: shell({ title: 'Nueva operación', businessName: business.nombreNegocio, cuit: business.cuit, bodyHtml: body }),
-    attachments: pdfPath ? [{ filename: `${sale.tipo === 'cotizacion' ? 'cotizacion' : 'venta'}-${sale.numero.replace(/\//g, '-')}.pdf`, path: pdfPath }] : [],
-  });
-  log.info('email', 'aviso interno de venta enviado', { numero: sale.numero, a: mask.email(to) });
-}
-
 // ── Email código de recuperación de contraseña ─────────────────
 async function sendPasswordResetCode({ to, ownerName, code, businessName, expiresInMinutes = 15 }) {
   if (!mailReady() || !to) return;
@@ -759,4 +725,4 @@ async function sendDelegacionArcaPendiente({ negocio, cuit, nombre, ambiente, mo
   return { enviado: true, messageId: info.messageId };
 }
 
-module.exports = { sendInvoiceEmail, sendInvoiceCopyToBusiness, sendSaleReceiptToCustomer, sendSaleNotificationToBusiness, sendPasswordResetCode, sendPasswordResetAlert, sendCashDiscrepancyAlert, sendAccountChangeCode, sendAccountDeletionRequest, sendReporteProblema, sendCotizacionDesarrollo, sendDelegacionArcaPendiente, CASILLA_BACKOFFICE };
+module.exports = { sendInvoiceEmail, sendInvoiceCopyToBusiness, sendSaleReceiptToCustomer, sendPasswordResetCode, sendPasswordResetAlert, sendCashDiscrepancyAlert, sendAccountChangeCode, sendAccountDeletionRequest, sendReporteProblema, sendCotizacionDesarrollo, sendDelegacionArcaPendiente, CASILLA_BACKOFFICE };

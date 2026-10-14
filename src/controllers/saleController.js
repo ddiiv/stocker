@@ -15,21 +15,28 @@ const reglaMayorista = require('../services/reglaMayoristaService');
 const precioService = require('../services/precioService');
 const { generateSalePdf, generateSaleTicketPdf } = require('../services/pdfService');
 const fse = require('fs-extra');
-const { sendSaleReceiptToCustomer, sendSaleNotificationToBusiness } = require('../services/emailService');
-const { sendSaleWhatsapp, sendSaleNotificationWhatsapp } = require('../services/whatsappService');
+const { sendSaleReceiptToCustomer } = require('../services/emailService');
+const { sendSaleWhatsapp } = require('../services/whatsappService');
 const { log, sinDatos } = require('../utils/logger');
 
-// Genera PDF de la venta y dispara mails (cliente + negocio) sin bloquear la request.
+/*
+ * Le manda al CLIENTE su comprobante (mail con el PDF y WhatsApp), sin bloquear
+ * la venta.
+ *
+ * Al negocio no se le avisa nada: la venta ya está registrada en Stocker y se
+ * ve ahí. Antes salían un mail y un WhatsApp al dueño por CADA venta; un local
+ * con doscientas ventas por día recibía cuatrocientos mensajes, y cada uno es
+ * un envío que cuesta (el mail tiene cupo diario y el WhatsApp de Meta se
+ * cobra). Lo decidió el dueño de Stocker. La copia de cada FACTURA al mail
+ * del negocio sigue saliendo (ver invoiceController): es su comprobante fiscal.
+ */
 async function notifySaleAsync(saleId, businessId) {
   try {
     const sale = await Sale.findByPk(saleId, {
       include: [
         { model: SaleItem, as: 'items' },
         { association: 'cliente' },
-        { association: 'empleado', attributes: ['id', 'nombre', 'apellido'] },
-        // El aviso al negocio nombra el local, así que hace falta acá.
-        { association: 'local', attributes: ['id', 'nombre'] },
-        // Y los pagos, porque el PDF imprime a qué CUIT entró cada cobro que no
+        // Los pagos, porque el PDF imprime a qué CUIT entró cada cobro que no
         // fue al cajón. Sin esto el que recibe el mail no ve el destinatario.
         { association: 'pagos' },
       ],
@@ -40,7 +47,8 @@ async function notifySaleAsync(saleId, businessId) {
     const emisor   = await BusinessCuit.findOne({ where: { businessId, esPrincipal: true } })
                   || await BusinessCuit.findOne({ where: { businessId } });
 
-    const pdfPath = await generateSalePdf(sale.toJSON(), sale.items.map((i) => i.toJSON()), business.toJSON(), {
+    // El PDF sólo existe para adjuntarse al mail del cliente: sin mail, no se arma.
+    const pdfPath = !sale.cliente?.email ? null : await generateSalePdf(sale.toJSON(), sale.items.map((i) => i.toJSON()), business.toJSON(), {
       cliente: sale.cliente?.toJSON() || null,
       emisor:  emisor?.toJSON()       || null,
     }).catch((err) => { log.error('venta', 'no se pudo generar el PDF', { motivo: sinDatos(err.message, 160) }); return null; });
@@ -80,23 +88,6 @@ async function notifySaleAsync(saleId, businessId) {
         .catch((err) => log.error('venta', 'no se pudo avisar al cliente por email', { motivo: sinDatos(err.message, 160) }))
         .finally(limpiar);
     }
-    // Aviso interno al negocio (siempre)
-    if (business.email) {
-      pendientes++;
-      sendSaleNotificationToBusiness({
-        to: business.email,
-        cliente: sale.cliente?.toJSON() || null,
-        sale: sale.toJSON(),
-        items: sale.items.map((i) => i.toJSON()),
-        business: business.toJSON(),
-        emisor: emisor?.toJSON() || null,
-        empleado: sale.empleado?.toJSON() || null,
-        pdfPath: absPdf,
-      })
-        .catch((err) => log.error('venta', 'no se pudo avisar al negocio por email', { motivo: sinDatos(err.message, 160) }))
-        .finally(limpiar);
-    }
-
     // Nadie va a adjuntarlo: se borra ya.
     if (absPdf && pendientes === 0) await fse.remove(absPdf).catch(() => {});
     // WhatsApp al cliente (prefiere whatsapp, cae en telefono)
@@ -111,22 +102,6 @@ async function notifySaleAsync(saleId, businessId) {
       }).catch((err) => log.error('venta', 'no se pudo avisar al cliente por WhatsApp', { motivo: sinDatos(err.message, 160) }));
     }
 
-    /*
-     * WhatsApp al negocio, con el detalle de lo vendido.
-     *
-     * Va aparte del aviso al cliente porque dicen cosas distintas: el cliente
-     * recibe su comprobante, el dueño quiere ver qué salió del local sin abrir
-     * el sistema. Igual que los mails, no bloquea la respuesta de la venta.
-     */
-    sendSaleNotificationWhatsapp({
-      business: business.toJSON(),
-      sale:     sale.toJSON(),
-      items:    sale.items.map((i) => i.toJSON()),
-      cliente:  sale.cliente?.toJSON()  || null,
-      empleado: sale.empleado?.toJSON() || null,
-      local:    sale.local?.toJSON()    || null,
-      emisor:   emisor?.toJSON()        || null,
-    }).catch((err) => log.error('venta', 'no se pudo avisar al negocio por WhatsApp', { motivo: sinDatos(err.message, 160) }));
   } catch (err) {
     log.error('venta', 'falló el aviso de la venta', { motivo: sinDatos(err.message, 160) });
   }
@@ -1426,4 +1401,6 @@ const downloadTicket = async (req, res, next) => {
   } catch (error) { next(error); }
 };
 
-module.exports = { getSales, getSale, createSale, cobrarSale, updateSaleStatus, anularSale, convertQuoteToSale, downloadTicket };
+module.exports = { getSales, getSale, createSale, cobrarSale, updateSaleStatus, anularSale, convertQuoteToSale, downloadTicket,
+  // Para scripts/test-avisos-venta.cjs.
+  notifySaleAsync };

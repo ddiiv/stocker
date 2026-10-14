@@ -298,7 +298,6 @@ WHATSAPP_META_TOKEN=
 WHATSAPP_META_PHONE_NUMBER_ID=
 WHATSAPP_TEMPLATE_NAME=            # opcional pero importante, ver abajo
 WHATSAPP_TEMPLATE_LANG=es_AR
-WHATSAPP_AVISAR_NEGOCIO=true       # aviso de cada venta al teléfono del negocio
 
 # Segundo factor por WhatsApp (opcional). Plantilla APARTE de la de ventas.
 WHATSAPP_META_WABA_ID=             # id de la cuenta de WhatsApp Business, para crear la plantilla
@@ -320,9 +319,9 @@ reintenta con el template de `WHATSAPP_TEMPLATE_NAME` si Meta lo rechaza — sin
 ese template configurado, los mensajes a clientes que nunca escribieron
 simplemente no llegan y queda en el log.
 
-Y cada mensaje fuera de la ventana se cobra. Un local con doscientas ventas al
-día son doscientos mensajes al dueño; por eso está `WHATSAPP_AVISAR_NEGOCIO`
-para apagarlo sin desactivar los del cliente.
+Y cada mensaje fuera de la ventana se cobra. Por eso Stocker ya no le manda al
+dueño un aviso por cada venta (ni por WhatsApp ni por mail): la venta queda
+registrada en el sistema. Sólo el cliente recibe su comprobante.
 
 #### La plantilla del segundo factor
 
