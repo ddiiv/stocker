@@ -892,6 +892,10 @@ async function ensureColumns(sequelize) {
 
   await liberarNumeroDeCotizaciones(sequelize);
   await heredarFeaturesEnUso(sequelize);
+  // Después de heredarFeaturesEnUso y no antes: ésa sólo mira negocios con
+  // featuresHeredadas en NULL, y si ésta escribiera primero los dejaría
+  // afuera de la foto de depósito, reposición y eventos para siempre.
+  await heredarConexionesPropias(sequelize);
   await asegurarIndices(sequelize, esPostgres);
 
   return agregadas;
@@ -1002,6 +1006,90 @@ async function heredarFeaturesEnUso() {
   }
   if (marcados) {
     console.log(`[schema] ${marcados} negocio(s) conservan funciones que ya usaban antes de entrar al plan`);
+  }
+}
+
+/*
+ * La tienda propia y el portal mayorista entran al plan (desde el Pro): quien
+ * ya tenía el puente andando lo conserva (decisión del dueño).
+ *
+ * Hasta acá esos dos puentes no tenían puerta de plan: bastaba la credencial.
+ * El día que requireIntegracion empieza a mirar el plan, un negocio en el
+ * Inicial con su portal conectado empezaría a recibir 402 en cada pedido, y
+ * sus clientes mayoristas dejarían de poder comprarle. Es el mismo criterio
+ * que heredarFeaturesEnUso: un cambio comercial nuestro no le corta a nadie
+ * lo que ya estaba usando.
+ *
+ * Se marca a TODO negocio con una credencial viva de ese origen, tenga el plan
+ * que tenga: "la conserva aunque su plan no la incluya" vale también para el
+ * Pro que mañana baja al Inicial.
+ *
+ * Es una foto y corre UNA vez. La marca es una fila de platform_settings
+ * escrita en la misma transacción que los UPDATE (como los rellenos con
+ * `marca`): si algo falla en el medio, no queda marca y el arranque siguiente
+ * la vuelve a sacar entera. Una vez hecha, una credencial que emita el equipo
+ * después ya no hereda nada: pasa por el plan como corresponde.
+ *
+ * Agrega a la lista y no la pisa: lo heredado de depósito, reposición o
+ * eventos se queda. Y si un negocio todavía tiene featuresHeredadas en NULL
+ * (heredarFeaturesEnUso no pudo mirarlo), no se le escribe nada y la foto no
+ * se cierra: escribirle la clave lo sacaría de esa otra foto para siempre.
+ */
+const MARCA_CONEXIONES_PROPIAS = 'herencia:conexionesPropias';
+
+async function heredarConexionesPropias(sequelize) {
+  const { PlatformSetting, IntegracionExterna, Business } = require('../models');
+  const { FEATURE_POR_ORIGEN } = require('../config/plataformas');
+
+  try {
+    if (await PlatformSetting.findByPk(MARCA_CONEXIONES_PROPIAS, { attributes: ['clave'] })) return null;
+
+    const vivas = await IntegracionExterna.findAll({
+      where: { activa: true, origen: Object.keys(FEATURE_POR_ORIGEN) },
+      attributes: ['businessId', 'origen'],
+    });
+
+    // negocio → claves que hereda
+    const porNegocio = new Map();
+    for (const v of vivas) {
+      const clave = FEATURE_POR_ORIGEN[v.origen];
+      if (!porNegocio.has(v.businessId)) porNegocio.set(v.businessId, new Set());
+      porNegocio.get(v.businessId).add(clave);
+    }
+
+    const negocios = porNegocio.size
+      ? await Business.findAll({ where: { id: [...porNegocio.keys()] }, attributes: ['id', 'featuresHeredadas'] })
+      : [];
+    if (negocios.some((n) => n.featuresHeredadas == null)) {
+      console.warn('[schema] conexiones propias: hay negocios sin mirar por heredarFeaturesEnUso; se reintenta en el próximo arranque');
+      return null;
+    }
+
+    const marcados = [];
+    await sequelize.transaction(async (transaction) => {
+      for (const negocio of negocios) {
+        const actuales = String(negocio.featuresHeredadas).split(',').map((x) => x.trim()).filter(Boolean);
+        const nuevas = [...porNegocio.get(negocio.id)].filter((c) => !actuales.includes(c));
+        if (!nuevas.length) continue;
+        await negocio.update({ featuresHeredadas: [...actuales, ...nuevas].join(',') }, { transaction });
+        marcados.push({ negocio: negocio.id, claves: nuevas });
+      }
+      await PlatformSetting.upsert({
+        clave: MARCA_CONEXIONES_PROPIAS,
+        valor: new Date().toISOString(),
+        descripcion: 'Foto hecha: negocios con tienda propia o portal mayorista conectados antes de la puerta de plan',
+        actualizadoPor: 'arranque',
+      }, { transaction });
+    });
+
+    // Los ids y nada más: es para poder decir después a quién se le respetó.
+    for (const m of marcados) {
+      console.log(`[schema] el negocio ${m.negocio} conserva ${m.claves.join(', ')}: ya tenía la credencial viva`);
+    }
+    return marcados;
+  } catch (err) {
+    console.warn(`[schema] No se pudo heredar las conexiones propias: ${sinDatos(err.message, 160)}`);
+    return null;
   }
 }
 
@@ -1156,4 +1244,8 @@ async function ensureDatosIniciales() {
   return sembrados;
 }
 
-module.exports = { ensureColumns, ensureDatosIniciales, COLUMNAS_ESPERADAS, aplicarRellenos, RELLENOS };
+// Sin coma al final: test-rellenos le agrega claves a esta línea con un replace.
+module.exports = {
+  ensureColumns, ensureDatosIniciales, COLUMNAS_ESPERADAS, aplicarRellenos, RELLENOS,
+  heredarConexionesPropias, MARCA_CONEXIONES_PROPIAS
+};

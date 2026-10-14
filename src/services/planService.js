@@ -65,7 +65,12 @@ async function sembrarPlanes() {
       defaults: { ...p, features: JSON.stringify(p.features) },
     });
     if (nuevo) { creados++; continue; }
-    if (fila.editadoEn) continue;          // lo tocó una persona: se respeta
+    if (fila.editadoEn) {
+      // Lo tocó una persona: se respeta. Sólo se completan las funciones que
+      // no existían cuando la editó (ver completarFeaturesNuevas).
+      if (await completarFeaturesNuevas(fila, p)) actualizados++;
+      continue;
+    }
 
     const iguales =
       Number(fila.precioMensual ?? -1) === Number(p.precioMensual ?? -1) &&
@@ -88,6 +93,32 @@ async function sembrarPlanes() {
   }
 
   return { creados, actualizados };
+}
+
+/*
+ * Un plan editado a mano recibe las funciones que se crearon DESPUÉS.
+ *
+ * Respetar lo que tocó un operador quiere decir no pisar lo que decidió, y
+ * sobre una función que no existía no decidió nada. Sin esto, la primera
+ * función nueva que se suma al catálogo (tienda propia y portal mayorista,
+ * desde el Pro) no le llegaba nunca a un Pro editado desde el backoffice: la
+ * clave faltaba, contaba como "no incluida", y la puerta de la integración
+ * le cortaba el puente a un negocio que sí la tenía en su plan.
+ *
+ * Por eso se mira si la clave FALTA, no si vale false: un false escrito es
+ * una decisión del operador y se deja como está.
+ */
+async function completarFeaturesNuevas(fila, semilla) {
+  const actuales = fila.features || {};
+  const faltan = Object.keys(semilla.features || {}).filter((k) => !(k in actuales));
+  if (!faltan.length) return false;
+  const completas = { ...actuales };
+  for (const k of faltan) completas[k] = Boolean(semilla.features[k]);
+  await fila.update({ features: completas });
+  log.info('planes', 'plan editado: se completaron funciones nuevas del catálogo', {
+    plan: fila.codigo, funciones: faltan.join(','),
+  });
+  return true;
 }
 
 /** Arranca la prueba de 14 días de una cuenta recién creada. */
@@ -1086,7 +1117,7 @@ async function trialsPorVencer(dias = 2) {
 }
 
 module.exports = {
-  sembrarPlanes, iniciarTrial, estadoDe, tieneFeature, heredaFeature, usoDe, exigirCupo,
+  sembrarPlanes, completarFeaturesNuevas, iniciarTrial, estadoDe, tieneFeature, heredaFeature, usoDe, exigirCupo,
   acreditarPago, aplicarPlanPendiente, trabarSuscripcion, trabada, sentidoDelCambio,
   trialsPorVencer, precioDeSuscripcion, ErrorPlan, DIAS_TRIAL, DIAS_PERIODO, TOLERANCIA,
   // Prorrateo y cambio de plan

@@ -903,8 +903,20 @@ const emitirIntegracion = async (req, res, next) => {
       businessId, origen, nombre: req.body?.nombre || null,
     });
 
+    /*
+     * Se emite igual, pero se avisa si el plan del negocio no la incluye.
+     *
+     * Emitirla no la habilita: requireIntegracion mira el plan en cada pedido
+     * y una credencial nueva no hereda nada. Sin este aviso el equipo
+     * entregaría un token que rebota con 402 desde el primer pedido, y se
+     * enteraría por el cliente.
+     */
+    const { rechazoPorPlan } = require('../middleware/integracion');
+    const fueraDePlan = await rechazoPorPlan(integracion);
+
     res.status(201).json({
       token,
+      fueraDePlan: fueraDePlan ? fueraDePlan.message : null,
       reemplaza: habia ? { pista: habia.pista, ultimoUsoEn: habia.ultimoUsoEn } : null,
       integracion: {
         id: integracion.id, origen: integracion.origen, nombre: integracion.nombre,

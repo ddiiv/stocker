@@ -95,7 +95,12 @@ const requireFeature = (clave) => async (req, res, next) => {
  * cerró. Ahora corre dentro de requireAuth —el único lugar donde req.auth ya
  * está— y la lista de exentas pasa a ser explícita.
  */
-const EXENTAS = ['/auth', '/account', '/billing', '/backoffice', '/public'];
+/*
+ * '/plataformas/cotizaciones': pedir un desarrollo a medida no es operar el
+ * negocio, es contratarnos trabajo. Una cuenta en lectura que quiere su
+ * portal mayorista no tiene que pagar primero para poder pedir el presupuesto.
+ */
+const EXENTAS = ['/auth', '/account', '/billing', '/backoffice', '/public', '/plataformas/cotizaciones'];
 
 const estaExenta = (ruta) => EXENTAS.some((p) => ruta === p || ruta.startsWith(p + '/'));
 

@@ -231,8 +231,32 @@ const reporteLimiter = rateLimit({
   handler: respuesta('Ya mandaste varios reportes seguidos. Esperá un rato: los estamos leyendo.'),
 });
 
+/*
+ * Pedidos de cotización de un desarrollo a medida.
+ *
+ * Cada uno es una fila que alguien del equipo tiene que leer y un mail a
+ * soporte. Cinco por hora y por negocio alcanzan para corregir un pedido mal
+ * escrito; más que eso es un botón apretado de más o algo automático.
+ */
+const cotizacionLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  limit: 5,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  // Cuenta sólo los pedidos que se guardaron: corregir un detalle demasiado
+  // corto no tiene por qué gastar el cupo.
+  skipFailedRequests: true,
+  // Por negocio, como el de reportes: varias cajas del mismo local comparten IP.
+  keyGenerator: (req) => {
+    const ip = ipKeyGenerator(req.ip);
+    const quien = req.auth?.businessId ? `n${req.auth.businessId}` : null;
+    return quien ? `${ip}|${quien}` : ip;
+  },
+  handler: respuesta('Ya mandaste varios pedidos de cotización seguidos. Ya los tenemos: te escribimos.'),
+});
+
 module.exports = {
-  loginLimiter, passwordResetLimiter, registerLimiter, reporteLimiter,
+  loginLimiter, passwordResetLimiter, registerLimiter, reporteLimiter, cotizacionLimiter,
   apiLimiter, burstLimiter, publicLimiter, frenoContrasenaDeSesion,
   claveIpMasEmail, claveDeSesion,
 };

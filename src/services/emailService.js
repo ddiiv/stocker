@@ -622,6 +622,61 @@ async function sendReporteProblema({ negocio, quien, email, tipo, asunto, detall
 }
 
 /*
+ * Un negocio pidió cotizar un desarrollo a medida (su portal mayorista, o
+ * conectar su tienda propia).
+ *
+ * Es el aviso, no el registro: la cotización ya está guardada cuando esto
+ * corre, y el equipo la ve en el backoffice aunque este mail no salga. Por eso
+ * devuelve { enviado:false } en vez de tirar cuando no hay correo o destino.
+ *
+ * El destino lo decide quien llama (COTIZACIONES_EMAIL o la casilla de
+ * soporte). Todo lo que escribió el cliente pasa por escapeHtml: el detalle es
+ * texto libre y termina en el HTML del mail.
+ */
+async function sendCotizacionDesarrollo({ destino, negocio, cotizacion, tipoTexto, quien, plan }) {
+  if (!mailReady()) return { enviado: false, motivo: 'correo no configurado' };
+  if (!destino) return { enviado: false, motivo: 'sin destino' };
+
+  const filas = [
+    ['Pedido', `#${cotizacion.id} · ${tipoTexto}`],
+    ['Negocio', `${negocio?.nombreNegocio || '—'}${negocio?.cuit ? ` · CUIT ${negocio.cuit}` : ''}`],
+    ['Plan', plan || '—'],
+    ['Lo pide', quien || '—'],
+    ['Contacto', [cotizacion.contactoNombre, cotizacion.contactoEmail, cotizacion.contactoTelefono].filter(Boolean).join(' · ') || '—'],
+  ];
+
+  const body = `
+    <p style="margin:0 0 12px;">${escapeHtml(cotizacion.detalle).replace(/\n/g, '<br>')}</p>
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border:1px solid ${C.line};border-radius:6px;overflow:hidden;margin:14px 0;">
+      ${filas.map(([k, v], i) => `
+        <tr style="background:${i % 2 ? C.paper100 : C.paper50};">
+          <td style="padding:7px 10px;color:${C.ink600};width:120px;">${escapeHtml(k)}</td>
+          <td style="padding:7px 10px;color:${C.ink950};">${escapeHtml(v)}</td>
+        </tr>`).join('')}
+    </table>
+    <p style="margin:0;color:${C.ink600};font-size:12px;">Queda en el backoffice, en Cotizaciones, para seguirla.</p>`;
+
+  const info = await transport().sendMail({
+    from: correo.remitente(),
+    to: destino,
+    // Responder le contesta al cliente, no a la casilla automática.
+    replyTo: cotizacion.contactoEmail || negocio?.email || correo.CASILLAS.soporte,
+    subject: `[COTIZACIÓN] ${tipoTexto} — ${negocio?.nombreNegocio || 'Stocker'}`,
+    html: shell({
+      title: 'Pedido de cotización',
+      businessName: negocio?.nombreNegocio || 'Stocker',
+      bodyHtml: body,
+    }),
+    text: `${cotizacion.detalle}\n\n${filas.map(([k, v]) => `${k}: ${v}`).join('\n')}`,
+  });
+
+  log.info('email', 'cotización avisada', {
+    negocio: negocio?.id, cotizacion: cotizacion.id, destino: mask.email(destino),
+  });
+  return { enviado: true, messageId: info.messageId };
+}
+
+/*
  * Un CUIT de un cliente está esperando la delegación de AFIP.
  *
  * El trámite no se puede automatizar: alguien de Stocker tiene que entrar al
@@ -704,4 +759,4 @@ async function sendDelegacionArcaPendiente({ negocio, cuit, nombre, ambiente, mo
   return { enviado: true, messageId: info.messageId };
 }
 
-module.exports = { sendInvoiceEmail, sendInvoiceCopyToBusiness, sendSaleReceiptToCustomer, sendSaleNotificationToBusiness, sendPasswordResetCode, sendPasswordResetAlert, sendCashDiscrepancyAlert, sendAccountChangeCode, sendAccountDeletionRequest, sendReporteProblema, sendDelegacionArcaPendiente, CASILLA_BACKOFFICE };
+module.exports = { sendInvoiceEmail, sendInvoiceCopyToBusiness, sendSaleReceiptToCustomer, sendSaleNotificationToBusiness, sendPasswordResetCode, sendPasswordResetAlert, sendCashDiscrepancyAlert, sendAccountChangeCode, sendAccountDeletionRequest, sendReporteProblema, sendCotizacionDesarrollo, sendDelegacionArcaPendiente, CASILLA_BACKOFFICE };

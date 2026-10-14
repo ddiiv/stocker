@@ -3,6 +3,7 @@ const multer = require('multer');
 const { requireAuth, requirePermission, requireAnyPermission, requireOwner } = require('../middleware/auth');
 const {
   loginLimiter, passwordResetLimiter, registerLimiter, reporteLimiter, frenoContrasenaDeSesion,
+  cotizacionLimiter,
 } = require('../middleware/rateLimit');
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
@@ -54,6 +55,7 @@ const { restringirBackoffice } = require('../middleware/ipAllowlist');
 const { frenarSiBloqueado } = require('../services/bloqueoService');
 const publicCtrl = require('../controllers/publicController');
 const integracionesCtrl = require('../controllers/integracionesController');
+const plataformasCtrl = require('../controllers/plataformasController');
 const solicitudMayoristaCtrl = require('../controllers/solicitudMayoristaController');
 const { requireIntegracion } = require('../middleware/integracion');
 const { FEATURES } = require('../config/planes');
@@ -191,6 +193,13 @@ r.post('/backoffice/arca/delegaciones/sincronizar', requirePlatformAdmin, backof
 r.get   ('/backoffice/integraciones',     requirePlatformAdmin, backofficeCtrl.listarIntegraciones);
 r.post  ('/backoffice/integraciones',     requirePlatformAdmin, backofficeCtrl.emitirIntegracion);
 r.delete('/backoffice/integraciones/:id', requirePlatformAdmin, backofficeCtrl.revocarIntegracion);
+/*
+ * Los pedidos de cotización de un desarrollo a medida (portal mayorista,
+ * tienda propia). El cliente los crea desde Plataformas; acá el equipo los
+ * sigue y les cambia el estado.
+ */
+r.get  ('/backoffice/cotizaciones',     requirePlatformAdmin, plataformasCtrl.listarBackoffice);
+r.patch('/backoffice/cotizaciones/:id', requirePlatformAdmin, plataformasCtrl.actualizarBackoffice);
 r.get ('/backoffice/ajustes',        requirePlatformAdmin, backofficeCtrl.getAjustes);
 r.put ('/backoffice/ajustes',        requirePlatformAdmin, backofficeCtrl.editarAjustes);
 
@@ -343,6 +352,22 @@ r.get ('/solicitudes-mayoristas',     requireAuth, requireAnyPermission(['ventas
 r.get ('/solicitudes-mayoristas/:id', requireAuth, requireAnyPermission(['ventas', 'stock'], 'ver'), solicitudMayoristaCtrl.getSolicitud);
 r.post('/solicitudes-mayoristas/:id/aceptar',  requireAuth, requirePermission('ventas', 'editar'), solicitudMayoristaCtrl.postAceptar);
 r.post('/solicitudes-mayoristas/:id/rechazar', requireAuth, requirePermission('ventas', 'editar'), solicitudMayoristaCtrl.postRechazar);
+
+/*
+ * ── Plataformas ───────────────────────────────────────────────────
+ *
+ * El estado lo ve quien entra a la sección: integraciones (Mercado Libre,
+ * Jumpseller, tienda propia) o ventas (la bandeja de pedidos mayoristas vive
+ * ahí). No trae ningún token: ver plataformasService.
+ *
+ * Pedir una cotización es contratar trabajo en nombre del negocio: el dueño,
+ * o un cargo con integraciones en edición (decisión del dueño). Está exenta
+ * del modo lectura (middleware/plan.js EXENTAS): una cuenta vencida tiene que
+ * poder pedir, y perder ese pedido por un 402 sería perder un cliente.
+ */
+r.get ('/plataformas',              requireAuth, requireAnyPermission(['integraciones', 'ventas'], 'ver'), plataformasCtrl.estado);
+r.get ('/plataformas/cotizaciones', requireAuth, requireAnyPermission(['integraciones', 'ventas'], 'ver'), plataformasCtrl.listarCotizaciones);
+r.post('/plataformas/cotizaciones', requireAuth, requirePermission('integraciones', 'editar'), cotizacionLimiter, plataformasCtrl.crearCotizacion);
 
 // El dueño maneja sus credenciales desde la configuración del negocio.
 r.get   ('/integraciones',     requireAuth, requireOwner, integracionesCtrl.listar);

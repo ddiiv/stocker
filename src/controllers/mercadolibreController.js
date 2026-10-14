@@ -51,7 +51,10 @@ const callback = async (req, res, next) => {
     // Relativo a propósito: el navegador llegó por el dominio del front (que
     // proxea /api), así que volver sin host lo deja en el mismo origen. Evita
     // depender de que FRONTEND_URL esté bien puesta.
-    const volver = (params) => res.redirect(`/integraciones/mercadolibre?${new URLSearchParams(params)}`);
+    // Mercado Libre vive ahora en Plataformas. La dirección vieja
+    // (/integraciones/mercadolibre) sigue andando: el front la redirige con
+    // la query intacta, por las autorizaciones que estén en vuelo.
+    const volver = (params) => res.redirect(`/plataformas/mercadolibre?${new URLSearchParams(params)}`);
 
     if (error) return volver({ ml_error: errorDescription || error });
     if (!code || !state) return volver({ ml_error: 'Faltan parámetros en la respuesta de MercadoLibre.' });
@@ -71,7 +74,7 @@ const callback = async (req, res, next) => {
     volver({ ml_ok: '1' });
   } catch (e) {
     const detalle = e.response?.data?.message || e.message;
-    res.redirect(`/integraciones/mercadolibre?${new URLSearchParams({ ml_error: detalle })}`);
+    res.redirect(`/plataformas/mercadolibre?${new URLSearchParams({ ml_error: detalle })}`);
   }
 };
 

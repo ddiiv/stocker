@@ -30,6 +30,18 @@ const FEATURES = {
   MULTI_DEPOSITO:       'multiDeposito',        // stock por local
   LISTAS_PRECIOS:       'listasPrecios',        // precios por cliente
   API:                  'api',                  // API para integraciones a medida
+  /*
+   * Las dos conexiones de máquina: una página propia que vende online y el
+   * portal donde los clientes mayoristas arman sus pedidos. Las dos entran
+   * con una credencial que emite el equipo de Stocker (no el cliente) y las
+   * dos las exige requireIntegracion según el origen de esa credencial.
+   *
+   * Van separadas aunque hoy se vendan juntas: son dos puentes distintos, con
+   * rutas distintas, y el día que se cotice uno sin el otro alcanza con
+   * destildar una casilla en el backoffice en vez de partir una clave en dos.
+   */
+  TIENDA_PROPIA:        'tiendaPropia',         // página propia conectada por credencial
+  PORTAL_MAYORISTA:     'portalMayorista',      // portal de pedidos mayoristas
   IMPORTACION_MASIVA:   'importacionMasiva',    // alta/edición por Excel
   /*
    * El circuito de mercadería, que hasta ahora no estaba en ningún plan.
@@ -67,7 +79,13 @@ const CATALOGO_FEATURES = [
   { clave: FEATURES.EVENTOS,            label: 'Eventos: vender sin llevar stock',    ayuda: 'Catálogo de evento: se registra qué se vendió, no cuánto queda.' },
   { clave: FEATURES.FACTURACION_MASIVA, label: 'Facturación por lote',                ayuda: 'Emitir muchos comprobantes de una vez.' },
   { clave: FEATURES.CUENTAS_CORRIENTES, label: 'Cuentas corrientes y fiado',          ayuda: 'Vender a cuenta y llevar el saldo del cliente.' },
-  { clave: FEATURES.ECOMMERCE,          label: 'Mercado Libre',                       ayuda: 'Publicar y sincronizar el stock con Mercado Libre.' },
+  /*
+   * Decía «Mercado Libre» a secas, pero la misma clave abre Jumpseller: un
+   * plan que la incluye da las dos, y la tarjeta tiene que decirlo.
+   */
+  { clave: FEATURES.ECOMMERCE,          label: 'Mercado Libre y Jumpseller',          ayuda: 'Sincronizar el stock y traer las ventas de Mercado Libre y de una tienda Jumpseller.' },
+  { clave: FEATURES.TIENDA_PROPIA,      label: 'Tienda online propia conectada',      ayuda: 'Una página propia que pregunta catálogo, precios y stock, y manda sus ventas a Stocker. La credencial la emite el equipo de Stocker.' },
+  { clave: FEATURES.PORTAL_MAYORISTA,   label: 'Portal de pedidos mayoristas',        ayuda: 'Los pedidos que arman los clientes mayoristas en su portal llegan a una bandeja para aceptarlos o rechazarlos.' },
   { clave: FEATURES.COMPRAS,            label: 'Proveedores y órdenes de compra',     ayuda: 'Registrar compras y llevar el circuito con proveedores.' },
   { clave: FEATURES.DEPOSITO,           label: 'Depósito: ingreso de mercadería',     ayuda: 'Recibir mercadería, cargarla por series y generar etiquetas.' },
   { clave: FEATURES.REPOSICION,         label: 'Reposición entre depósito y locales', ayuda: 'Pedidos del local, aprobación y despacho desde el depósito.' },
@@ -109,6 +127,8 @@ const PLANES = [
       [FEATURES.MULTI_DEPOSITO]:     false,
       [FEATURES.LISTAS_PRECIOS]:     false,
       [FEATURES.API]:                false,
+      [FEATURES.TIENDA_PROPIA]:      false,
+      [FEATURES.PORTAL_MAYORISTA]:   false,
       // Depósito y reposición sólo tienen sentido con más de un punto de
       // venta, que es lo que empieza a pasar recién en el Pro.
       [FEATURES.DEPOSITO]:           false,
@@ -141,6 +161,14 @@ const PLANES = [
       [FEATURES.MULTI_DEPOSITO]:     false,
       [FEATURES.LISTAS_PRECIOS]:     false,
       [FEATURES.API]:                false,
+      /*
+       * Tienda propia y portal mayorista entran desde el Pro (decisión del
+       * dueño): es el plan de quien ya vende por más de un canal. Quien tenía
+       * la credencial antes de que existiera la puerta la conserva aunque su
+       * plan no la incluya (ver ensureColumns.heredarConexionesPropias).
+       */
+      [FEATURES.TIENDA_PROPIA]:      true,
+      [FEATURES.PORTAL_MAYORISTA]:   true,
     },
   },
   {

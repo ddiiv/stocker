@@ -1880,6 +1880,51 @@ const SolicitudMayoristaItem = db.define('SolicitudMayoristaItem', {
 SolicitudMayorista.hasMany(SolicitudMayoristaItem, { as: 'items', foreignKey: 'solicitudId' });
 SolicitudMayoristaItem.belongsTo(SolicitudMayorista, { as: 'solicitud', foreignKey: 'solicitudId' });
 
+/*
+ * Un pedido de cotización de un desarrollo a medida: el portal mayorista
+ * propio de un negocio, o conectar su tienda online.
+ *
+ * Se llama "de desarrollo" para no confundirla con las cotizaciones de venta
+ * (COT-), que son otra cosa y viven en `sales`.
+ *
+ * ── Se guarda primero, se avisa después ──────────────────────────
+ *
+ * El pedido es un cliente que quiere pagar un trabajo. Si dependiera del mail
+ * —que puede no estar configurado, o caerse— se perdería en silencio, y el
+ * cliente creería que pidió algo que nadie vio. Por eso la fila es lo que
+ * cuenta: el backoffice la lista con su estado, y el mail es sólo el aviso.
+ * `avisoEnviadoEn` / `avisoError` dicen qué pasó con ese aviso.
+ *
+ * Es tabla nueva, así que declara sus índices acá: sync la crea con ellos.
+ */
+const CotizacionDesarrollo = db.define('CotizacionDesarrollo', {
+  id:              { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
+  businessId:      { type: DataTypes.INTEGER, allowNull: false },
+  // 'portal_mayorista' | 'tienda_propia' (ver plataformasService.TIPOS_COTIZACION)
+  tipo:            { type: DataTypes.STRING(30), allowNull: false },
+  detalle:         { type: DataTypes.TEXT, allowNull: false },
+  contactoNombre:  { type: DataTypes.STRING(150), allowNull: true },
+  contactoEmail:   { type: DataTypes.STRING(150), allowNull: true },
+  contactoTelefono: { type: DataTypes.STRING(40), allowNull: true },
+  // nueva → contactada → cotizada → aceptada | descartada. Lo mueve el equipo
+  // desde el backoffice; el cliente sólo lo ve.
+  estado:          { type: DataTypes.STRING(15), allowNull: false, defaultValue: 'nueva' },
+  // Quién lo pidió: el dueño (employeeId nulo) o un empleado con permiso.
+  pedidaPorEmployeeId: { type: DataTypes.INTEGER, allowNull: true },
+  avisoEnviadoEn:  { type: DataTypes.DATE, allowNull: true },
+  avisoError:      { type: DataTypes.STRING(200), allowNull: true },
+  // Del equipo, para el equipo: el cliente nunca la ve.
+  notaInterna:     { type: DataTypes.TEXT, allowNull: true },
+  estadoCambiadoEn:  { type: DataTypes.DATE, allowNull: true },
+  estadoCambiadoPor: { type: DataTypes.STRING(150), allowNull: true },
+}, {
+  tableName: 'cotizaciones_desarrollo',
+  indexes: [
+    { name: 'idx_cotizacion_desarrollo_negocio', fields: ['businessId', 'createdAt'] },
+    { name: 'idx_cotizacion_desarrollo_estado', fields: ['estado', 'createdAt'] },
+  ],
+});
+
 // ─── Sale ────────────────────────────────────────────────────────
 const Sale = db.define('Sale', {
   id:           { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
@@ -2462,7 +2507,7 @@ module.exports = {
   // Packs: una variante que se vende sola pero descuenta lo que lleva adentro.
   PackComponente,
   StockIngreso, StockIngresoItem, PedidoReposicion, PedidoReposicionItem,
-  IntegracionExterna, SolicitudMayorista, SolicitudMayoristaItem,
+  IntegracionExterna, SolicitudMayorista, SolicitudMayoristaItem, CotizacionDesarrollo,
   db,
   Plan, Subscription, SubscriptionPayment, PlatformAdmin, PlatformSetting, AuthAttempt,
   Business, BusinessLocation, BusinessCuit, BusinessArcaConfig, ArcaToken, VariantType, VariantStock,

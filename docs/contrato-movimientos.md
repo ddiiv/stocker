@@ -58,11 +58,19 @@ Authorization: Bearer <el token de la credencial>
 Content-Type: application/json
 ```
 
-- El token se emite en Stocker (pantalla **Integraciones**) o en el backoffice. Se muestra **una sola
-  vez** y se guarda hasheado: si se pierde, se emite otro y el anterior deja de servir.
+- El token lo emite el **equipo de Stocker desde el backoffice** (el negocio ve en Plataformas si está
+  conectada y cuándo se usó, nunca el token). Se muestra **una sola vez** y se guarda hasheado: si se
+  pierde, se emite otro y el anterior deja de servir.
 - Orígenes válidos hoy: `isuwaya` (Pedidos Mayoristas), `tienda` (minorista `isu`). Mercado Libre y
   Jumpseller no usan credencial porque hoy **Stocker los va a buscar**, no al revés (§ 6).
 - **El negocio sale de la credencial.** Si el cuerpo trae un `businessId`, se ignora.
+- **La tienda propia y el portal mayorista son funciones del plan** del negocio (desde el Plan Pro).
+  Con una credencial buena de un negocio cuyo plan no las incluye, Stocker contesta `402` con
+  `{ "motivo": "plan", "feature": "tiendaPropia" | "portalMayorista", "message": "…" }` en TODAS las
+  rutas de ese origen. **No es un error de la credencial ni algo que se arregle reintentando**: lo
+  resuelve el negocio cambiando de plan. Reintentá con espera larga (15 minutos o más), no al toque.
+  Los negocios que ya tenían la credencial andando cuando se puso esta puerta la conservan aunque
+  su plan no la incluya.
 
 ---
 
@@ -282,6 +290,7 @@ ventas:
 | `contrato` que no entendemos | — | `400` | Nada. No lo interpreta con otra versión. |
 | `tipo` que no es el de la ruta | — | `400` | Nada. Es el error más caro: se corta acá. |
 | Credencial que no sirve | — | `401` | Nada. No distingue «no existe» de «revocada». |
+| **El plan del negocio no incluye la conexión** | — | `402` | Nada. `motivo: "plan"`. Lo resuelve el negocio pasando de plan: reintentar con espera larga (§ 1). |
 | **Lo tengo pero no lo resolví** | `pendiente` | `202` | **Nada apartado todavía.** Pasa si el procesamiento no llegó a correr. No lo reenvíes como si se hubiera perdido: ya está guardado y Stocker lo resuelve solo (como máximo 15 minutos después). Lo que NO podés es decirle al cliente que está reservado. |
 | **Demasiados pedidos seguidos** | — | `429` | Nada. Ver abajo: este es el único que hay que reintentar con espera creciente. |
 
