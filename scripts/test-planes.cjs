@@ -243,12 +243,15 @@ function sesion() {
       ? JSON.parse(proAntes.features || '{}') : { ...proAntes.features };
     const editadoAntes = proAntes.editadoEn;
 
-    await llamar('pro', { features: { api: true } });
+    // Una función que existe y que el Pro trae prendida: apagarla no puede
+    // llevarse puestas a las demás. (Antes era `api`, que se retiró del
+    // catálogo en v3.60 porque nunca existió: editarPlan ahora la descarta.)
+    await llamar('pro', { features: { cuentasCorrientes: false } });
     const proDespues = await Plan.findOne({ where: { codigo: 'pro' } });
     const featuresDespues = typeof proDespues.features === 'string'
       ? JSON.parse(proDespues.features || '{}') : proDespues.features;
 
-    chk('la función nombrada cambia', true, featuresDespues.api);
+    chk('la función nombrada cambia', false, featuresDespues.cuentasCorrientes);
     chk('eventos sigue estando', true, featuresDespues.eventos);
     chk('depósito también', true, featuresDespues.deposito);
     chk('y reposición', true, featuresDespues.reposicion);
