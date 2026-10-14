@@ -264,6 +264,14 @@ async function api(token, metodo, ruta, json) {
     chk('el que la heredó la ve "conectada", marcada como heredada', ['conectada', true, true],
       [por(eHeredado, 'mayorista').estado, por(eHeredado, 'mayorista').heredada, por(eHeredado, 'mayorista').incluida]);
 
+    tit('2d. LAS CREDENCIALES LAS EMITE EL EQUIPO, NO EL DUEÑO');
+    const credsAntes = await IntegracionExterna.count({ where: { businessId: pro.id } });
+    const rAuto = await api(tokPro, 'POST', '/integraciones', { origen: 'tienda', nombre: 'QA auto' });
+    chk('el dueño no puede emitirse una credencial (no hay ruta)', 404, rAuto.status);
+    chk('   y no se creó ninguna', credsAntes, await IntegracionExterna.count({ where: { businessId: pro.id } }));
+    chk('   (control: verlas sí puede, y sin el token)', [200, false],
+      [(await api(tokPro, 'GET', '/integraciones')).status, (await api(tokPro, 'GET', '/integraciones')).crudo.includes(tokTiendaPro)]);
+
     tit('3. LA PUERTA DE PLAN EN LAS RUTAS DE MÁQUINA');
     const rRebota = await api(tokPortalInicial, 'GET', '/integraciones/isuwaya/precios');
     chk('portal de un Inicial que no lo heredó → 402 motivo plan', [402, 'plan', 'portalMayorista'],

@@ -369,9 +369,14 @@ r.get ('/plataformas',              requireAuth, requireAnyPermission(['integrac
 r.get ('/plataformas/cotizaciones', requireAuth, requireAnyPermission(['integraciones', 'ventas'], 'ver'), plataformasCtrl.listarCotizaciones);
 r.post('/plataformas/cotizaciones', requireAuth, requirePermission('integraciones', 'editar'), cotizacionLimiter, plataformasCtrl.crearCotizacion);
 
-// El dueño maneja sus credenciales desde la configuración del negocio.
+/*
+ * Las credenciales del negocio, para el dueño: verlas (sin el token) y cortar
+ * una si hace falta. EMITIR no: las emite el equipo de Stocker desde el
+ * backoffice (decisión del dueño). Había un POST para que el dueño se las
+ * emitiera solo, sin pantalla que lo usara; con eso cualquier dueño podía
+ * conectar una página a su negocio sin que el equipo se enterara.
+ */
 r.get   ('/integraciones',     requireAuth, requireOwner, integracionesCtrl.listar);
-r.post  ('/integraciones',     requireAuth, requireOwner, integracionesCtrl.emitir);
 r.delete('/integraciones/:id', requireAuth, requireOwner, integracionesCtrl.revocar);
 
 r.post('/online/pedidos',   requireAuth, requirePermission('ventas', 'editar'), colaCtrl.postPedido);

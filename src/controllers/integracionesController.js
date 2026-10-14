@@ -327,30 +327,6 @@ const listar = async (req, res, next) => {
   } catch (e) { next(e); }
 };
 
-/*
- * POST /api/integraciones — emite una credencial nueva.
- *
- * El token viaja UNA sola vez, en esta respuesta. No se puede volver a ver: si
- * se pierde, se emite otra y la anterior deja de servir.
- */
-const emitir = async (req, res, next) => {
-  try {
-    const { token, integracion } = await integraciones.emitir({
-      businessId: req.auth.businessId,
-      origen: req.body?.origen,
-      nombre: req.body?.nombre || null,
-    });
-    res.status(201).json({
-      token,
-      aviso: 'Guardalo ahora: no se vuelve a mostrar.',
-      integracion: {
-        id: integracion.id, origen: integracion.origen, nombre: integracion.nombre,
-        pista: integracion.pista, activa: integracion.activa,
-      },
-    });
-  } catch (e) { next(e); }
-};
-
 /** DELETE /api/integraciones/:id — corta el puente. */
 const revocar = async (req, res, next) => {
   try {
@@ -362,7 +338,7 @@ const revocar = async (req, res, next) => {
 };
 
 module.exports = {
-  recibirPedido, resolucionesDePedidos, preciosPorSku, listar, emitir, revocar,
+  recibirPedido, resolucionesDePedidos, preciosPorSku, listar, revocar,
   catalogoTienda, stockTienda, pedidoDeTienda, cancelarPedidoDeTienda,
   resolucionesDeTienda, envioDeTienda, cobroDeTienda,
 };
