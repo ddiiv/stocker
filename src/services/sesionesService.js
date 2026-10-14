@@ -335,15 +335,23 @@ async function tocar(fila, ahora = new Date()) {
  * que se trata, nunca del pedido: un cierre sin negocio cerraría filas de
  * todas las cuentas.
  *
- * Cierra toda fila sin cerrar, aunque parezca vencida. La última actividad
- * guardada puede atrasar (y si una escritura falló, atrasar más); una sesión
- * que en la base parece muerta podría estar viva, y en un cambio de
- * contraseña no hay margen para equivocarse de ese lado.
+ * Cierra toda fila sin cerrar, aunque parezca vencida por inactividad. La
+ * última actividad guardada puede atrasar (y si una escritura falló, atrasar
+ * más); una sesión que en la base parece muerta podría estar viva, y en un
+ * cambio de contraseña no hay margen para equivocarse de ese lado.
+ *
+ * Lo que NO cierra es una fila pasada de su tope absoluto. `venceEn` no
+ * atrasa: es el `absExp` del token (reemitir mueve los dos juntos) y
+ * requireAuth rechaza la fila en cuanto lo pasa, así que ningún token puede
+ * volver a usarla. Cerrarla sólo le cambiaría la fecha: una sesión muerta
+ * hace 80 días quedaba "cerrada hoy", volvía a aparecer en el historial de
+ * 30 días y la purga, que cuenta 90 días desde el fin, guardaba su IP y su
+ * navegador casi el doble de lo que dice la Política de Privacidad.
  */
 async function cerrar({ businessId, tipo, employeeId, id, excepto, motivo, ahora = new Date(), transaction }) {
   if (!businessId) throw new Error('Cerrar sesiones exige el negocio.');
   if (!motivo) throw new Error('Cerrar sesiones exige un motivo.');
-  const where = { businessId, cerradaEn: null };
+  const where = { businessId, cerradaEn: null, venceEn: { [Op.gt]: new Date(ahora) } };
   if (tipo) where.tipo = tipo;
   if (employeeId != null) where.employeeId = employeeId;
   if (id != null) where.id = id;
@@ -359,13 +367,17 @@ async function cerrar({ businessId, tipo, employeeId, id, excepto, motivo, ahora
  * El logout. Recibe el payload ya verificado (la firma sí, el vencimiento no:
  * ver utils/jwt.decodificarToken) y cierra su fila. Nunca tira: salir tiene
  * que funcionar aunque la base no conteste.
+ *
+ * Como en cerrar(): una fila pasada de su tope absoluto ya terminó y no se le
+ * pone fecha de cierre.
  */
 async function cerrarPorLogout(payload) {
   if (!payload?.sid || !payload.businessId) return 0;
   try {
+    const ahora = new Date();
     const [cantidad] = await SesionCuenta.update(
-      { cerradaEn: new Date(), motivoCierre: 'usuario' },
-      { where: { sid: payload.sid, businessId: payload.businessId, cerradaEn: null } },
+      { cerradaEn: ahora, motivoCierre: 'usuario' },
+      { where: { sid: payload.sid, businessId: payload.businessId, cerradaEn: null, venceEn: { [Op.gt]: ahora } } },
     );
     return cantidad;
   } catch (e) {
@@ -453,11 +465,22 @@ function aVista(fila, auth, estado) {
  */
 async function listar(auth, ahora = new Date()) {
   const desde = new Date(new Date(ahora).getTime() - HISTORIAL_DIAS * DIA);
+  /*
+   * Una fila cerrada entra si TERMINÓ en los últimos 30 días, y terminó en lo
+   * primero que pasó: el cierre, el tope absoluto o la inactividad (la misma
+   * cuenta que finDeVida). Mirar sólo cerradaEn mostraba sesiones muertas
+   * hace meses que alguien "cerró" después —datos de antes de que cerrar()
+   * dejara de tocarlas—.
+   */
   const where = {
     businessId: auth.businessId,
     [Op.or]: [
       { cerradaEn: null, ultimaActividadEn: { [Op.gte]: desde } },
-      { cerradaEn: { [Op.gte]: desde } },
+      {
+        cerradaEn: { [Op.gte]: desde },
+        venceEn: { [Op.gte]: desde },
+        ultimaActividadEn: { [Op.gte]: new Date(desde.getTime() - IDLE_MS - TOQUE_MS) },
+      },
     ],
   };
   if (auth.type !== 'business') {
@@ -513,8 +536,13 @@ function contarActivasDelDueno(businessId, ahora = new Date()) {
  *
  * Una fila de sesión es un dato personal: IP, navegador, a qué hora entró
  * cada empleado. Se guarda lo que la Política de Privacidad dice y nada más.
- * Una fila sin cerrar se mide por su tope absoluto, que es lo más tarde que
- * pudo haber terminado.
+ *
+ * Los 90 días cuentan desde el FIN real de la sesión, que es lo primero que
+ * pasó: el cierre, el tope absoluto o la inactividad (la cuenta de
+ * finDeVida). Basta con que cualquiera de los tres sea anterior al límite.
+ * Medir una fila cerrada sólo por cerradaEn guardaba de más a las que se
+ * cerraron cuando ya estaban muertas; medir una abierta sólo por su tope,
+ * hasta un día de más a la que quedó quieta mucho antes de llegar a él.
  */
 async function purgar(ahora = new Date()) {
   const limite = new Date(new Date(ahora).getTime() - RETENCION_DIAS * DIA);
@@ -523,7 +551,8 @@ async function purgar(ahora = new Date()) {
       where: {
         [Op.or]: [
           { cerradaEn: { [Op.lt]: limite } },
-          { cerradaEn: null, venceEn: { [Op.lt]: limite } },
+          { venceEn: { [Op.lt]: limite } },
+          { ultimaActividadEn: { [Op.lt]: new Date(limite.getTime() - IDLE_MS - TOQUE_MS) } },
         ],
       },
     });

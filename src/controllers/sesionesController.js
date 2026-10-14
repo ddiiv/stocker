@@ -77,7 +77,15 @@ const cerrarUna = async (req, res, next) => {
       return res.json({ message: 'Esa sesión ya estaba cerrada.', cerrada: true });
     }
 
-    await sesiones.cerrar({ businessId: req.auth.businessId, id: fila.id, motivo: 'remota' });
+    /*
+     * cerrar() no toca una fila pasada de su tope absoluto: esa sesión ya
+     * terminó sola y ningún token la puede usar. Decir "se cerró" sería
+     * contar algo que no pasó.
+     */
+    const cerradas = await sesiones.cerrar({ businessId: req.auth.businessId, id: fila.id, motivo: 'remota' });
+    if (!cerradas) {
+      return res.json({ message: 'Esa sesión ya había terminado: no hacía falta cerrarla.', cerrada: true });
+    }
     log.info('sesiones', 'se cerró una sesión desde la lista de la cuenta', { negocio: req.auth.businessId });
     res.json({ message: 'Listo. Esa sesión se cerró: en su próximo pedido le va a pedir que vuelva a entrar.', cerrada: true });
   } catch (error) { next(error); }

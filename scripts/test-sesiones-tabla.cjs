@@ -875,6 +875,111 @@ console.warn = (...args) => { avisos.push(args.join(' ')); };
     } finally {
       await new Promise((r) => server21.close(r));
     }
+
+    tit('22. UN CIERRE NO RESUCITA SESIONES QUE YA HABÍAN TERMINADO');
+    /*
+     * La revisión de v3.44: cerrar() cerraba toda fila sin cerrar, aunque
+     * hubiera pasado su tope absoluto hacía semanas, y la purga sólo borra una
+     * fila sin cerrar a los 90 días de su tope. Un "cerrar todas" o un cambio
+     * de contraseña le ponía cerradaEn = HOY a una sesión muerta hace 80 días:
+     * aparecía en el historial de 30 días (decisión 4) y la purga, que medía
+     * por cerradaEn, guardaba su IP y su navegador casi 180 días (la Política
+     * de Privacidad dice 90).
+     *
+     * Una fila pasada de su tope absoluto (venceEn = el absExp del token) ya
+     * no tiene token que la use: no hace falta cerrarla. Y como red, la lista
+     * y la purga miden por el fin REAL, no por cerradaEn.
+     */
+    process.env.SESIONES_LIMITE = 'off';
+    const DIA22 = 86400000;
+    const HORA22 = 3600000;
+    const hace22 = (ms) => new Date(Date.now() - ms);
+    const fila22 = (datos) => SesionCuenta.create({
+      sid: require('node:crypto').randomUUID(), businessId: negocioA.id, tipo: 'employee', employeeId: empleado.id,
+      ip: '203.0.113.61', dispositivo: 'Chrome · Windows', ...datos,
+    });
+    // Venció hace 60 días y nadie la cerró, como casi todas.
+    const muerta60 = await fila22({
+      creadaEn: hace22(61 * DIA22), ultimaActividadEn: hace22(60 * DIA22 + HORA22), venceEn: hace22(60 * DIA22),
+    });
+    // Quieta hace dos horas, pero su tope es dentro de 22 h: la última actividad
+    // guardada puede atrasar, así que ésta SÍ se cierra (es el porqué de cerrar
+    // también las que "parecen" muertas).
+    const quieta2h = await fila22({
+      creadaEn: hace22(3 * HORA22), ultimaActividadEn: hace22(2 * HORA22), venceEn: new Date(Date.now() + 21 * HORA22),
+    });
+    // Datos que ya dejó el código anterior: cerrada ayer, muerta hace 60 días.
+    const resucitada = await fila22({
+      creadaEn: hace22(61 * DIA22), ultimaActividadEn: hace22(60 * DIA22 + HORA22), venceEn: hace22(60 * DIA22),
+      cerradaEn: hace22(DIA22), motivoCierre: 'cerrar-todo',
+    });
+    // Ídem, muerta hace 91 días: la purga tiene que borrarla ya.
+    const resucitada91 = await fila22({
+      creadaEn: hace22(92 * DIA22), ultimaActividadEn: hace22(91 * DIA22 + HORA22), venceEn: hace22(91 * DIA22),
+      cerradaEn: hace22(2 * DIA22), motivoCierre: 'password',
+    });
+    // Quieta desde hace 90 días y 6 h, con el tope 12 h después (hace 89 días
+    // y 18 h): terminó hace más de 90 días aunque su venceEn diga menos.
+    const quieta90 = await fila22({
+      creadaEn: hace22(90 * DIA22 + 8 * HORA22), ultimaActividadEn: hace22(90 * DIA22 + 6 * HORA22),
+      venceEn: hace22(90 * DIA22 - 6 * HORA22),
+    });
+    // Trabajó hasta el último minuto de su tope, que fue hace 90 días y 5
+    // minutos, y el código anterior la "cerró" hace 2 días. Su fin es el tope.
+    const alTope90 = await fila22({
+      creadaEn: hace22(91 * DIA22), ultimaActividadEn: hace22(90 * DIA22 + 15 * 60000),
+      venceEn: hace22(90 * DIA22 + 5 * 60000), cerradaEn: hace22(2 * DIA22), motivoCierre: 'cerrar-todo',
+    });
+    // Una normal: se cerró hace 10 días mientras estaba viva.
+    const normal10 = await fila22({
+      creadaEn: hace22(10 * DIA22 + HORA22), ultimaActividadEn: hace22(10 * DIA22 + 10 * 60000),
+      venceEn: hace22(10 * DIA22 - 23 * HORA22), cerradaEn: hace22(10 * DIA22), motivoCierre: 'usuario',
+    });
+
+    const jefe22 = (await entraDueno(EMAIL_A)).token;
+    const una22 = await conSesion(jefe22, sesionesCtrl.cerrarUna, {
+      method: 'POST', params: { id: String(muerta60.id) }, body: { passwordActual: CLAVE },
+    });
+    chk('cerrar UNA que ya había terminado contesta bien', 200, una22.status);
+    chk('y dice que ya había terminado, sin decir que la cerró', true, /terminad/i.test(una22.json?.message || ''));
+    chk('pero no le pone fecha de cierre', null, (await muerta60.reload()).cerradaEn);
+
+    const todas22 = await conSesion(jefe22, sesionesCtrl.cerrarOtras, {
+      method: 'POST', path: '/account/sesiones/cerrar', body: { passwordActual: CLAVE },
+    });
+    chk('«cerrar todas» funciona', 200, todas22.status);
+    chk('no toca la que venció hace 60 días', null, (await muerta60.reload()).cerradaEn);
+    chk('sí cierra la quieta que todavía estaba dentro de su tope', 'cerrar-todo', (await quieta2h.reload()).motivoCierre);
+
+    // Lo mismo con el cierre de un empleado (sus propias sesiones).
+    const emp22 = (await entraEmpleado(EMAIL_EMP)).token;
+    await conSesion(emp22, sesionesCtrl.cerrarOtras, {
+      method: 'POST', path: '/account/sesiones/cerrar', body: { passwordActual: CLAVE_EMP },
+    });
+    chk('ni el «cerrar todas» del empleado', null, (await muerta60.reload()).cerradaEn);
+
+    // Salir con un token de una sesión que ya pasó su tope tampoco la "cierra hoy".
+    const tarde22 = (await entraDueno(EMAIL_A)).token;
+    await SesionCuenta.update({ venceEn: hace22(2 * DIA22), ultimaActividadEn: hace22(2 * DIA22 + HORA22) },
+      { where: { sid: sidDe(tarde22) } });
+    await llamar(authCtrl.logout, { token: tarde22, method: 'POST', path: '/auth/logout' });
+    chk('salir con el token de una sesión pasada de su tope no le pone fecha de cierre', null, (await filaDe(tarde22)).cerradaEn);
+
+    const lista22 = (await conSesion(todas22.token || jefe22, sesionesCtrl.listar)).json;
+    const ids22 = new Set([...(lista22?.sesiones || []), ...(lista22?.historial || [])].map((x) => x.id));
+    chk('la que venció hace 60 días no aparece en la lista', false, ids22.has(muerta60.id));
+    chk('ni la que el código anterior «cerró ayer» estando muerta hace 60', false, ids22.has(resucitada.id));
+    chk('la quieta de hace dos horas sí, como vencida', 'vencida',
+      lista22?.historial?.find((x) => x.id === quieta2h.id)?.estado);
+    chk('y la normal de hace 10 días, como cerrada', 'cerrada',
+      lista22?.historial?.find((x) => x.id === normal10.id)?.estado);
+
+    await sesiones.purgar();
+    chk('la purga borra la «cerrada hace 2 días» que murió hace 91', null, await SesionCuenta.findByPk(resucitada91.id));
+    chk('y la quieta hace 90 días y 6 h aunque su tope fuera 12 h después', null, await SesionCuenta.findByPk(quieta90.id));
+    chk('y la que llegó a su tope hace 90 días y 5 minutos', null, await SesionCuenta.findByPk(alTope90.id));
+    chk('no borra la que murió hace 60', true, Boolean(await SesionCuenta.findByPk(muerta60.id)));
+    chk('ni la de hace 10 días', true, Boolean(await SesionCuenta.findByPk(normal10.id)));
   } finally {
     if (modoOriginal === undefined) delete process.env.SESIONES_LIMITE;
     else process.env.SESIONES_LIMITE = modoOriginal;
