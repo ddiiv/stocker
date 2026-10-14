@@ -15,6 +15,16 @@
  * se sube una y no la otra la pantalla le dice al dueño que está al día con un
  * texto que ya cambió.
  */
-const TERMINOS_VERSION = '2026-09';
+/*
+ * 2026-10: los Términos suman las integraciones (Jumpseller, tienda propia,
+ * portal mayorista), las credenciales de máquina, el límite de dispositivos
+ * del dueño, los cambios de plan (prorrateo, bajada con empleados suspendidos,
+ * débito automático), los desarrollos a medida, la reserva de stock de un
+ * pedido sin pagar y el logo de la factura. La Privacidad, las sesiones y las
+ * cotizaciones, y deja de decir que las claves de Mercado Libre y Jumpseller se
+ * guardan cifradas. La landing muestra este mismo número arriba de las dos
+ * páginas (scripts/test-legales.cjs controla que coincidan).
+ */
+const TERMINOS_VERSION = '2026-10';
 
 module.exports = { TERMINOS_VERSION };

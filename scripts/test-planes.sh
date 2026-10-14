@@ -36,7 +36,7 @@ chk "Pro admite 2 CUITs"         "2"     "$(echo "$P" | J ".find(x=>x.codigo==='
 chk "Enterprise se cotiza"       "true"  "$(echo "$P" | J ".find(x=>x.codigo==='enterprise').requiereCotizacion")"
 chk "Enterprise sin tope"        "null"  "$(echo "$P" | J ".find(x=>x.codigo==='enterprise').maxEmpleados")"
 chk "Superior cuesta 178.000"    "178000" "$(echo "$P" | J ".find(x=>x.codigo==='superior').precioMensual")"
-chk "Superior: todo habilitado"  "true"  "$(echo "$P" | J ".find(x=>x.codigo==='superior').features.api")"
+chk "Superior: todo habilitado"  "true"  "$(echo "$P" | J ".find(x=>x.codigo==='superior').features.portalMayorista")"
 
 tit "1.b TOPES DE ALMACENAMIENTO Y CONSUMO"
 chk "Inicial: 2.000 comprobantes/mes" "2000"  "$(echo "$P" | J ".find(x=>x.codigo==='inicial').maxComprobantes")"
@@ -128,17 +128,20 @@ chkAlta "no se registra otra cuenta con un CUIT ya usado" \
      -d "{\"nombreNegocio\":\"Trucho\",\"ownerNombre\":\"A\",\"ownerApellido\":\"B\",\"cuit\":\"$CUIT\",\"email\":\"otro.qa@test.local\",\"password\":\"Prueba2026!!\",\"aceptaTerminos\":true}")"
 
 tit "6. FUNCIONES SEGÚN EL PLAN"
-# El demo está en Pro, que sí incluye cuentas corrientes; lo que no incluye es
-# multi-depósito ni la API, que son del Superior en adelante.
+# El demo está en Pro, que incluye cuentas corrientes y, desde la Etapa 2, la
+# tienda propia. Multi-depósito y la API se retiraron del catálogo (el sistema
+# nunca las tuvo): ningún plan las tiene que seguir mostrando.
 CID=$(C -X POST $API/clients -d '{"nombre":"Plan","apellido":"QA"}' | J .id)
 chk "el Pro habilita cuentas corrientes" "true" \
   "$(C -X PUT $API/clients/$CID/cuenta -d '{"cuentaHabilitada":true,"limiteCredito":1000}' | J .cuentaHabilitada)"
 chk "la facturación está incluida"      "si" \
   "$(C $API/billing/suscripcion | J ".plan.features.facturacion?'si':'no'")"
-chk "el Pro NO incluye multi-depósito"  "no" \
-  "$(C $API/billing/suscripcion | J ".plan.features.multiDeposito?'si':'no'")"
-chk "el Pro NO incluye la API"          "no" \
-  "$(C $API/billing/suscripcion | J ".plan.features.api?'si':'no'")"
+chk "el Pro incluye la tienda propia"   "si" \
+  "$(C $API/billing/suscripcion | J ".plan.features.tiendaPropia?'si':'no'")"
+chk "multi-depósito ya no figura"       "no" \
+  "$(C $API/billing/suscripcion | J ".plan.features.hasOwnProperty('multiDeposito')?'si':'no'")"
+chk "la API ya no figura"               "no" \
+  "$(C $API/billing/suscripcion | J ".plan.features.hasOwnProperty('api')?'si':'no'")"
 
 tit "6.b SUSCRIPCIÓN: RENOVACIÓN Y BAJA"
 chk "se puede cancelar la renovación" "false" \

@@ -1,7 +1,7 @@
 const { Op, TableHints } = require('sequelize');
 const db = require('../config/database');
 const { Plan, Subscription, Business, Employee, BusinessCuit, BusinessLocation, Product, ProductVariant, Invoice } = require('../models');
-const { PLANES, PLAN_POR_DEFECTO, DIAS_TRIAL, DIAS_GRACIA } = require('../config/planes');
+const { PLANES, PLAN_POR_DEFECTO, DIAS_TRIAL, DIAS_GRACIA, FEATURES_RETIRADAS } = require('../config/planes');
 const { log } = require('../utils/logger');
 // sesionesService lee el plan desde adentro de una función (estadoDe), no al
 // cargar, así que requerirlo acá no arma un ciclo.
@@ -59,16 +59,25 @@ class ErrorPlan extends Error {
 async function sembrarPlanes() {
   let creados = 0, actualizados = 0;
 
-  for (const p of PLANES) {
+  for (const semilla of PLANES) {
+    // `textosViejos` no es una columna: es lo que se busca para reemplazar.
+    const p = { ...semilla };
+    delete p.textosViejos;
     const [fila, nuevo] = await Plan.findOrCreate({
       where: { codigo: p.codigo },
       defaults: { ...p, features: JSON.stringify(p.features) },
     });
     if (nuevo) { creados++; continue; }
     if (fila.editadoEn) {
-      // Lo tocó una persona: se respeta. Sólo se completan las funciones que
-      // no existían cuando la editó (ver completarFeaturesNuevas).
-      if (await completarFeaturesNuevas(fila, p)) actualizados++;
+      /*
+       * Lo tocó una persona: se respeta. Sólo se completan las funciones que
+       * no existían cuando la editó (completarFeaturesNuevas), se le sacan las
+       * que el sistema nunca tuvo y se cambian los textos que prometían lo que
+       * no hay, si siguen diciendo exactamente lo de antes (ponerAlDiaPromesas).
+       */
+      const completo = await completarFeaturesNuevas(fila, p);
+      const limpio = await ponerAlDiaPromesas(fila, semilla);
+      if (completo || limpio) actualizados++;
       continue;
     }
 
@@ -84,6 +93,9 @@ async function sembrarPlanes() {
       // vienen después corren un lugar y sin esto quedan empatados.
       fila.orden === (p.orden ?? 0) &&
       fila.nombre === p.nombre &&
+      // La descripción también: sin compararla, corregir sólo el texto de un
+      // plan (lo que pasó al sacar lo que prometía de más) no llegaba nunca.
+      (fila.descripcion ?? null) === (p.descripcion ?? null) &&
       fila.soporte === (p.soporte ?? null) &&
       JSON.stringify(fila.features) === JSON.stringify(p.features);
     if (iguales) continue;
@@ -117,6 +129,42 @@ async function completarFeaturesNuevas(fila, semilla) {
   await fila.update({ features: completas });
   log.info('planes', 'plan editado: se completaron funciones nuevas del catálogo', {
     plan: fila.codigo, funciones: faltan.join(','),
+  });
+  return true;
+}
+
+/*
+ * Un plan editado a mano deja de prometer lo que el sistema no hace.
+ *
+ * Es la otra cara de completarFeaturesNuevas: aquélla suma lo que se creó
+ * después; ésta saca lo que se retiró (FEATURES_RETIRADAS: facturación por
+ * lote, compras, listas de precios, API, multi-depósito como exclusivo) y
+ * reemplaza la descripción y el soporte SÓLO si siguen diciendo, letra por
+ * letra, lo que decía la semilla vieja. Un texto que escribió un operador no
+ * coincide con ninguno y no se toca: eso sí fue una decisión suya.
+ *
+ * Sin esto, la landing y la pantalla de Suscripción —que leen el plan de la
+ * base— seguían ofreciendo "chat y teléfono" en un plan editado aunque el
+ * código ya no lo dijera.
+ */
+async function ponerAlDiaPromesas(fila, semilla) {
+  const patch = {};
+
+  const actuales = fila.features || {};
+  const sobran = Object.keys(actuales).filter((k) => FEATURES_RETIRADAS.includes(k));
+  if (sobran.length) {
+    patch.features = Object.fromEntries(Object.entries(actuales).filter(([k]) => !sobran.includes(k)));
+  }
+
+  for (const campo of ['descripcion', 'soporte']) {
+    const viejos = semilla.textosViejos?.[campo] || [];
+    if (viejos.includes(fila[campo]) && fila[campo] !== semilla[campo]) patch[campo] = semilla[campo];
+  }
+
+  if (!Object.keys(patch).length) return false;
+  await fila.update(patch);
+  log.info('planes', 'plan editado: se sacó lo que prometía y el sistema no hace', {
+    plan: fila.codigo, campos: Object.keys(patch).join(','), funciones: sobran.join(',') || null,
   });
   return true;
 }
@@ -1117,7 +1165,7 @@ async function trialsPorVencer(dias = 2) {
 }
 
 module.exports = {
-  sembrarPlanes, completarFeaturesNuevas, iniciarTrial, estadoDe, tieneFeature, heredaFeature, usoDe, exigirCupo,
+  sembrarPlanes, completarFeaturesNuevas, ponerAlDiaPromesas, iniciarTrial, estadoDe, tieneFeature, heredaFeature, usoDe, exigirCupo,
   acreditarPago, aplicarPlanPendiente, trabarSuscripcion, trabada, sentidoDelCambio,
   trialsPorVencer, precioDeSuscripcion, ErrorPlan, DIAS_TRIAL, DIAS_PERIODO, TOLERANCIA,
   // Prorrateo y cambio de plan

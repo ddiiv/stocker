@@ -5,7 +5,7 @@ const {
   PlatformAdmin, PlatformSetting, Plan, Subscription, SubscriptionPayment,
   Business, Employee, BusinessCuit, Sale, BusinessArcaConfig,
 } = require('../models');
-const { CATALOGO_FEATURES } = require('../config/planes');
+const { CATALOGO_FEATURES, FEATURES_RETIRADAS } = require('../config/planes');
 const planService = require('../services/planService');
 const totp = require('../utils/totp');
 const mp = require('../services/mercadopagoService');
@@ -612,10 +612,20 @@ const editarPlan = async (req, res, next) => {
      * sola función cambia esa y nada más.
      */
     if (req.body?.features !== undefined) {
-      const entrada = req.body.features;
-      if (typeof entrada !== 'object' || entrada === null || Array.isArray(entrada)) {
+      const bruta = req.body.features;
+      if (typeof bruta !== 'object' || bruta === null || Array.isArray(bruta)) {
         return res.status(400).json({ message: 'Las funciones tienen que venir como un objeto.' });
       }
+      /*
+       * Las retiradas (API, compras, listas de precios…) se descartan en
+       * silencio, de lo que llega y de lo guardado. La pantalla manda el
+       * objeto entero que leyó del plan, y un plan editado antes de que se
+       * retiraran las trae: rechazarlas con 400 dejaría ese plan sin poder
+       * guardarse, y aceptarlas volvería a prometer lo que no existe.
+       */
+      const sinRetiradas = (o) => Object.fromEntries(
+        Object.entries(o).filter(([k]) => !FEATURES_RETIRADAS.includes(k)));
+      const entrada = sinRetiradas(bruta);
       const validas = new Set(CATALOGO_FEATURES.map((f) => f.clave));
       const desconocidas = Object.keys(entrada).filter((k) => !validas.has(k));
       if (desconocidas.length) {
@@ -624,9 +634,9 @@ const editarPlan = async (req, res, next) => {
           desconocidas,
         });
       }
-      const actuales = typeof plan.features === 'string'
+      const actuales = sinRetiradas(typeof plan.features === 'string'
         ? JSON.parse(plan.features || '{}')
-        : (plan.features || {});
+        : (plan.features || {}));
       const merge = { ...actuales };
       for (const [clave, valor] of Object.entries(entrada)) merge[clave] = Boolean(valor);
       patch.features = merge;

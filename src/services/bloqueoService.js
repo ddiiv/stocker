@@ -297,4 +297,6 @@ module.exports = {
   registrar, limpiar, revisar, frenarSiBloqueado, purgar,
   estadoDeCuentas, desbloquearCuenta,
   VENTANA_MIN, TOPE_POR_IP, TOPE_POR_CUENTA,
+  // Lo cita la Política de Privacidad: intentos fallidos, 7 días.
+  RETENCION_DIAS,
 };

@@ -1055,4 +1055,6 @@ module.exports = {
   rescatarPendientes, PAGO_PENDIENTE, PAGO_PAGADO, __estadoDePago: estadoDePago,
   registrarCobro, liberarPagosVencidos,
   partesDeItem, cancelarPorPlataforma,
+  // Los citan los Términos: cuánto dura una reserva sin pagar y su tope.
+  PAGO_VENCE_H, PAGO_TOPE_H,
 };

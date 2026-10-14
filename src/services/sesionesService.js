@@ -1,7 +1,7 @@
 const crypto = require('node:crypto');
 const { Op, TableHints } = require('sequelize');
 const db = require('../config/database');
-const { SesionCuenta, Business, Employee } = require('../models');
+const { SesionCuenta, Business, Employee, EmployeeSession } = require('../models');
 const { crearSesion, vencimientoAbsoluto, IDLE_MS } = require('../utils/session');
 const { etiquetaDeDispositivo, normalizarIp } = require('../utils/dispositivo');
 const { log } = require('../utils/logger');
@@ -546,8 +546,9 @@ function contarActivasDelDueno(businessId, ahora = new Date()) {
  */
 async function purgar(ahora = new Date()) {
   const limite = new Date(new Date(ahora).getTime() - RETENCION_DIAS * DIA);
+  let borradas = 0;
   try {
-    const borradas = await SesionCuenta.destroy({
+    borradas = await SesionCuenta.destroy({
       where: {
         [Op.or]: [
           { cerradaEn: { [Op.lt]: limite } },
@@ -557,9 +558,30 @@ async function purgar(ahora = new Date()) {
       },
     });
     if (borradas) log.info('sesiones', `sesiones de hace más de ${RETENCION_DIAS} días purgadas: ${borradas}`);
-    return borradas;
   } catch (e) {
     log.warn('sesiones', 'no se pudo purgar el historial de sesiones', { motivo: e.message });
+  }
+  await purgarIngresosDeEmpleados(limite);
+  return borradas;
+}
+
+/*
+ * El registro viejo de ingresos de empleados (`employee_sessions`), con la
+ * misma regla.
+ *
+ * Lo sigue escribiendo cada login de un empleado (IP, navegador y hora) para
+ * la ficha del empleado, y no lo borraba nadie: la Política de Privacidad dice
+ * que los registros de acceso se guardan 90 días y éstos quedaban para
+ * siempre. Se mide por la última vez que se lo vio, que es cuando terminó.
+ * Va aparte y con su propio try: si falla, no se lleva la otra purga.
+ */
+async function purgarIngresosDeEmpleados(limite) {
+  try {
+    const borrados = await EmployeeSession.destroy({ where: { lastSeenAt: { [Op.lt]: limite } } });
+    if (borrados) log.info('sesiones', `ingresos de empleados de hace más de ${RETENCION_DIAS} días purgados: ${borrados}`);
+    return borrados;
+  } catch (e) {
+    log.warn('sesiones', 'no se pudo purgar el registro de ingresos de empleados', { motivo: e.message });
     return 0;
   }
 }

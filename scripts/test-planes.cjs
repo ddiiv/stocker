@@ -132,7 +132,8 @@ function sesion() {
 
     chk('depósito vuelve a estar', true, await planService.tieneFeature(negocio.id, 'deposito'));
     chk('reposición también', true, await planService.tieneFeature(negocio.id, 'reposicion'));
-    chk('pero no le abre lo que nunca usó', false, await planService.tieneFeature(negocio.id, 'api'));
+    // Cuentas corrientes no está en el Inicial y no la heredó: no se abre.
+    chk('pero no le abre lo que nunca usó', false, await planService.tieneFeature(negocio.id, 'cuentasCorrientes'));
 
     const ingreso2 = await api('POST', '/api/deposito/ingresos', {
       origen: 'etiquetas', items: [],
