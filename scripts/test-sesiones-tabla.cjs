@@ -684,6 +684,197 @@ console.warn = (...args) => { avisos.push(args.join(' ')); };
     chk('sin user agent', 'Dispositivo desconocido', etiquetaDeDispositivo(''));
     chk('la IPv4 mapeada pierde el prefijo', '10.1.2.3', normalizarIp('::ffff:10.1.2.3'));
     chk('una IPv6 de verdad queda igual', '2001:db8::1', normalizarIp('2001:db8::1'));
+
+    tit('21. EL FRENO DE LA CONTRASEÑA NO SE ESQUIVA CON EL CUERPO DEL PEDIDO');
+    /*
+     * Cerrar sesiones pide la contraseña de quien tiene la sesión, y la
+     * respuesta distingue "mal" (400) de "bien" (200/404): sin freno es un
+     * oráculo para adivinarla. El freno lo pone el limitador de la RUTA, así
+     * que esto va por HTTP, con el router de verdad, en un puerto efímero de
+     * este mismo proceso (no en el 3000). `trust proxy` en 1 para poder
+     * simular IPs con X-Forwarded-For, como hace Railway.
+     *
+     * La revisión de v3.44 encontró que la clave del limitador tomaba el email
+     * del CUERPO antes que la sesión: mandando un email inventado distinto en
+     * cada pedido, cada intento caía en un contador nuevo y nunca llegaba al
+     * 429. Y sin email, el dueño y todos los empleados compartían cupo.
+     */
+    process.env.SESIONES_LIMITE = 'off';
+    await empleado.update({ passwordHash: await bcrypt.hash(CLAVE_EMP, 10) });
+    const express = require('express');
+    const cookieParser = require('cookie-parser');
+    const freno = require('../src/middleware/rateLimit');
+    const app21 = express();
+    app21.set('trust proxy', 1);
+    app21.use(cookieParser());
+    app21.use(express.json());
+    app21.use('/api', require('../src/routes'));
+    const server21 = await new Promise((r) => { const s = app21.listen(0, '127.0.0.1', () => r(s)); });
+    const base21 = `http://127.0.0.1:${server21.address().port}/api`;
+    const post21 = async (token, ruta, cuerpo, ip) => {
+      const r = await fetch(base21 + ruta, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json', 'X-Forwarded-For': ip,
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify(cuerpo),
+      });
+      let json = null;
+      try { json = await r.json(); } catch { /* sin cuerpo */ }
+      return { status: r.status, json };
+    };
+    // N intentos con la contraseña mal; devuelve los estados en orden.
+    const fallar = async (token, ruta, n, ip, extra = () => ({})) => {
+      const estados = [];
+      for (let i = 0; i < n; i++) {
+        estados.push((await post21(token, ruta, { passwordActual: `no-es-${i}`, ...extra(i) }, ip)).status);
+      }
+      return estados;
+    };
+    const llegaA429 = (estados) => estados.includes(429);
+
+    // Las claves, sueltas: lo que decide en qué contador cae cada pedido.
+    {
+      const conAuth = (auth, body = {}, ip = '203.0.113.50') => ({ ip, auth, body });
+      const dueno = { businessId: 7, type: 'business', sid: 's-1' };
+      const cajero = { businessId: 7, type: 'employee', employeeId: 3, sid: 's-2' };
+      chk('con sesión, el email del cuerpo no cambia la clave',
+        freno.claveIpMasEmail(conAuth(dueno, { email: 'a@x.test' })),
+        freno.claveIpMasEmail(conAuth(dueno, { email: 'b@x.test' })));
+      chk('ni aparece en ella', false, freno.claveIpMasEmail(conAuth(dueno, { email: 'a@x.test' })).includes('a@x.test'));
+      chk('el dueño y un empleado del mismo negocio van en cupos distintos', false,
+        freno.claveIpMasEmail(conAuth(dueno)) === freno.claveIpMasEmail(conAuth(cajero)));
+      chk('y dos empleados también', false,
+        freno.claveIpMasEmail(conAuth(cajero)) === freno.claveIpMasEmail(conAuth({ ...cajero, employeeId: 4 })));
+      chk('sin sesión (login, recupero) sigue siendo IP + email',
+        '203.0.113.50|a@x.test', freno.claveIpMasEmail({ ip: '203.0.113.50', body: { email: ' A@x.test' } }));
+      chk('el freno de la contraseña cuenta por sesión: la misma desde dos IPs es una',
+        freno.claveDeSesion(conAuth(dueno, {}, '198.51.100.1')), freno.claveDeSesion(conAuth(dueno, {}, '198.51.100.2')));
+      chk('y dos sesiones del mismo dueño son dos', false,
+        freno.claveDeSesion(conAuth(dueno)) === freno.claveDeSesion(conAuth({ ...dueno, sid: 's-3' })));
+    }
+
+    try {
+      const jefe21a = (await entraDueno(EMAIL_A)).token;
+      const sinEmail = await fallar(jefe21a, '/account/sesiones/1/cerrar', 7, '192.0.2.10');
+      chk('sin email: cinco errores y después 429', [400, 400, 400, 400, 400, 429, 429], sinEmail);
+
+      // El ataque de la revisión: un email inventado distinto en cada pedido.
+      const jefe21b = (await entraDueno(EMAIL_A)).token;
+      const rotandoUna = await fallar(jefe21b, '/account/sesiones/1/cerrar', 8, '192.0.2.11',
+        (i) => ({ email: `r${i}.${SUF}@x.test` }));
+      chk('cerrar UNA con un email distinto en cada pedido igual llega al 429', true, llegaA429(rotandoUna));
+      chk('y en el sexto, no después', 429, rotandoUna[5]);
+
+      const jefe21c = (await entraDueno(EMAIL_A)).token;
+      const rotandoTodas = await fallar(jefe21c, '/account/sesiones/cerrar', 8, '192.0.2.12',
+        (i) => ({ email: `t${i}.${SUF}@x.test` }));
+      chk('el «cerrar todas» del dueño tampoco se esquiva', true, llegaA429(rotandoTodas));
+
+      const emp21a = (await entraEmpleado(EMAIL_EMP)).token;
+      const rotandoEmp = await fallar(emp21a, '/account/sesiones/cerrar', 8, '192.0.2.13',
+        (i) => ({ email: `e${i}.${SUF}@x.test` }));
+      chk('ni el de un empleado (su propia contraseña)', true, llegaA429(rotandoEmp));
+
+      // El 2FA comparte la clave del limitador: el mismo arreglo lo cubre.
+      const jefe21d = (await entraDueno(EMAIL_A)).token;
+      const rotando2fa = await fallar(jefe21d, '/account/2fa/desactivar', 8, '192.0.2.14',
+        (i) => ({ email: `d${i}.${SUF}@x.test` }));
+      chk('desactivar el 2FA con emails inventados tampoco esquiva el freno', true, llegaA429(rotando2fa));
+
+      /*
+       * Cupos separados. Cinco errores de un empleado desde la PC del local no
+       * pueden dejar sin el botón de pánico al dueño que está en el mismo local
+       * (misma IP pública).
+       */
+      const emp21b = (await entraEmpleado(EMAIL_EMP)).token;
+      const jefe21e = (await entraDueno(EMAIL_A)).token;
+      const errEmp = await fallar(emp21b, '/account/sesiones/cerrar', 6, '192.0.2.15');
+      chk('el empleado que se equivoca cinco veces queda frenado', 429, errEmp[5]);
+      const panico = await post21(jefe21e, '/account/sesiones/cerrar', { passwordActual: CLAVE }, '192.0.2.15');
+      chk('pero el dueño, desde la misma IP, sigue pudiendo cerrar todas', 200, panico.status);
+
+      /*
+       * El cupo es de la SESIÓN, no de la persona ni de la IP. Quien tiene una
+       * sesión robada del dueño gasta el cupo de ESA sesión: el dueño, desde su
+       * celular en la misma red, puede echarla igual.
+       */
+      const robada = (await entraDueno(EMAIL_A)).token;
+      const celular = (await entraDueno(EMAIL_A)).token;
+      const errRobada = await fallar(robada, '/account/sesiones/cerrar', 6, '192.0.2.16');
+      chk('la sesión robada queda frenada', 429, errRobada[5]);
+      const idRobada = (await filaDe(robada)).id;
+      const echar = await post21(celular, `/account/sesiones/${idRobada}/cerrar`, { passwordActual: CLAVE }, '192.0.2.16');
+      chk('y el dueño la cierra desde su celular, misma IP', 200, echar.status);
+      chk('la robada queda afuera', 401, (await conSesion(robada)).status);
+
+      // Rotar IPs tampoco suma intentos: la sesión es la misma.
+      const jefe21f = (await entraDueno(EMAIL_A)).token;
+      const estadosIps = [];
+      for (let i = 0; i < 8; i++) {
+        estadosIps.push((await post21(jefe21f, '/account/sesiones/1/cerrar', { passwordActual: `no-${i}` }, `198.18.${i}.1`)).status);
+      }
+      chk('cambiando de IP en cada pedido, igual 429 en el sexto', 429, estadosIps[5]);
+
+      /*
+       * Los aciertos no cuentan: quien se equivoca y después la pone bien no
+       * se acerca al tope. Un empleado cerrando sus otras sesiones.
+       */
+      const emp21c = (await entraEmpleado(EMAIL_EMP)).token;
+      const mezcla = [
+        ...(await fallar(emp21c, '/account/sesiones/cerrar', 4, '192.0.2.17')),
+        (await post21(emp21c, '/account/sesiones/cerrar', { passwordActual: CLAVE_EMP }, '192.0.2.17')).status,
+        ...(await fallar(emp21c, '/account/sesiones/cerrar', 1, '192.0.2.17')),
+      ];
+      chk('cuatro errores, un acierto y otro error: ningún 429', [400, 400, 400, 400, 200, 400], mezcla);
+
+      /*
+       * El freno lento. Cinco por minuto, durante las 24 h que vive una sesión,
+       * siguen siendo miles de intentos. Además del de un minuto hay un tope
+       * por sesión para todo el día: pasado, hay que salir y volver a entrar
+       * —y el login tiene su propio bloqueo por cuenta—.
+       */
+      const [rapido, diario] = Array.isArray(freno.frenoContrasenaDeSesion) ? freno.frenoContrasenaDeSesion : [];
+      if (!rapido || !diario || typeof freno.claveDeSesion !== 'function') {
+        chk('existe el freno por sesión, rápido y diario', true, false);
+      } else {
+        const lenta = (await entraDueno(EMAIL_A)).token;
+        const clave = freno.claveDeSesion({ auth: verifyToken(lenta) });
+        const todos = [];
+        // De a cuatro, soltando el de un minuto entre tanda y tanda, como si
+        // pasara el minuto.
+        for (let tanda = 0; tanda < 6; tanda++) {
+          todos.push(...(await fallar(lenta, '/account/sesiones/1/cerrar', 4, '192.0.2.18')));
+          await rapido.resetKey(clave);
+        }
+        chk('con el de un minuto suelto, veinte errores pasan', 20, todos.slice(0, 20).filter((s) => s === 400).length);
+        chk('y el 21 ya no', 429, todos[20]);
+        const despues = await post21(lenta, '/account/sesiones/cerrar', { passwordActual: CLAVE }, '192.0.2.18');
+        chk('ni siquiera con la contraseña bien: la sesión agotó el día', 429, despues.status);
+        chk('y el mensaje dice cómo seguir', true, /volv[eé] a entrar/i.test(despues.json?.message || ''));
+        const otraVez = (await entraDueno(EMAIL_A)).token;
+        chk('saliendo y volviendo a entrar, la sesión nueva tiene su cupo', 200,
+          (await post21(otraVez, '/account/sesiones/cerrar', { passwordActual: CLAVE }, '192.0.2.18')).status);
+      }
+
+      /*
+       * El login no cambia: sin sesión, la clave sigue siendo IP + el email del
+       * cuerpo, que es el único dato que hay. Con un email que no existe, para
+       * no dejar bloqueada ninguna cuenta de la suite.
+       */
+      const nadie = `qa.sestabla.nadie.${SUF}@stocker.test`;
+      const otroNadie = `qa.sestabla.nadie2.${SUF}@stocker.test`;
+      const logins = [];
+      for (let i = 0; i < 6; i++) {
+        logins.push((await post21(null, '/auth/login', { email: nadie, password: `no-${i}` }, '192.0.2.19')).status);
+      }
+      chk('el login sigue frenando a los cinco errores', [401, 401, 401, 401, 401, 429], logins);
+      chk('y otro email desde la misma IP sigue teniendo su cupo', 401,
+        (await post21(null, '/auth/login', { email: otroNadie, password: 'no' }, '192.0.2.19')).status);
+    } finally {
+      await new Promise((r) => server21.close(r));
+    }
   } finally {
     if (modoOriginal === undefined) delete process.env.SESIONES_LIMITE;
     else process.env.SESIONES_LIMITE = modoOriginal;

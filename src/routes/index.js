@@ -1,7 +1,9 @@
 const { Router } = require('express');
 const multer = require('multer');
 const { requireAuth, requirePermission, requireAnyPermission, requireOwner } = require('../middleware/auth');
-const { loginLimiter, passwordResetLimiter, registerLimiter, reporteLimiter } = require('../middleware/rateLimit');
+const {
+  loginLimiter, passwordResetLimiter, registerLimiter, reporteLimiter, frenoContrasenaDeSesion,
+} = require('../middleware/rateLimit');
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 // El mismo multer, con el tope del logo de la factura (300 KB).
@@ -203,14 +205,6 @@ r.post('/account/password/solicitar', requireAuth, requireOwner, passwordResetLi
 r.post('/account/password/confirmar', requireAuth, requireOwner, validatePasswordBody('passwordNueva'), accountCtrl.confirmarCambioPassword);
 
 /*
- * Cerrar todas las sesiones del negocio, dueño y empleados.
- *
- * Con `loginLimiter` porque pide la contraseña actual: sin freno, este
- * endpoint es un oráculo cómodo para adivinarla —una petición por intento,
- * respuesta inmediata—. Los aciertos no cuentan para el límite, así que
- * usarlo de verdad nunca se acerca al tope.
- */
-/*
  * Las sesiones de la cuenta: ver cuáles hay abiertas (y las que terminaron en
  * los últimos 30 días), cerrar una, cerrar todas menos ésta.
  *
@@ -220,16 +214,19 @@ r.post('/account/password/confirmar', requireAuth, requireOwner, validatePasswor
  * negocio. "Cerrar todas" del dueño sigue siendo el botón de pánico de
  * siempre: dueño y empleados.
  *
- * Las dos que cierran piden la contraseña, y por eso van con `loginLimiter`:
- * sin freno, son un oráculo cómodo para adivinarla —una petición por intento,
- * respuesta inmediata—. Los aciertos no cuentan para el límite.
+ * Las dos que cierran piden la contraseña de quien tiene la sesión, y por eso
+ * van con `frenoContrasenaDeSesion`: sin freno, son un oráculo cómodo para
+ * adivinarla —una petición por intento, respuesta inmediata—. El freno cuenta
+ * por SESIÓN (ver middleware/rateLimit): con `loginLimiter`, un email
+ * inventado en el cuerpo abría un contador nuevo en cada pedido, y el dueño y
+ * los empleados del mismo local compartían cupo. Los aciertos no cuentan.
  *
  * Viven bajo /account, que está exenta del modo lectura: una cuenta sin pagar
  * tiene que poder echar igual a quien no debería estar adentro.
  */
 r.get ('/account/sesiones',            requireAuth, sesionesCtrl.listar);
-r.post('/account/sesiones/cerrar',     requireAuth, loginLimiter, sesionesCtrl.cerrarOtras);
-r.post('/account/sesiones/:id/cerrar', requireAuth, loginLimiter, sesionesCtrl.cerrarUna);
+r.post('/account/sesiones/cerrar',     requireAuth, frenoContrasenaDeSesion, sesionesCtrl.cerrarOtras);
+r.post('/account/sesiones/:id/cerrar', requireAuth, frenoContrasenaDeSesion, sesionesCtrl.cerrarUna);
 
 /*
  * Verificación en dos pasos (TOTP).

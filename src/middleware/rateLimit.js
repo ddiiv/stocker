@@ -35,13 +35,47 @@ const respuesta = (mensaje) => (req, res) => {
  *
  * Mirar `req.auth` no afloja nada: los endpoints públicos no lo tienen y
  * siguen exactamente como estaban.
+ *
+ * Con sesión, el QUIÉN sale SÓLO del token, nunca del cuerpo. Antes el email
+ * del cuerpo ganaba también acá, y en una ruta autenticada ese email no lo
+ * mira nadie: mandando uno inventado distinto en cada pedido, cada intento
+ * caía en un contador nuevo y el freno de cinco no llegaba nunca. Así se
+ * adivinaba la contraseña contra "cerrar sesiones" o "desactivar el 2FA" con
+ * una sesión ajena abierta (la PC del mostrador). Y el dueño y cada empleado
+ * van en cupos separados: los errores de un cajero no pueden dejar al dueño,
+ * desde la misma IP del local, sin el botón de pánico.
  */
 function claveIpMasEmail(req) {
   const ip = ipKeyGenerator(req.ip);
+  if (req.auth?.businessId) {
+    const quien = req.auth.type === 'employee' ? `empleado:${req.auth.employeeId}` : 'dueno';
+    return `${ip}|negocio:${req.auth.businessId}|${quien}`;
+  }
   const email = String(req.body?.email || '').toLowerCase().trim();
   if (email) return `${ip}|${email}`;
-  if (req.auth?.businessId) return `${ip}|negocio:${req.auth.businessId}`;
   return ip;
+}
+
+/*
+ * La clave de las rutas que piden la contraseña de quien ya tiene la sesión
+ * abierta (cerrar sesiones): la SESIÓN misma.
+ *
+ * Por sesión y no por IP + persona, por dos razones:
+ *
+ *   · Quien tiene una sesión robada no puede conseguir otra sin la
+ *     contraseña, así que no hay forma de rotar la clave. Con la IP adentro,
+ *     cambiar de IP en cada pedido sumaba cinco intentos más por IP.
+ *   · El dueño que encuentra su sesión abierta en la PC del local y la quiere
+ *     echar desde el celular —en la misma red, misma IP pública— tiene su
+ *     propio cupo. Con IP + persona, el que está en la PC le gastaba el cupo
+ *     y le bloqueaba justo el botón que necesita.
+ *
+ * requireAuth ya exige el sid (un token sin sid no pasa), así que la vuelta a
+ * la clave de arriba es sólo por si este freno se pone delante de otra ruta.
+ */
+function claveDeSesion(req) {
+  if (req.auth?.sid) return `sesion:${req.auth.sid}`;
+  return claveIpMasEmail(req);
 }
 
 // Login: el PDF pide 5 intentos por minuto. Los exitosos no cuentan, así que
@@ -55,6 +89,48 @@ const loginLimiter = rateLimit({
   skipSuccessfulRequests: true,
   handler: respuesta('Demasiados intentos fallidos. Esperá un minuto antes de reintentar.'),
 });
+
+/*
+ * Contraseña pedida DENTRO de una sesión (cerrar una sesión, cerrar todas).
+ *
+ * Dos frenos, los dos por sesión (claveDeSesion) y los dos sin contar los
+ * aciertos, así que usarlo de verdad nunca se acerca a ninguno:
+ *
+ *   · Cinco errores por minuto, como el login: frena el ataque rápido.
+ *   · Veinte errores en el día. Cinco por minuto durante las 24 h que puede
+ *     durar una sesión siguen siendo miles de intentos; el login no tiene ese
+ *     problema porque bloqueoService corta a los cinco fallos por cuenta. Acá
+ *     no se usa bloqueoService a propósito: sus fallos bloquean el LOGIN de
+ *     la cuenta, y entonces cualquiera que conozca el email del dueño podría,
+ *     fallando el login desde afuera, dejarlo sin el botón de pánico justo
+ *     cuando lo necesita. Pasado el tope del día, la salida es la de siempre:
+ *     salir y volver a entrar, que exige la contraseña con todos los frenos
+ *     del login.
+ *
+ * Va primero el de un minuto: un pedido que ése ya rechazó no llega al del
+ * día y no le gasta el cupo.
+ *
+ * En memoria, como los demás limitadores de este archivo.
+ */
+const contrasenaSesionRapido = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 5,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  keyGenerator: claveDeSesion,
+  skipSuccessfulRequests: true,
+  handler: respuesta('Demasiados intentos fallidos. Esperá un minuto antes de reintentar.'),
+});
+const contrasenaSesionDiario = rateLimit({
+  windowMs: 24 * 60 * 60 * 1000,
+  limit: 20,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  keyGenerator: claveDeSesion,
+  skipSuccessfulRequests: true,
+  handler: respuesta('Demasiados intentos fallidos con la contraseña desde esta sesión. Salí y volvé a entrar para seguir.'),
+});
+const frenoContrasenaDeSesion = [contrasenaSesionRapido, contrasenaSesionDiario];
 
 // Recuperación de contraseña: cada intento manda un mail. Más restrictivo,
 // tanto para no filtrar qué cuentas existen como para no convertirnos en
@@ -157,5 +233,6 @@ const reporteLimiter = rateLimit({
 
 module.exports = {
   loginLimiter, passwordResetLimiter, registerLimiter, reporteLimiter,
-  apiLimiter, burstLimiter, publicLimiter,
+  apiLimiter, burstLimiter, publicLimiter, frenoContrasenaDeSesion,
+  claveIpMasEmail, claveDeSesion,
 };
