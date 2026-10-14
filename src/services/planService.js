@@ -430,6 +430,42 @@ function periodoEnCurso(sub, ahora = new Date()) {
   return sub.estado !== 'trial' && sub.periodoFin != null && new Date(sub.periodoFin) > new Date(ahora);
 }
 
+/*
+ * Lo pago, partido en el período que se está USANDO y lo que viene después
+ * ya pago: { actual: { desde, hasta }, siguiente: { desde, hasta } | null }.
+ *
+ * Pagar antes del vencimiento suma lo nuevo después de lo que está corriendo
+ * (acreditarPago: "pagar antes de tiempo no puede regalar días"). Si la
+ * pantalla mostrara de periodoInicio a periodoFin, quien renueva el 20 un
+ * período que vence el 30 vería como "actual" uno que empieza el 30, con el
+ * día de hoy afuera; y con una bajada paga, el período del plan barato al lado
+ * del plan caro que todavía rige. El corte (periodoSiguienteDesde) es dónde
+ * termina lo que se usa y empieza lo pagado por adelantado.
+ *
+ * Cuando el corte ya pasó, lo que se usa es lo que se había pagado por
+ * adelantado, hasta el fin de todo lo pago: no se guardan los cortes de varios
+ * meses pagados juntos, así que dos meses por adelantado se ven como uno de
+ * sesenta días una vez que empiezan. Es lo que cubre el pago, sin inventar.
+ *
+ * Una fila de antes de que existiera el corte puede tener periodoInicio en el
+ * futuro (era el inicio de lo pagado por adelantado): ese inicio ES el corte,
+ * y de cuándo empezó lo que se usa no hay dato: `desde` va en null en vez de
+ * una fecha inventada.
+ */
+function partirPeriodo(sub, ahora = new Date()) {
+  const t = new Date(ahora);
+  const fin = sub.periodoFin ? new Date(sub.periodoFin) : null;
+  let inicio = sub.periodoInicio ? new Date(sub.periodoInicio) : null;
+  let corte = sub.periodoSiguienteDesde ? new Date(sub.periodoSiguienteDesde) : null;
+  if (!corte && inicio && inicio > t) { corte = inicio; inicio = null; }
+  // Un corte que no deja nada después no parte nada.
+  if (corte && (!fin || corte >= fin)) corte = null;
+
+  if (!corte) return { actual: { desde: inicio, hasta: fin }, siguiente: null };
+  if (corte <= t) return { actual: { desde: corte, hasta: fin }, siguiente: null };
+  return { actual: { desde: inicio, hasta: corte }, siguiente: { desde: corte, hasta: fin } };
+}
+
 const pesos = (n) => `$${Number(n || 0).toLocaleString('es-AR', { maximumFractionDigits: 2 })}`;
 
 /*
@@ -968,9 +1004,31 @@ async function acreditarPago(opciones, transaction = null) {
   const hasta = diasExtra > 0 ? diasDesde(finAnterior, diasExtra) : finAnterior;
   const extiende = diasExtra > 0 && tipo !== 'subida' && tipo !== 'seguir';
 
+  /*
+   * El período en uso no se mueve por pagar antes de tiempo: lo nuevo queda
+   * como lo pagado por adelantado, después del corte (ver partirPeriodo). Antes
+   * periodoInicio pasaba a ser el vencimiento viejo y la pantalla mostraba como
+   * "período actual" uno que todavía no empezaba. Con el período ya vencido no
+   * hay nada que partir: arranca hoy y un corte viejo no sobrevive.
+   */
+  let periodoSiguienteDesde = sub.periodoSiguienteDesde || null;
+  // Un inicio desconocido (fila vieja, ver partirPeriodo) no pasa a ser hoy.
+  let periodoInicio = sub.periodoInicio || (periodoSiguienteDesde ? null : desde);
+  if (extiende) {
+    if (finAnterior > desde) {
+      const { actual } = partirPeriodo(sub, desde);
+      periodoInicio = actual.desde;
+      periodoSiguienteDesde = actual.hasta;
+    } else {
+      periodoInicio = finAnterior;
+      periodoSiguienteDesde = null;
+    }
+  }
+
   await sub.update({
     estado: 'activa',
-    periodoInicio: extiende ? finAnterior : (sub.periodoInicio || desde),
+    periodoInicio,
+    periodoSiguienteDesde,
     periodoFin: hasta,
     ultimoPagoEn: desde,
     proximoCobroEn: hasta,
@@ -1032,7 +1090,7 @@ module.exports = {
   acreditarPago, aplicarPlanPendiente, trabarSuscripcion, trabada, sentidoDelCambio,
   trialsPorVencer, precioDeSuscripcion, ErrorPlan, DIAS_TRIAL, DIAS_PERIODO, TOLERANCIA,
   // Prorrateo y cambio de plan
-  precioPara, periodoEnCurso, clasificarCambio, montoDe, diasPorValor, leerLista, guardarLista,
+  precioPara, periodoEnCurso, partirPeriodo, clasificarCambio, montoDe, diasPorValor, leerLista, guardarLista,
   // Empleados de más al bajar (decisión 19)
   ajustarEmpleados, excesosPara, empleadosParaElegir, eleccionDeEmpleados, ordenDeUso,
   aplicarBajadasVencidas,

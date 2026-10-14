@@ -362,6 +362,10 @@ const COLUMNAS_ESPERADAS = {
     planPendienteSuspender: { type: DataTypes.TEXT, allowNull: true },
     debitoMonto:          { type: DataTypes.DECIMAL(12, 2), allowNull: true },
     debitoPendienteDesde: { type: DataTypes.DATE, allowNull: true },
+    // El corte entre el período en uso y lo pagado por adelantado. Ver el
+    // modelo. Sin relleno: nulo es "nada por adelantado", y una fila vieja con
+    // el inicio en el futuro la entiende planService.partirPeriodo.
+    periodoSiguienteDesde: { type: DataTypes.DATE, allowNull: true },
   },
   subscription_payments: {
     // Qué se cotizó (plan entero o diferencia), cuánto, la elección de

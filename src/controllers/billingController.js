@@ -75,18 +75,28 @@ const getPlanes = async (_req, res, next) => {
  *
  * `vence` sola dice cuándo termina, pero no qué cubre: quien pagó hace diez días
  * y ve "vence el 30" no sabe si eso es lo que pagó o lo anterior. En la prueba
- * el período es la prueba; con un plan pago, lo último que se acreditó.
+ * el período es la prueba; con un plan pago, el que se está usando HOY.
+ *
+ * Lo pagado por adelantado (renovar o bajar de plan antes del vencimiento) va
+ * aparte, en `siguiente`: mostrarlo como "actual" dejaba el día de hoy afuera
+ * del rango y, con una bajada paga, el período del plan barato al lado del
+ * plan caro que todavía rige. `desde` puede venir null en una fila de antes de
+ * guardar el corte: se sabe dónde termina lo que se usa, no dónde empezó. Ver
+ * planService.partirPeriodo. `vence` sigue siendo el fin de todo lo pago.
  *
  * null si no hay un período que mostrar: un Enterprise facturado por fuera
  * puede estar activo sin fechas, y una cuenta en modo lectura ya no tiene uno
  * en curso (su `vence` ya pasó y la pantalla lo dice con el estado).
  */
-function periodoActual({ estado, suscripcion: sub }) {
-  const enPrueba = sub.estado === 'trial';
-  const desde = enPrueba ? sub.trialInicio : sub.periodoInicio;
-  const hasta = enPrueba ? sub.trialFin : sub.periodoFin;
-  if (estado === 'lectura' || estado === 'cancelada' || !desde || !hasta) return null;
-  return { desde, hasta, tipo: enPrueba ? 'prueba' : 'pago' };
+function periodoActual({ estado, suscripcion: sub }, ahora = new Date()) {
+  if (estado === 'lectura' || estado === 'cancelada') return null;
+  if (sub.estado === 'trial') {
+    if (!sub.trialInicio || !sub.trialFin) return null;
+    return { desde: sub.trialInicio, hasta: sub.trialFin, tipo: 'prueba', siguiente: null };
+  }
+  const { actual, siguiente } = planService.partirPeriodo(sub, ahora);
+  if (!actual.hasta || (!actual.desde && !siguiente)) return null;
+  return { desde: actual.desde, hasta: actual.hasta, tipo: 'pago', siguiente };
 }
 
 // GET /api/billing/suscripcion — estado, uso y topes de la cuenta

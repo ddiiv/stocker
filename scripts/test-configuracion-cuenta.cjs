@@ -135,6 +135,138 @@ function llamar(handler, req) {
     chk('Enterprise facturado por fuera, sin fechas: sin período y sin romper', ['activa', null],
       [s.estado, s.periodo]);
 
+    /*
+     * Lo de arriba escribe las fechas a mano. Acá se llega al estado por
+     * acreditarPago, que es por donde llega de verdad: pagar antes del
+     * vencimiento (renovar, bajar de plan, días regalados) suma lo nuevo
+     * DESPUÉS de lo que está corriendo, y el período que se está usando no
+     * puede saltar a uno que todavía no empezó.
+     */
+    tit('1b. DESPUÉS DE PAGAR ANTES DE TIEMPO (por acreditarPago)');
+    const [inicialP, proP, superiorP] = await Promise.all(
+      ['inicial', 'pro', 'superior'].map((codigo) => Plan.findOne({ where: { codigo } })),
+    );
+    const poner = async (plan, { inicio = enDias(-20), fin = enDias(10), siguiente = null } = {}) => {
+      await Subscription.update({
+        estado: 'activa', planId: plan.id, periodoInicio: inicio, periodoFin: fin,
+        periodoSiguienteDesde: siguiente,
+        planPendienteId: null, planPendienteDesde: null, planPendienteSuspender: null,
+        precioAcordado: null, descuentoPct: 0, metodoPago: null, proveedorRef: null,
+      }, { where: { id: sub.id } });
+      return Subscription.findByPk(sub.id);
+    };
+    const masDias = (f, n) => new Date(new Date(f).getTime() + n * DIA);
+    // Hoy adentro del período que la pantalla llama "actual".
+    const hoyAdentro = (p) => Boolean(p) && (!p.desde || new Date(p.desde) <= new Date())
+      && new Date() < new Date(p.hasta);
+    const igualA = (p, desde, hasta) => Boolean(p)
+      && (desde === null ? p.desde == null : mismoInstante(p.desde, desde)) && mismoInstante(p.hasta, hasta);
+
+    const ini = enDias(-20);
+    const fin10 = enDias(10);
+
+    let antes = await poner(proP, { inicio: ini, fin: fin10 });
+    await planService.acreditarPago({ subscription: antes, planId: proP.id });
+    s = await suscripcion();
+    chk('renovar 10 días antes: hoy sigue adentro del "período actual"', true, hoyAdentro(s.periodo));
+    chk('  el actual es el que se está usando (del inicio al vencimiento viejo)', true,
+      igualA(s.periodo, ini, fin10));
+    chk('  lo recién pagado va aparte, como el siguiente', true,
+      igualA(s.periodo?.siguiente, fin10, masDias(fin10, 30)));
+    chk('  y `vence` es el fin de todo lo pago', true, mismoInstante(s.vence, masDias(fin10, 30)));
+
+    // Un segundo mes por adelantado: el actual sigue siendo el mismo.
+    await planService.acreditarPago({ subscription: await Subscription.findByPk(sub.id), planId: proP.id });
+    s = await suscripcion();
+    chk('dos meses por adelantado: el actual no se mueve', true, igualA(s.periodo, ini, fin10));
+    chk('  y el siguiente cubre los dos', true, igualA(s.periodo?.siguiente, fin10, masDias(fin10, 60)));
+
+    /*
+     * Pasó el corte: lo pagado por adelantado es lo que se usa ahora. Pagar de
+     * nuevo antes de tiempo deja como actual ESE tramo y no el primero.
+     */
+    antes = await poner(proP, { inicio: enDias(-50), siguiente: enDias(-20), fin: fin10 });
+    s = await suscripcion();
+    chk('pasado el corte, el actual es lo que se había pagado por adelantado', true,
+      igualA(s.periodo, enDias(-20), fin10) && !s.periodo?.siguiente);
+    await planService.acreditarPago({ subscription: antes, planId: proP.id });
+    s = await suscripcion();
+    chk('  y pagar otra vez antes de tiempo lo deja como actual', true, igualA(s.periodo, enDias(-20), fin10));
+    chk('  con lo nuevo como siguiente', true, igualA(s.periodo?.siguiente, fin10, masDias(fin10, 30)));
+
+    /*
+     * La bajada ya paga: el plan caro sigue rigiendo hasta el vencimiento, y
+     * el período actual tiene que ser el SUYO, no el del plan barato.
+     */
+    antes = await poner(superiorP, { inicio: ini, fin: fin10 });
+    await planService.acreditarPago({ subscription: antes, planId: inicialP.id });
+    s = await suscripcion();
+    chk('bajada paga: sigue el Superior', ['superior', 'inicial'], [s.plan?.codigo, s.planPendiente?.codigo]);
+    chk('  el actual es el del Superior (hoy adentro)', true, igualA(s.periodo, ini, fin10) && hoyAdentro(s.periodo));
+    chk('  el siguiente es el del Inicial y arranca cuando rige la bajada', true,
+      igualA(s.periodo?.siguiente, fin10, masDias(fin10, 30))
+      && mismoInstante(s.periodo?.siguiente?.desde, s.planPendiente?.desde));
+
+    // Subir no mueve el vencimiento (decisión 18): no hay siguiente.
+    antes = await poner(proP, { inicio: ini, fin: fin10 });
+    await planService.acreditarPago({ subscription: antes, planId: superiorP.id, concepto: 'diferencia' });
+    s = await suscripcion();
+    chk('subida: plan nuevo, mismo período, sin siguiente', ['superior', true, null],
+      [s.plan?.codigo, igualA(s.periodo, ini, fin10), s.periodo?.siguiente ?? null]);
+
+    // Días regalados desde el backoffice: entran después, como un pago.
+    antes = await poner(proP, { inicio: ini, fin: fin10 });
+    await planService.acreditarPago({ subscription: antes, dias: 15 });
+    s = await suscripcion();
+    chk('días regalados: el actual no se mueve y lo regalado es el siguiente', [true, true],
+      [igualA(s.periodo, ini, fin10), igualA(s.periodo?.siguiente, fin10, masDias(fin10, 15))]);
+
+    /*
+     * Pagar con el período ya vencido (en la gracia): arranca hoy, y un corte
+     * que había quedado de antes no puede sobrevivir.
+     */
+    antes = await poner(proP, { inicio: enDias(-32), siguiente: enDias(-12), fin: enDias(-2) });
+    await planService.acreditarPago({ subscription: antes, planId: proP.id });
+    s = await suscripcion();
+    chk('pagar vencido: el período arranca hoy y no hay siguiente', [true, true, null],
+      [mismoInstante(s.periodo?.desde, new Date()) || Math.abs(new Date(s.periodo?.desde) - Date.now()) < 5000,
+        hoyAdentro(s.periodo), s.periodo?.siguiente ?? null]);
+
+    /*
+     * Una fila que dejó el código anterior: el inicio guardado es el de lo
+     * pagado por adelantado, en el futuro. No se sabe cuándo empezó el que se
+     * usa, pero sí cuándo termina: se dice eso y no un período que no empezó.
+     */
+    antes = await poner(proP, { inicio: fin10, fin: masDias(fin10, 30) });
+    s = await suscripcion();
+    chk('fila vieja con el inicio en el futuro: el actual termina donde empieza lo pago', true,
+      igualA(s.periodo, null, fin10) && hoyAdentro(s.periodo));
+    chk('  y lo pago es el siguiente', true, igualA(s.periodo?.siguiente, fin10, masDias(fin10, 30)));
+    await planService.acreditarPago({ subscription: antes, planId: proP.id });
+    s = await suscripcion();
+    chk('  pagar otra vez sobre esa fila no inventa un inicio', true,
+      igualA(s.periodo, null, fin10) && igualA(s.periodo?.siguiente, fin10, masDias(fin10, 60)));
+    // Subir no toca el período: el inicio desconocido tampoco pasa a ser hoy.
+    await planService.acreditarPago({
+      subscription: await Subscription.findByPk(sub.id), planId: superiorP.id, concepto: 'diferencia',
+    });
+    s = await suscripcion();
+    chk('  ni subir de plan sobre esa fila', ['superior', true],
+      [s.plan?.codigo, igualA(s.periodo, null, fin10) && igualA(s.periodo?.siguiente, fin10, masDias(fin10, 60))]);
+
+    // El paso del tiempo, sin esperar: la misma fila mirada otro día.
+    const partir = (fila, dia) => planService.partirPeriodo(fila, enDias(dia));
+    const fila = { periodoInicio: enDias(-20), periodoSiguienteDesde: enDias(10), periodoFin: enDias(40) };
+    let p = partir(fila, 0);
+    chk('mirada hoy: actual hasta el corte y siguiente desde ahí', true,
+      igualA(p.actual, enDias(-20), enDias(10)) && igualA(p.siguiente, enDias(10), enDias(40)));
+    p = partir(fila, 15);
+    chk('mirada pasado el corte: lo adelantado es el actual y no hay siguiente', [true, null],
+      [igualA(p.actual, enDias(10), enDias(40)), p.siguiente]);
+    p = partir({ ...fila, periodoSiguienteDesde: enDias(40) }, 0);
+    chk('un corte que no deja nada después no parte nada', [true, null],
+      [igualA(p.actual, enDias(-20), enDias(40)), p.siguiente]);
+
     tit('2. EL MEDIDOR DE SESIONES QUE USA LA PANTALLA');
     const pro = await Plan.findOne({ where: { codigo: 'pro' } });
     await Subscription.update(

@@ -219,6 +219,15 @@ const Subscription = db.define('Subscription', {
   // Período pago vigente. Fuera de él la cuenta cae a lectura.
   periodoInicio: { type: DataTypes.DATE, allowNull: true },
   periodoFin:    { type: DataTypes.DATE, allowNull: true },
+  /*
+   * Dónde termina el período que se está USANDO y empieza lo que ya se pagó
+   * por adelantado (renovar o bajar de plan antes del vencimiento, días
+   * regalados). Sin esto, pagar diez días antes dejaba como "período actual"
+   * uno que todavía no empezó. Null = no hay nada pagado por adelantado.
+   * periodoFin sigue siendo el fin de TODO lo pago. Ver
+   * planService.partirPeriodo. Sin índice: entra por ensureColumns.
+   */
+  periodoSiguienteDesde: { type: DataTypes.DATE, allowNull: true },
   // Precio cerrado con este cliente. Manda sobre el del plan: es lo que
   // permite cotizar Enterprise o dejar un precio viejo a quien ya estaba.
   precioAcordado: { type: DataTypes.DECIMAL(12,2), allowNull: true },
