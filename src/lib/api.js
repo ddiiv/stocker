@@ -43,6 +43,16 @@ export const emitirIntegracion = (payload) =>
 export const revocarIntegracion = (id) =>
   http.delete(`/backoffice/integraciones/${id}`).then((r) => r.data);
 
+// ── Cotizaciones ─────────────────────────────────────────────────
+/* Los pedidos de cotización de un desarrollo a medida (portal mayorista,
+   tienda propia) que hacen los clientes desde Plataformas. Se guardan aunque
+   el mail de aviso no salga: esta lista es la que no deja que se pierdan. */
+export const getCotizaciones = (params) =>
+  http.get("/backoffice/cotizaciones", { params }).then((r) => r.data);
+/* { estado?, notaInterna? } */
+export const editarCotizacion = (id, payload) =>
+  http.patch(`/backoffice/cotizaciones/${id}`, payload).then((r) => r.data);
+
 // ── Cobros ───────────────────────────────────────────────────────
 /* { montoRecibido, aceptarDiferencia }: lo que entró al banco, y si se acredita
    aunque no coincida con lo que corresponde (el backend contesta 409 si no). */

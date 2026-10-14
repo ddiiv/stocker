@@ -1,5 +1,5 @@
 import { NavLink, Outlet } from "react-router-dom";
-import { LayoutDashboard, Building2, Layers, SlidersHorizontal, LogOut, Menu, Wallet, ShieldCheck, Globe, ExternalLink, Receipt, Plug } from "lucide-react";
+import { LayoutDashboard, Building2, Layers, SlidersHorizontal, LogOut, Menu, Wallet, ShieldCheck, Globe, ExternalLink, Receipt, Plug, ClipboardList } from "lucide-react";
 import { useEffect, useState } from "react";
 import * as api from "../lib/api";
 import { useAdmin } from "../context/AdminAuth";
@@ -18,6 +18,11 @@ const LINKS = [
    * funciona a medias.
    */
   { to: "/integraciones", label: "Integraciones", icono: Plug },
+  /*
+   * Al lado de Integraciones: una cotización aceptada termina en una
+   * credencial emitida ahí. Son el antes y el después del mismo trabajo.
+   */
+  { to: "/cotizaciones", label: "Cotizaciones", icono: ClipboardList },
   { to: "/seguridad", label: "Seguridad", icono: ShieldCheck },
   { to: "/ajustes",  label: "Página pública", icono: SlidersHorizontal },
 ];

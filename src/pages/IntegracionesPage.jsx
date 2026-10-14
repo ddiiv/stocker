@@ -290,6 +290,17 @@ export default function IntegracionesPage() {
               </div>
             </div>
 
+            {/*
+              * La credencial se emitió, pero el plan de ese negocio no incluye
+              * la conexión y no la heredó: lo que mande va a rebotar con 402
+              * hasta que pase de plan. Mejor saberlo acá que por el cliente.
+              */}
+            {reciénEmitida.fueraDePlan && (
+              <Aviso tono="error">
+                {reciénEmitida.fueraDePlan} Hasta que cambie de plan, lo que mande con este token va a rebotar.
+              </Aviso>
+            )}
+
             {reciénEmitida.reemplaza && (
               <Aviso tono="info">
                 Se apagó la credencial anterior (···{reciénEmitida.reemplaza.pista}). Desde este momento el

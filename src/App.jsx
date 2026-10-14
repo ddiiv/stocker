@@ -10,6 +10,7 @@ import PlanesPage from "./pages/PlanesPage";
 import CobrosPage from "./pages/CobrosPage";
 import ArcaPage from "./pages/ArcaPage";
 import IntegracionesPage from "./pages/IntegracionesPage";
+import CotizacionesPage from "./pages/CotizacionesPage";
 import SeguridadPage from "./pages/SeguridadPage";
 import AjustesPage from "./pages/AjustesPage";
 import { Cargando } from "./components/ui";
@@ -53,6 +54,7 @@ export default function App() {
             <Route path="/cobros"       element={<CobrosPage />} />
             <Route path="/arca"         element={<ArcaPage />} />
             <Route path="/integraciones" element={<IntegracionesPage />} />
+            <Route path="/cotizaciones" element={<CotizacionesPage />} />
             <Route path="/seguridad"    element={<SeguridadPage />} />
             <Route path="/ajustes"      element={<AjustesPage />} />
           </Route>
