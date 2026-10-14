@@ -30,11 +30,24 @@ export async function fetchPagos() {
 }
 
 /**
- * Genera el link de pago y devuelve a dónde mandar al cliente.
- * @param {"unico"|"recurrente"} modo  un mes suelto, o débito automático
+ * Cuánto se cobra un plan y por qué, antes de pagar: el plan entero o, al
+ * subir con un período pago corriendo, sólo la diferencia por los días que
+ * quedan; cuándo rige; qué pasa con el débito automático; y, al bajar, cuánto
+ * se pasa de cada tope y quiénes pueden seguir. Es la misma cuenta que cobra
+ * el checkout: el modal no calcula precios por su lado.
  */
-export async function crearCheckout({ plan, modo = "unico" } = {}) {
-  const { data } = await http.post("/billing/checkout", { plan, modo });
+export async function fetchCotizacion(plan) {
+  const { data } = await http.get("/billing/cotizacion", { params: { plan } });
+  return data;
+}
+
+/**
+ * Genera el link de pago y devuelve a dónde mandar al cliente.
+ * @param {"unico"|"recurrente"} modo  un pago suelto, o débito automático
+ * @param {number[]} [conservar]  al bajar con empleados de más, los que siguen
+ */
+export async function crearCheckout({ plan, modo = "unico", conservar } = {}) {
+  const { data } = await http.post("/billing/checkout", { plan, modo, conservar });
   return data;
 }
 

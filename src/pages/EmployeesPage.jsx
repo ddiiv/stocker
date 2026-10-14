@@ -51,7 +51,22 @@ export default function EmployeesPage() {
     await load();
   }
 
-  async function handleToggle(id) { await toggleEmployeeActive(id); await load(); }
+  /*
+   * Activar ocupa un lugar del plan: sin lugar, el servidor contesta con el
+   * motivo (tope de usuarios) y se muestra. Antes el error se perdía y el
+   * botón parecía no hacer nada.
+   */
+  async function handleToggle(id) {
+    try {
+      await toggleEmployeeActive(id);
+    } catch (err) {
+      alert(err.response?.data?.message || "No se pudo cambiar el estado del empleado.");
+    }
+    await load();
+  }
+
+  // Los que quedaron afuera porque la cuenta bajó a un plan con menos usuarios.
+  const suspendidosPorPlan = employees.filter((e) => !e.activo && e.suspendidoPorPlan);
 
   /*
    * Levantar el bloqueo por intentos fallidos.
@@ -93,6 +108,16 @@ export default function EmployeesPage() {
         <Card><p className="text-xs uppercase tracking-wide text-ink-600">Locales</p><p className="mt-2 font-display text-2xl font-semibold">{locations.length}</p></Card>
       </div>
 
+      {suspendidosPorPlan.length > 0 && (
+        <Card className="mb-5 border-l-4 border-l-brass-500">
+          <p className="text-sm text-ink-700">
+            <strong>{suspendidosPorPlan.length} usuario{suspendidosPorPlan.length === 1 ? "" : "s"} suspendido{suspendidosPorPlan.length === 1 ? "" : "s"} por el plan.</strong>{" "}
+            La cuenta pasó a un plan con menos usuarios: siguen guardados con todo su historial, pero no
+            pueden entrar. Vuelven solos si subís de plan; para usar a uno ahora, desactivá a otro y activalo.
+          </p>
+        </Card>
+      )}
+
       {loading ? (
         <div className="card p-0">{Array.from({ length: 4 }).map((_, i) => <div key={i} className="h-20 animate-pulse border-b border-line last:border-0" />)}</div>
       ) : employees.length === 0 ? (
@@ -121,7 +146,13 @@ export default function EmployeesPage() {
                   <td className="px-4 py-3 text-ink-700">{e.local?.nombre || "—"}</td>
                   <td className="px-4 py-3 text-ink-500 text-xs">{e.ultimaConexion ? new Date(e.ultimaConexion).toLocaleString("es-AR") : "Nunca"}</td>
                   <td className="px-4 py-3">
-                    <span className={`badge ${e.activo ? "badge-ok" : "badge-out"}`}>{e.activo ? "Activo" : "Inactivo"}</span>
+                    {!e.activo && e.suspendidoPorPlan ? (
+                      <span className="badge badge-low" title="La cuenta pasó a un plan con menos usuarios. Vuelve solo si subís de plan.">
+                        Suspendido por el plan
+                      </span>
+                    ) : (
+                      <span className={`badge ${e.activo ? "badge-ok" : "badge-out"}`}>{e.activo ? "Activo" : "Inactivo"}</span>
+                    )}
                     {/* El bloqueo por intentos fallidos no es lo mismo que estar
                         inactivo: la cuenta está habilitada, pero el login no la
                         deja pasar hasta que se venza. */}
@@ -150,7 +181,7 @@ export default function EmployeesPage() {
                       )}
                       <button className="btn-ghost px-2 py-1.5" title="Sesiones" onClick={() => setSessionsFor(e)}><Activity size={14} /></button>
                       <button className="btn-ghost px-2 py-1.5" title="Editar" onClick={() => { setEditing(e); setModalOpen(true); }}><PencilLine size={14} /></button>
-                      <button className="btn-ghost px-2 py-1.5" title={e.activo ? "Desactivar" : "Activar"} onClick={() => handleToggle(e.id)}><Power size={14} /></button>
+                      <button className="btn-ghost px-2 py-1.5" title={e.activo ? "Desactivar" : e.suspendidoPorPlan ? "Volver a usar (ocupa un lugar del plan)" : "Activar"} onClick={() => handleToggle(e.id)}><Power size={14} /></button>
                     </div>
                   </td>
                 </tr>

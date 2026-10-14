@@ -53,7 +53,9 @@ http.interceptors.response.use(
         window.location.href = `/login${motivo}`;
       }
     }
-    if (status === 403 && onForbidden) {
+    // Un empleado suspendido por el plan que intenta entrar no es un permiso
+    // que le falta: el login muestra el motivo que manda el servidor.
+    if (status === 403 && onForbidden && err.response?.data?.codigo !== "EMPLEADO_SUSPENDIDO_PLAN") {
       const msg = err.response?.data?.message || "";
       // Parseamos "Sin permiso de <level> en <modulo>." para mostrar el modal correcto
       const match = msg.match(/Sin permiso de (\w+) en (\w+)/);

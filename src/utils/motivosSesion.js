@@ -22,6 +22,10 @@ export const AVISOS_DE_CIERRE = {
   SESION_CERRADA_REMOTA: "Se cerró tu sesión desde otro dispositivo. Volvé a entrar.",
   SESION_FINALIZADA: "La sesión terminó. Volvé a entrar.",
   SESION_ANTERIOR: "Actualizamos la forma de iniciar sesión. Volvé a entrar: es una sola vez.",
+  // La cuenta bajó a un plan con menos usuarios y éste quedó afuera: no es que
+  // lo echaron, y lo resuelve el dueño eligiéndolo o subiendo de plan.
+  SESION_SUSPENDIDA_PLAN:
+    "Tu usuario quedó suspendido porque la cuenta pasó a un plan con menos usuarios. Pedile al dueño que te habilite.",
 };
 
 /*

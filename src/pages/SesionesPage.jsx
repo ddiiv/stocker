@@ -258,11 +258,15 @@ function FilaSesion({ s, quien, cerrada = false, children }) {
             <p className="flex flex-wrap items-center gap-1.5 text-sm font-medium text-ink-900">
               {s.dispositivo || "Dispositivo desconocido"}
               {s.actual && <span className="badge badge-ok">Este dispositivo</span>}
-              {s.suspendida && (
+              {s.suspendida && (s.suspendidaPorPlan ? (
+                <span className="badge badge-low" title="La cuenta pasó a un plan con menos usuarios: vuelve solo si sube de plan.">
+                  Suspendido por el plan
+                </span>
+              ) : (
                 <span className="badge badge-out" title="El usuario está desactivado: no puede entrar hasta que lo reactiven.">
                   Usuario desactivado
                 </span>
-              )}
+              ))}
               {cerrada && (
                 <span className="badge bg-paper-200 text-ink-700">{s.estado === "vencida" ? "Venció" : "Cerrada"}</span>
               )}
