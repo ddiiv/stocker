@@ -35,7 +35,6 @@ const TITLES = {
   "/deposito": "Depósito",
   "/evento": "Evento",
   "/reposicion": "Reposición",
-  "/pedidos-mayoristas": "Pedidos mayoristas",
   "/ventas": "Ventas y cotizaciones",
   "/ventas/nueva": "Nueva venta / cotización",
   "/ventas/pos": "Punto de venta (POS)",
@@ -46,7 +45,6 @@ const TITLES = {
   "/caja": "Caja",
   "/pagos": "Métodos de pago",
   "/empleados": "Empleados",
-  "/integraciones/mercadolibre": "Mercado Libre",
   "/cuenta": "Mi cuenta",
   "/cuenta/suscripcion": "Suscripción",
   "/cuenta/sesiones": "Sesiones",
@@ -58,6 +56,8 @@ const TITLES = {
 function titleFor(pathname) {
   if (TITLES[pathname]) return TITLES[pathname];
   if (pathname.startsWith("/facturacion/cuits/")) return "Configuración de ARCA";
+  // Todas las pestañas de Plataformas: cada pantalla trae su propio título.
+  if (pathname === "/plataformas" || pathname.startsWith("/plataformas/")) return "Plataformas";
   if (pathname.startsWith("/empleados/")) return "Perfil de empleado";
   if (pathname.startsWith("/ventas/")) return "Detalle de venta";
   if (pathname.startsWith("/stock/")) return "Detalle de producto";

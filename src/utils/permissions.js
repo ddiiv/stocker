@@ -19,7 +19,7 @@ export const PERM_MODULES = [
   { key: "pagos",         label: "Métodos de pago", descripcion: "Medios de pago disponibles y sus recargos o descuentos." },
   { key: "caja",          label: "Caja",            descripcion: "Turnos de caja, movimientos de efectivo y arqueo." },
   { key: "empleados",     label: "Empleados",       descripcion: "Empleados, cargos y locales del negocio." },
-  { key: "integraciones", label: "Integraciones",   descripcion: "Conexión con MercadoLibre y sincronización de stock." },
+  { key: "integraciones", label: "Integraciones",   descripcion: "Plataformas: Mercado Libre, Jumpseller y tienda propia; pedir cotizaciones a medida." },
   // Los tres del circuito depósito → local. Debe coincidir con el backend
   // (config/permisos.js): un módulo que exista sólo de un lado no da acceso
   // pero sí ocupa un renglón en la matriz de cargos, y confunde.

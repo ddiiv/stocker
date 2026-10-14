@@ -14,7 +14,7 @@ import {
   Tent,
   Users,
   CreditCard,
-  Store,
+  Plug,
   BadgeCheck,
   LifeBuoy,
   Tag,
@@ -23,6 +23,7 @@ import {
 import { useAuth } from "../../context/AuthContext";
 import { canView, esAdministradorTotal } from "../../utils/permissions";
 import { entradaDeCuenta } from "../../utils/cuenta";
+import { PERMISOS_PLATAFORMAS } from "../../utils/plataformas";
 import { useOverlayKeyboard } from "../../hooks/useOverlayKeyboard";
 
 /*
@@ -57,11 +58,6 @@ const GRUPOS = [
         activo: (p) => (p === "/ventas" || p.startsWith("/ventas/")) && p !== "/ventas/pos",
       },
       { to: "/ventas/pos",  label: "Punto de venta (POS)", icon: ScanLine,    permission: "ventas" },
-      /*
-       * Va con Ventas y no con Integraciones: lo mira quien vende, todos los
-       * días, y termina en una venta.
-       */
-      { to: "/pedidos-mayoristas", label: "Pedidos mayoristas", icon: Store, permission: "ventas" },
       { to: "/caja",        label: "Caja",                 icon: Wallet,      permission: "caja" },
       { to: "/clientes",    label: "Clientes",             icon: UserCircle2, permission: "clientes" },
       { to: "/facturacion", label: "Facturación",          icon: Receipt,     permission: "facturacion" },
@@ -89,8 +85,14 @@ const GRUPOS = [
     items: [
       { to: "/empleados", label: "Empleados",       icon: Users,      permission: "empleados" },
       { to: "/pagos",     label: "Métodos de pago", icon: CreditCard, permission: "pagos" },
-      { to: "/integraciones/mercadolibre", label: "Mercado Libre", icon: Store, permission: "integraciones" },
-      { to: "/integraciones/jumpseller", label: "Jumpseller", icon: Store, permission: "integraciones" },
+      /*
+       * Un solo ítem para todo lo que conecta el negocio con dónde vende
+       * (decisión del dueño): Mercado Libre, Jumpseller, la tienda propia y
+       * los pedidos mayoristas son pestañas adentro. Lo ve quien tiene
+       * integraciones O ventas: la bandeja mayorista es de los vendedores y
+       * vive acá, así que pedir sólo integraciones se la habría escondido.
+       */
+      { to: "/plataformas", label: "Plataformas", icon: Plug, permisos: PERMISOS_PLATAFORMAS },
     ],
   },
   {
@@ -132,7 +134,10 @@ export default function Sidebar({ open, onClose }) {
   // de Suscripción, que después les respondía 403.
   const esDuenio = esAdministradorTotal(user);
   const puedeVer = (l) =>
-    l.siempre ? true : l.soloDuenio ? esDuenio : canView(user, l.permission);
+    l.siempre ? true
+      : l.soloDuenio ? esDuenio
+        : l.permisos ? l.permisos.some((p) => canView(user, p))
+          : canView(user, l.permission);
 
   /*
    * Un grupo sin nada adentro no se dibuja.

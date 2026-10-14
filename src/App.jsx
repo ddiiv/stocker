@@ -6,6 +6,8 @@ import ProtectedRoute from "./components/layout/ProtectedRoute";
 import PermissionRoute from "./components/layout/PermissionRoute";
 import OwnerRoute from "./components/layout/OwnerRoute";
 import AppLayout from "./components/layout/AppLayout";
+import RedirigirRutaVieja from "./components/layout/RedirigirRutaVieja";
+import { PERMISOS_PLATAFORMAS } from "./utils/plataformas";
 
 import LoginPage from "./pages/LoginPage";
 
@@ -61,7 +63,12 @@ const EventoPage = lazy(() => import("./pages/EventoPage"));
 const StockARegularizarPage = lazy(() => import("./pages/StockARegularizarPage"));
 const PacksPage = lazy(() => import("./pages/PacksPage"));
 const ReposicionPage = lazy(() => import("./pages/ReposicionPage"));
-const PedidosMayoristasPage = lazy(() => import("./pages/PedidosMayoristasPage"));
+// Plataformas: un solo ítem del menú con pestañas (ver utils/plataformas.js).
+// La bandeja mayorista ya no tiene ruta propia: la monta la pestaña Mayoristas.
+const PlataformasLayout = lazy(() => import("./pages/plataformas/PlataformasLayout"));
+const PlataformasResumenPage = lazy(() => import("./pages/plataformas/ResumenPage"));
+const TiendaPropiaPage = lazy(() => import("./pages/plataformas/TiendaPropiaPage"));
+const MayoristasPage = lazy(() => import("./pages/plataformas/MayoristasPage"));
 const ScanStockPage = lazy(() => import("./pages/ScanStockPage"));
 const PosPage = lazy(() => import("./pages/PosPage"));
 const BusinessCuitsPage = lazy(() => import("./pages/BusinessCuitsPage"));
@@ -108,7 +115,8 @@ export default function App() {
             <Route path="/evento"                       element={<PermissionRoute permission="stock"><EventoPage /></PermissionRoute>} />
             <Route path="/deposito"                     element={<PermissionRoute permission="deposito"><DepositoPage /></PermissionRoute>} />
             <Route path="/reposicion"                   element={<PermissionRoute permission="reposicion"><ReposicionPage /></PermissionRoute>} />
-            <Route path="/pedidos-mayoristas"           element={<PermissionRoute permission="ventas"><PedidosMayoristasPage /></PermissionRoute>} />
+            {/* Se mudó a Plataformas → Mayoristas. La dirección vieja sigue andando. */}
+            <Route path="/pedidos-mayoristas"           element={<RedirigirRutaVieja />} />
             <Route path="/envios"                       element={<PermissionRoute permission="stock"><EnviosDelDiaPage /></PermissionRoute>} />
             <Route path="/stock/:skuAgrupador"          element={<PermissionRoute permission="stock"><ProductDetailPage /></PermissionRoute>} />
             <Route path="/ventas"                       element={<PermissionRoute permission="ventas"><SalesPage /></PermissionRoute>} />
@@ -137,8 +145,22 @@ export default function App() {
             <Route path="/pagos"                        element={<PermissionRoute permission="pagos"><PaymentMethodsPage /></PermissionRoute>} />
             <Route path="/caja"                         element={<PermissionRoute permission="caja"><CashPage /></PermissionRoute>} />
             <Route path="/empleados"                    element={<PermissionRoute permission="empleados"><EmployeesPage /></PermissionRoute>} />
-            <Route path="/integraciones/mercadolibre"   element={<PermissionRoute permission="integraciones"><MercadoLibrePage /></PermissionRoute>} />
-            <Route path="/integraciones/jumpseller"     element={<PermissionRoute permission="integraciones"><JumpsellerPage /></PermissionRoute>} />
+            {/*
+              Plataformas: el armazón con las pestañas, y cada pestaña con la
+              puerta de su pantalla de siempre. Mayoristas sigue con ventas:
+              pasarla a integraciones le sacaría la bandeja a los vendedores.
+            */}
+            <Route path="/plataformas" element={<PermissionRoute permission={PERMISOS_PLATAFORMAS}><PlataformasLayout /></PermissionRoute>}>
+              <Route index                element={<PlataformasResumenPage />} />
+              <Route path="mercadolibre"  element={<PermissionRoute permission="integraciones"><MercadoLibrePage /></PermissionRoute>} />
+              <Route path="jumpseller"    element={<PermissionRoute permission="integraciones"><JumpsellerPage /></PermissionRoute>} />
+              <Route path="tienda"        element={<PermissionRoute permission="integraciones"><TiendaPropiaPage /></PermissionRoute>} />
+              <Route path="mayoristas"    element={<PermissionRoute permission="ventas"><MayoristasPage /></PermissionRoute>} />
+            </Route>
+            {/* Las direcciones de antes redirigen con la query intacta: el
+                regreso de Mercado Libre (?ml_ok=1) en vuelo y los favoritos. */}
+            <Route path="/integraciones/mercadolibre"   element={<RedirigirRutaVieja />} />
+            <Route path="/integraciones/jumpseller"     element={<RedirigirRutaVieja />} />
 
             {/*
               Dirección que no existe.

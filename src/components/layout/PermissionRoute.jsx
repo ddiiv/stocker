@@ -23,24 +23,31 @@ function primeraPermitida(user) {
       dashboard: "/dashboard", stock: "/stock", ventas: "/ventas",
       cotizaciones: "/ventas", clientes: "/clientes", facturacion: "/facturacion",
       pagos: "/pagos", caja: "/caja", empleados: "/empleados",
-      integraciones: "/integraciones/mercadolibre",
+      integraciones: "/plataformas",
     }[m.key];
     if (destino) return destino;
   }
   return null;
 }
 
+/*
+ * `permission` puede ser una lista: alcanza con uno. Es para las secciones que
+ * juntan pantallas de módulos distintos, como Plataformas (integraciones o
+ * ventas). El aviso nombra el primero.
+ */
 export default function PermissionRoute({ permission, level = "ver", children }) {
   const { user } = useAuth();
   const denegar = useDenegar();
 
-  const ok = level === "editar" ? canEdit(user, permission) : canView(user, permission);
+  const permisos = Array.isArray(permission) ? permission : [permission];
+  const primero = permisos[0];
+  const ok = permisos.some((p) => (level === "editar" ? canEdit(user, p) : canView(user, p)));
 
   // El aviso se dispara en un efecto: llamarlo durante el render actualizaría
   // el estado del provider mientras React está renderizando.
   useEffect(() => {
-    if (!ok && user) denegar(permission, level);
-  }, [ok, user, permission, level, denegar]);
+    if (!ok && user) denegar(primero, level);
+  }, [ok, user, primero, level, denegar]);
 
   if (ok) return children;
   if (!user) return null; // la sesión todavía se está resolviendo
