@@ -4,7 +4,7 @@ import { fetchAccount } from "../services/accountService";
 import { PageHeader, Card } from "../components/ui/Layout";
 import CuentaTabs from "../components/cuenta/CuentaTabs";
 import { fechaYHora, estadoDeTerminos } from "../utils/cuenta";
-import { ENLACES_LEGALES } from "../utils/legales";
+import useEnlacesLegales from "../hooks/useEnlacesLegales";
 
 /*
  * Qué versión de los Términos aceptó la cuenta, cuándo, y cuál rige hoy.
@@ -21,6 +21,7 @@ export default function TerminosCuentaPage() {
   const [cuenta, setCuenta] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const legales = useEnlacesLegales();
 
   useEffect(() => {
     fetchAccount()
@@ -84,17 +85,20 @@ export default function TerminosCuentaPage() {
               </p>
             )}
 
-            <a className="btn-accent mt-4" href={ENLACES_LEGALES.terminos}
-              target="_blank" rel="noopener noreferrer">
-              Leer los Términos vigentes <ExternalLink size={14} />
-            </a>
+            {legales.terminos && (
+              <a className="btn-accent mt-4" href={legales.terminos}
+                target="_blank" rel="noopener noreferrer">
+                Leer los Términos vigentes <ExternalLink size={14} />
+              </a>
+            )}
           </Card>
 
           <Card>
             <p className="mb-3 font-display text-base font-semibold text-ink-950">Otros textos</p>
             <ul className="divide-y divide-line text-sm">
-              <EnlaceLegal href={ENLACES_LEGALES.privacidad} texto="Política de Privacidad" />
-              <EnlaceLegal href={ENLACES_LEGALES.reembolsos} texto="Política de Reembolsos" />
+              <EnlaceLegal href={legales.privacidad} texto="Política de Privacidad" />
+              <EnlaceLegal href={legales.reembolsos} texto="Política de Reembolsos" />
+              <EnlaceLegal href={legales.cookies} texto="Política de Cookies" />
             </ul>
           </Card>
         </div>
@@ -103,7 +107,9 @@ export default function TerminosCuentaPage() {
   );
 }
 
+// Sin dirección (ver utils/legales.js), el nombre solo: nunca un enlace inventado.
 function EnlaceLegal({ href, texto }) {
+  if (!href) return <li className="py-2.5 text-ink-700">{texto}</li>;
   return (
     <li>
       <a href={href} target="_blank" rel="noopener noreferrer"

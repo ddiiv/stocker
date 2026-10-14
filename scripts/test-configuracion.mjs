@@ -267,5 +267,30 @@ chk('  y lo borra cuando entra una sesión', true, /if \(me\) setMotivoCierre\("
 chk('ProtectedRoute lleva al login con el motivo', true,
   /<Navigate to=\{`\/login\$\{motivoCierre \|\| ""\}`\}/.test(leer('src/components/layout/ProtectedRoute.jsx')));
 
+tit('12. LOS TEXTOS LEGALES SALEN DEL BACKEND, NO DE UN DOMINIO ESCRITO A MANO');
+/*
+ * El registro y Configuración mandaban a leer los Términos a un dominio que no
+ * era el nuestro, escrito en utils/legales.js. Ahora la dirección la da
+ * GET /public/legales (LANDING_DOMAIN del backend).
+ */
+const legales = await import('../src/utils/legales.js');
+const ENLACES = { terminos: 'https://pagina.example/terminos', privacidad: 'https://pagina.example/privacidad' };
+pedidos.length = 0;
+respuesta = { status: 0 };
+chk('con la red caída: null, sin inventar nada', null, await legales.cargarEnlacesLegales());
+respuesta = { status: 200, data: { enlaces: ENLACES } };
+chk('  y el siguiente reintenta (la falla no queda guardada)', ENLACES, await legales.cargarEnlacesLegales());
+chk('le pregunta a /public/legales', '/public/legales', pedidos.at(-1));
+const antes = pedidos.length;
+await legales.cargarEnlacesLegales();
+chk('una sola vez por carga de la app (registro y Configuración la comparten)', antes, pedidos.length);
+const fuenteLegales = leer('src/utils/legales.js');
+chk('utils/legales.js no tiene ninguna dirección escrita', false, /https?:\/\//.test(fuenteLegales));
+for (const pagina of ['src/pages/RegisterPage.jsx', 'src/pages/TerminosCuentaPage.jsx']) {
+  const fuente = leer(pagina);
+  chk(`${pagina}: usa useEnlacesLegales`, true, /useEnlacesLegales\(\)/.test(fuente));
+  chk(`${pagina}: sin dirección, el nombre sin enlace`, true, /if \(!href\) return </.test(fuente));
+}
+
 console.log(`\n─────────────────────────────\n  Pasaron: ${ok}   Fallaron: ${ko}`);
 process.exit(ko ? 1 : 0);

@@ -8,7 +8,7 @@ import { useAuth } from "../context/AuthContext";
 import PhoneInput from "../components/ui/PhoneInput";
 import PasswordStrength from "../components/ui/PasswordStrength";
 import { evaluatePassword } from "../utils/passwordPolicy";
-import { ENLACES_LEGALES } from "../utils/legales";
+import useEnlacesLegales from "../hooks/useEnlacesLegales";
 
 // Espejo de las reglas del backend (backend/src/utils/passwordPolicy.js).
 const passwordStrong = z.string().refine((v) => evaluatePassword(v).valid, {
@@ -43,6 +43,7 @@ const schema = z.object({
 export default function RegisterPage() {
   const { register: registerBusiness } = useAuth();
   const navigate = useNavigate();
+  const legales = useEnlacesLegales();
   const [serverError, setServerError] = useState("");
   const {
     register, handleSubmit, control, watch,
@@ -164,11 +165,9 @@ export default function RegisterPage() {
             <input type="checkbox" className="mt-0.5 shrink-0" {...register("aceptaTerminos")} />
             <span>
               Leí y acepto los{" "}
-              <a className="text-brass-600 underline" href={ENLACES_LEGALES.terminos}
-                target="_blank" rel="noopener noreferrer">Términos y Condiciones</a>{" "}
+              <EnlaceLegal href={legales.terminos}>Términos y Condiciones</EnlaceLegal>{" "}
               y la{" "}
-              <a className="text-brass-600 underline" href={ENLACES_LEGALES.privacidad}
-                target="_blank" rel="noopener noreferrer">Política de Privacidad</a>.
+              <EnlaceLegal href={legales.privacidad}>Política de Privacidad</EnlaceLegal>.
             </span>
           </label>
           {errors.aceptaTerminos && <p className="field-error">{errors.aceptaTerminos.message}</p>}
@@ -184,5 +183,18 @@ export default function RegisterPage() {
         </p>
       </div>
     </div>
+  );
+}
+
+/*
+ * Sin la dirección (el backend no tiene LANDING_DOMAIN) va el nombre solo: un
+ * enlace a un dominio inventado mandaba a leer los Términos a un sitio ajeno.
+ */
+function EnlaceLegal({ href, children }) {
+  if (!href) return <span className="font-medium text-ink-900">{children}</span>;
+  return (
+    <a className="text-brass-600 underline" href={href} target="_blank" rel="noopener noreferrer">
+      {children}
+    </a>
   );
 }
