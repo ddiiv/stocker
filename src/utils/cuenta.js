@@ -78,6 +78,43 @@ export function proximoCobro(sub = {}) {
   };
 }
 
+/*
+ * El período que se está usando y, aparte, lo que ya está pago para después.
+ * Devuelve los datos de uno o dos recuadros de la pantalla de Suscripción.
+ *
+ * `sub.periodo` lo arma el backend (billingController.periodoActual). Pagar
+ * antes del vencimiento —renovar, bajar de plan— suma lo nuevo después de lo
+ * que está corriendo: eso viene en `periodo.siguiente` y se muestra como
+ * "Próximo período". Mostrarlo como el actual dejaba el día de hoy afuera del
+ * rango y, con una bajada paga, ponía el período del plan barato al lado del
+ * plan caro que todavía rige.
+ *
+ *   · `desde` puede venir null (una cuenta de antes de que se guardara dónde
+ *     empieza lo que se usa): se dice hasta cuándo, sin inventar el inicio.
+ *   · Si la bajada rige justo cuando empieza lo pagado por adelantado, ese
+ *     período es del plan nuevo y se nombra. Si rige en otra fecha, no se nombra
+ *     ningún plan: ya lo dice el aviso de la bajada.
+ */
+export function datosDelPeriodo(sub = {}) {
+  const p = sub.periodo;
+  if (!p) return [{ rotulo: "Período actual", valor: "Sin período en curso", nota: null }];
+  const rango = (d, h) => (d ? `${formatDate(d)} al ${formatDate(h)}` : `Hasta el ${formatDate(h)}`);
+  if (p.tipo === "prueba") return [{ rotulo: "Período de prueba", valor: rango(p.desde, p.hasta), nota: null }];
+
+  const actual = { rotulo: "Período actual", valor: rango(p.desde, p.hasta), nota: "Pagado" };
+  if (!p.siguiente) return [actual];
+
+  const pendiente = sub.planPendiente;
+  const plan = pendiente
+    ? (formatDate(pendiente.desde) === formatDate(p.siguiente.desde) ? pendiente.nombre : null)
+    : sub.plan?.nombre || null;
+  return [actual, {
+    rotulo: "Próximo período",
+    valor: rango(p.siguiente.desde, p.siguiente.hasta),
+    nota: plan ? `Ya pago · ${plan}` : "Ya pago",
+  }];
+}
+
 /* ── Sesiones ─────────────────────────────────────────────────── */
 
 const MINUTO = 60 * 1000;

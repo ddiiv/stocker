@@ -2,7 +2,7 @@ import { Navigate } from "react-router-dom";
 import { useAuth } from "../../context/AuthContext";
 
 export default function ProtectedRoute({ children }) {
-  const { session } = useAuth();
+  const { session, motivoCierre } = useAuth();
 
   if (session === undefined) {
     return (
@@ -11,6 +11,8 @@ export default function ProtectedRoute({ children }) {
       </div>
     );
   }
-  if (!session) return <Navigate to="/login" replace />;
+  // Con el motivo si la sonda de sesión lo trajo (ver AuthContext): quien
+  // recarga después de que le cerraron la sesión tiene que leer por qué.
+  if (!session) return <Navigate to={`/login${motivoCierre || ""}`} replace />;
   return children;
 }

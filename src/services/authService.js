@@ -1,4 +1,7 @@
-import { http } from "../lib/http";
+// Con la extensión: así este archivo también se puede cargar con node, que es
+// como scripts/test-configuracion.mjs prueba la sonda de sesión de verdad.
+import { http } from "../lib/http.js";
+import { motivoDelRechazo } from "../utils/motivosSesion.js";
 
 // El backend responde con Set-Cookie (httpOnly): no hay token que guardar
 // acá, el navegador lo adjunta solo en cada request.
@@ -40,15 +43,31 @@ export async function logout() {
   try { await http.post("/auth/logout"); } catch { /* la sesión se cierra igual */ }
 }
 
-// Sin token en JS, la única forma de saber si hay sesión es preguntarle
-// al backend: si la cookie no vale, responde 401 y devolvemos null.
-export async function getMe() {
+/*
+ * La sonda de sesión: { me, motivo }.
+ *
+ * Sin token en JS, la única forma de saber si hay sesión es preguntarle al
+ * backend: si la cookie no vale, responde 401 y `me` es null. `motivo` es el
+ * `?motivo=…` para el login cuando el 401 dice POR QUÉ ya no vale (se entró
+ * desde otro dispositivo, la cerraron desde otro lado, el cambio de la forma de
+ * iniciar sesión del despliegue).
+ *
+ * Hace falta acá porque el interceptor de lib/http.js no redirige el 401 de
+ * /auth/me (sería un loop), y es justo el primer pedido al abrir o recargar la
+ * app: el camino más común de enterarse de que te sacaron. Sin esto, quien
+ * recargaba la pestaña caía al login sin ninguna explicación.
+ */
+export async function sondearSesion() {
   try {
     const { data } = await http.get("/auth/me");
-    return data;
-  } catch {
-    return null;
+    return { me: data, motivo: "" };
+  } catch (err) {
+    return { me: null, motivo: motivoDelRechazo(err) };
   }
+}
+
+export async function getMe() {
+  return (await sondearSesion()).me;
 }
 
 // ── Recuperación de contraseña ─────────────────────────────────

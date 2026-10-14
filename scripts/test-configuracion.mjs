@@ -13,9 +13,9 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import {
   PESTANAS_CUENTA, pestanasDeCuenta, entradaDeCuenta, haceCuanto, deQuienEs,
-  esMovil, ordenarActivas, textoDelLimite, estadoDeTerminos, proximoCobro,
+  esMovil, ordenarActivas, textoDelLimite, estadoDeTerminos, proximoCobro, datosDelPeriodo,
 } from '../src/utils/cuenta.js';
-import { AVISOS_DE_CIERRE, motivoParaLogin, avisoDeCierre } from '../src/utils/motivosSesion.js';
+import { AVISOS_DE_CIERRE, motivoParaLogin, avisoDeCierre, motivoDelRechazo } from '../src/utils/motivosSesion.js';
 
 let ok = 0, ko = 0;
 const chk = (t, e, o) => {
@@ -178,6 +178,94 @@ chk('con una bajada ya paga, se cobra el plan nuevo', 'Plan Inicial',
   proximoCobro({ ...base, planPendiente: { nombre: 'Plan Inicial', desde: base.vence } }).nota);
 chk('sin próximo cobro guardado, cae al vencimiento', proximoCobro(base).valor,
   proximoCobro({ ...base, proximoCobroEn: null }).valor);
+
+/*
+ * Lo que manda el backend después de pagar antes de tiempo: el período en uso
+ * y, aparte, lo ya pago para después (billingController.periodoActual). Antes
+ * se mostraba lo pagado por adelantado como "actual", con hoy afuera.
+ */
+tit('10. EL PERÍODO ACTUAL Y LO PAGADO POR ADELANTADO');
+const PER = { desde: '2026-10-01T03:00:00Z', hasta: '2026-10-31T03:00:00Z', tipo: 'pago', siguiente: null };
+const SIG = { desde: '2026-10-31T03:00:00Z', hasta: '2026-11-30T03:00:00Z' };
+const fechas = (d) => d.map((x) => [x.rotulo, x.valor, x.nota]);
+chk('sin período, un solo recuadro que lo dice', [['Período actual', 'Sin período en curso', null]],
+  fechas(datosDelPeriodo({ periodo: null })));
+chk('la prueba se llama prueba y no dice "Pagado"', [['Período de prueba', '01/10/2026 al 31/10/2026', null]],
+  fechas(datosDelPeriodo({ periodo: { ...PER, tipo: 'prueba' } })));
+chk('al día, sin nada adelantado: un recuadro', [['Período actual', '01/10/2026 al 31/10/2026', 'Pagado']],
+  fechas(datosDelPeriodo({ periodo: PER, plan: { nombre: 'Plan Pro' } })));
+chk('renovado antes de tiempo: el actual y, aparte, el próximo ya pago con su plan', [
+  ['Período actual', '01/10/2026 al 31/10/2026', 'Pagado'],
+  ['Próximo período', '31/10/2026 al 30/11/2026', 'Ya pago · Plan Pro'],
+], fechas(datosDelPeriodo({ periodo: { ...PER, siguiente: SIG }, plan: { nombre: 'Plan Pro' } })));
+chk('con la bajada que rige cuando empieza lo adelantado: el próximo es del plan nuevo',
+  'Ya pago · Plan Inicial',
+  datosDelPeriodo({
+    periodo: { ...PER, siguiente: SIG }, plan: { nombre: 'Plan Superior' },
+    planPendiente: { nombre: 'Plan Inicial', desde: SIG.desde },
+  })[1]?.nota);
+chk('si la bajada rige en otra fecha no se nombra un plan que no es', 'Ya pago',
+  datosDelPeriodo({
+    periodo: { ...PER, siguiente: SIG }, plan: { nombre: 'Plan Superior' },
+    planPendiente: { nombre: 'Plan Inicial', desde: '2026-11-15T03:00:00Z' },
+  })[1]?.nota);
+chk('sin el inicio guardado (cuenta vieja): "Hasta el …", sin inventar la fecha', 'Hasta el 31/10/2026',
+  datosDelPeriodo({ periodo: { ...PER, desde: null, siguiente: SIG } })[0].valor);
+chk('la pantalla usa esto y no arma el período a mano', true,
+  /datosDelPeriodo\(sub\)\.map/.test(leer('src/pages/SubscriptionPage.jsx'))
+  && !/sub\.periodo\.desde/.test(leer('src/pages/SubscriptionPage.jsx')));
+
+/*
+ * Al abrir o recargar la app, el primer pedido es GET /auth/me, y su 401 no
+ * pasa por la redirección del interceptor (sería un loop). Si la sonda se
+ * traga el código, el desplazado que recarga cae al login sin cartel. Se
+ * prueba el camino de verdad: lib/http.js con su interceptor y
+ * services/authService.js, con el adaptador de axios en lugar de la red.
+ */
+tit('11. EL MOTIVO TAMBIÉN AL ABRIR O RECARGAR LA APP (la sonda /auth/me)');
+globalThis.window = { location: { pathname: '/dashboard', href: '/dashboard' } };
+const { http } = await import('../src/lib/http.js');
+const authService = await import('../src/services/authService.js');
+const pedidos = [];
+let respuesta = null;
+http.defaults.adapter = async (config) => {
+  pedidos.push(config.url);
+  const { status, data } = respuesta;
+  if (status === 0) throw Object.assign(new Error('Network Error'), { config, isAxiosError: true });
+  if (status >= 200 && status < 300) return { data, status, statusText: 'OK', headers: {}, config };
+  throw Object.assign(new Error(`HTTP ${status}`), {
+    config, isAxiosError: true, response: { status, data, headers: {}, config },
+  });
+};
+for (const codigo of ['SESION_DESPLAZADA', 'SESION_CERRADA_REMOTA', 'SESION_ANTERIOR']) {
+  respuesta = { status: 401, data: { codigo, message: 'x' } };
+  chk(`401 ${codigo} de /auth/me: sin sesión y con el motivo`, { me: null, motivo: `?motivo=${codigo}` },
+    await authService.sondearSesion());
+}
+chk('la sonda pregunta a /auth/me', '/auth/me', pedidos.at(-1));
+chk('y no recarga la página (el interceptor no redirige la sonda: no hay loop)', '/dashboard', window.location.href);
+respuesta = { status: 401, data: { message: 'Token no proporcionado.' } };
+chk('401 sin código (nunca entró): sin cartel', { me: null, motivo: '' }, await authService.sondearSesion());
+respuesta = { status: 500, data: { codigo: 'SESION_DESPLAZADA' } };
+chk('un 500 no es una sesión cerrada, aunque traiga un código', { me: null, motivo: '' },
+  await authService.sondearSesion());
+respuesta = { status: 0 };
+chk('la red caída tampoco', { me: null, motivo: '' }, await authService.sondearSesion());
+respuesta = { status: 200, data: { type: 'business', data: { id: 1 } } };
+chk('con sesión: los datos y sin motivo', { me: { type: 'business', data: { id: 1 } }, motivo: '' },
+  await authService.sondearSesion());
+chk('getMe sigue devolviendo los datos', { type: 'business', data: { id: 1 } }, await authService.getMe());
+respuesta = { status: 401, data: { codigo: 'SESION_DESPLAZADA' } };
+chk('y null sin sesión, como antes (lo usan el login y el registro)', null, await authService.getMe());
+chk('motivoDelRechazo sin respuesta no rompe', '', motivoDelRechazo(undefined));
+
+// El cableado: la sonda al montar guarda el motivo y la puerta lo lleva al login.
+const contexto = leer('src/context/AuthContext.jsx');
+chk('AuthContext sondea con sondearSesion al montar y guarda el motivo', true,
+  /sondearSesion\(\)\.then\(\(\{ me, motivo \}\) => \{\s*setMotivoCierre\(motivo\)/.test(contexto));
+chk('  y lo borra cuando entra una sesión', true, /if \(me\) setMotivoCierre\(""\)/.test(contexto));
+chk('ProtectedRoute lleva al login con el motivo', true,
+  /<Navigate to=\{`\/login\$\{motivoCierre \|\| ""\}`\}/.test(leer('src/components/layout/ProtectedRoute.jsx')));
 
 console.log(`\n─────────────────────────────\n  Pasaron: ${ok}   Fallaron: ${ko}`);
 process.exit(ko ? 1 : 0);

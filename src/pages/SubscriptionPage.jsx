@@ -14,7 +14,7 @@ import CuentaTabs from "../components/cuenta/CuentaTabs";
 import Medidor from "../components/cuenta/Medidor";
 import Modal from "../components/ui/Modal";
 import { formatCurrency, formatDate } from "../utils/formatters";
-import { proximoCobro } from "../utils/cuenta";
+import { proximoCobro, datosDelPeriodo } from "../utils/cuenta";
 
 /*
  * Suscripción a Stocker.
@@ -255,14 +255,9 @@ export default function SubscriptionPage() {
 
           <div className="mt-5 grid gap-4 border-t border-line pt-4 sm:grid-cols-3">
             {/* Qué cubre lo que se está usando: "vence el 30" solo no dice si
-                es lo que se pagó la semana pasada o lo anterior. */}
-            <Dato
-              rotulo={sub.periodo?.tipo === "prueba" ? "Período de prueba" : "Período actual"}
-              valor={sub.periodo
-                ? `${formatDate(sub.periodo.desde)} al ${formatDate(sub.periodo.hasta)}`
-                : "Sin período en curso"}
-              nota={sub.periodo?.tipo === "pago" ? "Pagado" : null}
-            />
+                es lo que se pagó la semana pasada o lo anterior. Lo pagado
+                por adelantado va en su propio recuadro (utils/cuenta.js). */}
+            {datosDelPeriodo(sub).map((d) => <Dato key={d.rotulo} {...d} />)}
             <Dato {...proximoCobro(sub)} />
             <Dato
               rotulo={sub.estado === "trial" ? "La prueba vence" : "Vence"}

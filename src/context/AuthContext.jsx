@@ -27,14 +27,26 @@ export function AuthProvider({ children }) {
   // Minutos de inactividad, los define el backend (/auth/me).
   const [inactividadMin, setInactividadMin] = useState(null);
   const [avisoInactividad, setAvisoInactividad] = useState(null);
+  /*
+   * Por qué no hay sesión al abrir la app (`?motivo=…` o ""), para que
+   * ProtectedRoute lleve al login CON el cartel. Al abrir o recargar, el 401 de
+   * /auth/me no pasa por la redirección del interceptor (sería un loop): sin
+   * esto, a quien le desplazaron la sesión y recargaba la pestaña lo mandaba a
+   * entrar sin ninguna explicación. Una sesión que entra lo borra.
+   */
+  const [motivoCierre, setMotivoCierre] = useState("");
 
   function aplicarSesion(me) {
     setSession(normalize(me));
     setInactividadMin(me?.sesion?.inactividadMin || null);
+    if (me) setMotivoCierre("");
   }
 
   useEffect(() => {
-    authService.getMe().then(aplicarSesion);
+    authService.sondearSesion().then(({ me, motivo }) => {
+      setMotivoCierre(motivo);
+      aplicarSesion(me);
+    });
   }, []);
 
   // El backend ya rechaza la sesión vencida; esto además saca los datos de
@@ -110,6 +122,7 @@ export function AuthProvider({ children }) {
       negocio: session?.negocio || null,
       login, employeeLogin, register, logout,
       avisoInactividad,               // segundos restantes, o null
+      motivoCierre,                   // "?motivo=…" para el login, o ""
     }}>
       {children}
     </AuthContext.Provider>

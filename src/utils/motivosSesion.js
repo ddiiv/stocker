@@ -40,6 +40,16 @@ export function motivoParaLogin(codigo) {
   return tieneCartel(codigo) ? `?motivo=${codigo}` : "";
 }
 
+/*
+ * El `?motivo=…` de un pedido que falló, o "": sólo un 401 es una sesión que
+ * se cerró. Un 500 o la red caída no lo son, y decirle "se cerró tu sesión
+ * desde otro dispositivo" a quien tiene el wifi cortado lo mandaría a cambiar
+ * la contraseña por nada.
+ */
+export function motivoDelRechazo(err) {
+  return err?.response?.status === 401 ? motivoParaLogin(err.response.data?.codigo) : "";
+}
+
 /** El texto del cartel para un `?motivo=` del login, o null. */
 export function avisoDeCierre(motivo) {
   return tieneCartel(motivo) ? AVISOS_DE_CIERRE[motivo] : null;

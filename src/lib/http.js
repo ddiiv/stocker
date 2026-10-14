@@ -1,9 +1,10 @@
 import axios from "axios";
-import { motivoParaLogin } from "../utils/motivosSesion";
+import { motivoParaLogin } from "../utils/motivosSesion.js";
 
 // Mismo origen: en dev lo resuelve el proxy de Vite, en producción el
 // servicio web que sirve el build y reenvía /api por la red privada.
-export const API_URL = import.meta.env.VITE_API_URL || "/api";
+// `?.`: fuera de Vite (las pruebas con node) import.meta.env no existe.
+export const API_URL = import.meta.env?.VITE_API_URL || "/api";
 
 export const http = axios.create({
   baseURL: API_URL,
