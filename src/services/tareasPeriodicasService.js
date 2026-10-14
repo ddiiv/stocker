@@ -32,6 +32,7 @@ const arca = require('./arcaService');
 const postventa = require('./mercadolibrePostventaService');
 const mlPedidos = require('./mercadolibrePedidosService');
 const cola = require('./colaVentasOnlineService');
+const planes = require('./planService');
 const { MercadoLibreAccount, JumpsellerAccount } = require('../models');
 const { log } = require('../utils/logger');
 
@@ -333,6 +334,24 @@ async function tick() {
     if (process.env.PAGO_VENCIMIENTO !== 'off') await cola.liberarPagosVencidos();
   } catch (e) {
     log.warn('cola-online', 'la liberación de pagos vencidos se cayó entera', { motivo: e.message });
+  }
+  /*
+   * Las bajadas de plan que llegaron a su fecha, y los débitos automáticos que
+   * Mercado Pago no aceptó actualizar.
+   *
+   * La bajada se aplica sola en la primera consulta de la cuenta, pero una
+   * cuenta que nadie toca no consulta nada: sin esto, los empleados que la
+   * bajada deja afuera seguirían adentro hasta que el dueño entre. Y un débito
+   * que quedó con el monto viejo cobraría el precio equivocado el mes que
+   * viene. Las dos cuestan una consulta por vuelta cuando no hay nada.
+   */
+  try {
+    if (process.env.PLANES_BARRIDO !== 'off') {
+      await planes.aplicarBajadasVencidas();
+      await planes.reintentarDebitos();
+    }
+  } catch (e) {
+    log.warn('planes', 'el barrido de bajadas y débitos se cayó entero', { motivo: e.message });
   } finally {
     corriendo = false;
   }
@@ -367,8 +386,9 @@ function arrancar() {
   const conPedidosJs = process.env.JUMPSELLER_PEDIDOS !== 'off';
   const conCola = process.env.COLA_RESCATE !== 'off';
   const conVencimientos = process.env.PAGO_VENCIMIENTO !== 'off';
+  const conPlanes = process.env.PLANES_BARRIDO !== 'off';
 
-  if (!conMl && !conJumpseller && !conArca && !conPedidosJs && !conCola && !conVencimientos) {
+  if (!conMl && !conJumpseller && !conArca && !conPedidosJs && !conCola && !conVencimientos && !conPlanes) {
     console.log('  Tareas periódicas ................ apagadas (todas)');
     return false;
   }
@@ -394,6 +414,8 @@ function arrancar() {
    */
   if (conCola) console.log(`  Rescate de pedidos online ........ cada ${minutos} min`);
   if (conVencimientos) console.log(`  Pagos vencidos ................... cada ${minutos} min`);
+  // Toca usuarios y cobros: si alguien lo apagó, que se vea en el arranque.
+  if (conPlanes) console.log(`  Bajadas de plan y débitos ........ cada ${minutos} min`);
   return true;
 }
 

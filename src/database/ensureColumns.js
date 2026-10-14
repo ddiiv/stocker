@@ -311,6 +311,8 @@ const COLUMNAS_ESPERADAS = {
   employees: {
     // Lo mismo por empleado: cambiarle la contraseña cierra SUS sesiones.
     sesionesDesde: { type: DataTypes.DATE, allowNull: true },
+    // Suspendido porque el plan bajó (va con activo=false). Nulo = no lo está.
+    suspendidoPorPlan: { type: DataTypes.BOOLEAN, allowNull: true, defaultValue: false },
   },
   products: {
     // Producto de feria: se vende sin llevar inventario. Ver el modelo.
@@ -355,6 +357,19 @@ const COLUMNAS_ESPERADAS = {
     // La bajada de plan ya paga que rige al terminar el período. Ver el modelo.
     planPendienteId:      { type: DataTypes.INTEGER, allowNull: true },
     planPendienteDesde:   { type: DataTypes.DATE, allowNull: true },
+    // Quiénes quedan afuera cuando rige esa bajada, y el monto del débito
+    // automático en Mercado Pago. Ver el modelo.
+    planPendienteSuspender: { type: DataTypes.TEXT, allowNull: true },
+    debitoMonto:          { type: DataTypes.DECIMAL(12, 2), allowNull: true },
+    debitoPendienteDesde: { type: DataTypes.DATE, allowNull: true },
+  },
+  subscription_payments: {
+    // Qué se cotizó (plan entero o diferencia), cuánto, la elección de
+    // empleados de una bajada y si hay que mirarlo a mano. Ver el modelo.
+    concepto:           { type: DataTypes.STRING(15), allowNull: true },
+    montoCotizado:      { type: DataTypes.DECIMAL(12, 2), allowNull: true },
+    empleadosSuspender: { type: DataTypes.TEXT, allowNull: true },
+    aRevisar:           { type: DataTypes.STRING(300), allowNull: true },
   },
   platform_admins: {
     totpSecret:     { type: DataTypes.STRING(64), allowNull: true },

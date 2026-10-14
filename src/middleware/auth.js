@@ -105,7 +105,7 @@ async function requireAuth(req, res, next) {
     if (req.auth.type === 'employee') {
       const [empleado, fila] = await Promise.all([
         Employee.findByPk(req.auth.employeeId, {
-          attributes: ['id', 'businessId', 'activo', 'roleId', 'sesionesDesde'],
+          attributes: ['id', 'businessId', 'activo', 'roleId', 'sesionesDesde', 'suspendidoPorPlan'],
           include: [{ model: Role, as: 'cargo', attributes: ['id', 'permisos'] }],
         }),
         sesiones.buscar(req.auth.sid),
@@ -117,6 +117,15 @@ async function requireAuth(req, res, next) {
        * propósito: decir cuál de las tres cosas pasó es información sobre la
        * cuenta que no hace falta dar en un 401.
        */
+      /*
+       * Salvo el suspendido por el plan (la cuenta bajó a un plan con menos
+       * usuarios): a él se le dice eso, que es algo que el dueño resuelve, y
+       * no "ya no tenés acceso", que suena a que lo echaron.
+       */
+      if (empleado && !empleado.activo && empleado.suspendidoPorPlan &&
+          empleado.businessId === req.auth.businessId) {
+        return res.status(401).json(sesiones.RECHAZOS.plan);
+      }
       if (!empleado || !empleado.activo || empleado.businessId !== req.auth.businessId) {
         return res.status(401).json({
           message: 'Tu usuario ya no tiene acceso. Pedile al dueño de la cuenta que lo revise.',

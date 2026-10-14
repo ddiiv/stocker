@@ -256,6 +256,12 @@ const RECHAZOS = {
     codigo: 'SESION_REVOCADA',
     message: 'Tu usuario ya no tiene acceso. Pedile al dueño de la cuenta que lo revise.',
   },
+  // La cuenta bajó a un plan con menos usuarios y éste quedó afuera. No es
+  // "ya no tenés acceso": vuelve solo si la cuenta sube, o si el dueño lo elige.
+  plan: {
+    codigo: 'SESION_SUSPENDIDA_PLAN',
+    message: 'Tu usuario quedó suspendido porque la cuenta pasó a un plan con menos usuarios. Pedile al dueño que te habilite.',
+  },
 };
 const RECHAZO_GENERICO = { codigo: 'SESION_FINALIZADA', message: 'Esta sesión ya terminó. Volvé a entrar.' };
 const RECHAZO_VENCIDA = {
@@ -377,6 +383,7 @@ const TEXTO_MOTIVO = {
   password: 'Cambio de contraseña',
   limite: 'Se superó el máximo de dispositivos del plan',
   baja: 'El usuario se dio de baja',
+  plan: 'El usuario quedó suspendido por el cambio de plan',
   vencida: 'Venció',
 };
 
@@ -426,6 +433,8 @@ function aVista(fila, auth, estado) {
      * marca, para que la lista no diga "activa" de alguien que no puede entrar.
      */
     suspendida: fila.tipo === 'employee' && e?.activo === false,
+    // Y si fue por el plan: la pantalla no lo explica igual que un "desactivado".
+    suspendidaPorPlan: fila.tipo === 'employee' && e?.activo === false && e?.suspendidoPorPlan === true,
     ...(estado.estado === 'activa' ? {} : {
       estado: estado.estado,
       cerradaEn: estado.fin,
@@ -458,7 +467,7 @@ async function listar(auth, ahora = new Date()) {
 
   const filas = await SesionCuenta.findAll({
     where,
-    include: [{ model: Employee, as: 'empleado', attributes: ['id', 'nombre', 'apellido', 'activo'], required: false }],
+    include: [{ model: Employee, as: 'empleado', attributes: ['id', 'nombre', 'apellido', 'activo', 'suspendidoPorPlan'], required: false }],
     order: [['ultimaActividadEn', 'DESC'], ['id', 'DESC']],
     limit: HISTORIAL_MAX + 1,
   });
@@ -543,5 +552,5 @@ module.exports = {
   abrir, reemitir, buscar, motivoDeRechazo, tocar, cerrar, cerrarPorLogout,
   listar, contarActivasDelDueno, purgar, programarPurga, modoLimite, condicionActiva,
   estadoDeFila,
-  RECHAZO_SIN_SID, TOQUE_MS, HISTORIAL_DIAS, RETENCION_DIAS,
+  RECHAZO_SIN_SID, RECHAZOS, TOQUE_MS, HISTORIAL_DIAS, RETENCION_DIAS,
 };

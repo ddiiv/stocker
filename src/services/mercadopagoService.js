@@ -191,7 +191,7 @@ async function llamar(ruta, { method = 'GET', body, idempotencia, queFalla } = {
  * Link de pago por un período suelto.
  * @returns {{ id, initPoint, sandbox }}
  */
-async function crearLinkDePago({ businessId, subscriptionId, plan, monto, descripcion }) {
+async function crearLinkDePago({ businessId, subscriptionId, plan, monto, descripcion, venceEn = null }) {
   const c = config();
   const pref = await llamar('/checkout/preferences', {
     method: 'POST',
@@ -210,6 +210,12 @@ async function crearLinkDePago({ businessId, subscriptionId, plan, monto, descri
       back_urls: { success: c.backUrl, pending: c.backUrl, failure: c.backUrl },
       auto_return: 'approved',
       notification_url: c.webhook || undefined,
+      /*
+       * Un link con vencimiento. Lo lleva el pago de una DIFERENCIA de plan:
+       * vale por los días que quedaban cuando se cotizó, y pagado una semana
+       * después (o con el período ya vencido) cobraría algo que ya no es.
+       */
+      ...(venceEn ? { expires: true, expiration_date_to: new Date(venceEn).toISOString() } : {}),
     },
   });
 
@@ -224,7 +230,15 @@ async function crearSuscripcionRecurrente({ businessId, subscriptionId, plan, mo
   const c = config();
   const pre = await llamar('/preapproval', {
     method: 'POST',
-    idempotencia: `preap-${subscriptionId}`,
+    /*
+     * Una clave por alta, no por suscripción. Desde que un débito nuevo
+     * reemplaza al anterior (billingController.crearCheckout lo cancela y da
+     * de alta otro), la clave fija `preap-<id>` le hacía devolver a Mercado
+     * Pago la respuesta guardada del alta vieja: el "débito nuevo" era el
+     * mismo que se acababa de cancelar. `llamar` no reintenta, así que la
+     * clave sólo tiene que distinguir un alta de otra.
+     */
+    idempotencia: `preap-${subscriptionId}-${Date.now()}`,
     queFalla: 'No se pudo dar de alta el débito automático. Probá de nuevo en unos minutos.',
     body: {
       reason: `Stocker — ${plan?.nombre || 'Suscripción mensual'}`,
@@ -283,6 +297,25 @@ async function buscarPagosDe({ businessId, subscriptionId }) {
   }));
 }
 
+/*
+ * Cambia el monto del débito automático: PUT /preapproval/{id} con
+ * auto_recurring.transaction_amount y currency_id, que es lo que documenta
+ * Mercado Pago para modificar el monto de una suscripción existente. Rige para
+ * los débitos que vengan; lo ya cobrado no se toca. El `reason` es lo que el
+ * cliente ve en Mercado Pago: si cambió el plan, que diga el plan nuevo.
+ */
+async function actualizarMontoRecurrente(preapprovalId, { monto, motivo } = {}) {
+  if (!preapprovalId) throw new ErrorMercadoPago('No hay débito automático para actualizar.', 400);
+  return llamar(`/preapproval/${encodeURIComponent(preapprovalId)}`, {
+    method: 'PUT',
+    queFalla: 'No se pudo actualizar el débito automático en Mercado Pago.',
+    body: {
+      ...(motivo ? { reason: motivo } : {}),
+      auto_recurring: { transaction_amount: Number(monto), currency_id: 'ARS' },
+    },
+  });
+}
+
 async function cancelarSuscripcionRecurrente(preapprovalId) {
   return llamar(`/preapproval/${preapprovalId}`, { method: 'PUT', body: { status: 'cancelled' } });
 }
@@ -319,6 +352,6 @@ function firmaValida({ signature, requestId, dataId }) {
 
 module.exports = {
   estaConfigurado, diagnostico, problemasDeUrls, crearLinkDePago, crearSuscripcionRecurrente,
-  consultarPago, buscarPagosDe, cancelarSuscripcionRecurrente,
+  consultarPago, buscarPagosDe, cancelarSuscripcionRecurrente, actualizarMontoRecurrente,
   firmaValida, refExterna, leerRef, ErrorMercadoPago,
 };

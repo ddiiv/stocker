@@ -198,6 +198,24 @@ const updateEmployee = async (req, res, next) => {
     for (const campo of CAMPOS_EDITABLES) {
       if (req.body?.[campo] !== undefined) patch[campo] = req.body[campo];
     }
+    /*
+     * Activar por acá es lo mismo que el botón de activar: ocupa un lugar del
+     * plan. Antes `activo: true` pasaba sin mirar el tope, y desde que una
+     * bajada de plan suspende empleados era la forma de esquivarla. Cualquier
+     * cambio a mano de `activo` es una decisión del dueño y deja de ser "por
+     * el plan": un suspendido que se activa ya no lo está, y uno que se apaga a
+     * mano no vuelve solo cuando la cuenta suba.
+     */
+    if (patch.activo !== undefined) {
+      patch.activo = patch.activo === true || patch.activo === 'true';
+      if (patch.activo === Boolean(e.activo)) {
+        // No cambia nada: reenviar el mismo estado no es una decisión nueva.
+        delete patch.activo;
+      } else {
+        if (patch.activo) await exigirCupo(req.auth.businessId, 'empleados');
+        patch.suspendidoPorPlan = false;
+      }
+    }
     Object.assign(patch, await resolverRelaciones(req.body || {}, req.auth.businessId));
 
     if (req.body?.password) {
@@ -245,7 +263,8 @@ const toggleActive = async (req, res, next) => {
      * cubre test-aislamiento). La lista de la cuenta las marca como
      * suspendidas mientras tanto.
      */
-    await e.update({ activo: !e.activo });
+    // Lo hace el dueño, no el plan: deja de estar "suspendido por el plan".
+    await e.update({ activo: !e.activo, suspendidoPorPlan: false });
     res.json(sanitize(e));
   } catch (error) { next(error); }
 };

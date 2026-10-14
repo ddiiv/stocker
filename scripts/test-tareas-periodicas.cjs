@@ -34,6 +34,8 @@ const callado = (fn) => {
 const INTERRUPTORES = [
   'ML_BARRIDO', 'JUMPSELLER_BARRIDO', 'ARCA_DELEGACIONES',
   'JUMPSELLER_PEDIDOS', 'COLA_RESCATE', 'PAGO_VENCIMIENTO',
+  // Las bajadas de plan que llegaron a su fecha y los débitos a reintentar.
+  'PLANES_BARRIDO',
 ];
 const prender = (...cuales) => {
   for (const k of INTERRUPTORES) process.env[k] = cuales.includes(k) ? 'on' : 'off';
@@ -47,7 +49,7 @@ const prender = (...cuales) => {
    * El caso que estaba roto: todo lo viejo apagado, pero las tareas nuevas
    * prendidas. El reloj TIENE que arrancar igual.
    */
-  for (const quien of ['JUMPSELLER_PEDIDOS', 'COLA_RESCATE', 'PAGO_VENCIMIENTO']) {
+  for (const quien of ['JUMPSELLER_PEDIDOS', 'COLA_RESCATE', 'PAGO_VENCIMIENTO', 'PLANES_BARRIDO']) {
     prender(quien);
     const arrancó = callado(() => tareas.arrancar());
     tareas.parar();

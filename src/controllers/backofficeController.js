@@ -209,6 +209,19 @@ const verCuenta = async (req, res, next) => {
       Sale.count({ where: { businessId: negocio.id } }),
     ]);
 
+    /*
+     * Lo que corresponde HOY a cada cobro pendiente, para que quien acredita
+     * una transferencia vea al lado del importe cuánto tendría que haber
+     * entrado (el plan entero, o la diferencia por los días que quedan) y no
+     * descubra la diferencia recién al tocar "Acreditar".
+     */
+    const planes = new Map((await Plan.findAll()).map((p) => [p.id, p]));
+    const pagosVista = pagos.map((p) => {
+      const j = p.toJSON();
+      if (j.estado === 'pendiente') Object.assign(j, { corresponde: cotizacionDeFila(estado, planes, j) });
+      return j;
+    });
+
     res.json({
       negocio,
       suscripcion: {
@@ -226,12 +239,66 @@ const verCuenta = async (req, res, next) => {
         bajaSolicitadaEn: estado.bajaSolicitadaEn,
         bajaMotivo: estado.suscripcion.bajaMotivo,
         notas: estado.suscripcion.notas,
+        // El débito automático y si Mercado Pago tiene el monto que corresponde.
+        debito: planService.debitoActivo(estado.suscripcion)
+          ? {
+              activo: true,
+              monto: estado.suscripcion.debitoMonto != null ? Number(estado.suscripcion.debitoMonto) : null,
+              pendienteDesde: estado.suscripcion.debitoPendienteDesde,
+            }
+          : { activo: false },
       },
-      uso, pagos,
+      uso, pagos: pagosVista,
       actividad: { cuits, empleados, ventas },
     });
   } catch (e) { next(e); }
 };
+
+/*
+ * Lo que corresponde cobrar HOY por una fila de pago, con la misma cuenta que
+ * ve el cliente antes de pagar (planService.clasificarCambio). `esperado` null
+ * = no se puede aplicar como cambio de plan (ya hay otra bajada programada).
+ *
+ * Una fila sin plan (de antes de que los pagos lo llevaran) renueva el plan con
+ * el que la cuenta sigue.
+ */
+function cotizar({ sub, actual, pendiente, pendienteDesde, nuevo, ahora = new Date() }) {
+  if (!nuevo) {
+    const continua = pendiente || actual;
+    return { esperado: planService.precioPara(sub, continua), concepto: 'periodo', tipo: 'renovacion', plan: continua };
+  }
+  const c = planService.clasificarCambio({ sub, actual, pendiente, pendienteDesde, nuevo, ahora });
+  if (c.tipo === 'cambio_pendiente') return { esperado: null, concepto: 'periodo', tipo: c.tipo, plan: nuevo, pendiente };
+  const dias = c.tramos.reduce((a, t) => a + t.dias, 0);
+  return { esperado: planService.montoDe(c), concepto: c.concepto, tipo: c.tipo, plan: nuevo, dias };
+}
+
+/** Para la ficha: a partir del estado ya resuelto y los planes en memoria. */
+function cotizacionDeFila(estado, planes, fila) {
+  const r = cotizar({
+    sub: estado.suscripcion, actual: estado.plan, pendiente: estado.planPendiente,
+    pendienteDesde: estado.planPendienteDesde, nuevo: fila.planId ? planes.get(fila.planId) : null,
+  });
+  return { esperado: r.esperado, concepto: r.concepto, tipo: r.tipo, dias: r.dias ?? null };
+}
+
+/** Al acreditar: sobre la suscripción TRABADA, con lo que ya tenía que regir aplicado. */
+async function cotizacionDelPago(sub, pago, t, ahora = new Date()) {
+  let vigenteId = sub.planId;
+  let pendienteId = sub.planPendienteId || null;
+  let pendienteDesde = pendienteId ? sub.planPendienteDesde : null;
+  if (pendienteId && pendienteDesde && new Date(pendienteDesde) <= ahora) {
+    vigenteId = pendienteId; pendienteId = null; pendienteDesde = null;
+  }
+  const [actual, pendiente, nuevo] = await Promise.all([
+    Plan.findByPk(vigenteId, { transaction: t }),
+    pendienteId ? Plan.findByPk(pendienteId, { transaction: t }) : null,
+    pago.planId ? Plan.findByPk(pago.planId, { transaction: t }) : null,
+  ]);
+  return cotizar({ sub, actual, pendiente, pendienteDesde, nuevo, ahora });
+}
+
+const pesos = (n) => `$${Number(n || 0).toLocaleString('es-AR', { maximumFractionDigits: 2 })}`;
 
 /*
  * PUT /api/backoffice/cuentas/:id/suscripcion
@@ -255,10 +322,12 @@ const editarSuscripcion = async (req, res, next) => {
     const { suscripcion } = await planService.estadoDe(req.params.id);
     await planService.trabarSuscripcion(suscripcion.id, t);
     const patch = {};
+    let planManual = null;
 
     if (req.body?.plan) {
       const plan = await Plan.findOne({ where: { codigo: req.body.plan }, transaction: t });
       if (!plan) { await t.rollback(); return res.status(400).json({ message: 'Ese plan no existe.' }); }
+      planManual = plan;
       patch.planId = plan.id;
       // El plan que pone una persona manda: una bajada que el cliente había
       // dejado programada no puede pisarlo semanas después.
@@ -292,11 +361,28 @@ const editarSuscripcion = async (req, res, next) => {
       await planService.acreditarPago({ subscription: suscripcion, dias }, t);
     }
 
+    if (patch.planPendienteId === null) patch.planPendienteSuspender = null;
     if (Object.keys(patch).length) {
       await Subscription.update(patch, { where: { id: suscripcion.id }, transaction: t });
     }
+    /*
+     * Un plan puesto a mano rige en el acto: los empleados se acomodan a su
+     * tope ya. Si es más chico, nadie eligió quiénes siguen (lo hizo un
+     * operador), así que quedan los de actividad más reciente: ver
+     * planService.ajustarEmpleados. Si es más grande, vuelven los suspendidos.
+     */
+    if (planManual) {
+      await planService.ajustarEmpleados(suscripcion.businessId, planManual, { transaction: t });
+    }
     await t.commit();
     log.info('backoffice', 'suscripción editada', { negocio: req.params.id, admin: req.admin.id });
+
+    // Cambió lo que se cobra todos los meses: el débito automático se pone en
+    // el precio nuevo (decisión 20). Corre después del commit y no tira.
+    if ((planManual || patch.descuentoPct !== undefined || patch.precioAcordado !== undefined) &&
+        planService.debitoActivo(suscripcion)) {
+      await planService.programarSincronizacion(suscripcion.id);
+    }
 
     const actualizado = await planService.estadoDe(req.params.id);
     res.json({ estado: actualizado.estado, plan: actualizado.plan?.codigo, precio: actualizado.precio, vence: actualizado.vence });
@@ -304,10 +390,20 @@ const editarSuscripcion = async (req, res, next) => {
 };
 
 /*
- * POST /api/backoffice/pagos/:id/aprobar
+ * POST /api/backoffice/pagos/:id/aprobar  { montoRecibido?, aceptarDiferencia? }
  *
  * Acredita una transferencia después de verla en el extracto. Es el paso que
  * a propósito no es automático: el sistema no puede saber si la plata llegó.
+ *
+ * Y antes de aplicar el plan se compara lo que entró (`montoRecibido`, lo que
+ * el operador ve en el banco; si no lo manda, el importe de la fila) con lo que
+ * corresponde HOY a ese plan para esta cuenta: el plan entero o, al subir con un
+ * período pago corriendo, la diferencia por los días que quedan —la misma cuenta
+ * que vio el cliente al pagar—. Si entró menos, no se acredita nada: vuelve un
+ * 409 con los dos números y el operador decide si lo acredita igual
+ * (`aceptarDiferencia: true`, queda anotado quién) o lo rechaza. Antes el plan
+ * del pago se aplicaba sin mirar el importe: una transferencia del Superior por
+ * el precio del Inicial dejaba la cuenta en el Superior.
  */
 const aprobarPago = async (req, res, next) => {
   const t = await sequelize.transaction();
@@ -334,17 +430,59 @@ const aprobarPago = async (req, res, next) => {
       return res.status(409).json({ message: 'Ese pago ya estaba acreditado.' });
     }
 
+    const bruto = req.body?.montoRecibido;
+    const recibido = bruto != null && bruto !== '' ? Number(bruto) : Number(pago.monto);
+    if (!Number.isFinite(recibido) || recibido < 0) {
+      await t.rollback();
+      return res.status(400).json({ message: 'El importe recibido no es válido.' });
+    }
+    const aceptar = req.body?.aceptarDiferencia === true;
+
+    const cot = await cotizacionDelPago(sub, pago, t);
+    const falta = cot.esperado == null || recibido + planService.TOLERANCIA < cot.esperado;
+    if (falta && !aceptar) {
+      await t.rollback();
+      return res.status(409).json({
+        motivo: 'monto_no_coincide',
+        esperado: cot.esperado, recibido, concepto: cot.concepto, tipo: cot.tipo,
+        plan: cot.plan && { codigo: cot.plan.codigo, nombre: cot.plan.nombre },
+        message: cot.esperado == null
+          ? `La cuenta ya tiene programado el paso al ${cot.pendiente?.nombre}: este pago del ` +
+            `${cot.plan?.nombre} no se puede aplicar como cambio de plan. Si lo acreditás igual, se ` +
+            'convierte en días del plan con el que sigue.'
+          : `Entraron ${pesos(recibido)} y para el ${cot.plan?.nombre || 'plan'} corresponde ` +
+            `${pesos(cot.esperado)} (${cot.concepto === 'diferencia'
+              ? `la diferencia por ${cot.dias} día${cot.dias === 1 ? '' : 's'}`
+              : 'el plan entero'}). Si igual querés acreditarlo, confirmalo; si no, rechazalo.`,
+      });
+    }
+
     // El plan es el que figura en el pago: el que eligió el cliente al pagar.
-    const periodo = await planService.acreditarPago({ subscription: sub, planId: pago.planId }, t);
+    const periodo = await planService.acreditarPago({
+      subscription: sub,
+      planId: pago.planId,
+      concepto: cot.concepto,
+      // Siempre lo que entró: si el pago no puede cambiar el plan y se vuelve
+      // días, son los días de esa plata (ver acreditarPago).
+      monto: recibido,
+      aceptado: aceptar,
+      empleadosSuspender: planService.leerLista(pago.empleadosSuspender) ?? undefined,
+    }, t);
     const { desde, hasta } = periodo;
+    const revisar = falta
+      ? `Acreditado con ${pesos(recibido)} contra ${cot.esperado == null ? 'un cambio que no se podía aplicar' : pesos(cot.esperado)}: lo aceptó ${req.admin.email}.`
+      : periodo.revisar;
     await pago.update({
       estado: 'aprobado',
+      monto: recibido,
+      montoCotizado: pago.montoCotizado ?? pago.monto,
+      aRevisar: revisar ? revisar.slice(0, 300) : null,
       periodoDesde: desde, periodoHasta: hasta,
       verificadoPor: req.admin.email, verificadoEn: new Date(),
     }, { transaction: t });
 
     await t.commit();
-    log.info('backoffice', 'pago acreditado a mano', { pago: pago.id, admin: req.admin.id });
+    log.info('backoffice', 'pago acreditado a mano', { pago: pago.id, admin: req.admin.id, conDiferencia: falta });
 
     // Para que quien acreditó vea qué pasó con el plan, no sólo hasta cuándo.
     const [vigente, pendiente] = await Promise.all([
@@ -354,6 +492,9 @@ const aprobarPago = async (req, res, next) => {
     res.json({
       pago,
       periodo: { desde, hasta },
+      esperado: cot.esperado,
+      recibido,
+      revisar,
       plan: {
         cambio: periodo.cambio,
         vigente: vigente && { codigo: vigente.codigo, nombre: vigente.nombre },

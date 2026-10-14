@@ -6,6 +6,7 @@ const { log } = require('../utils/logger');
 // sesionesService lee el plan desde adentro de una función (estadoDe), no al
 // cargar, así que requerirlo acá no arma un ciclo.
 const sesionesService = require('./sesionesService');
+const mp = require('./mercadopagoService');
 
 /*
  * Planes y suscripciones.
@@ -20,7 +21,21 @@ const sesionesService = require('./sesionesService');
  * caído, una cuenta vencida seguiría operando gratis.
  */
 
-const diasDesde = (fecha, dias) => new Date(new Date(fecha).getTime() + dias * 24 * 60 * 60 * 1000);
+const DIA = 24 * 60 * 60 * 1000;
+const diasDesde = (fecha, dias) => new Date(new Date(fecha).getTime() + dias * DIA);
+
+/*
+ * Lo que dura un período pago, y la base del prorrateo: "la diferencia por los
+ * días que quedan" es (precio nuevo − precio de ese tramo) × días / 30.
+ */
+const DIAS_PERIODO = 30;
+
+/*
+ * Cuánto puede faltar, en pesos, para dar por pagada una diferencia. El total
+ * del prorrateo se redondea al peso: sin este margen, un cobro de $12.345 por
+ * una diferencia de $12.345,40 no alcanzaría para subir de plan.
+ */
+const TOLERANCIA = 1;
 
 class ErrorPlan extends Error {
   constructor(mensaje, status = 402, extra = {}) {
@@ -225,9 +240,12 @@ async function usoDe(businessId) {
   const { plan } = await estadoDe(businessId);
   const desde = inicioDelMes();
 
-  const [cuits, empleados, locales, skus, comprobantes, sesiones] = await Promise.all([
+  const [cuits, empleados, suspendidos, locales, skus, comprobantes, sesiones] = await Promise.all([
     BusinessCuit.count({ where: { businessId } }),
     Employee.count({ where: { businessId, activo: true } }),
+    // Los que una bajada dejó afuera. No ocupan lugar (están inactivos), pero
+    // la pantalla tiene que poder decir que existen y que vuelven al subir.
+    Employee.count({ where: { businessId, activo: false, suspendidoPorPlan: true } }),
     BusinessLocation.count({ where: { businessId } }),
     // Las variantes se cuentan por el negocio de su producto padre: la tabla de
     // variantes no lleva businessId propio.
@@ -248,7 +266,7 @@ async function usoDe(businessId) {
 
   return {
     cuits:     medir(cuits, plan?.maxCuits),
-    empleados: medir(empleados, plan?.maxEmpleados),
+    empleados: medir(empleados, plan?.maxEmpleados, { suspendidosPorPlan: suspendidos }),
     locales:   medir(locales, plan?.maxLocales),
     skus:      medir(skus, plan?.maxSkus),
     comprobantes: medir(comprobantes, plan?.maxComprobantes, {
@@ -330,31 +348,53 @@ function sentidoDelCambio(actual, nuevo) {
 /*
  * Aplica la bajada de plan ya paga si llegó su fecha. Devuelve si la aplicó.
  *
- * Contra el reloj y no con una tarea programada, por lo mismo que el estado:
- * si el cron no corre, la cuenta seguiría con los topes del plan caro pagando
- * el barato.
+ * Contra el reloj y no sólo con una tarea programada, por lo mismo que el
+ * estado: si el cron no corre, la cuenta seguiría con los topes del plan caro
+ * pagando el barato. (La tarea periódica igual la aplica: ver
+ * aplicarBajadasVencidas.)
  *
  * La condición entera va en el WHERE y no sólo el id. Si entre que se leyó la
  * suscripción y se escribe se acreditó un pago que SUBIÓ de plan (y borró lo
  * pendiente), el UPDATE ya no encuentra la fila y no pisa la subida recién
  * pagada con la bajada vieja.
+ *
+ * Es el momento en que los empleados de más quedan suspendidos (decisión 19):
+ * cuando la bajada RIGE, no cuando se paga. Va en la misma transacción que el
+ * cambio de plan para que no quede uno sin lo otro, y sólo lo hace quien ganó
+ * el UPDATE: dos consultas a la vez no suspenden dos veces.
  */
 async function aplicarPlanPendiente(sub, ahora = new Date()) {
   if (!sub?.planPendienteId || !sub.planPendienteDesde) return false;
   if (new Date(sub.planPendienteDesde) > ahora) return false;
 
-  const [filas] = await Subscription.update(
-    { planId: sub.planPendienteId, planPendienteId: null, planPendienteDesde: null },
-    {
-      where: {
-        id: sub.id,
-        planPendienteId: sub.planPendienteId,
-        planPendienteDesde: { [Op.lte]: ahora },
+  const aplicada = await db.transaction(async (t) => {
+    const [filas] = await Subscription.update(
+      { planId: sub.planPendienteId, planPendienteId: null, planPendienteDesde: null, planPendienteSuspender: null },
+      {
+        where: {
+          id: sub.id,
+          planPendienteId: sub.planPendienteId,
+          planPendienteDesde: { [Op.lte]: ahora },
+        },
+        transaction: t,
       },
-    },
-  );
-  if (filas > 0) log.info('planes', 'rige la bajada de plan ya paga', { businessId: sub.businessId });
-  return filas > 0;
+    );
+    if (!filas) return false;
+    const plan = await Plan.findByPk(sub.planPendienteId, { transaction: t });
+    await ajustarEmpleados(sub.businessId, plan, {
+      suspender: leerLista(sub.planPendienteSuspender), transaction: t,
+    });
+    return true;
+  });
+
+  if (aplicada) {
+    log.info('planes', 'rige la bajada de plan ya paga', { businessId: sub.businessId });
+    // Decisión 20: el día que la bajada rige se vuelve a mirar el débito. Ya
+    // tendría que estar en el precio nuevo (se puso al programarla); si aquella
+    // vez Mercado Pago no contestó, es ahora.
+    if (debitoActivo(sub)) programarSincronizacion(sub.id);
+  }
+  return aplicada;
 }
 
 /*
@@ -375,106 +415,597 @@ function trabarSuscripcion(id, transaction) {
   return Subscription.findByPk(id, trabada(transaction));
 }
 
+/* ── Precio y prorrateo ───────────────────────────────────────── */
+
+/** Precio mensual de un plan para ESTA cuenta: el acordado o el de lista, con su descuento. */
+function precioPara(sub, plan) {
+  if (!plan) return null;
+  return precioDeSuscripcion({
+    precioAcordado: sub.precioAcordado, descuentoPct: sub.descuentoPct, plan,
+  }).precio;
+}
+
+/** ¿Hay un período pago corriendo? La prueba no cuenta: ahí se paga el plan entero. */
+function periodoEnCurso(sub, ahora = new Date()) {
+  return sub.estado !== 'trial' && sub.periodoFin != null && new Date(sub.periodoFin) > new Date(ahora);
+}
+
+const pesos = (n) => `$${Number(n || 0).toLocaleString('es-AR', { maximumFractionDigits: 2 })}`;
+
 /*
- * Acredita un pago: deja la cuenta activa N días más y aplica el plan pagado.
+ * Qué significa pagar el plan `nuevo` hoy. No escribe nada: lo usan la
+ * cotización que el cliente ve antes de pagar, la comparación del backoffice al
+ * acreditar una transferencia y acreditarPago, así los tres dicen lo mismo.
  *
- * @param {number|null} planId  el plan que se pagó. `null` = sólo extender, como
- *   antes de que el pago llevara plan: una cortesía del backoffice, o un débito
- *   automático que no corresponde a ningún pedido de cambio.
+ *   alta        Sin período pago en curso (prueba, vencida): el plan entero, rige ya.
+ *   renovacion  El plan con el que la cuenta sigue: el plan entero, 30 días más.
+ *   subida      Un plan más alto con un período pago corriendo (decisión 18):
+ *               SÓLO la diferencia por los días que quedan; rige ya y el
+ *               vencimiento no se mueve.
+ *   seguir      El plan actual cuando hay una bajada programada: la diferencia
+ *               del tramo que se pagó con el plan bajo. Cancela la bajada.
+ *   bajada      Un plan más bajo: el plan entero, rige al terminar lo ya pagado.
+ *   cambio_pendiente  Otro plan más bajo con una bajada ya programada. Con una
+ *               sola ranura no se puede representar Superior → Pro → Inicial, y
+ *               antes la segunda pisaba el mes que se había pagado con la
+ *               primera: se rechaza hasta que la primera rija.
  *
- * Antes esto sólo extendía el período: el checkout cobraba el precio del plan
- * nuevo y la cuenta seguía con los topes del viejo. La regla, del dueño:
- *   · SUBIR aplica en el momento. Pagó el plan más caro; hacerlo esperar al
- *     vencimiento sería cobrarle algo que no se le da.
- *   · BAJAR aplica al terminar el período ya pago con el plan caro. Queda en
- *     planPendienteId y lo aplica `aplicarPlanPendiente` cuando llega la fecha.
- *     Si no hay período pago en curso (prueba, vencida) la fecha es hoy.
- *   · El mismo plan sólo extiende. Si había una bajada esperando se cae: el
- *     último plan que el cliente eligió y pagó es el que manda.
+ * El prorrateo va por tramos porque, con una bajada programada, los días que
+ * quedan no valen lo mismo: hasta la fecha de la bajada se pagaron al precio del
+ * plan actual y desde ahí al del plan bajo. Cada tramo paga
+ *     (precio del plan nuevo − precio del tramo) × días del tramo / 30
+ * con los precios de HOY de esta cuenta: el acordado o el de lista, con su
+ * descuento (un 20% de descuento achica la diferencia en la misma proporción).
+ * Los días se cuentan enteros y hacia arriba —el día empezado cuenta entero,
+ * como el "quedan N días" de la pantalla— y lo que se cobra es el total
+ * redondeado al peso. Un tramo nunca resta: bajarle el precio a lo ya pagado
+ * sería un reintegro.
+ *
+ * Los días regalados desde el backoffice (extender días) cuentan como pagos: se
+ * regaló ese plan y no uno más caro, así que pasarlos al plan nuevo también
+ * paga la diferencia. Varios meses pagados por adelantado, igual: pasar al
+ * Superior trescientos días pagos del Inicial cuesta la diferencia de esos
+ * trescientos días, no la de uno.
+ */
+function clasificarCambio({ sub, actual, pendiente = null, pendienteDesde = null, nuevo, ahora = new Date() }) {
+  const enCurso = periodoEnCurso(sub, ahora);
+  const continua = pendiente || actual;
+  const r = {
+    enCurso,
+    precioNuevo: precioPara(sub, nuevo),
+    precioContinua: precioPara(sub, continua),
+    tramos: [],
+    diferencia: 0,
+  };
+  if (!enCurso) return { ...r, tipo: 'alta', concepto: 'periodo' };
+  if (Number(nuevo.id) === Number(continua?.id)) return { ...r, tipo: 'renovacion', concepto: 'periodo' };
+
+  const seguir = Boolean(pendiente) && Number(nuevo.id) === Number(actual?.id);
+  if (!seguir && sentidoDelCambio(actual, nuevo) !== 'sube') {
+    return { ...r, tipo: pendiente ? 'cambio_pendiente' : 'bajada', concepto: 'periodo' };
+  }
+
+  const fin = new Date(sub.periodoFin);
+  const total = Math.ceil((fin - new Date(ahora)) / DIA);
+  const diasPendiente = pendiente && pendienteDesde
+    ? Math.min(total, Math.max(0, Math.round((fin - new Date(pendienteDesde)) / DIA)))
+    : 0;
+  if (!seguir) {
+    r.tramos.push({
+      plan: actual, desde: new Date(ahora), hasta: pendiente ? new Date(pendienteDesde) : fin,
+      dias: total - diasPendiente,
+    });
+  }
+  if (pendiente) {
+    r.tramos.push({ plan: pendiente, desde: new Date(pendienteDesde), hasta: fin, dias: diasPendiente });
+  }
+  for (const t of r.tramos) {
+    t.precio = precioPara(sub, t.plan) ?? 0;
+    t.importe = Math.max(0, ((r.precioNuevo ?? 0) - t.precio) * t.dias / DIAS_PERIODO);
+    r.diferencia += t.importe;
+  }
+  return { ...r, tipo: seguir ? 'seguir' : 'subida', concepto: 'diferencia' };
+}
+
+/** Lo que se cobra por un cambio ya clasificado: el plan entero, o la diferencia al peso. */
+function montoDe(clasificacion) {
+  return clasificacion.concepto === 'diferencia'
+    ? Math.round(clasificacion.diferencia)
+    : clasificacion.precioNuevo;
+}
+
+/*
+ * Cuántos días de un plan compra un importe.
+ *
+ * Es lo que se hace con un cobro que ya entró y no corresponde a lo que se le
+ * cotizó (un link que se pagó cuando el período ya había vencido, dos pagos que
+ * se cruzaron): ni regalarle el plan caro ni quedarse con la plata. Sin precio
+ * (un plan a cotizar) no hay cuenta posible: el período entero, como siempre.
+ */
+function diasPorValor(importe, precio, siNoHayPrecio = DIAS_PERIODO) {
+  if (!(Number(precio) > 0)) return siNoHayPrecio;
+  return Math.max(0, Math.floor(DIAS_PERIODO * Number(importe) / Number(precio)));
+}
+
+/** Una lista de ids guardada como JSON. Lo que no se entiende es "nadie eligió". */
+function leerLista(texto) {
+  if (texto == null || texto === '') return null;
+  if (Array.isArray(texto)) return texto.map(Number).filter(Number.isInteger);
+  try {
+    const v = JSON.parse(texto);
+    return Array.isArray(v) ? v.map(Number).filter(Number.isInteger) : null;
+  } catch { return null; }
+}
+const guardarLista = (lista) => (Array.isArray(lista) ? JSON.stringify(lista.map(Number)) : null);
+
+/* ── Empleados y el tope de usuarios (decisión 19) ────────────── */
+
+/*
+ * En qué orden SE QUEDAN los empleados cuando no entran todos: primero el que
+ * usó el sistema más recientemente, al final el que nunca entró; a igual
+ * actividad, el más antiguo. Es el criterio cuando nadie eligió —una bajada que
+ * hizo un operador desde el backoffice, o un pago que no trae la elección— y el
+ * orden en que vuelven cuando la cuenta sube y no entran todos. Quien está
+ * trabajando hoy es quien menos puede quedarse afuera mañana.
+ */
+function ordenDeUso(a, b) {
+  const ua = a.ultimaConexion ? new Date(a.ultimaConexion).getTime() : -Infinity;
+  const ub = b.ultimaConexion ? new Date(b.ultimaConexion).getTime() : -Infinity;
+  if (ua !== ub) return ub > ua ? 1 : -1;
+  const ca = new Date(a.createdAt || 0).getTime();
+  const cb = new Date(b.createdAt || 0).getTime();
+  return ca - cb || a.id - b.id;
+}
+
+const ATRIBUTOS_EMPLEADO = ['id', 'nombre', 'apellido', 'ultimaConexion', 'createdAt', 'activo', 'suspendidoPorPlan'];
+
+/*
+ * Deja a los empleados en uso dentro del tope de usuarios del plan que rige.
+ *
+ * Se llama cada vez que cambia el plan VIGENTE, nunca al pagar una bajada: el
+ * período caro está pago y hasta su fecha la cuenta usa todo lo que pagó.
+ *
+ *   · Si sobran, quedan suspendidos por el plan (activo=false +
+ *     suspendidoPorPlan): no pueden entrar ni operar, pero no se borra nada
+ *     —la ficha, sus ventas, su historial—. Primero los que el dueño dejó
+ *     afuera al pagar; si aun así sobran (dio de alta a alguien después de
+ *     elegir), los de menos actividad. Sus sesiones se cierran con el mismo
+ *     cierre de sesionesService que usa todo lo demás, con motivo 'plan', para
+ *     que la lista de sesiones diga por qué.
+ *   · Si sobra lugar, vuelven solos los suspendidos POR EL PLAN, en el mismo
+ *     orden, hasta llenarlo. A los que el dueño desactivó a mano no se los toca:
+ *     eso es una decisión suya, no del plan.
+ */
+async function ajustarEmpleados(businessId, plan, { suspender = null, transaction = null } = {}) {
+  const tope = plan?.maxEmpleados == null ? null : Number(plan.maxEmpleados);
+  const [activos, suspendidos] = await Promise.all([
+    Employee.findAll({ where: { businessId, activo: true }, attributes: ATRIBUTOS_EMPLEADO, transaction }),
+    Employee.findAll({
+      where: { businessId, activo: false, suspendidoPorPlan: true }, attributes: ATRIBUTOS_EMPLEADO, transaction,
+    }),
+  ]);
+  const resultado = { reactivados: [], suspendidos: [] };
+
+  if (tope == null || activos.length < tope) {
+    const lugar = tope == null ? suspendidos.length : tope - activos.length;
+    resultado.reactivados = suspendidos.sort(ordenDeUso).slice(0, lugar).map((e) => e.id);
+    if (resultado.reactivados.length) {
+      await Employee.update(
+        { activo: true, suspendidoPorPlan: false },
+        { where: { businessId, id: resultado.reactivados, activo: false, suspendidoPorPlan: true }, transaction },
+      );
+    }
+  } else if (activos.length > tope) {
+    const elegidos = new Set(suspender || []);
+    const afuera = activos.filter((e) => elegidos.has(e.id));
+    const resto = activos.filter((e) => !elegidos.has(e.id)).sort(ordenDeUso);
+    if (resto.length > tope) afuera.push(...resto.slice(tope));
+    resultado.suspendidos = afuera.map((e) => e.id);
+    if (resultado.suspendidos.length) {
+      await Employee.update(
+        { activo: false, suspendidoPorPlan: true },
+        { where: { businessId, id: resultado.suspendidos, activo: true }, transaction },
+      );
+      await sesionesService.cerrar({
+        businessId, tipo: 'employee', employeeId: resultado.suspendidos, motivo: 'plan', transaction,
+      });
+    }
+  }
+
+  if (resultado.reactivados.length || resultado.suspendidos.length) {
+    log.info('planes', 'empleados ajustados al tope del plan', {
+      businessId, reactivados: resultado.reactivados.length, suspendidos: resultado.suspendidos.length,
+    });
+  }
+  return resultado;
+}
+
+const TOPES = [
+  ['empleados', 'maxEmpleados'], ['locales', 'maxLocales'], ['cuits', 'maxCuits'],
+  ['skus', 'maxSkus'], ['comprobantes', 'maxComprobantes'], ['sesiones', 'maxSesiones'],
+];
+
+/*
+ * Cuánto se pasa la cuenta, con lo que tiene HOY, de cada tope de `plan`. Es el
+ * aviso que el dueño ve antes de pagar una bajada (decisión 19).
+ */
+async function excesosPara(businessId, plan) {
+  const uso = await usoDe(businessId);
+  const excesos = [];
+  for (const [recurso, campo] of TOPES) {
+    if (plan?.[campo] == null) continue;
+    const tope = Number(plan[campo]);
+    const usado = Number(uso[recurso]?.usado || 0);
+    if (usado > tope) excesos.push({ recurso, usado, tope, exceso: usado - tope });
+  }
+  return excesos;
+}
+
+/** Los empleados en uso, en el orden en que se quedarían, para que el dueño elija. */
+async function empleadosParaElegir(businessId, plan) {
+  const activos = (await Employee.findAll({
+    where: { businessId, activo: true }, attributes: ATRIBUTOS_EMPLEADO,
+  })).sort(ordenDeUso);
+  const tope = plan?.maxEmpleados == null ? null : Number(plan.maxEmpleados);
+  return {
+    tope,
+    lista: activos.map((e) => ({ id: e.id, nombre: e.nombre, apellido: e.apellido, ultimaConexion: e.ultimaConexion })),
+    sugeridos: (tope == null ? activos : activos.slice(0, tope)).map((e) => e.id),
+  };
+}
+
+/*
+ * La elección del dueño: `conservar` son los ids que siguen en uso. Se valida
+ * contra los empleados activos de ESTA cuenta y se devuelve como la lista de
+ * los que quedan afuera, que es lo que se guarda con el pago: un empleado que
+ * se dé de alta después de elegir no queda afuera por no estar en la lista.
+ * `suspender` null = no hacía falta elegir, o no eligió.
+ */
+async function eleccionDeEmpleados(businessId, plan, conservar) {
+  const tope = plan?.maxEmpleados == null ? null : Number(plan.maxEmpleados);
+  if (conservar == null || tope == null) return { suspender: null };
+  if (!Array.isArray(conservar)) return { error: 'La lista de empleados que siguen no es válida.' };
+  const ids = [...new Set(conservar.map(Number))];
+  if (ids.some((id) => !Number.isInteger(id))) return { error: 'La lista de empleados que siguen no es válida.' };
+
+  const activos = await Employee.findAll({ where: { businessId, activo: true }, attributes: ['id'] });
+  const deLaCuenta = new Set(activos.map((e) => e.id));
+  if (ids.some((id) => !deLaCuenta.has(id))) {
+    return { error: 'Alguno de los empleados elegidos no está activo en esta cuenta.' };
+  }
+  if (ids.length > tope) {
+    return { error: `El ${plan.nombre} incluye hasta ${tope} usuario${tope === 1 ? '' : 's'}: elegí ${tope} como máximo.` };
+  }
+  if (activos.length <= tope) return { suspender: null };
+  const quedan = new Set(ids);
+  return { suspender: activos.map((e) => e.id).filter((id) => !quedan.has(id)) };
+}
+
+/* ── Débito automático de Mercado Pago (decisión 20) ───────────── */
+
+/** ¿La cuenta tiene un débito automático que Stocker tiene que mantener al día? */
+function debitoActivo(sub) {
+  return sub?.metodoPago === 'mercadopago' && Boolean(sub.proveedorRef) && sub.renovacionAutomatica !== false;
+}
+
+/*
+ * Pone el monto del débito automático en el precio del plan con el que la
+ * cuenta SIGUE.
+ *
+ * Ese y no el vigente: cada débito paga el período que se agrega al final
+ * (acreditarPago suma 30 días sobre el vencimiento), y ese período es del plan
+ * con el que sigue. Con una bajada programada, el próximo débito ya paga el
+ * primer mes del plan bajo: ponerle el monto nuevo recién el día que la bajada
+ * rige sería cobrar ese mes al precio caro. Por eso se actualiza al cambiar de
+ * plan —al subir, al programar una bajada, al cancelarla, cuando un operador
+ * pone otro plan— y se vuelve a mirar el día que la bajada rige.
+ *
+ * Antes nadie lo tocaba: con débito del Inicial y un pago único del Superior, la
+ * cuenta quedaba en el Superior pagando el Inicial todos los meses.
+ *
+ * Corre DESPUÉS del commit (es una llamada a Mercado Pago) y nunca tira. Si
+ * Mercado Pago no contesta queda anotado desde cuándo (debitoPendienteDesde):
+ * el backoffice lo muestra y la tarea periódica lo reintenta. No se compara
+ * contra el precio de lista para "corregir" débitos solos: subirle el débito a
+ * todos porque cambió la lista necesita el aviso que dicen los Términos.
+ */
+async function sincronizarDebito(subscriptionId) {
+  const sub = await Subscription.findByPk(subscriptionId);
+  if (!sub || !debitoActivo(sub)) return { estado: 'sin_debito' };
+  const plan = await Plan.findByPk(sub.planPendienteId || sub.planId);
+  const monto = precioPara(sub, plan);
+  if (!(monto > 0)) {
+    log.warn('billing', 'el plan con el que sigue no tiene precio: el débito automático no se toca', { businessId: sub.businessId });
+    return { estado: 'sin_precio' };
+  }
+  if (sub.debitoMonto != null && Math.abs(Number(sub.debitoMonto) - monto) < 0.01 && !sub.debitoPendienteDesde) {
+    return { estado: 'al_dia', monto };
+  }
+  try {
+    await mp.actualizarMontoRecurrente(sub.proveedorRef, { monto, motivo: `Stocker — ${plan.nombre}` });
+  } catch (e) {
+    await Subscription.update(
+      { debitoPendienteDesde: sub.debitoPendienteDesde || new Date() },
+      { where: { id: sub.id } },
+    );
+    log.error('billing', 'no se pudo actualizar el monto del débito automático: queda para reintentar', {
+      businessId: sub.businessId, motivo: e.message,
+    });
+    return { estado: 'fallo', monto };
+  }
+  await Subscription.update({ debitoMonto: monto, debitoPendienteDesde: null }, { where: { id: sub.id } });
+  log.info('billing', 'débito automático puesto en el precio del plan con el que sigue', { businessId: sub.businessId });
+  return { estado: 'actualizado', monto };
+}
+
+/*
+ * Una sincronización por suscripción a la vez, en orden. Dos cambios seguidos
+ * mandarían dos montos a Mercado Pago en paralelo y podría quedar el viejo si
+ * su respuesta llega última; en fila, la segunda lee el estado que dejó la
+ * primera y manda el monto de ahora.
+ */
+const sincronizando = new Map();
+function programarSincronizacion(subscriptionId) {
+  const anterior = sincronizando.get(subscriptionId) || Promise.resolve();
+  const esta = anterior
+    .then(() => sincronizarDebito(subscriptionId))
+    .catch((e) => {
+      log.error('billing', 'falló la sincronización del débito automático', { motivo: e.message });
+      return { estado: 'error' };
+    })
+    .finally(() => { if (sincronizando.get(subscriptionId) === esta) sincronizando.delete(subscriptionId); });
+  sincronizando.set(subscriptionId, esta);
+  return esta;
+}
+
+/** Espera las sincronizaciones en curso. Para las pruebas y un apagado ordenado. */
+async function esperarSincronizaciones() {
+  while (sincronizando.size) await Promise.allSettled([...sincronizando.values()]);
+}
+
+/** Reintenta los débitos que Mercado Pago no aceptó. La llama la tarea periódica. */
+async function reintentarDebitos({ subscriptionId } = {}) {
+  // El filtro es para las pruebas: no tocar las cuentas de otros.
+  const subs = await Subscription.findAll({
+    where: { debitoPendienteDesde: { [Op.ne]: null }, ...(subscriptionId ? { id: subscriptionId } : {}) },
+    attributes: ['id'],
+  });
+  const r = await Promise.all(subs.map((x) => programarSincronizacion(x.id)));
+  return { pendientes: subs.length, actualizados: r.filter((x) => x?.estado === 'actualizado').length };
+}
+
+/*
+ * Las bajadas que llegaron a su fecha y nadie aplicó todavía.
+ *
+ * estadoDe las aplica en la primera consulta de la cuenta, pero una cuenta que
+ * nadie toca no consulta nada, y la decisión 19 pide que los empleados de más
+ * queden afuera el día que la bajada rige —no cuando el dueño vuelva a entrar—.
+ */
+async function aplicarBajadasVencidas(ahora = new Date(), { businessId } = {}) {
+  // El filtro es para las pruebas: no tocar las cuentas de otros.
+  const subs = await Subscription.findAll({
+    where: {
+      planPendienteId: { [Op.ne]: null }, planPendienteDesde: { [Op.lte]: ahora },
+      ...(businessId ? { businessId } : {}),
+    },
+  });
+  let aplicadas = 0;
+  for (const sub of subs) {
+    if (await aplicarPlanPendiente(sub, ahora)) aplicadas += 1;
+  }
+  return { revisadas: subs.length, aplicadas };
+}
+
+/* ── Acreditar ────────────────────────────────────────────────── */
+
+/*
+ * Acredita un pago y aplica lo que se pagó.
+ *
+ * @param planId    el plan que se pagó. null = sólo extender: una cortesía del
+ *                  backoffice, o un débito automático (su monto es el del plan
+ *                  con el que la cuenta sigue, ver sincronizarDebito).
+ * @param concepto  lo que se le cotizó al cliente: 'periodo' o 'diferencia'.
+ *                  null = 'periodo' (las filas de antes del prorrateo).
+ * @param monto     lo que entró de verdad. null = lo que corresponde: quien
+ *                  llama ya lo comparó, o no hay importe (una prueba).
+ * @param aceptado  un operador vio que el importe no coincide y decidió
+ *                  acreditarlo igual: se aplica como si estuviera completo.
+ * @param empleadosSuspender  la elección del dueño al pagar una bajada (ids que
+ *                  quedan afuera). undefined = el pago no trae elección.
+ *
+ * Qué pasa sale de clasificarCambio con el estado de AHORA, no con el de cuando
+ * se cotizó: entre las dos cosas pudo entrar otro pago. La regla, del dueño:
+ *   · alta        Rige ya; 30 días desde hoy.
+ *   · renovacion  30 días más sobre el vencimiento; el plan no cambia.
+ *   · subida / seguir  Rige ya y el vencimiento NO se mueve (decisión 18). Si
+ *                 lo que entró sobra —un pago del plan entero que se cruzó con
+ *                 otro—, lo que sobra se convierte en días del plan nuevo.
+ *   · bajada      Queda pendiente desde el fin de lo ya pagado y suma 30 días.
+ * Cuando lo que entró no corresponde a eso (una diferencia que llega con el
+ * período ya vencido, un pago que no alcanza para subir, una segunda bajada),
+ * no se regala el plan ni se pierde la plata: se acredita por lo que vale en
+ * días y la fila queda marcada (`revisar`) para que alguien la mire. Antes un
+ * pago del Superior convertía en Superior todos los meses pagados por
+ * adelantado al precio del Inicial.
  *
  * La suscripción se relee TRABADA, aunque quien llama ya la tenga en la mano.
  * Dos pagos que se acreditaban a la vez leían el mismo periodoFin y los dos
  * sumaban 30 días sobre él: el cliente pagaba dos meses y recibía uno. Con la
- * fila trabada el segundo espera y suma sobre lo que dejó el primero, y lo
- * mismo con el plan: nadie decide sobre un plan que otro ya cambió.
+ * fila trabada el segundo espera y decide sobre lo que dejó el primero.
  */
-async function acreditarPago({ subscription, planId = null, desde = new Date(), dias = 30 }, transaction = null) {
-  if (!transaction) {
-    return db.transaction((t) => acreditarPago({ subscription, planId, desde, dias }, t));
-  }
+async function acreditarPago(opciones, transaction = null) {
+  if (!transaction) return db.transaction((t) => acreditarPago(opciones, t));
+  const {
+    subscription, planId = null, concepto = null, monto = null, aceptado = false,
+    empleadosSuspender, desde = new Date(), dias = DIAS_PERIODO,
+  } = opciones;
 
   const sub = await trabarSuscripcion(subscription.id, transaction);
-
-  // Si todavía está en curso, el período nuevo arranca cuando termina el
-  // anterior: pagar antes de tiempo no puede regalar días.
-  const base = sub.periodoFin && new Date(sub.periodoFin) > desde
-    ? new Date(sub.periodoFin)
-    : desde;
-  const hasta = diasDesde(base, dias);
+  const planLeido = Number(sub.planId);
+  const continuaAntes = Number(sub.planPendienteId || sub.planId);
 
   let vigenteId = sub.planId;
   let pendienteId = sub.planPendienteId || null;
   let pendienteDesde = pendienteId ? sub.planPendienteDesde : null;
+  let suspenderPendiente = pendienteId ? leerLista(sub.planPendienteSuspender) : null;
+  // La elección con la que se ajustan los empleados si cambia el plan vigente.
+  let suspenderAhora = null;
 
   // Lo que ya tenía que regir, rige antes de comparar: si no, un pago llegado
   // después de la fecha se mediría contra un plan que la cuenta ya no tiene.
   if (pendienteId && pendienteDesde && new Date(pendienteDesde) <= desde) {
     vigenteId = pendienteId;
+    suspenderAhora = suspenderPendiente;
     pendienteId = null;
     pendienteDesde = null;
+    suspenderPendiente = null;
   }
 
+  // Si todavía está en curso, lo nuevo se suma cuando termina lo anterior:
+  // pagar antes de tiempo no puede regalar días.
+  const finAnterior = sub.periodoFin && new Date(sub.periodoFin) > desde ? new Date(sub.periodoFin) : desde;
+  let diasExtra = dias;
+  let cubreDesde = finAnterior;
   let cambio = null;
+  let tipo = null;
+  let revisar = null;
+
   const nuevo = planId != null ? await Plan.findByPk(planId, { transaction }) : null;
   if (planId != null && !nuevo) {
     // Un plan borrado no puede dejar a nadie sin el mes que pagó: se acredita
     // el período y el plan queda como estaba.
     log.warn('planes', 'pago con un plan que ya no existe: sólo se extiende', { businessId: sub.businessId });
   } else if (nuevo) {
-    const actual = Number(vigenteId) === Number(nuevo.id)
-      ? nuevo
-      : await Plan.findByPk(vigenteId, { transaction });
-    cambio = sentidoDelCambio(actual, nuevo);
+    const [actual, pendiente] = await Promise.all([
+      Number(vigenteId) === Number(nuevo.id) ? nuevo : Plan.findByPk(vigenteId, { transaction }),
+      !pendienteId ? null
+        : Number(pendienteId) === Number(nuevo.id) ? nuevo : Plan.findByPk(pendienteId, { transaction }),
+    ]);
+    const c = clasificarCambio({ sub, actual, pendiente, pendienteDesde, nuevo, ahora: desde });
+    tipo = c.tipo;
 
-    if (cambio === 'sube') {
-      vigenteId = nuevo.id;
-      pendienteId = null;
-      pendienteDesde = null;
-    } else if (cambio === 'igual') {
-      pendienteId = null;
-      pendienteDesde = null;
-    } else {
-      // Si ya había otra bajada esperando, la fecha no se corre: el período
-      // pagado con el plan caro termina donde terminaba.
-      pendienteDesde = pendienteId ? pendienteDesde : base;
-      pendienteId = nuevo.id;
-      if (new Date(pendienteDesde) <= desde) {
-        vigenteId = nuevo.id;
-        pendienteId = null;
-        pendienteDesde = null;
+    const completo = aceptado || monto == null;
+    const cotizoDiferencia = concepto === 'diferencia';
+    // Lo que entró; o, si nadie dice otra cosa, lo que corresponde hoy.
+    const pagado = completo
+      ? Number((cotizoDiferencia ? montoDe(c) : c.precioNuevo) ?? 0)
+      : Number(monto);
+    // Lo que entró de verdad, aunque un operador haya dicho "acreditalo igual":
+    // cuando el pago no puede cambiar el plan y se convierte en días, se
+    // convierte lo que llegó al banco y no lo que se había cotizado.
+    const entro = monto != null ? Number(monto) : pagado;
+    // Se cotizó una diferencia y ahora no hay ninguna que pagar.
+    const desfasado = !completo && cotizoDiferencia && c.concepto !== 'diferencia';
+
+    switch (c.tipo) {
+      case 'alta':
+      case 'renovacion': {
+        if (desfasado) {
+          diasExtra = diasPorValor(pagado, c.precioNuevo);
+          revisar = `Entró una diferencia de ${pesos(pagado)} cuando ya no correspondía ` +
+            `(${c.tipo === 'alta' ? 'el período había vencido' : `el plan ya era el ${nuevo.nombre}`}): ` +
+            `se acreditó como ${diasExtra} días del ${nuevo.nombre}.`;
+        }
+        if (c.tipo === 'alta') {
+          // Sin período en curso no hay nada que esperar: rige ya, suba o baje.
+          cambio = sentidoDelCambio(actual, nuevo);
+          if (Number(vigenteId) !== Number(nuevo.id)) suspenderAhora = empleadosSuspender ?? null;
+          vigenteId = nuevo.id;
+          pendienteId = null;
+          pendienteDesde = null;
+          suspenderPendiente = null;
+        } else {
+          cambio = 'igual';
+          // Renovar el plan de la bajada con otra elección: manda la última.
+          if (pendienteId && empleadosSuspender !== undefined) suspenderPendiente = empleadosSuspender;
+        }
+        break;
+      }
+      case 'subida':
+      case 'seguir': {
+        cubreDesde = desde;
+        if (pagado + TOLERANCIA >= c.diferencia) {
+          vigenteId = nuevo.id;
+          pendienteId = null;
+          pendienteDesde = null;
+          suspenderPendiente = null;
+          suspenderAhora = null;
+          // El vencimiento no se mueve; sólo lo que sobre de un pago del plan
+          // entero (que se cruzó con otro) se vuelve días del plan nuevo.
+          diasExtra = diasPorValor(Math.max(0, pagado - c.diferencia), c.precioNuevo, 0);
+          cambio = c.tipo === 'seguir' ? 'sigue' : 'sube';
+        } else {
+          diasExtra = diasPorValor(pagado, c.precioContinua);
+          revisar = `Entraron ${pesos(pagado)} y pasar al ${nuevo.nombre} los días que quedan cuesta ` +
+            `${pesos(Math.round(c.diferencia))}: no se cambió el plan y se acreditaron ${diasExtra} días ` +
+            'del plan con el que sigue.';
+        }
+        break;
+      }
+      case 'bajada': {
+        if (desfasado) {
+          diasExtra = diasPorValor(pagado, c.precioContinua);
+          revisar = `Entró una diferencia para el ${nuevo.nombre} pero la cuenta ya tiene un plan más alto: ` +
+            `se acreditaron ${diasExtra} días del plan con el que sigue.`;
+        } else {
+          pendienteId = nuevo.id;
+          pendienteDesde = finAnterior;
+          suspenderPendiente = empleadosSuspender ?? null;
+          cambio = 'baja';
+        }
+        break;
+      }
+      default: {
+        // cambio_pendiente: la cotización lo rechaza; llega sólo por un pago
+        // que se cruzó con otro o por una fila de antes de esta regla.
+        diasExtra = diasPorValor(entro, c.precioContinua);
+        revisar = `Ya había un cambio al ${pendiente?.nombre || 'otro plan'} programado: el pago del ` +
+          `${nuevo.nombre} no cambió el plan y se acreditó como ${diasExtra} días del plan con el que sigue.`;
       }
     }
   }
 
+  const hasta = diasExtra > 0 ? diasDesde(finAnterior, diasExtra) : finAnterior;
+  const extiende = diasExtra > 0 && tipo !== 'subida' && tipo !== 'seguir';
+
   await sub.update({
     estado: 'activa',
-    periodoInicio: base,
+    periodoInicio: extiende ? finAnterior : (sub.periodoInicio || desde),
     periodoFin: hasta,
     ultimoPagoEn: desde,
     proximoCobroEn: hasta,
     planId: vigenteId,
     planPendienteId: pendienteId,
     planPendienteDesde: pendienteDesde,
+    planPendienteSuspender: pendienteId ? guardarLista(suspenderPendiente) : null,
   }, { transaction });
 
-  if (cambio === 'sube' || cambio === 'baja') {
-    log.info('planes', `pago acreditado con cambio de plan (${cambio})`, { businessId: sub.businessId });
+  // Cambió el plan que rige: los empleados se acomodan al tope nuevo ahora
+  // (al subir vuelven los suspendidos; al bajar sin período en curso, se
+  // suspenden los de más). Una bajada programada no toca a nadie todavía.
+  if (Number(vigenteId) !== planLeido) {
+    const planVigente = Number(vigenteId) === Number(nuevo?.id) ? nuevo : await Plan.findByPk(vigenteId, { transaction });
+    await ajustarEmpleados(sub.businessId, planVigente, { suspender: suspenderAhora, transaction });
   }
 
+  // Si cambió el plan con el que sigue, el débito automático se pone en su
+  // precio cuando esto quede firme (decisión 20).
+  if (Number(pendienteId || vigenteId) !== continuaAntes && debitoActivo(sub)) {
+    transaction.afterCommit(() => { programarSincronizacion(sub.id); });
+  }
+
+  if (cambio === 'sube' || cambio === 'baja' || cambio === 'sigue') {
+    log.info('planes', `pago acreditado con cambio de plan (${cambio})`, { businessId: sub.businessId });
+  }
+  if (revisar) log.warn('planes', 'pago acreditado que hay que revisar a mano', { businessId: sub.businessId });
+
   return {
-    desde: base,
+    desde: cubreDesde,
     hasta,
     cambio,
+    tipo,
+    revisar,
+    diasAcreditados: diasExtra,
     planId: vigenteId,
     planPendienteId: pendienteId,
     planPendienteDesde: pendienteDesde,
@@ -499,5 +1030,12 @@ async function trialsPorVencer(dias = 2) {
 module.exports = {
   sembrarPlanes, iniciarTrial, estadoDe, tieneFeature, heredaFeature, usoDe, exigirCupo,
   acreditarPago, aplicarPlanPendiente, trabarSuscripcion, trabada, sentidoDelCambio,
-  trialsPorVencer, precioDeSuscripcion, ErrorPlan, DIAS_TRIAL,
+  trialsPorVencer, precioDeSuscripcion, ErrorPlan, DIAS_TRIAL, DIAS_PERIODO, TOLERANCIA,
+  // Prorrateo y cambio de plan
+  precioPara, periodoEnCurso, clasificarCambio, montoDe, diasPorValor, leerLista, guardarLista,
+  // Empleados de más al bajar (decisión 19)
+  ajustarEmpleados, excesosPara, empleadosParaElegir, eleccionDeEmpleados, ordenDeUso,
+  aplicarBajadasVencidas,
+  // Débito automático (decisión 20)
+  debitoActivo, sincronizarDebito, programarSincronizacion, esperarSincronizaciones, reintentarDebitos,
 };

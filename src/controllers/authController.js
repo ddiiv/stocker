@@ -8,7 +8,7 @@ const { Business, Employee, Role, EmployeeSession, BusinessCuit, PasswordResetCo
 const { PRESETS } = require('../config/permisos');
 const { exigirLibre, normalizar } = require('../services/cuitRegistry');
 const identidad = require('../services/identityRegistry');
-const { iniciarTrial } = require('../services/planService');
+const { iniciarTrial, estadoDe } = require('../services/planService');
 const bloqueo = require('../services/bloqueoService');
 const { corteDeSesiones, IDLE_MIN } = require('../utils/session');
 const sesiones = require('../services/sesionesService');
@@ -221,13 +221,51 @@ const login = async (req, res, next) => {
 const employeeLogin = async (req, res, next) => {
   try {
     const { email, password } = req.body;
-    const employee = await Employee.findOne({ where: { email, activo: true }, include: [{ association: 'cargo' }] });
+    /*
+     * También se busca al suspendido POR EL PLAN, para poder decirle por qué no
+     * entra (abajo, después de la contraseña). El desactivado a mano sigue
+     * recibiendo "Email o contraseña incorrectos", como siempre.
+     */
+    let employee = await Employee.findOne({
+      where: { email, [Op.or]: [{ activo: true }, { suspendidoPorPlan: true }] },
+      include: [{ association: 'cargo' }],
+    });
     if (!employee || !employee.passwordHash) {
       await bloqueo.registrar({ req, tipo: 'employee', identificador: email, exito: false });
       return res.status(401).json({ message: 'Email o contraseña incorrectos.' });
     }
     if (!(await bcrypt.compare(password, employee.passwordHash))) {
       await bloqueo.registrar({ req, tipo: 'employee', identificador: email, exito: false });
+      return res.status(401).json({ message: 'Email o contraseña incorrectos.' });
+    }
+
+    /*
+     * Una bajada que llegó a su fecha y nadie aplicó todavía se aplica acá,
+     * antes de mirar si está suspendido: si no, el primer empleado que sobra
+     * entraría una vez más el día que la cuenta ya bajó. Si la consulta falla
+     * se entra como antes; la tarea periódica la aplica igual.
+     */
+    try {
+      await estadoDe(employee.businessId);
+      await employee.reload();
+    } catch (e) {
+      log.warn('auth', 'no se pudo revisar el plan al entrar un empleado', { motivo: e.message });
+    }
+
+    /*
+     * Suspendido porque la cuenta bajó a un plan con menos usuarios (decisión
+     * 19). La contraseña ya se verificó, así que decir el motivo no le
+     * confirma nada a quien no la tiene; y "contraseña incorrecta" mandaría a
+     * la persona a pedir un cambio que no le sirve.
+     */
+    if (!employee.activo) {
+      if (employee.suspendidoPorPlan) {
+        return res.status(403).json({
+          codigo: 'EMPLEADO_SUSPENDIDO_PLAN',
+          message: 'Tu usuario está suspendido porque la cuenta pasó a un plan con menos usuarios. ' +
+            'Pedile al dueño de la cuenta que te habilite.',
+        });
+      }
       return res.status(401).json({ message: 'Email o contraseña incorrectos.' });
     }
 

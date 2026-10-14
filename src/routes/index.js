@@ -122,6 +122,7 @@ r.get ('/billing/features',        billingCtrl.getFeatures);
 r.post('/billing/webhook/mercadopago', billingCtrl.webhookMercadoPago);
 r.get ('/billing/suscripcion',     requireAuth, requireOwner, billingCtrl.getSuscripcion);
 r.get ('/billing/pagos',           requireAuth, requireOwner, billingCtrl.getPagos);
+r.get ('/billing/cotizacion',      requireAuth, requireOwner, billingCtrl.getCotizacion);
 r.post('/billing/checkout',        requireAuth, requireOwner, billingCtrl.crearCheckout);
 r.get ('/billing/transferencia',   requireAuth, requireOwner, billingCtrl.getDatosTransferencia);
 r.post('/billing/transferencia',   requireAuth, requireOwner, billingCtrl.informarTransferencia);

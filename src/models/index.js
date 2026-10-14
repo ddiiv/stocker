@@ -256,6 +256,23 @@ const Subscription = db.define('Subscription', {
    */
   planPendienteId:    { type: DataTypes.INTEGER, allowNull: true },
   planPendienteDesde: { type: DataTypes.DATE, allowNull: true },
+  /*
+   * Los empleados que el dueño dejó AFUERA al pagar esa bajada (JSON con los
+   * ids), porque el plan nuevo tiene menos usuarios. Se suspenden cuando la
+   * bajada rige, no cuando se paga: hasta esa fecha el plan caro está pago.
+   * Null = nadie eligió (la hizo un operador, o un pago sin elección): se
+   * aplica el criterio de planService.ajustarEmpleados.
+   */
+  planPendienteSuspender: { type: DataTypes.TEXT, allowNull: true },
+  /*
+   * El monto que tiene cargado el débito automático (preapproval) en Mercado
+   * Pago, según lo último que Stocker le pudo poner. Tiene que ser siempre el
+   * precio del plan con el que la cuenta SIGUE: cada débito paga el período
+   * que se agrega al final. `debitoPendienteDesde` = desde cuándo hay un cambio
+   * que no se le pudo mandar a Mercado Pago (se reintenta solo).
+   */
+  debitoMonto:          { type: DataTypes.DECIMAL(12,2), allowNull: true },
+  debitoPendienteDesde: { type: DataTypes.DATE, allowNull: true },
 }, { tableName: 'subscriptions' });
 
 /* ─── SubscriptionPayment (historial de cobros) ───────────────────
@@ -288,6 +305,20 @@ const SubscriptionPayment = db.define('SubscriptionPayment', {
   verificadoEn:   { type: DataTypes.DATE, allowNull: true },
   detalle:        { type: DataTypes.STRING(500), allowNull: true },
   fecha:          { type: DataTypes.DATE, allowNull: false, defaultValue: DataTypes.NOW },
+  /*
+   * Qué se cotizó: 'periodo' (el plan entero, suma 30 días) o 'diferencia' (lo
+   * que falta para pasar al plan más alto los días que quedan; no mueve el
+   * vencimiento). Null = fila anterior al prorrateo, se trata como 'periodo'.
+   * Las columnas de acá abajo van sin índice: llegan por ensureColumns.
+   */
+  concepto:       { type: DataTypes.STRING(15), allowNull: true },
+  // Lo que Stocker pidió cobrar. `monto` es lo que entró: para una
+  // transferencia, lo que el operador vio en el banco al acreditarla.
+  montoCotizado:  { type: DataTypes.DECIMAL(12,2), allowNull: true },
+  // La elección del dueño en una bajada (ids de empleados que quedan afuera).
+  empleadosSuspender: { type: DataTypes.TEXT, allowNull: true },
+  // Por qué alguien tiene que mirar este cobro a mano (ver acreditarPago).
+  aRevisar:       { type: DataTypes.STRING(300), allowNull: true },
 }, { tableName: 'subscription_payments' });
 
 /* ─── PlatformAdmin (backoffice de Stocker) ───────────────────────
@@ -1208,6 +1239,15 @@ const Employee = db.define('Employee', {
   sesionesDesde:  { type: DataTypes.DATE, allowNull: true },
   activo:         { type: DataTypes.BOOLEAN, defaultValue: true },
   ultimaConexion: { type: DataTypes.DATE, allowNull: true },
+  /*
+   * Inactivo porque el plan bajó y tiene menos usuarios, no porque lo haya
+   * desactivado el dueño. Va siempre con `activo: false` —así todo lo que ya
+   * mira `activo` (el login, requireAuth, el conteo del tope) lo deja afuera
+   * sin tocarlo—, y es lo que permite reactivarlo solo cuando la cuenta vuelve
+   * a subir de plan sin despertar a quien el dueño apagó a propósito. Sin
+   * índice: llega por ensureColumns.
+   */
+  suspendidoPorPlan: { type: DataTypes.BOOLEAN, allowNull: true, defaultValue: false },
 }, { tableName: 'employees' });
 
 // ─── Client ───────────────────────────────────────────────────────

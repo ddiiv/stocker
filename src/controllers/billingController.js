@@ -18,6 +18,17 @@ const { generateSubscriptionReceiptPdf } = require('../services/pdfService');
  * Nada de acá borra datos. Cuando la cuenta cae a lectura sigue todo cargado.
  */
 
+const DIA_MS = 24 * 60 * 60 * 1000;
+
+/*
+ * Cuánto vale el link de pago de una diferencia de plan. La diferencia se
+ * calcula con los días que quedan HOY; un link que se paga una semana después
+ * cobraría días que ya pasaron con el plan viejo.
+ */
+const VIGENCIA_LINK_DIFERENCIA_MS = DIA_MS;
+
+const fechaAr = (f) => new Date(f).toLocaleDateString('es-AR');
+
 const DATOS_TRANSFERENCIA = {
   titular: process.env.BANCO_TITULAR || 'Stocker',
   cbu:     process.env.BANCO_CBU     || null,
@@ -110,6 +121,18 @@ const getSuscripcion = async (req, res, next) => {
         codigo: estado.planPendiente.codigo, nombre: estado.planPendiente.nombre,
         desde: estado.planPendienteDesde,
       },
+      /*
+       * El débito automático y su monto: la pantalla tiene que poder decir
+       * "tu débito pasa a $X" al cambiar de plan, y no ofrecer dar de alta
+       * otro débito encima del que ya cobra.
+       */
+      debito: planService.debitoActivo(estado.suscripcion)
+        ? {
+            activo: true,
+            monto: estado.suscripcion.debitoMonto != null ? Number(estado.suscripcion.debitoMonto) : null,
+            pendienteDesde: estado.suscripcion.debitoPendienteDesde,
+          }
+        : { activo: false },
       uso,
       // Para que la pantalla sepa qué formas de pago ofrecer.
       mediosDisponibles: {
@@ -136,13 +159,25 @@ const getPagos = async (req, res, next) => {
   try {
     const pagos = await SubscriptionPayment.findAll({
       where: { businessId: req.auth.businessId },
+      // La elección de empleados y la marca de revisión son del backoffice.
+      attributes: { exclude: ['empleadosSuspender', 'aRevisar'] },
       // Con el nombre del plan: desde que el pago cambia el plan, "qué pagué"
       // incluye a qué plan corresponde cada cobro.
       include: [{ model: Plan, as: 'plan', attributes: ['codigo', 'nombre'] }],
       order: [['fecha', 'DESC']],
       limit: 50,
     });
-    res.json(pagos);
+    // El link de una diferencia vence (ver crearCheckout): no se ofrece un
+    // botón de "Pagar" que lleva a un link vencido.
+    const ahora = Date.now();
+    res.json(pagos.map((p) => {
+      const j = p.toJSON();
+      if (j.concepto === 'diferencia' && j.estado === 'pendiente' &&
+          ahora - new Date(j.fecha).getTime() > VIGENCIA_LINK_DIFERENCIA_MS) {
+        j.linkPago = null;
+      }
+      return j;
+    }));
   } catch (e) { next(e); }
 };
 
@@ -206,85 +241,253 @@ async function planAPagar({ suscripcion, plan: planActual, planPendiente }, codi
 }
 
 /*
- * POST /api/billing/checkout  { plan?, modo? }
+ * Cuánto y por qué se cobra un plan, ANTES de cobrarlo. Devuelve { rechazo } o
+ * la cotización: { estado, sub, plan, c, monto, bajaDePlan, vista }.
  *
- * Devuelve a dónde mandar al cliente a pagar. `modo`:
- *   unico      → link por un mes (default)
- *   recurrente → débito automático mensual
+ * Es una sola cuenta para todo: la pantalla la muestra en el modal de pago
+ * (GET /billing/cotizacion), el checkout de Mercado Pago cobra ese monto y la
+ * transferencia lo anota. Antes el modal calculaba el precio por su lado (y
+ * mostraba el de lista aunque se cobrara con descuento) y la transferencia
+ * aceptaba el importe que mandaba el navegador.
  */
-const crearCheckout = async (req, res, next) => {
+async function cotizacionPara(businessId, codigo) {
+  const estado = await planService.estadoDe(businessId);
+  const sub = estado.suscripcion;
+  const { plan, rechazo } = await planAPagar(estado, codigo);
+  if (rechazo) return { rechazo };
+
+  const ahora = new Date();
+  const c = planService.clasificarCambio({
+    sub, actual: estado.plan, pendiente: estado.planPendiente,
+    pendienteDesde: estado.planPendienteDesde, nuevo: plan, ahora,
+  });
+  if (c.tipo === 'cambio_pendiente') {
+    return { rechazo: { status: 409, cuerpo: {
+      motivo: 'cambio_pendiente',
+      message: `Ya tenés programado el paso al ${estado.planPendiente.nombre} desde el ` +
+        `${fechaAr(estado.planPendienteDesde)}. Cuando rija vas a poder pasar al ${plan.nombre}. ` +
+        `Si preferís quedarte con el ${estado.plan.nombre}, elegí «Seguir con este plan».`,
+    } } };
+  }
+
+  // precioDe corta con 409 si el plan elegido no tiene precio (se cotiza).
+  const precioMensual = precioDe(sub, plan);
+  const monto = c.concepto === 'diferencia' ? planService.montoDe(c) : precioMensual;
+  if (c.concepto === 'diferencia' && !(monto >= 1)) {
+    // Sólo pasa si un operador dejó un plan más alto al mismo precio que otro.
+    return { rechazo: { status: 409, cuerpo: {
+      motivo: 'sin_diferencia',
+      message: 'Este cambio no tiene diferencia para cobrar. Escribinos y lo aplicamos.',
+    } } };
+  }
+
+  // Al bajar (programado, o ya si no hay período en curso) se avisa cuánto se
+  // pasa de cada tope y se elige quiénes siguen (decisión 19).
+  const bajaDePlan = c.tipo === 'bajada' ||
+    (c.tipo === 'alta' && planService.sentidoDelCambio(estado.plan, plan) === 'baja');
+  const excesos = bajaDePlan ? await planService.excesosPara(businessId, plan) : [];
+  const empleados = excesos.some((x) => x.recurso === 'empleados')
+    ? await planService.empleadosParaElegir(businessId, plan)
+    : null;
+
+  const fin = sub.periodoFin ? new Date(sub.periodoFin) : null;
+  const masUnPeriodo = (desde) => new Date(new Date(desde).getTime() + planService.DIAS_PERIODO * DIA_MS);
+  const venceDespues = {
+    alta: masUnPeriodo(ahora),
+    renovacion: masUnPeriodo(c.enCurso ? fin : ahora),
+    subida: fin,
+    seguir: fin,
+    bajada: fin && masUnPeriodo(fin),
+  }[c.tipo];
+
+  const debitoActivo = planService.debitoActivo(sub);
+  const vista = {
+    plan: { codigo: plan.codigo, nombre: plan.nombre },
+    planActual: estado.plan && { codigo: estado.plan.codigo, nombre: estado.plan.nombre },
+    planPendiente: estado.planPendiente && {
+      codigo: estado.planPendiente.codigo, nombre: estado.planPendiente.nombre, desde: estado.planPendienteDesde,
+    },
+    tipo: c.tipo,
+    concepto: c.concepto,
+    monto,
+    // El precio por mes del plan elegido para esta cuenta, con su descuento.
+    precioMensual,
+    descuentoPct: Number(sub.descuentoPct) || 0,
+    detalle: c.concepto === 'diferencia' ? {
+      diasPeriodo: planService.DIAS_PERIODO,
+      tramos: c.tramos.map((t) => ({
+        plan: { codigo: t.plan.codigo, nombre: t.plan.nombre },
+        desde: t.desde, hasta: t.hasta, dias: t.dias,
+        precioMensual: t.precio,
+        importe: Math.round(t.importe * 100) / 100,
+      })),
+      total: Math.round(c.diferencia * 100) / 100,
+    } : null,
+    // Desde cuándo rige el plan elegido: ya, al vencimiento, o null si es el
+    // mismo con el que la cuenta sigue.
+    rige: c.tipo === 'renovacion' ? null : c.tipo === 'bajada' ? fin : ahora,
+    venceDespues,
+    debito: debitoActivo
+      ? { activo: true, montoActual: sub.debitoMonto != null ? Number(sub.debitoMonto) : null, montoNuevo: c.precioNuevo }
+      : { activo: false },
+    excesos,
+    empleados,
+    medios: {
+      mercadopago: mp.estaConfigurado(),
+      // La diferencia se paga una vez; un débito mensual de la diferencia no
+      // tiene sentido. Y con un débito andando, otro encima cobraría doble.
+      debitoAutomatico: mp.estaConfigurado() && c.concepto === 'periodo' && !debitoActivo,
+      transferencia: Boolean(DATOS_TRANSFERENCIA.cbu || DATOS_TRANSFERENCIA.alias),
+    },
+  };
+  return { estado, sub, plan, c, monto, bajaDePlan, vista };
+}
+
+/** Lo que dice el renglón del pago, para el cliente y para el backoffice. */
+function detalleDelPago({ c, plan, modo }) {
+  if (c.tipo === 'seguir') return `Diferencia para seguir con el ${plan.nombre}`;
+  if (c.concepto === 'diferencia') {
+    const dias = c.tramos.reduce((a, t) => a + t.dias, 0);
+    return `Diferencia para pasar al ${plan.nombre} (${dias} día${dias === 1 ? '' : 's'})`;
+  }
+  return modo === 'recurrente' ? 'Alta de débito automático' : 'Pago de un período';
+}
+
+// GET /api/billing/cotizacion?plan=pro — lo que se cobraría, antes de cobrar.
+const getCotizacion = async (req, res, next) => {
   try {
-    const estado = await planService.estadoDe(req.auth.businessId);
-    const { suscripcion } = estado;
-
-    // Permite pagar directamente el plan al que se quiere pasar.
-    const { plan, rechazo } = await planAPagar(estado, req.body?.plan);
-    if (rechazo) return res.status(rechazo.status).json(rechazo.cuerpo);
-
-    const monto = precioDe(suscripcion, plan);
-    const negocio = await Business.findByPk(req.auth.businessId, { attributes: ['email'] });
-    const modo = req.body?.modo === 'recurrente' ? 'recurrente' : 'unico';
-
-    const creado = modo === 'recurrente'
-      ? await mp.crearSuscripcionRecurrente({
-          businessId: req.auth.businessId, subscriptionId: suscripcion.id,
-          plan, monto, emailPagador: negocio.email,
-        })
-      : await mp.crearLinkDePago({
-          businessId: req.auth.businessId, subscriptionId: suscripcion.id,
-          plan, monto,
-        });
-
-    // Queda pendiente hasta que MP confirme. El webhook la busca por esta fila,
-    // y de acá sale el plan que se aplica al acreditar.
-    await SubscriptionPayment.create({
-      businessId: req.auth.businessId,
-      subscriptionId: suscripcion.id,
-      planId: plan.id,
-      monto, estado: 'pendiente', metodo: 'mercadopago',
-      linkPago: creado.initPoint,
-      detalle: modo === 'recurrente' ? 'Alta de débito automático' : 'Pago de un período',
-    });
-
-    if (modo === 'recurrente') {
-      await suscripcion.update({ metodoPago: 'mercadopago', proveedorRef: creado.id });
-    }
-
-    res.status(201).json({ url: creado.initPoint, modo, monto });
+    const q = await cotizacionPara(req.auth.businessId, req.query?.plan);
+    if (q.rechazo) return res.status(q.rechazo.status).json(q.rechazo.cuerpo);
+    res.json(q.vista);
   } catch (e) { next(e); }
 };
 
 /*
- * POST /api/billing/transferencia  { plan?, comprobanteUrl?, detalle? }
+ * POST /api/billing/checkout  { plan?, modo?, conservar? }
+ *
+ * Devuelve a dónde mandar al cliente a pagar. `modo`:
+ *   unico      → link de pago (default)
+ *   recurrente → débito automático mensual
+ * `conservar`: al bajar a un plan con menos usuarios, los empleados que siguen.
+ *
+ * Cobra exactamente la cotización: el plan entero o, al subir con un período
+ * pago corriendo, sólo la diferencia por los días que quedan (decisión 18).
+ */
+const crearCheckout = async (req, res, next) => {
+  try {
+    const q = await cotizacionPara(req.auth.businessId, req.body?.plan);
+    if (q.rechazo) return res.status(q.rechazo.status).json(q.rechazo.cuerpo);
+    const { sub, plan, c, monto } = q;
+    const modo = req.body?.modo === 'recurrente' ? 'recurrente' : 'unico';
+
+    if (modo === 'recurrente' && c.concepto === 'diferencia') {
+      return res.status(409).json({
+        motivo: 'diferencia_unica',
+        message: 'La diferencia se paga una sola vez. Si tenés débito automático, pasa solo al precio del plan nuevo.',
+      });
+    }
+    const eleccion = await planService.eleccionDeEmpleados(
+      req.auth.businessId, plan, q.bajaDePlan ? req.body?.conservar : null,
+    );
+    if (eleccion.error) return res.status(400).json({ message: eleccion.error });
+
+    const negocio = await Business.findByPk(req.auth.businessId, { attributes: ['email'] });
+
+    let creado;
+    if (modo === 'recurrente') {
+      /*
+       * Un débito nuevo reemplaza al anterior. Antes se daba de alta otro
+       * encima y el viejo seguía cobrando: dos débitos por mes. Si Mercado
+       * Pago no deja cancelar el anterior, no se crea el nuevo.
+       */
+      if (sub.metodoPago === 'mercadopago' && sub.proveedorRef) {
+        await mp.cancelarSuscripcionRecurrente(sub.proveedorRef);
+        await sub.update({ proveedorRef: null, debitoMonto: null, debitoPendienteDesde: null });
+      }
+      creado = await mp.crearSuscripcionRecurrente({
+        businessId: req.auth.businessId, subscriptionId: sub.id,
+        plan, monto, emailPagador: negocio.email,
+      });
+    } else {
+      creado = await mp.crearLinkDePago({
+        businessId: req.auth.businessId, subscriptionId: sub.id,
+        plan, monto,
+        descripcion: c.concepto === 'diferencia' ? `Stocker — ${detalleDelPago({ c, plan, modo })}` : undefined,
+        // La diferencia vale por los días que quedan HOY: el link vence en un
+        // día, y nunca después del período que viene a completar.
+        venceEn: c.concepto === 'diferencia'
+          ? new Date(Math.min(new Date(sub.periodoFin).getTime(), Date.now() + VIGENCIA_LINK_DIFERENCIA_MS))
+          : null,
+      });
+    }
+
+    // Queda pendiente hasta que MP confirme. El webhook la busca por esta fila,
+    // y de acá salen el plan, el concepto y la elección que se aplican al
+    // acreditar.
+    await SubscriptionPayment.create({
+      businessId: req.auth.businessId,
+      subscriptionId: sub.id,
+      planId: plan.id,
+      monto, montoCotizado: monto, concepto: c.concepto,
+      empleadosSuspender: planService.guardarLista(eleccion.suspender),
+      estado: 'pendiente', metodo: 'mercadopago',
+      linkPago: creado.initPoint,
+      detalle: detalleDelPago({ c, plan, modo }),
+    });
+
+    if (modo === 'recurrente') {
+      await sub.update({
+        metodoPago: 'mercadopago', proveedorRef: creado.id,
+        // Lo que el débito nuevo tiene cargado: el precio del plan que se paga.
+        debitoMonto: monto, debitoPendienteDesde: null,
+      });
+    }
+
+    res.status(201).json({ url: creado.initPoint, modo, monto, concepto: c.concepto });
+  } catch (e) { next(e); }
+};
+
+/*
+ * POST /api/billing/transferencia  { plan?, conservar?, comprobanteUrl?, detalle? }
  *
  * El cliente avisa que transfirió. NO acredita: deja el pago pendiente para
  * que alguien lo verifique contra el extracto bancario desde el backoffice.
  *
- * Lleva el plan elegido igual que el checkout. Antes se anotaba siempre el
- * plan actual: quien transfería el precio del Superior desde "Cambiar a este
- * plan" quedaba registrado como un pago del Pro.
+ * Lleva el plan elegido igual que el checkout, y el importe lo pone Stocker
+ * con la misma cotización. Antes se aceptaba el `monto` que mandaba el
+ * navegador: {plan:'superior', monto: 48400} dejaba una fila del Superior al
+ * precio del Inicial, el operador veía que llegaron 48.400 y acreditaba. Lo que
+ * entró de verdad se compara al acreditar (backoffice aprobarPago).
  */
 const informarTransferencia = async (req, res, next) => {
   try {
-    const estado = await planService.estadoDe(req.auth.businessId);
-    const { suscripcion } = estado;
-    const { plan, rechazo } = await planAPagar(estado, req.body?.plan);
-    if (rechazo) return res.status(rechazo.status).json(rechazo.cuerpo);
+    const q = await cotizacionPara(req.auth.businessId, req.body?.plan);
+    if (q.rechazo) return res.status(q.rechazo.status).json(q.rechazo.cuerpo);
+    const { sub, plan, c, monto } = q;
 
-    const monto = req.body?.monto != null ? Number(req.body.monto) : precioDe(suscripcion, plan);
+    const eleccion = await planService.eleccionDeEmpleados(
+      req.auth.businessId, plan, q.bajaDePlan ? req.body?.conservar : null,
+    );
+    if (eleccion.error) return res.status(400).json({ message: eleccion.error });
 
     const pago = await SubscriptionPayment.create({
       businessId: req.auth.businessId,
-      subscriptionId: suscripcion.id,
-      planId: plan?.id || null,
-      monto, estado: 'pendiente', metodo: 'transferencia',
+      subscriptionId: sub.id,
+      planId: plan.id,
+      monto, montoCotizado: monto, concepto: c.concepto,
+      empleadosSuspender: planService.guardarLista(eleccion.suspender),
+      estado: 'pendiente', metodo: 'transferencia',
       comprobanteUrl: req.body?.comprobanteUrl || null,
-      detalle: req.body?.detalle || null,
+      detalle: String(req.body?.detalle || '').slice(0, 500) || detalleDelPago({ c, plan, modo: 'unico' }),
     });
-    await suscripcion.update({ metodoPago: 'transferencia' });
+    // Con un débito automático andando, una transferencia suelta (la
+    // diferencia de una subida) no cambia cómo se cobra todos los meses: si se
+    // pisara el método, el débito dejaría de seguir al plan.
+    if (!planService.debitoActivo(sub)) await sub.update({ metodoPago: 'transferencia' });
 
     res.status(201).json({
-      pago,
+      pago: { id: pago.id, monto, concepto: c.concepto, plan: plan.codigo, estado: pago.estado },
+      monto,
       datosTransferencia: DATOS_TRANSFERENCIA,
       message: 'Recibimos el aviso. Apenas confirmemos la transferencia se activa la cuenta.',
     });
@@ -336,15 +539,44 @@ async function acreditarCobroMp(subscriptionId, pagoMp, t) {
   if (yaEsta?.estado === 'aprobado') return null;
 
   const fila = yaEsta || await filaDelCobro(sub, pagoMp, t);
+  // Con la fila: el plan, lo que se cotizó (plan entero o diferencia) y la
+  // elección de empleados, y lo que cobró Mercado Pago, que es lo que entró.
   const periodo = await planService.acreditarPago({
     subscription: sub,
     planId: fila ? fila.planId : null,
+    concepto: fila?.concepto || null,
+    monto: fila ? pagoMp.monto : null,
+    empleadosSuspender: fila ? (planService.leerLista(fila.empleadosSuspender) ?? undefined) : undefined,
   }, t);
+
+  let revisar = periodo.revisar;
+  if (!fila) {
+    /*
+     * Un cobro sin pedido: el débito automático del mes. Renueva el plan con el
+     * que la cuenta sigue y su monto tiene que ser el de ese plan, porque
+     * Stocker se lo pone en cada cambio (decisión 20). Si no coincide —Mercado
+     * Pago no aceptó la actualización, o el débito es de antes de esto— se
+     * acredita igual (la plata ya entró), queda marcado para el backoffice y
+     * se fuerza a mandarle el monto de nuevo.
+     */
+    const planDelPeriodo = await Plan.findByPk(periodo.planDelPeriodo, { transaction: t });
+    const esperado = planService.precioPara(sub, planDelPeriodo);
+    if (esperado != null && Math.abs(Number(pagoMp.monto) - esperado) >= planService.TOLERANCIA) {
+      revisar = `Mercado Pago cobró $${Number(pagoMp.monto).toLocaleString('es-AR')} sin un pedido que ` +
+        `coincida y el ${planDelPeriodo?.nombre || 'plan'} sale $${esperado.toLocaleString('es-AR')}: ` +
+        'se acreditó un período igual.';
+      if (planService.debitoActivo(sub)) {
+        await Subscription.update({ debitoPendienteDesde: new Date() }, { where: { id: sub.id }, transaction: t });
+        t.afterCommit(() => { planService.programarSincronizacion(sub.id); });
+      }
+    }
+  }
 
   const datos = {
     estado: 'aprobado', proveedorRef: pagoMp.id, monto: pagoMp.monto,
     periodoDesde: periodo.desde, periodoHasta: periodo.hasta,
     fecha: pagoMp.fecha ? new Date(pagoMp.fecha) : new Date(),
+    aRevisar: revisar ? revisar.slice(0, 300) : null,
   };
   if (fila) {
     await fila.update(datos, { transaction: t });
@@ -509,14 +741,19 @@ const cambiarRenovacion = async (req, res, next) => {
 
     // Si había débito automático en Mercado Pago hay que darlo de baja allá
     // también, o el cobro sigue llegando aunque acá figure cancelado.
+    let debitoCancelado = false;
     if (!activa && suscripcion.metodoPago === 'mercadopago' && suscripcion.proveedorRef) {
-      await mp.cancelarSuscripcionRecurrente(suscripcion.proveedorRef)
-        .catch((e) => log.warn('billing', 'no se pudo cancelar el débito en Mercado Pago', { error: e.message }));
+      debitoCancelado = await mp.cancelarSuscripcionRecurrente(suscripcion.proveedorRef)
+        .then(() => true)
+        .catch((e) => { log.warn('billing', 'no se pudo cancelar el débito en Mercado Pago', { error: e.message }); return false; });
     }
 
     await suscripcion.update({
       renovacionAutomatica: activa,
       canceladaEn: activa ? null : new Date(),
+      // Cancelado allá, ya no hay débito que seguir: sin esto, reactivar la
+      // renovación haría que Stocker le mande montos a un débito cancelado.
+      ...(debitoCancelado ? { proveedorRef: null, debitoMonto: null, debitoPendienteDesde: null } : {}),
     });
 
     res.json({
@@ -591,7 +828,7 @@ const descargarRecibo = async (req, res, next) => {
 };
 
 module.exports = {
-  getPlanes, getFeatures, getSuscripcion, getPagos, crearCheckout,
+  getPlanes, getFeatures, getSuscripcion, getPagos, getCotizacion, crearCheckout,
   informarTransferencia, getDatosTransferencia, webhookMercadoPago,
   cambiarRenovacion, solicitarBaja, cancelarBaja, descargarRecibo, verificarPagos,
 };
