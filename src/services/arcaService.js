@@ -87,6 +87,19 @@ function tipoComprobante({ condicionEmisor, condicionReceptor, clienteCuit }) {
    */
   return determineInvoiceType(clienteCuit);
 }
+
+/*
+ * Qué letras puede emitir un CUIT según su condición frente al IVA. Es la misma
+ * regla que tipoComprobante: un monotributista o exento sólo emite C; un
+ * responsable inscripto, A o B. Sin condición cargada no se restringe nada,
+ * porque no hay con qué decidir.
+ */
+function letrasPermitidas(condicionEmisor) {
+  const emisor = String(condicionEmisor || '').toLowerCase();
+  if (/monotribut|exento|no alcanzado/.test(emisor)) return ['C'];
+  if (/responsable inscripto/.test(emisor)) return ['A', 'B'];
+  return ['A', 'B', 'C'];
+}
 /*
  * La alícuota con la que se factura, en un solo lugar.
  *
@@ -1595,7 +1608,7 @@ function debugConfig() {
 }
 
 module.exports = {
-  tipoComprobante,
+  tipoComprobante, letrasPermitidas,
   solicitarCAE, determineInvoiceType, calcularIVA,
   CBTE_TIPO, CLASES, tipoDeComprobante,
   // Lo que la factura impresa tiene que decir igual que el pedido a ARCA.

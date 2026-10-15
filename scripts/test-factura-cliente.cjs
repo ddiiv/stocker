@@ -188,7 +188,10 @@ const CUIT_IMPOSTOR = '27222222228';
      * estaban.
      */
     if (cuitPrincipal) {
-      cuitAntes = { ingresosBrutos: cuitPrincipal.ingresosBrutos, inicioActividades: cuitPrincipal.inicioActividades };
+      cuitAntes = {
+        ingresosBrutos: cuitPrincipal.ingresosBrutos, inicioActividades: cuitPrincipal.inicioActividades,
+        condicionIva: cuitPrincipal.condicionIva,
+      };
     }
     const put = cuitPrincipal
       ? await api('PUT', `/api/business-cuits/${cuitPrincipal.id}`, { ingresosBrutos: `  ${IIBB_AL_EMITIR} `, inicioActividades: '2019-03-01' })
@@ -386,6 +389,63 @@ const CUIT_IMPOSTOR = '27222222228';
       [(await delMes('2031-10-01', '2031-10-31')).ids.includes(guardada.id), (await delMes('2031-09-01', '2031-09-30')).ids.includes(guardada.id)]);
     chk('una fecha que no se entiende es un 400, no un 500', 400,
       (await api('GET', '/api/invoices?desde=2031-13-45&hasta=2031-12-01')).status);
+
+    tit('8. FACTURAR UNA VENTA QUE SE COBRÓ SIN CLIENTE');
+    /*
+     * El cliente se busca o se da de alta en el modal y se manda su id: queda
+     * asociado a la venta y la factura sale con los datos de su ficha.
+     */
+    const sinCliente = await vender({});
+    const asociada = await api('POST', '/api/invoices', {
+      saleId: sinCliente.json.id, clientId: cliente.id, enviarEmail: false, enviarWhatsapp: false,
+    });
+    // El domicilio de hoy: la sección 5 se lo cambió a la ficha.
+    chk('se emite con el cliente elegido', [201, CUIT_CLIENTE, (await Client.findByPk(cliente.id)).direccion],
+      [asociada.status, asociada.json?.clienteCuit, asociada.json?.clienteDireccion]);
+    chk('y la venta queda a su nombre', cliente.id, (await Sale.findByPk(sinCliente.json.id)).clientId);
+
+    const otraSinCliente = await vender({});
+    chk('un cliente que no es del negocio se rechaza', 400, (await api('POST', '/api/invoices', {
+      saleId: otraSinCliente.json.id, clientId: 999999999, enviarEmail: false, enviarWhatsapp: false,
+    })).status);
+    chk('  y la venta no queda con cliente', null, (await Sale.findByPk(otraSinCliente.json.id)).clientId);
+
+    const conOtroCliente = await vender({ clientId: cliente.id });
+    const otroCliente = await Client.create({ businessId: negocio.id, nombre: 'QA Otro', cuit: CUIT_IMPOSTOR });
+    const cambioDeCliente = await api('POST', '/api/invoices', {
+      saleId: conOtroCliente.json.id, clientId: otroCliente.id, enviarEmail: false, enviarWhatsapp: false,
+    });
+    await otroCliente.destroy();
+    chk('a una venta con cliente no se le cambia el cliente al facturar', 409, cambioDeCliente.status);
+
+    tit('9. SÓLO LAS LETRAS QUE EL EMISOR PUEDE EMITIR');
+    /*
+     * Un responsable inscripto emite A o B; un monotributista, C. La lista de
+     * CUITs lo dice para que el modal no ofrezca lo demás, y la emisión lo
+     * rechaza igual si alguien lo manda.
+     */
+    const letrasDelPrincipal = async () => (await api('GET', '/api/business-cuits')).json
+      ?.find((c) => c.id === cuitPrincipal.id)?.letras;
+    const emitir = async (tipoOverride, extra = {}) => {
+      const venta = await vender(extra);
+      return api('POST', '/api/invoices', {
+        saleId: venta.json.id, tipoOverride, businessCuitId: cuitPrincipal.id, enviarEmail: false, enviarWhatsapp: false,
+      });
+    };
+
+    await BusinessCuit.update({ condicionIva: 'IVA Responsable Inscripto' }, { where: { id: cuitPrincipal.id } });
+    chk('responsable inscripto: la lista ofrece A y B', ['A', 'B'], await letrasDelPrincipal());
+    const cDeRi = await emitir('C');
+    chk('  y emitir C se rechaza diciendo por qué', [400, true], [cDeRi.status, /sólo puede emitir factura A o B/.test(cDeRi.json?.message || '')]);
+    chk('  la A sin CUIT del cliente también', 400, (await emitir('A')).status);
+    const bDeRi = await emitir('B');
+    chk('  la B sale', [201, 'B'], [bDeRi.status, bDeRi.json?.tipo]);
+
+    await BusinessCuit.update({ condicionIva: 'Monotributo' }, { where: { id: cuitPrincipal.id } });
+    chk('monotributista: la lista ofrece sólo C', ['C'], await letrasDelPrincipal());
+    chk('  y emitir A o B se rechaza', [400, 400], [(await emitir('A', { clientId: cliente.id })).status, (await emitir('B')).status]);
+    const auto = await emitir(undefined);
+    chk('  sin elegir, sale C', [201, 'C'], [auto.status, auto.json?.tipo]);
 
   } finally {
     tit('Limpieza');

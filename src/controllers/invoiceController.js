@@ -3,7 +3,7 @@ const fse = require('fs-extra');
 const sequelize = require('../config/database');
 const { Invoice, InvoiceItem, Sale, SaleItem, Business, Client, BusinessCuit, BusinessArcaConfig, BusinessLocation, SalePayment, ArcaIntento } = require('../models');
 const { nextInvoiceNumber, crearConNumero } = require('../services/invoiceNumberService');
-const { tipoComprobante, solicitarCAE, determineInvoiceType, calcularIVA } = require('../services/arcaService');
+const { tipoComprobante, letrasPermitidas, solicitarCAE, determineInvoiceType, calcularIVA } = require('../services/arcaService');
 const { lookupCuit } = require('../services/arcaLookupService');
 const { generateInvoicePdf, generateInvoicePdfBuffer, destinatariosDe } = require('../services/pdfService');
 const { contextoDeImpresion, domicilioComercial, fotoDelEmisor } = require('../services/facturaPdf');
@@ -159,7 +159,7 @@ const getInvoice = async (req, res, next) => {
 const createInvoice = async (req, res, next) => {
   const t = await sequelize.transaction();
   try {
-    const { saleId, clienteCuit, clienteEmail, clienteDireccion, tipoOverride, enviarEmail = true, enviarWhatsapp = true, businessCuitId } = req.body;
+    const { saleId, clienteCuit, clienteEmail, clienteDireccion, tipoOverride, enviarEmail = true, enviarWhatsapp = true, businessCuitId, clientId } = req.body;
 
     /*
      * La venta se traba antes de mirar si ya tiene factura.
@@ -205,6 +205,19 @@ const createInvoice = async (req, res, next) => {
       where: { saleId: sale.id }, transaction: t,
     });
     const cobroDestino = textoDeDestinatarios(pagosDeLaVenta);
+
+    /*
+     * La venta se cobró sin cliente y ahora piden factura: se busca o se da de
+     * alta en el modal y queda asociado a la venta, así la factura sale con los
+     * datos de la ficha y la compra aparece en su historial. Sólo si la venta
+     * no tenía cliente: cambiarle el cliente a una venta no es facturar.
+     */
+    if (clientId && Number(clientId) !== Number(sale.clientId)) {
+      if (sale.clientId) throw Object.assign(new Error('Esta venta ya tiene un cliente asociado.'), { status: 409 });
+      const elegido = await Client.findOne({ where: { id: clientId, businessId: req.auth.businessId }, transaction: t });
+      if (!elegido) throw Object.assign(new Error('Cliente no encontrado.'), { status: 400 });
+      await sale.update({ clientId: elegido.id }, { transaction: t });
+    }
     sale.cliente = sale.clientId
       ? await Client.findOne({ where: { id: sale.clientId, businessId: req.auth.businessId }, transaction: t })
       : null;
@@ -286,6 +299,21 @@ const createInvoice = async (req, res, next) => {
       ? await BusinessArcaConfig.findOne({ where: { businessCuitId: emisor.id } })
       : null;
     const condicionEmisor = configEmisor?.condicionIva || emisor?.condicionIva || business.condicionIva || null;
+
+    /*
+     * La letra elegida a mano tiene que poder emitirla este CUIT: un
+     * responsable inscripto no emite C ni un monotributista A o B, y ARCA lo
+     * rechazaría después de gastar el pedido. La A, además, va a un CUIT.
+     */
+    if (tipoOverride) {
+      const letras = letrasPermitidas(condicionEmisor);
+      if (!letras.includes(tipoOverride)) {
+        throw Object.assign(new Error(`Este CUIT (${condicionEmisor}) sólo puede emitir factura ${letras.join(' o ')}.`), { status: 400 });
+      }
+      if (tipoOverride === 'A' && !finalCuit) {
+        throw Object.assign(new Error('La factura A necesita un cliente con CUIT.'), { status: 400 });
+      }
+    }
 
     const tipo = tipoOverride || tipoComprobante({
       condicionEmisor,

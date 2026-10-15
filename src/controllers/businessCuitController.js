@@ -1,5 +1,6 @@
 const { exigirLibre } = require('../services/cuitRegistry');
-const { BusinessCuit, sequelize } = require('../models');
+const { BusinessCuit, BusinessArcaConfig, Business, sequelize } = require('../models');
+const { letrasPermitidas } = require('../services/arcaService');
 const seq = require('../config/database');
 const { exigirCupo } = require('../services/planService');
 const { prepararLogo } = require('../utils/logoFactura');
@@ -38,11 +39,21 @@ function datosFiscales(body) {
 // GET /api/business-cuits
 const list = async (req, res, next) => {
   try {
-    const rows = await BusinessCuit.findAll({
-      where: { businessId: req.auth.businessId },
-      order: [['esPrincipal', 'DESC'], ['nombre', 'ASC']],
-    });
-    res.json(rows);
+    const [rows, configs, negocio] = await Promise.all([
+      BusinessCuit.findAll({
+        where: { businessId: req.auth.businessId },
+        order: [['esPrincipal', 'DESC'], ['nombre', 'ASC']],
+      }),
+      BusinessArcaConfig.findAll({ where: { businessId: req.auth.businessId }, attributes: ['businessCuitId', 'condicionIva'] }),
+      Business.findByPk(req.auth.businessId, { attributes: ['condicionIva'] }),
+    ]);
+    // `letras`: qué tipos de factura puede emitir cada CUIT, con la misma
+    // condición que usa la emisión (config ARCA, después el CUIT, después el negocio).
+    const condicionArca = new Map(configs.map((c) => [c.businessCuitId, c.condicionIva]));
+    res.json(rows.map((r) => ({
+      ...r.toJSON(),
+      letras: letrasPermitidas(condicionArca.get(r.id) || r.condicionIva || negocio?.condicionIva),
+    })));
   } catch (e) { next(e); }
 };
 
