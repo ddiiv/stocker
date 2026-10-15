@@ -1,11 +1,13 @@
 import { useEffect, useState } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
-import { ArrowLeft, ReceiptText, CheckCircle2, RefreshCw, Printer, NotebookPen, Ban } from "lucide-react";
+import { ArrowLeft, ReceiptText, CheckCircle2, RefreshCw, Printer, NotebookPen, Ban, UserPlus } from "lucide-react";
 import { getSale, cobrarSale, printSaleTicket, anularSale } from "../services/salesService";
 import { mensajeDeError } from "../utils/errores";
 import { generateInvoiceFromSale } from "../services/invoiceService";
 import { fetchBusinessCuits } from "../services/businessCuitService";
 import { fetchPaymentMethods } from "../services/paymentMethodService";
+import { fetchClients } from "../services/clientService";
+import ClienteRapidoModal from "../components/clients/ClienteRapidoModal";
 import PaymentSplit, { lineasParaApi, calcularTotales } from "../components/sales/PaymentSplit";
 import { medioPagoBadge } from "../utils/paymentBadge";
 import { formatCurrency, formatDate } from "../utils/formatters";
@@ -23,7 +25,13 @@ export default function SaleDetailPage() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [invoiceModal, setInvoiceModal] = useState(false);
-  const [invoiceForm, setInvoiceForm] = useState({ clienteCuit: "", clienteEmail: "", clienteDireccion: "", tipo: "B", enviarEmail: true, enviarWhatsapp: true, businessCuitId: "" });
+  // tipo "" = la letra la decide el backend según el emisor y el cliente.
+  const [invoiceForm, setInvoiceForm] = useState({ clienteEmail: "", tipo: "", enviarEmail: true, enviarWhatsapp: true, businessCuitId: "" });
+  // Venta cobrada sin cliente: el que se elige o se da de alta para facturarle.
+  const [clienteSel, setClienteSel] = useState(null);
+  const [buscarCliente, setBuscarCliente] = useState("");
+  const [clientes, setClientes] = useState([]);
+  const [altaCliente, setAltaCliente] = useState(false);
   const [invoiceError, setInvoiceError] = useState("");
   const [businessCuits, setBusinessCuits] = useState([]);
   const [payModal, setPayModal] = useState(false);
@@ -49,7 +57,7 @@ export default function SaleDetailPage() {
     try {
       const s = await getSale(numero);
       setSale(s);
-      if (s?.cliente) setInvoiceForm((f) => ({ ...f, clienteCuit: s.cliente.cuit || "", clienteEmail: s.cliente.email || "" }));
+      if (s?.cliente) setInvoiceForm((f) => ({ ...f, clienteEmail: s.cliente.email || "" }));
     } catch (e) {
       setLoadError(mensajeDeError(e, "No se pudo cargar el comprobante."));
     } finally {
@@ -70,6 +78,25 @@ export default function SaleDetailPage() {
       }).catch(() => {});
     }
   }, [invoiceModal]);
+
+  // Mismo buscador que la caja: por nombre, apellido, CUIT o mail, en el servidor.
+  useEffect(() => {
+    const q = buscarCliente.trim();
+    if (q.length < 2) { setClientes([]); return undefined; }
+    let vigente = true;
+    const id = setTimeout(() => {
+      fetchClients(q, { limit: 8 })
+        .then((c) => { if (vigente) setClientes(c.data || c); })
+        .catch(() => { if (vigente) setClientes([]); });
+    }, 300);
+    return () => { vigente = false; clearTimeout(id); };
+  }, [buscarCliente]);
+
+  function elegirCliente(c) {
+    setClienteSel(c);
+    setBuscarCliente("");
+    setInvoiceForm((f) => ({ ...f, clienteEmail: c?.email || "" }));
+  }
 
   /*
    * Cobro de una venta abierta.
@@ -140,13 +167,21 @@ export default function SaleDetailPage() {
     setInvoiceError("");
     setBusy(true);
     try {
-      await generateInvoiceFromSale(sale, { ...invoiceForm, businessCuitId: invoiceForm.businessCuitId ? Number(invoiceForm.businessCuitId) : undefined });
+      await generateInvoiceFromSale(sale, {
+        ...invoiceForm,
+        tipoOverride: invoiceForm.tipo || undefined,
+        clientId: !sale.cliente && clienteSel ? clienteSel.id : undefined,
+        businessCuitId: invoiceForm.businessCuitId ? Number(invoiceForm.businessCuitId) : undefined,
+      });
+      setClienteSel(null);
       setInvoiceModal(false);
       await load();
     } catch (err) {
       setInvoiceError(err.response?.data?.message || "Error al generar la factura.");
     } finally { setBusy(false); }
   }
+
+  const letras = businessCuits.find((c) => String(c.id) === String(invoiceForm.businessCuitId))?.letras || ["A", "B", "C"];
 
   if (loading) return <div className="card h-64 animate-pulse bg-paper-200/60" />;
 
@@ -427,13 +462,54 @@ export default function SaleDetailPage() {
       <Modal open={invoiceModal} onClose={() => setInvoiceModal(false)} title="Generar factura ARCA">
         <div className="space-y-4">
           {invoiceError && <p className="rounded-md bg-brick-50 px-3 py-2 text-sm text-brick-500">{invoiceError}</p>}
-          <p className="text-sm text-ink-600">Completá los datos del cliente para la factura. Si tiene CUIT se generará Factura A, sino Factura B.</p>
+          <div>
+            <label className="label">Cliente</label>
+            {sale.cliente || clienteSel ? (
+              <div className="flex items-center justify-between rounded-xl bg-paper-200 px-3 py-2 text-sm text-ink-900">
+                <span>
+                  {`${(sale.cliente || clienteSel).nombre || ""} ${(sale.cliente || clienteSel).apellido || ""}`.trim() || "Cliente"}
+                  {(sale.cliente || clienteSel).cuit && <span className="text-ink-500"> · CUIT {(sale.cliente || clienteSel).cuit}</span>}
+                </span>
+                {!sale.cliente && (
+                  <button type="button" className="btn-ghost px-2 py-1 text-xs" onClick={() => elegirCliente(null)}>Cambiar</button>
+                )}
+              </div>
+            ) : (
+              <>
+                <input
+                  className="input"
+                  placeholder="Buscar por nombre o CUIT…"
+                  value={buscarCliente}
+                  onChange={(e) => setBuscarCliente(e.target.value)}
+                />
+                {buscarCliente.trim().length >= 2 && (
+                  <div className="mt-1 max-h-40 overflow-y-auto rounded-xl border border-line">
+                    {clientes.map((c) => (
+                      <button key={c.id} type="button" className="block w-full px-3 py-2 text-left text-sm hover:bg-paper-100" onClick={() => elegirCliente(c)}>
+                        {c.nombre} {c.apellido || ""}{c.cuit && <span className="text-ink-500"> · {c.cuit}</span>}
+                      </button>
+                    ))}
+                    {clientes.length === 0 && <p className="px-3 py-2 text-xs text-ink-500">No hay ningún cliente con ese nombre o CUIT.</p>}
+                  </div>
+                )}
+                {/* Se cierra la factura mientras se da de alta: dos modales a la vez se pelean el teclado. */}
+                <button
+                  type="button"
+                  className="btn-ghost mt-2 w-full justify-center border border-dashed border-line text-xs"
+                  onClick={() => { setInvoiceModal(false); setAltaCliente(true); }}
+                >
+                  <UserPlus size={13} /> Registrar un cliente nuevo
+                </button>
+                <p className="mt-1 text-xs text-ink-500">Sin cliente, la factura sale a consumidor final.</p>
+              </>
+            )}
+          </div>
           <div>
             <label className="label">Emisor (CUIT del negocio)</label>
             <select
               className="input"
               value={invoiceForm.businessCuitId}
-              onChange={(e) => setInvoiceForm({ ...invoiceForm, businessCuitId: e.target.value })}
+              onChange={(e) => setInvoiceForm({ ...invoiceForm, businessCuitId: e.target.value, tipo: "" })}
             >
               {businessCuits.length === 0 && <option value="">— Sin CUITs cargados —</option>}
               {businessCuits.map((c) => (
@@ -442,21 +518,22 @@ export default function SaleDetailPage() {
                 </option>
               ))}
             </select>
-            {businessCuits.length > 1 && (
-              <p className="mt-1 text-xs text-ink-500">Elegí desde cuál de tus CUITs se emite esta factura.</p>
-            )}
           </div>
           <div>
             <label className="label">Tipo de factura</label>
-            <select className="input" value={invoiceForm.tipo} onChange={(e) => setInvoiceForm({ ...invoiceForm, tipo: e.target.value })}>
-              <option value="A">Factura A (con CUIT)</option>
-              <option value="B">Factura B (consumidor final)</option>
-              <option value="C">Factura C (monotributista)</option>
-            </select>
+            {letras.length === 1 ? (
+              <p className="input bg-paper-100">Factura {letras[0]}</p>
+            ) : (
+              <select className="input" value={invoiceForm.tipo} onChange={(e) => setInvoiceForm({ ...invoiceForm, tipo: e.target.value })}>
+                <option value="">Automática (según el emisor y el cliente)</option>
+                {letras.map((l) => <option key={l} value={l}>Factura {l}</option>)}
+              </select>
+            )}
+            {letras.length === 3 && (
+              <p className="mt-1 text-xs text-ink-500">Cargá la condición frente al IVA de este CUIT para ver sólo las facturas que puede emitir.</p>
+            )}
           </div>
-          <div><label className="label">CUIT del cliente</label><input className="input" value={invoiceForm.clienteCuit} onChange={(e) => setInvoiceForm({ ...invoiceForm, clienteCuit: e.target.value })} placeholder="20-12345678-3" /></div>
-          <div><label className="label">Email del cliente</label><input className="input" type="email" value={invoiceForm.clienteEmail} onChange={(e) => setInvoiceForm({ ...invoiceForm, clienteEmail: e.target.value })} /></div>
-          <div><label className="label">Dirección del cliente</label><input className="input" value={invoiceForm.clienteDireccion} onChange={(e) => setInvoiceForm({ ...invoiceForm, clienteDireccion: e.target.value })} /></div>
+          <div><label className="label">Email para enviarla</label><input className="input" type="email" value={invoiceForm.clienteEmail} onChange={(e) => setInvoiceForm({ ...invoiceForm, clienteEmail: e.target.value })} /></div>
           <div className="space-y-2">
             <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={invoiceForm.enviarEmail} onChange={(e) => setInvoiceForm({ ...invoiceForm, enviarEmail: e.target.checked })} /> Enviar factura por email</label>
             <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={invoiceForm.enviarWhatsapp} onChange={(e) => setInvoiceForm({ ...invoiceForm, enviarWhatsapp: e.target.checked })} /> Notificar por WhatsApp</label>
@@ -467,6 +544,12 @@ export default function SaleDetailPage() {
           </div>
         </div>
       </Modal>
+
+      <ClienteRapidoModal
+        open={altaCliente}
+        onClose={() => { setAltaCliente(false); setInvoiceModal(true); }}
+        onCreado={elegirCliente}
+      />
     </div>
   );
 }

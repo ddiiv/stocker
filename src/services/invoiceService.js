@@ -18,10 +18,12 @@ export async function fetchInvoices({ desde, hasta, limit = 100 } = {}) {
   };
 }
 
-export async function generateInvoiceFromSale(sale, { tipo, clienteCuit, clienteEmail, clienteDireccion, enviarEmail = true, enviarWhatsapp = true, businessCuitId } = {}) {
+// `tipoOverride` vacío deja que el backend elija la letra; `clientId` asocia un
+// cliente a una venta que se cobró sin él.
+export async function generateInvoiceFromSale(sale, { tipoOverride, clientId, clienteCuit, clienteEmail, clienteDireccion, enviarEmail = true, enviarWhatsapp = true, businessCuitId } = {}) {
   const { data } = await http.post("/invoices", {
     saleId: sale.id,
-    tipo, clienteCuit, clienteEmail, clienteDireccion,
+    tipoOverride, clientId, clienteCuit, clienteEmail, clienteDireccion,
     enviarEmail, enviarWhatsapp,
     businessCuitId: businessCuitId || undefined,
   });
