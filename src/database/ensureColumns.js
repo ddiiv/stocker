@@ -548,6 +548,29 @@ const INDICES = [
     unico: true,
     where: { numeroVenta: { [Op.not]: null } },
   },
+  /*
+   * Las restricciones únicas de database/schema*.sql que `sequelize.sync` no crea.
+   *
+   * Una base creada por el arranque (no con el .sql) no las tenía, y la
+   * numeración depende de ellas: crearConNumero reintenta cuando choca contra
+   * el índice, y sin índice no choca nunca. Ocho cotizaciones a la vez salían
+   * con tres números. Con los mismos nombres que el .sql, donde ya están no
+   * se tocan; si hay duplicados viejos, se avisa y se reintenta al arrancar.
+   */
+  ...[
+    ['sales', 'uq_sales_biz_numero', ['businessId', 'numero']],
+    ['invoices', 'uq_invoices_biz_numero', ['businessId', 'numero']],
+    ['businesses', 'uq_businesses_email', ['email']],
+    ['employees', 'uq_employees_email', ['businessId', 'email']],
+    ['roles', 'uq_roles_biz_nombre', ['businessId', 'nombre']],
+    ['variant_types', 'uq_vartypes_biz_nombre', ['businessId', 'nombre']],
+    ['business_cuits', 'uq_bizcuits_biz_cuit', ['businessId', 'cuit']],
+    ['business_arca_configs', 'uq_arcaconfig_cuit', ['businessCuitId']],
+  ].map(([tabla, nombre, columnas]) => ({
+    tabla, nombre, columnas, unico: true,
+    requiere: `SELECT COUNT(*) AS faltan FROM (SELECT 1 AS x FROM ${tabla} GROUP BY ${columnas.join(', ')} HAVING COUNT(*) > 1) d`,
+    requierePg: `SELECT COUNT(*) AS faltan FROM (SELECT 1 AS x FROM ${tabla} GROUP BY ${columnas.map((c) => `"${c}"`).join(', ')} HAVING COUNT(*) > 1) d`,
+  })),
 ];
 
 /*

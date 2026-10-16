@@ -14,6 +14,7 @@ const {
   Business, BusinessLocation, Product, ProductVariant, VariantStock,
   Sale, SaleItem, SalePayment, StockMovement, PaymentMethod,
 } = require('../src/models');
+const { Op } = require('sequelize');
 const precios = require('../src/services/precioService');
 const stock = require('../src/services/stockService');
 
@@ -140,7 +141,10 @@ function sesion() {
       items: [{ variantId: grande.id, precioMinorista: -5 }],
     });
     chk('un precio negativo se rechaza', 400, negativo.status);
-    const ajeno = await api('POST', '/api/products/precios-masivo', { items: [{ variantId: 1, precioMinorista: 1 }] });
+    // De otro negocio de verdad (el id 1 es del demo en una base recién creada); sin otro negocio, una que no existe.
+    const prodAjeno = await Product.findOne({ where: { businessId: { [Op.ne]: negocio.id } } });
+    const varAjena = prodAjeno && await ProductVariant.findOne({ where: { productId: prodAjeno.id } });
+    const ajeno = await api('POST', '/api/products/precios-masivo', { items: [{ variantId: varAjena?.id ?? 2147483647, precioMinorista: 1 }] });
     chk('una variante de otro negocio, también', 404, ajeno.status);
 
     /*

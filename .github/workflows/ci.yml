@@ -1,0 +1,35 @@
+# Cada push a la rama `backend`: Postgres limpio, el backend levantado como en
+# Railway (las tablas las crea el arranque) y las pruebas de scripts/ci-pruebas.sh.
+name: ci
+on:
+  push:
+  pull_request:
+
+jobs:
+  pruebas:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env: { POSTGRES_PASSWORD: ci, POSTGRES_DB: stocker }
+        ports: ["5432:5432"]
+        options: --health-cmd "pg_isready -U postgres" --health-interval 5s --health-retries 10
+    env:
+      DATABASE_URL: postgres://postgres:ci@127.0.0.1:5432/stocker
+      DB_SSL: "false"
+      JWT_SECRET: ci-${{ github.run_id }}-0123456789abcdef0123456789abcdef0123456789abcdef
+      NODE_ENV: development
+      PORT: "3999"
+      API: http://127.0.0.1:3999
+      ARCA_MOCK: "true"
+      PDF_STORAGE_PATH: /tmp/pdfs
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 24, cache: npm }
+      - run: npm ci
+      - run: npm audit --omit=dev --audit-level=critical
+      - run: ./scripts/ci-pruebas.sh
+      - if: failure()
+        run: grep -v '^\[debug\]' backend.log | tail -200

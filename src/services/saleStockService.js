@@ -122,11 +122,13 @@ async function requerimientos(items, t, { trabar = false } = {}) {
   }
 
   // Ahora sí: trabadas en orden de id, el mismo para todas las ventas.
+  // NO KEY UPDATE y no UPDATE: el ítem de la venta ya tomó KEY SHARE sobre la variante
+  // (su clave foránea), y FOR UPDATE choca con eso → deadlock entre dos cajas (40P01).
   const ids = [...new Set(pedidos.map((p) => p.variantId))].sort((a, b) => a - b);
   const porId = new Map();
   for (const id of ids) {
     const v = await ProductVariant.findByPk(id, {
-      transaction: t, ...(trabar ? { lock: t.LOCK.UPDATE } : {}),
+      transaction: t, ...(trabar ? { lock: t.LOCK.NO_KEY_UPDATE } : {}),
     });
     if (v) porId.set(id, v);
   }
