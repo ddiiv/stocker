@@ -79,7 +79,14 @@ const tit = (t) => console.log(`\n\x1b[1m${t}\x1b[0m`);
     chk('"Mujér" es el mismo género que "Mujer"', ['Mujer'],
       (await pedir('PUT', '/catalogo/listas', { generos: ['Mujer', 'Mujér'] })).json?.generos);
 
-    tit('3. LO QUE NO SE ACEPTA');
+    tit('3. SE BUSCA POR CATEGORÍA Y POR GÉNERO');
+    const ids = async (q) => ((await pedir('GET', `/products?${q}`)).json?.data || []).map((p) => p.id);
+    chk('escribiendo la categoría en el buscador', true, (await ids('search=categor%C3%ADa%20%C3%BAnica')).includes(prod.id));
+    chk('escribiendo el género', true, (await ids(`search=${encodeURIComponent('QA Género')}`)).includes(prod.id));
+    chk('con el filtro de categoría', true, (await ids(`categoria=${encodeURIComponent('QA Categoría Única')}`)).includes(prod.id));
+    chk('y el de género deja afuera a otro género', false, (await ids('genero=Otro')).includes(prod.id));
+
+    tit('4. LO QUE NO SE ACEPTA');
     chk('algo que no es una lista', 400, (await pedir('PUT', '/catalogo/listas', { categorias: 'Remeras' })).status);
     chk('un género de más de 40 caracteres (el largo del campo del producto)', 400,
       (await pedir('PUT', '/catalogo/listas', { generos: ['x'.repeat(41)] })).status);

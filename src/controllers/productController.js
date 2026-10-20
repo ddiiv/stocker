@@ -194,6 +194,8 @@ const getProducts = async (req, res, next) => {
           { titulo: { [like]: texto } },
           { sku:    { [like]: texto } },
           { skuAgrupador: { [like]: texto } },
+          { categoria: { [like]: texto } },
+          { genero: { [like]: texto } },
           ...(idsPorVariante.length ? [{ id: { [Op.in]: idsPorVariante } }] : []),
         ],
       });
