@@ -114,7 +114,8 @@ const { RELLENOS } = (() => {
 
   tit('4. CADA RELLENO APUNTA A UNA COLUMNA QUE EXISTE');
   for (const r of RELLENOS) {
-    if (!r.cuandoSeAgrega) { chk(`"${r.descripcion}" declara cuandoSeAgrega`, false); continue; }
+    // Uno con `marca` corre una vez aunque no se agregue ninguna columna (ver aplicarRellenos).
+    if (!r.cuandoSeAgrega) { chk(`"${r.descripcion}" declara cuandoSeAgrega o una marca`, Boolean(r.marca)); continue; }
     const [tabla, columna] = r.cuandoSeAgrega.split('.');
     const declarada = Boolean(COLUMNAS_ESPERADAS[tabla]?.[columna]);
     chk(`"${r.descripcion}" — ${r.cuandoSeAgrega} está en COLUMNAS_ESPERADAS`, declarada,

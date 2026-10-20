@@ -37,7 +37,7 @@ node -e '
   })().catch((e) => { console.error(e); process.exit(1); });'
 
 PRUEBAS=(
-  2fa-confianza aislamiento alta-stock arca-emision arca-idempotencia arca-ptosventa avisos-venta
+  2fa-confianza aislamiento alta-stock arca-emision baja-sku arca-idempotencia arca-ptosventa avisos-venta
   cambio-plan carga clientes-cuit cobro-cuit cola-online configuracion-cuenta curvas enlaces-legales
   etiquetas factura-cliente factura-impresa factura-qr factura-transparencia feria inactividad integraciones-backoffice listas-producto
   legales mayorista ml-postventa ml-token packs pagos-caja planes plataformas precios rellenos reposicion

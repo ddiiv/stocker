@@ -597,6 +597,30 @@ const CODIGOS_CON_TOPE = PLANES_CON_TOPE_DE_SESIONES.map((p) => `'${p.codigo}'`)
 const RELLENOS = [
   {
     /*
+     * Los SKU de lo que ya estaba dado de baja, liberados una vez.
+     *
+     * Desde v3.70 la baja renombra los SKU a "-BAJA<id>" (utils/codigoDeBaja);
+     * esto hace lo mismo con lo que se dio de baja antes, que seguía ocupando
+     * su código. Productos inactivos, sus variantes, y las variantes inactivas
+     * (las presentaciones de pack eliminadas). Nada vuelve a activarse en el
+     * sistema, así que renombrar no le quita nada a nadie.
+     */
+    descripcion: 'productos y variantes dados de baja: se liberan sus SKU',
+    marca: 'relleno:skus-de-baja',
+    sql: `UPDATE product_variants v SET sku = LEFT(v.sku, 100 - LENGTH('-BAJA' || v.id)) || '-BAJA' || v.id
+           WHERE (v.activo = false OR v."productId" IN (SELECT p.id FROM products p WHERE p.activo = false))
+             AND v.sku NOT LIKE ('%-BAJA' || v.id);
+          UPDATE products SET sku = LEFT(sku, 80 - LENGTH('-BAJA' || id)) || '-BAJA' || id
+           WHERE activo = false AND sku NOT LIKE ('%-BAJA' || id);`,
+    sqlMssql: `UPDATE v SET sku = LEFT(v.sku, 100 - LEN('-BAJA' + CAST(v.id AS varchar(20)))) + '-BAJA' + CAST(v.id AS varchar(20))
+                FROM product_variants v
+                WHERE (v.activo = 0 OR v.productId IN (SELECT p.id FROM products p WHERE p.activo = 0))
+                  AND v.sku NOT LIKE ('%-BAJA' + CAST(v.id AS varchar(20)));
+               UPDATE products SET sku = LEFT(sku, 80 - LEN('-BAJA' + CAST(id AS varchar(20)))) + '-BAJA' + CAST(id AS varchar(20))
+                WHERE activo = 0 AND sku NOT LIKE ('%-BAJA' + CAST(id AS varchar(20)));`,
+  },
+  {
+    /*
      * El tope de sesiones a los planes que ya existían.
      *
      * Los planes que nadie editó los corrige igual la semilla (sembrarPlanes),

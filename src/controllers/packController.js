@@ -18,6 +18,7 @@ const packs = require('../services/packService');
 const precioService = require('../services/precioService');
 const skuService = require('../services/skuService');
 const { exigirCupo } = require('../services/planService');
+const { liberarCodigos } = require('../utils/codigoDeBaja');
 const {
   ProductVariant, Product, PackComponente, BusinessLocation, VariantStock,
 } = require('../models');
@@ -1405,7 +1406,7 @@ const eliminar = async (req, res, next) => {
       where: { id: productId, businessId }, attributes: ['id', 'sku'], transaction: t,
     });
     const variantes = await ProductVariant.findAll({
-      where: { productId, businessId, esPack: true }, attributes: ['id'], transaction: t,
+      where: { productId, businessId, esPack: true }, attributes: ['id', 'sku'], transaction: t,
     });
     if (!producto || !variantes.length) {
       await t.rollback();
@@ -1416,6 +1417,8 @@ const eliminar = async (req, res, next) => {
     await PackComponente.destroy({ where: { packVariantId: ids }, transaction: t });
     await ProductVariant.update({ activo: false }, { where: { id: ids }, transaction: t });
     await Product.update({ activo: false }, { where: { id: productId }, transaction: t });
+    // El código del pack queda libre para armar otro igual (ver utils/codigoDeBaja).
+    await liberarCodigos({ producto, variantes }, t);
 
     await t.commit();
     return res.json({
@@ -1458,6 +1461,7 @@ const desarmar = async (req, res, next) => {
     await PackComponente.destroy({ where: { packVariantId: variantId }, transaction: t });
     // Sigue marcado como pack: ver el comentario de `eliminar`.
     await v.update({ activo: false }, { transaction: t });
+    await liberarCodigos({ variantes: [v] }, t);
     await t.commit();
     return res.json({
       ok: true,

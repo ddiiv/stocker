@@ -873,9 +873,22 @@ function sesion() {
     chk('tampoco entran al catálogo al quedar inactivas', 0,
       ((await api('GET', '/api/products?search=QAPACK3&limit=50')).json?.data || []).length);
 
-    tit('17. RECHAZOS DEL ALTA');
-    const skuTomado = await api('POST', '/api/packs', {
+    /*
+     * Dado de baja, su código queda libre (utils/codigoDeBaja): antes volver a
+     * armar un pack igual decía que el SKU ya existía, por uno que ya no se
+     * veía en ningún lado.
+     */
+    const otraVezElMismo = await api('POST', '/api/packs', {
       productId: prod.id, sku: 'QAPACK3', unidades: 3,
+    });
+    chk('dado de baja, su SKU queda libre para armar otro igual', 201, otraVezElMismo.status);
+    const packRearmado = await Product.findOne({ where: { businessId: negocio.id, sku: 'QAPACK3', activo: true } });
+    if (packRearmado) await api('DELETE', `/api/packs/producto/${packRearmado.id}`);
+
+    tit('17. RECHAZOS DEL ALTA');
+    // Un SKU de un producto que sigue activo: ése sí está tomado.
+    const skuTomado = await api('POST', '/api/packs', {
+      productId: prod.id, sku: 'QA-PK', unidades: 3,
     });
     chk('un SKU repetido da 409, no un 500', 409, skuTomado.status);
 
@@ -1248,6 +1261,12 @@ function sesion() {
     await VariantStock.destroy({ where: { productVariantId: ids } });
     await ProductVariant.destroy({ where: { id: ids } });
     await Product.destroy({ where: { id: [prod.id, prodPack.id] } });
+    // El pack que se volvió a armar en la sección 16 (ya dado de baja: su SKU termina en -BAJA<id>).
+    const rearmados = await Product.findAll({ where: { businessId: negocio.id, sku: { [Op.like]: 'QAPACK3-BAJA%' } }, attributes: ['id'] });
+    const varRearmadas = await ProductVariant.findAll({ where: { productId: rearmados.map((r) => r.id) }, attributes: ['id'] });
+    await PackComponente.destroy({ where: { packVariantId: varRearmadas.map((v) => v.id) } });
+    await ProductVariant.destroy({ where: { id: varRearmadas.map((v) => v.id) } });
+    await Product.destroy({ where: { id: rearmados.map((r) => r.id) } });
     chk('no queda nada de la prueba', 0,
       await ProductVariant.count({ where: { sku: { [Op.like]: 'QA-PK-%' } } }));
   }

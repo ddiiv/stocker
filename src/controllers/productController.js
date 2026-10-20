@@ -10,6 +10,7 @@ const skuService = require('../services/skuService');
 const { generarEtiquetas } = require('../services/labelService');
 const stockService = require('../services/stockService');
 const precioService = require('../services/precioService');
+const { liberarCodigos } = require('../utils/codigoDeBaja');
 
 /*
  * Toma del body sólo los campos permitidos.
@@ -512,11 +513,15 @@ const updateProduct = async (req, res, next) => {
 };
 
 // ── DELETE /api/products/:id (soft delete) ─────────────────────────
+// La baja libera los SKU (ver utils/codigoDeBaja): se puede volver a cargar uno igual.
 const deleteProduct = async (req, res, next) => {
   try {
     const product = await Product.findOne({ where: { id: req.params.id, businessId: req.auth.businessId } });
     if (!product) return res.status(404).json({ message: 'Producto no encontrado.' });
-    await product.update({ activo: false });
+    await sequelize.transaction(async (transaction) => {
+      await liberarCodigos({ producto: product }, transaction);
+      await product.update({ activo: false }, { transaction });
+    });
     res.status(204).send();
   } catch (error) { next(error); }
 };
