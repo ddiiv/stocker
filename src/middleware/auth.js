@@ -4,6 +4,7 @@ const { readAuthCookie, setAuthCookie } = require('../utils/authCookie');
 const { motivoDeBloqueo } = require('./plan');
 const { Business, Employee, EmployeeSession, Role } = require('../models');
 const sesiones = require('../services/sesionesService');
+const dosFactores = require('../services/dosFactoresService');
 
 // El token vive en una cookie httpOnly. El header Bearer se sigue aceptando
 // para clientes que no son el navegador (scripts, Postman) y para que las
@@ -162,6 +163,7 @@ async function requireAuth(req, res, next) {
         return res.status(401).json({ message: 'La sesión alcanzó su duración máxima. Volvé a iniciar sesión.' });
       }
       setAuthCookie(res, renovado, req);
+      if (req.auth.type === 'business') dosFactores.renovarMarca(req, res, req.auth.businessId);
     }
 
     // La última actividad de la fila, como mucho una vez por minuto.

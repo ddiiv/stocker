@@ -60,6 +60,9 @@ const Business = db.define('Business', {
   totpSecret:       { type: DataTypes.STRING(64), allowNull: true },
   totpPendiente:    { type: DataTypes.STRING(64), allowNull: true },
   totpActivadoEn:   { type: DataTypes.DATE, allowNull: true },
+  // Horas sin usar Stocker en una computadora antes de volver a pedir el
+  // segundo factor (null = 24; 0 = en cada ingreso). Ver dosFactoresService.
+  dobleFactorVentanaH: { type: DataTypes.INTEGER, allowNull: true },
   totpUltimoPaso:   { type: DataTypes.BIGINT, allowNull: true },
   totpRecuperacion: { type: DataTypes.TEXT, allowNull: true },
 

@@ -1,6 +1,8 @@
 const crypto = require('node:crypto');
 const totp = require('../utils/totp');
 const codigos = require('./codigosCuentaService');
+const { signToken, verifyToken } = require('../utils/jwt');
+const { cookieOptions } = require('../utils/authCookie');
 
 /*
  * Segundo factor con app de autenticación.
@@ -162,7 +164,58 @@ async function verificar(business, codigo) {
   return { ok: false, motivo: 'invalido' };
 }
 
+/*
+ * ── Computadora de confianza ─────────────────────────────────────
+ *
+ * Pedir el código cada vez que la sesión se cierra por inactividad (15 min)
+ * hacía que el dueño lo escribiera decenas de veces por día. Después de pasar
+ * el segundo factor, el navegador se queda con una marca firmada; mientras se
+ * siga usando Stocker en esa computadora, al volver a entrar alcanza con la
+ * contraseña. Si pasan `ventana` horas sin usarlo, la marca vence y se vuelve
+ * a pedir el código. Lo eligió el dueño de Stocker; cada cuenta elige las horas
+ * en Configuración → Seguridad (0 = pedirlo en cada ingreso).
+ *
+ * `uso` es la última vez que se usó Stocker con la marca. Un cambio de
+ * contraseña o "cerrar todas" (sesionesDesde) y una activación nueva del
+ * segundo factor la invalidan: lo usado antes del corte no cuenta.
+ */
+const COOKIE_CONFIANZA = 'stocker2fa';
+const VENTANA_H = 24;
+const TOPE_MARCA = '30d';
+const RENOVAR_CADA_MS = 5 * 60 * 1000;
+
+const ventanaH = (b) => (b?.dobleFactorVentanaH ?? VENTANA_H);
+
+function leerMarca(req) {
+  try { return verifyToken(req.cookies?.[COOKIE_CONFIANZA]); } catch { return null; }
+}
+
+function confiaEnEsteDispositivo(req, b) {
+  const horas = ventanaH(b);
+  const marca = leerMarca(req);
+  if (!horas || !marca || marca.c2fa !== b.id) return false;
+  const uso = Number(marca.uso);
+  if (!(Date.now() - uso <= horas * 3600 * 1000)) return false;
+  return [b.sesionesDesde, b.totpActivadoEn].every((corte) => !corte || uso >= new Date(corte).getTime());
+}
+
+function ponerMarca(req, res, businessId) {
+  res.cookie(COOKIE_CONFIANZA, signToken({ c2fa: businessId, uso: Date.now() }, { expiresIn: TOPE_MARCA }),
+    { ...cookieOptions(req), maxAge: 30 * 24 * 3600 * 1000 });
+}
+
+function recordarDispositivo(req, res, b) {
+  if (ventanaH(b)) ponerMarca(req, res, b.id);
+}
+
+// Usar Stocker corre la marca, como mucho cada cinco minutos.
+function renovarMarca(req, res, businessId) {
+  const marca = leerMarca(req);
+  if (marca?.c2fa === businessId && Date.now() - Number(marca.uso) >= RENOVAR_CADA_MS) ponerMarca(req, res, businessId);
+}
+
 module.exports = {
+  confiaEnEsteDispositivo, recordarDispositivo, renovarMarca, ventanaH, COOKIE_CONFIANZA,
   canalesActivos,
   tieneSegundoFactor,
   TIPO_LOGIN,

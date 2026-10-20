@@ -83,4 +83,4 @@ function readAuthCookie(req) {
   return req.cookies?.[COOKIE_NAME] || null;
 }
 
-module.exports = { COOKIE_NAME, setAuthCookie, clearAuthCookie, readAuthCookie };
+module.exports = { COOKIE_NAME, setAuthCookie, clearAuthCookie, readAuthCookie, cookieOptions };

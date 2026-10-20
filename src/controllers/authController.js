@@ -163,7 +163,9 @@ const login = async (req, res, next) => {
      * fuerza bruta, igual que una contraseña equivocada: si no, el segundo
      * factor sería el único lugar del login sin freno.
      */
-    if (dosFactores.tieneSegundoFactor(business)) {
+    const pideCodigo = dosFactores.tieneSegundoFactor(business)
+      && !dosFactores.confiaEnEsteDispositivo(req, business);
+    if (pideCodigo) {
       const canales = dosFactores.canalesActivos(business);
       const code = req.body?.code;
       if (!code) {
@@ -209,6 +211,7 @@ const login = async (req, res, next) => {
      */
     const token = await sesiones.abrir(req, { type: 'business', businessId: business.id });
     setAuthCookie(res, token);
+    if (dosFactores.tieneSegundoFactor(business)) dosFactores.recordarDispositivo(req, res, business);
     res.json({
       business: sanitizeBusiness(business),
       // Para avisarle que gastó uno y le quedan pocos.

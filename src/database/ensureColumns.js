@@ -277,6 +277,8 @@ const COLUMNAS_ESPERADAS = {
     saldoCuenta:      { type: DataTypes.DECIMAL(12, 2), allowNull: true, defaultValue: 0 },
   },
   businesses: {
+    // Ver el modelo: cada cuántas horas sin uso se vuelve a pedir el segundo factor.
+    dobleFactorVentanaH: { type: DataTypes.INTEGER, allowNull: true },
     // Quién aceptó los términos, cuándo y qué versión. Ver el modelo: sin la
     // versión, un booleano no prueba QUÉ texto se aceptó.
     terminosVersion:     { type: DataTypes.STRING(20), allowNull: true },

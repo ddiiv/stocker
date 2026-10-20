@@ -52,6 +52,8 @@ const PERMITIDOS = [
   'terminosAceptadosEn',
   // Desde cuándo está activo el doble factor: una fecha, no el secreto.
   'totpActivadoEn',
+  // Cada cuántas horas sin uso se vuelve a pedir: un ajuste, no un secreto.
+  'dobleFactorVentanaH',
 ];
 
 /**

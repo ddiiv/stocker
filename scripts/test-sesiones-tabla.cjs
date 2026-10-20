@@ -99,7 +99,8 @@ function armarRes(resolve) {
     status(c) { this.statusCode = c; return this; },
     json(payload) { resolve({ status: this.statusCode, json: payload, token: this.tokenNuevo, res: this }); },
     send() { resolve({ status: this.statusCode, json: null, token: this.tokenNuevo, res: this }); },
-    cookie(_nombre, valor) { this.tokenNuevo = valor; },
+    // Sólo la de sesión: el login del dueño con 2FA pone además la marca de confianza.
+    cookie(nombre, valor) { if (nombre === 'stockerToken') this.tokenNuevo = valor; },
     clearCookie() { this.borro = true; },
     getHeader() { return undefined; },
     setHeader() {},

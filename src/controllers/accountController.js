@@ -72,6 +72,7 @@ const obtener = async (req, res, next) => {
       canales: Object.keys(CANALES),
       dobleFactor: {
         habilitado: dosFactores.tieneSegundoFactor(b),
+        ventanaH: dosFactores.ventanaH(b),
         canales: dosFactores.canalesActivos(b),
         // Los que este servidor puede entregar de verdad: sin credenciales de
         // WhatsApp no se ofrece WhatsApp. Ofrecer un canal que no entrega deja
@@ -87,6 +88,8 @@ const obtener = async (req, res, next) => {
     });
   } catch (error) { next(error); }
 };
+
+const VENTANAS_2FA_H = [0, 1, 8, 24, 72, 168];
 
 // PUT /api/account — datos que no son credenciales
 const actualizar = async (req, res, next) => {
@@ -110,6 +113,15 @@ const actualizar = async (req, res, next) => {
       if (req.body?.[campo] !== undefined) patch[campo] = String(req.body[campo]).trim();
     }
     if (patch.nombreNegocio === '') return res.status(400).json({ message: 'El nombre del negocio no puede quedar vacío.' });
+
+    // Cada cuántas horas sin uso se vuelve a pedir el segundo factor (0 = siempre).
+    if (req.body?.dobleFactorVentanaH !== undefined) {
+      const horas = Number(req.body.dobleFactorVentanaH);
+      if (!VENTANAS_2FA_H.includes(horas)) {
+        return res.status(400).json({ message: `Elegí una de estas opciones: ${VENTANAS_2FA_H.join(', ')} horas.` });
+      }
+      patch.dobleFactorVentanaH = horas;
+    }
 
     if (req.body?.cuit !== undefined && String(req.body.cuit).replace(/\D/g, '') !== String(b.cuit).replace(/\D/g, '')) {
       return res.status(400).json({
