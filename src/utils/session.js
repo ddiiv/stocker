@@ -26,6 +26,16 @@ const IDLE_MIN    = Number(process.env.SESSION_IDLE_MINUTES)    || 30;
 const ABSOLUTE_H  = Number(process.env.SESSION_ABSOLUTE_HOURS)  || 24;
 
 const IDLE_MS     = IDLE_MIN   * 60 * 1000;
+
+/*
+ * Cada cuenta elige sus minutos de inactividad (Configuración → Seguridad):
+ * viajan firmados en el token como `idleMin` y en la fila de la sesión como
+ * `inactividadMin`. Sin elección, los de SESSION_IDLE_MINUTES.
+ */
+const INACTIVIDADES_MIN = [5, 10, 15, 30, 60, 120, 240];
+const msDeInactividad = (min) => (Number(min) || IDLE_MIN) * 60 * 1000;
+// El más largo posible: para las consultas que no pueden mirar fila por fila.
+const IDLE_MAX_MS = Math.max(IDLE_MIN, ...INACTIVIDADES_MIN) * 60 * 1000;
 const ABSOLUTE_MS = ABSOLUTE_H * 60 * 60 * 1000;
 
 // Token de una sesión nueva (login/registro).
@@ -47,7 +57,7 @@ function crearSesion(payload, ahora = Date.now()) {
   // prueba que lo cubre —pasaba o fallaba según dónde cayera el borde del
   // segundo—, y una prueba de seguridad que a veces pasa no sirve de nada.
   const iniciada = ahora;
-  return signToken({ ...payload, iniciada, absExp }, { expiresIn: `${IDLE_MIN}m` });
+  return signToken({ ...payload, iniciada, absExp }, { expiresIn: Math.floor(msDeInactividad(payload.idleMin) / 1000) });
 }
 
 // El tope absoluto de una sesión creada en `ahora`, como fecha. Es el mismo
@@ -101,7 +111,7 @@ function renovarSesion(payload) {
 
   // El nuevo exp no puede pasarse del tope absoluto.
   const restanteSeg = Math.floor(absExp - Date.now() / 1000);
-  const ventanaSeg  = Math.min(Math.floor(IDLE_MS / 1000), restanteSeg);
+  const ventanaSeg  = Math.min(Math.floor(msDeInactividad(payload.idleMin) / 1000), restanteSeg);
   if (ventanaSeg <= 0) return null;
 
   return signToken({ ...despojar(payload), absExp }, { expiresIn: ventanaSeg });
@@ -125,6 +135,9 @@ module.exports = {
   corteDeSesiones,
   verifyToken,
   IDLE_MS,
+  IDLE_MAX_MS,
+  INACTIVIDADES_MIN,
+  msDeInactividad,
   ABSOLUTE_MS,
   IDLE_MIN,
   ABSOLUTE_H,

@@ -17,6 +17,7 @@ const COOKIE_NAME = 'stockerToken';
 // pedido autenticado. Así el navegador la descarta solo cuando el usuario deja
 // de trabajar, en lugar de mostrar una sesión "viva" que el servidor ya
 // rechaza. El corte real igual lo hace el backend (ver utils/session.js).
+const jwt = require('jsonwebtoken');
 const { IDLE_MS } = require('./session');
 const MAX_AGE_MS = IDLE_MS;
 
@@ -69,7 +70,11 @@ function quitarCookiePrevia(res) {
 
 function setAuthCookie(res, token, req = res.req) {
   quitarCookiePrevia(res);
-  res.cookie(COOKIE_NAME, token, cookieOptions(req));
+  // Lo que le queda al token: cada cuenta elige sus minutos de inactividad.
+  const exp = jwt.decode(token)?.exp;
+  const opciones = cookieOptions(req);
+  if (exp) opciones.maxAge = Math.max(0, exp * 1000 - Date.now());
+  res.cookie(COOKIE_NAME, token, opciones);
 }
 
 function clearAuthCookie(res, req = res.req) {

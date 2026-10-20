@@ -5,7 +5,7 @@ const { lookupCuit } = require('../services/arcaLookupService');
 const { sendAccountChangeCode } = require('../services/emailService');
 const { log, mask } = require('../utils/logger');
 const identidad = require('../services/identityRegistry');
-const { corteDeSesiones } = require('../utils/session');
+const { corteDeSesiones, INACTIVIDADES_MIN, IDLE_MIN } = require('../utils/session');
 const sesiones = require('../services/sesionesService');
 const QRCode = require('qrcode');
 const totp = require('../utils/totp');
@@ -70,6 +70,8 @@ const obtener = async (req, res, next) => {
       // El frontend lo usa para mostrar el 2FA como "próximamente" sin tener
       // que conocer qué canales existen del lado del servidor.
       canales: Object.keys(CANALES),
+      // Minutos sin uso hasta que se cierra la sesión (para todos los de la cuenta).
+      inactividadMin: b.sesionInactividadMin || IDLE_MIN,
       dobleFactor: {
         habilitado: dosFactores.tieneSegundoFactor(b),
         ventanaH: dosFactores.ventanaH(b),
@@ -121,6 +123,14 @@ const actualizar = async (req, res, next) => {
         return res.status(400).json({ message: `Elegí una de estas opciones: ${VENTANAS_2FA_H.join(', ')} horas.` });
       }
       patch.dobleFactorVentanaH = horas;
+    }
+    // Minutos sin uso hasta cerrar la sesión. Rige desde el próximo ingreso de cada uno.
+    if (req.body?.sesionInactividadMin !== undefined) {
+      const minutos = Number(req.body.sesionInactividadMin);
+      if (!INACTIVIDADES_MIN.includes(minutos)) {
+        return res.status(400).json({ message: `Elegí una de estas opciones: ${INACTIVIDADES_MIN.join(', ')} minutos.` });
+      }
+      patch.sesionInactividadMin = minutos;
     }
 
     if (req.body?.cuit !== undefined && String(req.body.cuit).replace(/\D/g, '') !== String(b.cuit).replace(/\D/g, '')) {

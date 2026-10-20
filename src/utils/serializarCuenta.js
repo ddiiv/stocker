@@ -54,6 +54,7 @@ const PERMITIDOS = [
   'totpActivadoEn',
   // Cada cuántas horas sin uso se vuelve a pedir: un ajuste, no un secreto.
   'dobleFactorVentanaH',
+  'sesionInactividadMin',
 ];
 
 /**

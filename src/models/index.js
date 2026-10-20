@@ -63,6 +63,9 @@ const Business = db.define('Business', {
   // Horas sin usar Stocker en una computadora antes de volver a pedir el
   // segundo factor (null = 24; 0 = en cada ingreso). Ver dosFactoresService.
   dobleFactorVentanaH: { type: DataTypes.INTEGER, allowNull: true },
+  // Minutos sin uso hasta que se cierra la sesión, para el dueño y los
+  // empleados (null = SESSION_IDLE_MINUTES). Ver utils/session.js.
+  sesionInactividadMin: { type: DataTypes.INTEGER, allowNull: true },
   totpUltimoPaso:   { type: DataTypes.BIGINT, allowNull: true },
   totpRecuperacion: { type: DataTypes.TEXT, allowNull: true },
 
@@ -1133,6 +1136,9 @@ const SesionCuenta = db.define('SesionCuenta', {
   cerradaEn:   { type: DataTypes.DATE, allowNull: true },
   // usuario | cerrar-todo | remota | password | limite | baja
   motivoCierre: { type: DataTypes.STRING(20), allowNull: true },
+  // Los minutos de inactividad con los que se abrió (los de la cuenta en ese
+  // momento; null = SESSION_IDLE_MINUTES). Ver finDeVida.
+  inactividadMin: { type: DataTypes.INTEGER, allowNull: true },
 }, {
   tableName: 'sesiones_cuenta',
   timestamps: false,

@@ -313,7 +313,7 @@ const me = async (req, res, next) => {
   try {
     // El front usa esto para cerrar la pantalla por inactividad antes de que
     // el servidor rechace el pedido. Una sola fuente de verdad para el valor.
-    const sesion = { inactividadMin: IDLE_MIN };
+    const sesion = { inactividadMin: req.auth.idleMin || IDLE_MIN };
 
     if (req.auth.type === 'business') {
       const b = await Business.findByPk(req.auth.businessId);

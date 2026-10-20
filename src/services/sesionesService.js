@@ -2,7 +2,7 @@ const crypto = require('node:crypto');
 const { Op, TableHints } = require('sequelize');
 const db = require('../config/database');
 const { SesionCuenta, Business, Employee, EmployeeSession } = require('../models');
-const { crearSesion, vencimientoAbsoluto, IDLE_MS } = require('../utils/session');
+const { crearSesion, vencimientoAbsoluto, IDLE_MAX_MS, msDeInactividad } = require('../utils/session');
 const { etiquetaDeDispositivo, normalizarIp } = require('../utils/dispositivo');
 const { log } = require('../utils/logger');
 
@@ -50,13 +50,18 @@ function condicionActiva(ahora = new Date()) {
   return {
     cerradaEn: null,
     venceEn: { [Op.gt]: new Date(t) },
-    ultimaActividadEn: { [Op.gt]: new Date(t - IDLE_MS - TOQUE_MS) },
+    // La cota más ancha: cada fila tiene sus minutos y el corte fino lo hace
+    // finDeVida (ver activasDe).
+    ultimaActividadEn: { [Op.gt]: new Date(t - IDLE_MAX_MS - TOQUE_MS) },
   };
 }
 
+// Las que de verdad siguen vivas, con los minutos de inactividad de cada una.
+const activasDe = (filas, ahora = new Date()) => filas.filter((f) => finDeVida(f) > new Date(ahora).getTime());
+
 // La misma condición, sobre una fila ya leída.
 function finDeVida(fila) {
-  const porInactividad = new Date(fila.ultimaActividadEn).getTime() + IDLE_MS + TOQUE_MS;
+  const porInactividad = new Date(fila.ultimaActividadEn).getTime() + msDeInactividad(fila.inactividadMin) + TOQUE_MS;
   return Math.min(new Date(fila.venceEn).getTime(), porInactividad);
 }
 
@@ -137,12 +142,12 @@ async function crearConLimite(datos) {
 
     // La de menos actividad primero: es la que se va. A igual actividad, la
     // más vieja.
-    const activas = await SesionCuenta.findAll({
+    const activas = activasDe(await SesionCuenta.findAll({
       where: { businessId: datos.businessId, tipo: 'business', ...condicionActiva(datos.creadaEn) },
-      attributes: ['id'],
+      attributes: ['id', 'ultimaActividadEn', 'venceEn', 'inactividadMin'],
       order: [['ultimaActividadEn', 'ASC'], ['id', 'ASC']],
       transaction: t,
-    });
+    }), datos.creadaEn);
 
     const sobran = activas.length + 1 - tope;
     if (sobran > 0) {
@@ -181,6 +186,8 @@ async function abrir(req, payload) {
 
   const ahora = Date.now();
   const ua = String(req?.headers?.['user-agent'] || '');
+  const negocio = await Business.findByPk(payload.businessId, { attributes: ['sesionInactividadMin'] });
+  const idleMin = negocio?.sesionInactividadMin || null;
   const datos = {
     sid: crypto.randomUUID(),
     businessId: payload.businessId,
@@ -192,6 +199,7 @@ async function abrir(req, payload) {
     creadaEn: new Date(ahora),
     ultimaActividadEn: new Date(ahora),
     venceEn: vencimientoAbsoluto(ahora),
+    inactividadMin: idleMin,
   };
 
   // Sólo el dueño tiene tope. Los empleados ya lo tienen en la cantidad de
@@ -200,7 +208,7 @@ async function abrir(req, payload) {
   if (tipo === 'business') await crearConLimite(datos);
   else await SesionCuenta.create(datos);
 
-  return crearSesion({ ...payload, sid: datos.sid }, ahora);
+  return crearSesion({ ...payload, sid: datos.sid, ...(idleMin ? { idleMin } : {}) }, ahora);
 }
 
 /*
@@ -223,7 +231,7 @@ async function reemitir(auth) {
     { venceEn: vencimientoAbsoluto(ahora), ultimaActividadEn: new Date(ahora) },
     { where: { sid: auth.sid, businessId: auth.businessId, cerradaEn: null } },
   );
-  return crearSesion({ ...base, sid: auth.sid }, ahora);
+  return crearSesion({ ...base, sid: auth.sid, ...(auth.idleMin ? { idleMin: auth.idleMin } : {}) }, ahora);
 }
 
 /* ── Verificar (en cada pedido, desde requireAuth) ──────────────── */
@@ -417,7 +425,7 @@ function estadoDeFila(fila, ahora = new Date()) {
   if (cerrada != null || vida <= new Date(ahora).getTime()) {
     // El fin real, sin el minuto de margen que se usa para contar.
     const fin = Math.min(new Date(fila.venceEn).getTime(),
-      new Date(fila.ultimaActividadEn).getTime() + IDLE_MS);
+      new Date(fila.ultimaActividadEn).getTime() + msDeInactividad(fila.inactividadMin));
     return { estado: 'vencida', motivo: 'vencida', fin: new Date(fin) };
   }
   return { estado: 'activa', motivo: null, fin: null };
@@ -479,7 +487,7 @@ async function listar(auth, ahora = new Date()) {
       {
         cerradaEn: { [Op.gte]: desde },
         venceEn: { [Op.gte]: desde },
-        ultimaActividadEn: { [Op.gte]: new Date(desde.getTime() - IDLE_MS - TOQUE_MS) },
+        ultimaActividadEn: { [Op.gte]: new Date(desde.getTime() - IDLE_MAX_MS - TOQUE_MS) },
       },
     ],
   };
@@ -525,8 +533,11 @@ async function listar(auth, ahora = new Date()) {
 }
 
 /** Cuántas sesiones del dueño hay activas ahora. Para el medidor del plan. */
-function contarActivasDelDueno(businessId, ahora = new Date()) {
-  return SesionCuenta.count({ where: { businessId, tipo: 'business', ...condicionActiva(ahora) } });
+async function contarActivasDelDueno(businessId, ahora = new Date()) {
+  return activasDe(await SesionCuenta.findAll({
+    where: { businessId, tipo: 'business', ...condicionActiva(ahora) },
+    attributes: ['id', 'ultimaActividadEn', 'venceEn', 'inactividadMin'],
+  }), ahora).length;
 }
 
 /* ── Purga ─────────────────────────────────────────────────────── */
@@ -553,7 +564,7 @@ async function purgar(ahora = new Date()) {
         [Op.or]: [
           { cerradaEn: { [Op.lt]: limite } },
           { venceEn: { [Op.lt]: limite } },
-          { ultimaActividadEn: { [Op.lt]: new Date(limite.getTime() - IDLE_MS - TOQUE_MS) } },
+          { ultimaActividadEn: { [Op.lt]: new Date(limite.getTime() - IDLE_MAX_MS - TOQUE_MS) } },
         ],
       },
     });
