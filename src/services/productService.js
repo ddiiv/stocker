@@ -9,9 +9,11 @@ import { http } from "../lib/http";
  * lo contrario— pero la pantalla no tenía cómo pedir los otros, así que el
  * catálogo de evento no se veía desde Stock en ningún lado.
  */
-export async function fetchProductGroups({ search = "", evento = false } = {}) {
+export async function fetchProductGroups({ search = "", evento = false, categoria = "", genero = "" } = {}) {
   const params = { limit: 200 };
   if (search) params.search = search;
+  if (categoria) params.categoria = categoria;
+  if (genero) params.genero = genero;
   if (evento) params.feria = 1;
   const { data } = await http.get("/products", { params });
   return groupBySkuAgrupador(data.data || []);

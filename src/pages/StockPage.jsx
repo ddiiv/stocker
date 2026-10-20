@@ -9,6 +9,7 @@ import Modal from "../components/ui/Modal";
 import { useForm } from "react-hook-form";
 import StockTabs from "../components/stock/StockTabs";
 import SelectDeLista from "../components/products/SelectDeLista";
+import { fetchListasProducto } from "../services/variantTypeService";
 
 export default function StockPage() {
   const [search, setSearch] = useState("");
@@ -34,12 +35,21 @@ export default function StockPage() {
    */
   const [catalogo, setCatalogo] = useState("locales");
   const esEvento = catalogo === "evento";
+  // Filtros por categoría y género, con las listas de Variantes y categorías.
+  const [filtros, setFiltros] = useState({ categoria: "", genero: "" });
+  const [listas, setListas] = useState({ categorias: [], generos: [] });
+  useEffect(() => { fetchListasProducto().then(setListas).catch(() => {}); }, []);
+  function filtrar(cambio) {
+    const nuevos = { ...filtros, ...cambio };
+    setFiltros(nuevos);
+    load(search, catalogo, nuevos);
+  }
 
-  async function load(term = "", cual = catalogo) {
+  async function load(term = "", cual = catalogo, f = filtros) {
     setLoading(true);
     setError("");
     try {
-      const data = await fetchProductGroups({ search: term, evento: cual === "evento" });
+      const data = await fetchProductGroups({ search: term, evento: cual === "evento", ...f });
       setGroups(data);
     } catch (e) {
       setError(e.response?.data?.message || "Error al cargar productos");
@@ -204,8 +214,16 @@ export default function StockPage() {
       <div className="mb-5 flex items-center gap-3">
         <div className="relative flex-1 max-w-md">
           <Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-ink-400" />
-          <input className="input pl-9" placeholder="Buscar por título, SKU o código de barras…" value={search} onChange={(e) => setSearch(e.target.value)} />
+          <input className="input pl-9" placeholder="Buscar por título, SKU, código, categoría o género…" value={search} onChange={(e) => setSearch(e.target.value)} />
         </div>
+        <select className="input w-auto" aria-label="Filtrar por categoría" value={filtros.categoria} onChange={(e) => filtrar({ categoria: e.target.value })}>
+          <option value="">Todas las categorías</option>
+          {listas.categorias.map((c) => <option key={c} value={c}>{c}</option>)}
+        </select>
+        <select className="input w-auto" aria-label="Filtrar por género" value={filtros.genero} onChange={(e) => filtrar({ genero: e.target.value })}>
+          <option value="">Todos los géneros</option>
+          {listas.generos.map((g) => <option key={g} value={g}>{g}</option>)}
+        </select>
         <button className="btn-ghost" onClick={() => load(search)}>
           <RefreshCw size={15} /> Actualizar
         </button>
