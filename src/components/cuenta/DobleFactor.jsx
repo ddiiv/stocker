@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Smartphone, ShieldCheck } from "lucide-react";
 import {
   iniciar2FA, activar2FA, desactivar2FA, regenerarCodigos2FA,
-  enviarCodigoCanal2FA, activarCanal2FA, desactivarCanal2FA,
+  enviarCodigoCanal2FA, activarCanal2FA, desactivarCanal2FA, updateAccount,
 } from "../../services/accountService";
 import { Card } from "../ui/Layout";
 
@@ -416,6 +416,38 @@ export default function DobleFactor({ cuenta, recargar }) {
               );
             })}
           </ul>
+        </div>
+      )}
+
+      {/*
+        Cada cuánto se vuelve a pedir el código. Antes se pedía cada vez que
+        la sesión se cerraba por inactividad; ahora alcanza con la contraseña
+        mientras esta computadora se siga usando dentro de estas horas.
+      */}
+      {activo2fa && (
+        <div className="mt-4 border-t border-line pt-3">
+          <label className="label" htmlFor="ventana-2fa">Pedir el código otra vez</label>
+          <select
+            id="ventana-2fa"
+            className="input"
+            value={cuenta?.dobleFactor?.ventanaH ?? 24}
+            onChange={async (e) => {
+              setError2fa("");
+              try { await updateAccount({ dobleFactorVentanaH: Number(e.target.value) }); await recargar(); }
+              catch (err) { setError2fa(err.response?.data?.message || "No se pudo guardar"); }
+            }}
+          >
+            <option value={0}>En cada ingreso</option>
+            <option value={1}>Después de 1 hora sin usar Stocker en esa computadora</option>
+            <option value={8}>Después de 8 horas sin usar Stocker en esa computadora</option>
+            <option value={24}>Después de 24 horas sin usar Stocker en esa computadora</option>
+            <option value={72}>Después de 3 días sin usar Stocker en esa computadora</option>
+            <option value={168}>Después de 7 días sin usar Stocker en esa computadora</option>
+          </select>
+          <p className="mt-1 text-xs text-ink-500">
+            Mientras tanto, cuando la sesión se cierra por inactividad alcanza con la contraseña.
+            Cambiar la contraseña o cerrar todas las sesiones vuelve a pedir el código en todas las computadoras.
+          </p>
         </div>
       )}
 
