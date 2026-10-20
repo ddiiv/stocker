@@ -577,6 +577,9 @@ r.post  ('/mercadolibre/postventa/sincronizar', requireAuth, requirePermission('
 
 // ── Variant types (variantes maestras del negocio) ───────────────
 r.get   ('/variant-types',      requireAuth, requirePermission('stock','ver'),    variantTypeCtrl.list);
+// Las categorías y géneros que se eligen al cargar un producto.
+r.get   ('/catalogo/listas',    requireAuth, requirePermission('stock','ver'),    variantTypeCtrl.listas);
+r.put   ('/catalogo/listas',    requireAuth, requirePermission('stock','editar'), variantTypeCtrl.guardarListas);
 r.post  ('/variant-types',      requireAuth, requirePermission('stock','editar'), variantTypeCtrl.create);
 r.put   ('/variant-types/:id',  requireAuth, requirePermission('stock','editar'), variantTypeCtrl.update);
 r.delete('/variant-types/:id',  requireAuth, requirePermission('stock','editar'), variantTypeCtrl.remove);

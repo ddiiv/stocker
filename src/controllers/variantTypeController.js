@@ -1,5 +1,5 @@
 const { Op } = require('sequelize');
-const { VariantType } = require('../models');
+const { VariantType, Business, Product } = require('../models');
 const { ilikeOperator } = require('../utils/sqlHelpers');
 
 /*
@@ -97,4 +97,54 @@ const remove = async (req, res, next) => {
   } catch (e) { next(e); }
 };
 
-module.exports = { list, create, update, remove };
+/*
+ * ── Categorías y géneros ────────────────────────────────────────
+ *
+ * Las listas de donde se eligen al cargar un producto, para no escribirlas a
+ * mano cada vez (y no terminar con "Remeras", "remera" y "Remera " como tres
+ * categorías). Viven en el negocio, con la misma limpieza que los valores de
+ * una variante. Los productos guardan el texto, como siempre: la planilla y la
+ * tienda pueden seguir mandando uno que no esté en la lista.
+ */
+const LISTAS = { categorias: { campo: 'categoria', max: 80 }, generos: { campo: 'genero', max: 40 } };
+
+// GET /api/catalogo/listas → { categorias: [], generos: [] }
+const listas = async (req, res, next) => {
+  try {
+    const negocio = await Business.findByPk(req.auth.businessId, { attributes: ['categorias', 'generos'] });
+    const salida = {};
+    for (const [lista, { campo }] of Object.entries(LISTAS)) {
+      let valores = null;
+      try { valores = JSON.parse(negocio?.[lista] || 'null'); } catch { /* se arma de nuevo abajo */ }
+      if (!Array.isArray(valores)) {
+        // Nunca se cargó: arranca con las que ya usan los productos del negocio.
+        const filas = await Product.findAll({
+          where: { businessId: req.auth.businessId }, attributes: [campo], group: [campo], raw: true,
+        });
+        valores = limpiarValores(filas.map((f) => f[campo]).filter(Boolean)).sort((a, b) => a.localeCompare(b, 'es'));
+      }
+      salida[lista] = valores;
+    }
+    res.json(salida);
+  } catch (e) { next(e); }
+};
+
+// PUT /api/catalogo/listas  { categorias?: [], generos?: [] }
+const guardarListas = async (req, res, next) => {
+  try {
+    const patch = {};
+    for (const [lista, { max }] of Object.entries(LISTAS)) {
+      const valores = req.body?.[lista];
+      if (valores === undefined) continue;
+      if (!Array.isArray(valores)) return res.status(400).json({ message: `"${lista}" tiene que ser una lista.` });
+      const limpios = limpiarValores(valores);
+      const largo = limpios.find((v) => v.length > max);
+      if (largo) return res.status(400).json({ message: `"${largo}" pasa de ${max} caracteres.` });
+      patch[lista] = JSON.stringify(limpios);
+    }
+    await Business.update(patch, { where: { id: req.auth.businessId } });
+    return listas(req, res, next);
+  } catch (e) { next(e); }
+};
+
+module.exports = { list, create, update, remove, listas, guardarListas };

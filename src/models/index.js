@@ -96,6 +96,11 @@ const Business = db.define('Business', {
   terminosVersion:   { type: DataTypes.STRING(20), allowNull: true },
   terminosAceptadosEn: { type: DataTypes.DATE, allowNull: true },
   terminosIp:        { type: DataTypes.STRING(60), allowNull: true },
+  // Las categorías y géneros que se eligen al cargar un producto (JSON, lista
+  // de textos). null = nunca se cargaron: se ofrecen las que ya usan los
+  // productos. Ver variantTypeController.listas.
+  categorias: { type: DataTypes.TEXT, allowNull: true },
+  generos:    { type: DataTypes.TEXT, allowNull: true },
   /*
    * Reglas de confección de SKU de las variantes.
    *

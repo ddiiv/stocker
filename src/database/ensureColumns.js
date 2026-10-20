@@ -296,6 +296,9 @@ const COLUMNAS_ESPERADAS = {
     // Cómo arma este negocio los SKU de sus variantes. JSON en texto, como el
     // resto: MSSQL no tiene tipo JSON. Vacío = las reglas de fábrica.
     reglaSku:     { type: DataTypes.TEXT, allowNull: true },
+    // Las listas de categorías y géneros para elegir al cargar un producto.
+    categorias:   { type: DataTypes.TEXT, allowNull: true },
+    generos:      { type: DataTypes.TEXT, allowNull: true },
     // Política de venta sin stock. Los negocios que ya existen arrancan en
     // 'permitir': es lo que pide el mostrador y lo que evita perder la venta.
     ventaSinStock: { type: DataTypes.STRING(10), allowNull: false, defaultValue: 'permitir' },

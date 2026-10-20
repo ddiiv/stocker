@@ -39,7 +39,7 @@ node -e '
 PRUEBAS=(
   2fa-confianza aislamiento alta-stock arca-emision arca-idempotencia arca-ptosventa avisos-venta
   cambio-plan carga clientes-cuit cobro-cuit cola-online configuracion-cuenta curvas enlaces-legales
-  etiquetas factura-cliente factura-impresa factura-qr factura-transparencia feria inactividad integraciones-backoffice
+  etiquetas factura-cliente factura-impresa factura-qr factura-transparencia feria inactividad integraciones-backoffice listas-producto
   legales mayorista ml-postventa ml-token packs pagos-caja planes plataformas precios rellenos reposicion
   reservas serializar-cuenta series sesiones sesiones-tabla sku solicitud-mayorista stock-local
   tareas-periodicas tienda-feed tienda-pago venta-local
