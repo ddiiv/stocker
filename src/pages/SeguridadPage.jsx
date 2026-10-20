@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
-import { Check } from "lucide-react";
-import { fetchAccount } from "../services/accountService";
-import { PageHeader } from "../components/ui/Layout";
+import { Check, Timer } from "lucide-react";
+import { fetchAccount, updateAccount } from "../services/accountService";
+import { PageHeader, Card } from "../components/ui/Layout";
 import CuentaTabs from "../components/cuenta/CuentaTabs";
 import CambioPassword from "../components/cuenta/CambioPassword";
 import DobleFactor from "../components/cuenta/DobleFactor";
@@ -45,7 +45,7 @@ export default function SeguridadPage() {
 
   return (
     <div>
-      <PageHeader title="Seguridad" subtitle="Contraseña y verificación en dos pasos" />
+      <PageHeader title="Seguridad" subtitle="Contraseña, verificación en dos pasos y cierre por inactividad" />
       <CuentaTabs />
 
       {loading ? (
@@ -65,6 +65,33 @@ export default function SeguridadPage() {
             <div className="grid items-start gap-5 lg:grid-cols-2">
               <DobleFactor cuenta={cuenta} recargar={load} />
               <CambioPassword cuenta={cuenta} onAviso={setAviso} />
+              <Card>
+                <p className="mb-1 flex items-center gap-2 font-display text-base font-semibold text-ink-950">
+                  <Timer size={17} /> Cierre por inactividad
+                </p>
+                <label className="label" htmlFor="inactividad">Cerrar la sesión después de</label>
+                <select
+                  id="inactividad"
+                  className="input"
+                  value={cuenta.inactividadMin}
+                  onChange={async (e) => {
+                    setError("");
+                    try {
+                      await updateAccount({ sesionInactividadMin: Number(e.target.value) });
+                      await load();
+                      setAviso("Listo. Rige desde el próximo ingreso de cada persona.");
+                    } catch (err) { setError(err.response?.data?.message || "No se pudo guardar"); }
+                  }}
+                >
+                  {[5, 10, 15, 30, 60, 120, 240].map((m) => (
+                    <option key={m} value={m}>{m < 60 ? `${m} minutos` : `${m / 60} ${m === 60 ? "hora" : "horas"}`} sin uso</option>
+                  ))}
+                </select>
+                <p className="mt-1 text-xs text-ink-500">
+                  Vale para vos y para tus empleados, desde el próximo ingreso de cada uno.
+                  Al volver a entrar se pide la contraseña (y el código, según lo que elijas en la verificación en dos pasos).
+                </p>
+              </Card>
             </div>
           )}
         </>
