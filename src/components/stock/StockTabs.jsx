@@ -17,7 +17,7 @@ import SectionTabs from "../ui/SectionTabs";
 const TABS = [
   { to: "/stock", label: "Productos", end: true },
   { to: "/stock/por-local", label: "Por local" },
-  { to: "/stock/variantes", label: "Variantes", nivel: "editar" },
+  { to: "/stock/variantes", label: "Variantes y categorías", nivel: "editar" },
   { to: "/stock/sku", label: "Confección de SKU" },
   { to: "/stock/escanear", label: "Escanear stock", nivel: "editar" },
   { to: "/stock/movimientos", label: "Movimientos" },

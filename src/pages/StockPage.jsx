@@ -8,6 +8,7 @@ import { PageHeader, EmptyState } from "../components/ui/Layout";
 import Modal from "../components/ui/Modal";
 import { useForm } from "react-hook-form";
 import StockTabs from "../components/stock/StockTabs";
+import SelectDeLista from "../components/products/SelectDeLista";
 
 export default function StockPage() {
   const [search, setSearch] = useState("");
@@ -413,8 +414,8 @@ function NewProductModal({ open, onClose, onCreated }) {
             {errors.skuAgrupador && <p className="field-error">{errors.skuAgrupador.message}</p>}
           </div>
           <div><label className="label">Modelo</label><input className="input" maxLength={80} {...register("modelo")} /></div>
-          <div><label className="label">Categoría</label><input className="input" maxLength={80} {...register("categoria")} /></div>
-          <div><label className="label">Género</label><input className="input" maxLength={40} {...register("genero")} /></div>
+          <SelectDeLista label="Categoría" lista="categorias" {...register("categoria")} />
+          <SelectDeLista label="Género" lista="generos" {...register("genero")} />
           <div>
             <label className="label">Costo</label>
             <input className="input" type="number" min="0" step="0.01" inputMode="decimal" {...register("costo", reglaPrecio("costo"))} />

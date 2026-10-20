@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Plus, Tag, PencilLine, Trash2, X } from "lucide-react";
-import { fetchVariantTypes, createVariantType, updateVariantType, deleteVariantType } from "../services/variantTypeService";
+import { fetchVariantTypes, createVariantType, updateVariantType, deleteVariantType, fetchListasProducto, guardarListasProducto } from "../services/variantTypeService";
 import { EmptyState, Card, PageHeader } from "../components/ui/Layout";
 import Modal from "../components/ui/Modal";
 import StockTabs from "../components/stock/StockTabs";
@@ -11,12 +11,17 @@ export default function VariantTypesPage() {
   const [modal, setModal] = useState(false);
   const [editing, setEditing] = useState(null);
   const [error, setError] = useState("");
+  const [listas, setListas] = useState({ categorias: [], generos: [] });
+  // La lista (categorías o géneros) que se está editando en el modal.
+  const [lista, setLista] = useState(null);
 
   async function load() {
     setLoading(true);
     setError("");
     try {
-      setTypes(await fetchVariantTypes());
+      const [tipos, ls] = await Promise.all([fetchVariantTypes(), fetchListasProducto()]);
+      setTypes(tipos);
+      setListas(ls);
     } catch (e) {
       setError(e.response?.data?.message || "Error al cargar variantes");
     } finally { setLoading(false); }
@@ -40,7 +45,7 @@ export default function VariantTypesPage() {
           <h3 className="font-display text-lg font-semibold text-ink-950">Variantes maestras</h3>
           <p className="text-sm text-ink-600">Definí acá los tipos de variante (Color, Talle, etc.) que vas a poder elegir al crear un producto.</p>
         </div>
-        <button className="btn-accent" onClick={() => { setEditing(null); setModal(true); }}>
+        <button className="btn-accent" onClick={() => { setEditing(null); setLista(null); setModal(true); }}>
           <Plus size={15} /> Nueva variante
         </button>
       </div>
@@ -61,7 +66,7 @@ export default function VariantTypesPage() {
                   <p className="text-xs text-ink-600">{v.valores.length} valores</p>
                 </div>
                 <div className="flex gap-1">
-                  <button className="btn-ghost px-2 py-1.5" title="Editar" onClick={() => { setEditing(v); setModal(true); }}><PencilLine size={14} /></button>
+                  <button className="btn-ghost px-2 py-1.5" title="Editar" onClick={() => { setEditing(v); setLista(null); setModal(true); }}><PencilLine size={14} /></button>
                   <button className="btn-ghost px-2 py-1.5" title="Eliminar" onClick={() => handleDelete(v)}><Trash2 size={14} /></button>
                 </div>
               </div>
@@ -73,12 +78,37 @@ export default function VariantTypesPage() {
         </div>
       )}
 
-      <VariantFormModal open={modal} onClose={() => setModal(false)} onSaved={() => { setModal(false); load(); }} variant={editing} />
+      <div className="mb-4 mt-8">
+        <h3 className="font-display text-lg font-semibold text-ink-950">Categorías y géneros</h3>
+        <p className="text-sm text-ink-600">Lo que vas a elegir de una lista al crear o editar un producto, en vez de escribirlo cada vez.</p>
+      </div>
+      <div className="grid gap-4 md:grid-cols-2">
+        {[
+          { clave: "categorias", titulo: "Categorías", max: 80 },
+          { clave: "generos", titulo: "Géneros", max: 40 },
+        ].map((l) => (
+          <Card key={l.clave}>
+            <div className="mb-3 flex items-start justify-between gap-2">
+              <div>
+                <p className="font-display text-base font-semibold text-ink-950">{l.titulo}</p>
+                <p className="text-xs text-ink-600">{listas[l.clave].length} valores</p>
+              </div>
+              <button className="btn-ghost px-2 py-1.5" title="Editar" onClick={() => { setLista({ ...l, valores: listas[l.clave] }); setModal(true); }}><PencilLine size={14} /></button>
+            </div>
+            <div className="flex flex-wrap gap-1">
+              {listas[l.clave].map((val) => <span key={val} className="tag-chip">{val}</span>)}
+            </div>
+          </Card>
+        ))}
+      </div>
+
+      <VariantFormModal open={modal} onClose={() => { setModal(false); setLista(null); }} onSaved={() => { setModal(false); setLista(null); load(); }} variant={lista ? null : editing} lista={lista} />
     </div>
   );
 }
 
-function VariantFormModal({ open, onClose, onSaved, variant }) {
+// Con `lista` edita las categorías o los géneros: sin nombre, y pueden quedar vacías.
+function VariantFormModal({ open, onClose, onSaved, variant, lista }) {
   const [nombre, setNombre] = useState("");
   const [valores, setValores] = useState([]);
   const [nuevo, setNuevo] = useState("");
@@ -87,10 +117,10 @@ function VariantFormModal({ open, onClose, onSaved, variant }) {
 
   useEffect(() => {
     setNombre(variant?.nombre || "");
-    setValores(variant?.valores || []);
+    setValores(variant?.valores || lista?.valores || []);
     setNuevo("");
     setError("");
-  }, [variant, open]);
+  }, [variant, lista, open]);
 
   /*
    * El repetido se compara sin mayúsculas ni acentos.
@@ -113,6 +143,13 @@ function VariantFormModal({ open, onClose, onSaved, variant }) {
   async function handleSubmit(e) {
     e.preventDefault();
     setError("");
+    if (lista) {
+      setSaving(true);
+      try { await guardarListasProducto({ [lista.clave]: valores }); onSaved(); }
+      catch (err) { setError(err.response?.data?.message || "Error al guardar"); }
+      finally { setSaving(false); }
+      return;
+    }
     if (!nombre.trim()) return setError("El nombre es obligatorio.");
     if (valores.length === 0) return setError("Agregá al menos un valor.");
     setSaving(true);
@@ -126,23 +163,25 @@ function VariantFormModal({ open, onClose, onSaved, variant }) {
   }
 
   return (
-    <Modal open={open} onClose={onClose} title={variant ? `Editar variante: ${variant.nombre}` : "Nueva variante"} width="max-w-lg">
+    <Modal open={open} onClose={onClose} title={lista ? `Editar ${lista.titulo.toLowerCase()}` : variant ? `Editar variante: ${variant.nombre}` : "Nueva variante"} width="max-w-lg">
       <form onSubmit={handleSubmit} className="space-y-4">
         {error && <p className="rounded-md bg-brick-50 px-3 py-2 text-sm text-brick-500">{error}</p>}
-        <div>
-          <label className="label">Nombre de la variante *</label>
-          <input className="input" required minLength={2} maxLength={80} value={nombre} onChange={(e) => setNombre(e.target.value)} placeholder="Ej: Color, Talle, Sabor…" />
-        </div>
+        {!lista && (
+          <div>
+            <label className="label">Nombre de la variante *</label>
+            <input className="input" required minLength={2} maxLength={80} value={nombre} onChange={(e) => setNombre(e.target.value)} placeholder="Ej: Color, Talle, Sabor…" />
+          </div>
+        )}
         <div>
           <label className="label">Valores posibles</label>
           <div className="mb-2 flex gap-2">
             <input
               className="input flex-1"
-              maxLength={60}
+              maxLength={lista?.max || 60}
               value={nuevo}
               onChange={(e) => setNuevo(e.target.value)}
               onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addValor(); } }}
-              placeholder='Escribí un valor y Enter (ej. "Rojo")'
+              placeholder={`Escribí un valor y Enter (ej. "${lista ? "Remeras" : "Rojo"}")`}
             />
             <button type="button" className="btn-ghost" onClick={addValor}>Agregar</button>
           </div>
@@ -161,7 +200,7 @@ function VariantFormModal({ open, onClose, onSaved, variant }) {
         </div>
         <div className="flex justify-end gap-2">
           <button type="button" className="btn-ghost" onClick={onClose}>Cancelar</button>
-          <button type="submit" className="btn-accent" disabled={saving}>{saving ? "Guardando…" : (variant ? "Guardar cambios" : "Crear variante")}</button>
+          <button type="submit" className="btn-accent" disabled={saving}>{saving ? "Guardando…" : (variant || lista ? "Guardar cambios" : "Crear variante")}</button>
         </div>
       </form>
     </Modal>

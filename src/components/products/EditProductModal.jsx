@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 import Modal from "../ui/Modal";
 import { updateProduct } from "../../services/productService";
+import SelectDeLista from "./SelectDeLista";
 
 /*
  * Edición del producto padre.
@@ -95,8 +96,8 @@ export default function EditProductModal({ open, onClose, group, onSaved }) {
             {/* Es lo que encabeza la etiqueta impresa, antes de la categoría. */}
             <p className="mt-1 text-xs text-ink-500">Encabeza la etiqueta.</p>
           </div>
-          <div><label className="label">Categoría</label><input className="input" maxLength={80} {...register("categoria")} /></div>
-          <div><label className="label">Género</label><input className="input" maxLength={40} {...register("genero")} /></div>
+          <SelectDeLista label="Categoría" lista="categorias" actual={group?.categoria} {...register("categoria")} />
+          <SelectDeLista label="Género" lista="generos" actual={group?.genero} {...register("genero")} />
         </div>
 
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
