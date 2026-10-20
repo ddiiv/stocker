@@ -315,7 +315,9 @@ export default function StockPage() {
 }
 
 function NewProductModal({ open, onClose, onCreated }) {
-  const { register, handleSubmit, formState: { errors, isSubmitting }, reset, watch } = useForm();
+  const { register, handleSubmit, formState: { errors, isSubmitting, isSubmitted }, reset, watch, setValue, getValues } = useForm();
+  // El agrupador sigue al SKU padre hasta que se escribe uno distinto; vaciarlo vuelve a seguirlo.
+  const agrupadorPropio = useRef(false);
   const [serverError, setServerError] = useState("");
   const [variantTypes, setVariantTypes] = useState([]);
   const [dim1TypeId, setDim1TypeId] = useState("");
@@ -387,6 +389,7 @@ function NewProductModal({ open, onClose, onCreated }) {
         categoria: values.categoria, genero: values.genero, modelo: values.modelo, variantes,
       });
       reset();
+      agrupadorPropio.current = false;
       onCreated();
     } catch (e) {
       setServerError(e.response?.data?.message || "Error al crear el producto");
@@ -405,13 +408,21 @@ function NewProductModal({ open, onClose, onCreated }) {
           </div>
           <div>
             <label className="label">SKU padre *</label>
-            <input className="input font-mono uppercase" maxLength={80} {...register("sku", { required: "Obligatorio", pattern: { value: /^[A-Za-z0-9._-]+$/, message: "Solo letras, números, . _ -" } })} />
+            <input className="input font-mono uppercase" maxLength={80} {...register("sku", {
+              required: "Obligatorio", pattern: { value: /^[A-Za-z0-9._-]+$/, message: "Solo letras, números, . _ -" },
+              onChange: (e) => { if (!agrupadorPropio.current) setValue("skuAgrupador", e.target.value, { shouldValidate: isSubmitted }); },
+            })} />
             {errors.sku && <p className="field-error">{errors.sku.message}</p>}
           </div>
           <div>
             <label className="label">SKU agrupador *</label>
-            <input className="input font-mono uppercase" maxLength={80} {...register("skuAgrupador", { required: "Obligatorio", pattern: { value: /^[A-Za-z0-9._-]+$/, message: "Solo letras, números, . _ -" } })} />
-            {errors.skuAgrupador && <p className="field-error">{errors.skuAgrupador.message}</p>}
+            <input className="input font-mono uppercase" maxLength={80} {...register("skuAgrupador", {
+              required: "Obligatorio", pattern: { value: /^[A-Za-z0-9._-]+$/, message: "Solo letras, números, . _ -" },
+              onChange: (e) => { agrupadorPropio.current = Boolean(e.target.value) && e.target.value !== getValues("sku"); },
+            })} />
+            {errors.skuAgrupador
+              ? <p className="field-error">{errors.skuAgrupador.message}</p>
+              : <p className="mt-1 text-xs text-ink-500">Igual al SKU padre, salvo que el modelo ya exista en otro producto.</p>}
           </div>
           <div><label className="label">Modelo</label><input className="input" maxLength={80} {...register("modelo")} /></div>
           <SelectDeLista label="Categoría" lista="categorias" {...register("categoria")} />
