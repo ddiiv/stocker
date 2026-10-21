@@ -78,26 +78,39 @@ async function buscarProductos({ businessId, texto, limite = TOPE_PRODUCTOS }) {
    * afuera a todos los buzos. Si ninguna palabra está en el catálogo, no hay
    * nada que mostrar ("heladera samsung" sigue sin traer nada).
    */
-  const textoDe = (p, v) => `${p.titulo} ${p.categoria} ${p.genero} ${p.skuAgrupador} ${v.sku} ${Object.values(v).join(' ')}`;
+  const textoProducto = (p) => `${p.titulo} ${p.categoria} ${p.genero} ${p.skuAgrupador}`;
+  const textoDe = (p, v) => `${textoProducto(p)} ${v.sku} ${Object.values(v).join(' ')}`;
   const buscadas = pedidas.filter((b) => catalogo.productos.some((p) => p.variantes.some((v) => coincide([b], textoDe(p, v)))));
   if (pedidas.length && !buscadas.length) {
     return { productos: [], reglaMayorista: mayorista, sinLocalesOnline: catalogo.sinLocalesOnline };
   }
 
-  const productos = [];
-  for (const p of catalogo.productos) {
-    if (productos.length >= tope) break;
-    const variantes = p.variantes
-      .filter((v) => v.activo)
-      .filter((v) => !buscadas.length || coincide(buscadas, textoDe(p, v)))
-      .map(({ id, activo, publicable, ...resto }) => ({ ...resto, disponible: publicable }));
-    if (variantes.length) {
-      productos.push({
-        titulo: p.titulo, categoria: p.categoria, genero: p.genero,
-        precioMayorista: p.precioMayorista, precioMinorista: p.precioMinorista, variantes,
-      });
-    }
+  const activas = (p) => p.variantes.filter((v) => v.activo);
+  // Primero, las variantes que tienen todas las palabras ("buzo negro m").
+  let elegidos = catalogo.productos
+    .map((p) => [p, activas(p).filter((v) => !buscadas.length || coincide(buscadas, textoDe(p, v)))])
+    .filter(([, vs]) => vs.length);
+  /*
+   * Si nada las tiene todas, las palabras pueden ser de productos distintos:
+   * "cuello v loan" son dos. Va cada producto que nombra alguna, primero el
+   * que nombra más, con todas sus variantes: filtrarlas por un color o talle
+   * que quizá era del otro producto escondería lo que sí hay.
+   */
+  if (!elegidos.length) {
+    // Una palabra que nombra pocos productos pesa más: "loan" es uno solo y "cuello" son muchos; sin esto el Loan quedaba fuera del tope.
+    const nombra = (b, p) => coincide([b], textoProducto(p));
+    const cuantos = new Map(buscadas.map((b) => [b, catalogo.productos.filter((p) => nombra(b, p)).length]));
+    elegidos = catalogo.productos
+      .map((p) => [p, activas(p), buscadas.filter((b) => nombra(b, p)).reduce((s, b) => s + 1 / cuantos.get(b), 0)])
+      .filter(([, vs, puntaje]) => puntaje && vs.length)
+      .sort((a, b) => b[2] - a[2]);
   }
+
+  const productos = elegidos.slice(0, tope).map(([p, vs]) => ({
+    titulo: p.titulo, categoria: p.categoria, genero: p.genero,
+    precioMayorista: p.precioMayorista, precioMinorista: p.precioMinorista,
+    variantes: vs.map(({ id, activo, publicable, ...resto }) => ({ ...resto, disponible: publicable })),
+  }));
   return { productos, reglaMayorista: mayorista, sinLocalesOnline: catalogo.sinLocalesOnline };
 }
 

@@ -88,8 +88,17 @@ const tit = (t) => console.log(`\n\x1b[1m${t}\x1b[0m`);
     chk('cada variante trae SKU, disponible y los dos precios', true,
       Boolean(uno?.variantes?.every((v) => v.sku && Number.isFinite(v.disponible) && v.precioMayorista != null && v.precioMinorista != null)));
     chk('y la regla mayorista en texto, para decirla', true, /Mayorista|mayorista/.test(jeans.json?.reglaMayorista?.texto || ''));
-    // El jean de la demo viene en 36 a 40: sin talle M no hay nada, y "Mom" no cuenta como M.
-    chk('"jean talle m": la m no encuentra "Mom"', [], (await pedir('GET', '/productos?texto=jean%20talle%20m')).json?.productos);
+    // El jean de la demo viene en 36 a 40: "Mom" no cuenta como M, y vuelve con sus talles reales para decir que M no hay.
+    const jeanM = (await pedir('GET', '/productos?texto=jean%20talle%20m')).json?.productos || [];
+    chk('"jean talle m": la m no encuentra "Mom" (ninguna variante M)', [true, false],
+      [jeanM.length > 0 && jeanM.every((p) => /jean/i.test(p.titulo)), jeanM.some((p) => p.variantes.some((v) => normal(v.talle) === 'm'))]);
+    // Palabras de dos productos distintos: antes exigía las dos en el mismo y no traía nada.
+    const dos = ((await pedir('GET', '/productos?texto=canguro%20cargo')).json?.productos || []).map((p) => p.titulo);
+    chk('"canguro cargo" trae el buzo canguro y el pantalón cargo', [true, true],
+      [dos.some((x) => /canguro/i.test(x)), dos.some((x) => /cargo/i.test(x))]);
+    // "cargo" nombra un solo producto; "buzo" y "canguro", varios: con tope 2 el cargo no puede quedar afuera.
+    chk('con tope, la palabra que nombra un solo producto no queda afuera', true,
+      ((await pedir('GET', '/productos?texto=buzo%20canguro%20cargo&limite=2')).json?.productos || []).some((p) => /cargo/i.test(p.titulo)));
     const buzoM = await pedir('GET', '/productos?texto=buzo%20talle%20m');
     chk('"buzo talle m" trae sólo las variantes M', true,
       (buzoM.json?.productos || []).length > 0
