@@ -29,6 +29,8 @@ const ORIGENES = [
    * usen el mismo nombre es la diferencia entre encontrarlo y trabarse acá.
    */
   { valor: "tienda", etiqueta: "Tienda online minorista (isu)" },
+  // El programa de asistente-local: busca productos, reconoce clientes y deja pedidos en la bandeja.
+  { valor: "asistente", etiqueta: "Asistente con IA (local)" },
 ];
 
 function Copiable({ valor, etiqueta = "Copiar" }) {
