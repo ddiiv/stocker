@@ -348,6 +348,7 @@ r.post('/integraciones/tienda/cobros',   requireIntegracion('tienda'), integraci
  * pedidos en la bandeja de mayoristas, igual que el portal: una persona los
  * acepta o los rechaza. El stock por SKU es el mismo que ve la tienda.
  */
+r.get ('/integraciones/asistente/negocio',   requireIntegracion('asistente'), integracionesCtrl.negocioAsistente);
 r.get ('/integraciones/asistente/productos', requireIntegracion('asistente'), integracionesCtrl.productosAsistente);
 r.get ('/integraciones/asistente/stock',     requireIntegracion('asistente'), integracionesCtrl.stockTienda);
 r.get ('/integraciones/asistente/clientes',  requireIntegracion('asistente'), integracionesCtrl.clientesAsistente);

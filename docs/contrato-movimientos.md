@@ -513,11 +513,12 @@ propio): es Stocker hablándose a sí mismo, no un bus entre plataformas, y no c
 ## 8. El asistente con IA (origen `asistente`)
 
 Un programa que conversa con los clientes (por ahora un chat de prueba: `stocker/asistente-local`, con
-Ollama) y le pregunta todo a Stocker. Credencial de origen `asistente`, que emite el equipo desde el
+Claude) y le pregunta todo a Stocker. Credencial de origen `asistente`, que emite el equipo desde el
 backoffice («Asistente con IA (local)»). Por ahora sólo para Isuwaya: no tiene puerta de plan.
 
 | Ruta | Qué devuelve |
 |---|---|
+| `GET /api/integraciones/asistente/negocio` | `{ nombre, locales: [{ nombre, direccion, telefono }], reglaMayorista: { modo, cantidad, monto, texto } }`. El nombre del negocio de la credencial, sus locales activos que atienden público (tipo `local` o `feria`; sin depósitos ni la tienda online) y la regla mayorista. El asistente lo lee una vez al arrancar. |
 | `GET /api/integraciones/asistente/productos?texto=remera negra m&limite=5` | `{ productos: [{ titulo, categoria, genero, precioMayorista, precioMinorista, variantes: [{ sku, color, talle, disponible, precioMayorista, precioMinorista }] }], reglaMayorista: { modo, cantidad, monto, texto } }`. Busca por palabras enteras en título, categoría, género, SKU, color y talle ("m" no encuentra "Mom"; "remeras" encuentra "Remera"). `disponible` es el mismo número que se publica online. La regla es la del local que abastece lo online. |
 | `GET /api/integraciones/asistente/stock?skus=A,B` | Lo mismo que `/tienda/stock`. |
 | `GET /api/integraciones/asistente/clientes?telefono=&cuit=&email=` | `{ clientes: [{ id, nombre, apellido, cuit, tipo, mayorista }] }`. El teléfono se compara por los últimos 8 dígitos. Sin datos, lista vacía. No devuelve mail ni teléfono. |

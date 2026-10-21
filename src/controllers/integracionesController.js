@@ -347,6 +347,10 @@ const revocar = async (req, res, next) => {
  *   → { clientes: [{ id, nombre, apellido, cuit, tipo, mayorista }] }
  * El stock por SKU y los pedidos usan los mismos de la tienda y del portal.
  */
+const negocioAsistente = async (req, res, next) => {
+  try { res.json(await asistente.negocio(req.integracion.businessId)); } catch (e) { next(e); }
+};
+
 const productosAsistente = async (req, res, next) => {
   try {
     res.json(await asistente.buscarProductos({
@@ -363,7 +367,7 @@ const clientesAsistente = async (req, res, next) => {
 };
 
 module.exports = {
-  productosAsistente, clientesAsistente,
+  negocioAsistente, productosAsistente, clientesAsistente,
   recibirPedido, resolucionesDePedidos, preciosPorSku, listar, revocar,
   catalogoTienda, stockTienda, pedidoDeTienda, cancelarPedidoDeTienda,
   resolucionesDeTienda, envioDeTienda, cobroDeTienda,

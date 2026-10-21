@@ -25,7 +25,7 @@ const tit = (t) => console.log(`\n\x1b[1m${t}\x1b[0m`);
 (async () => {
   const express = require('express');
   const db = require('../src/config/database');
-  const { Business, Client, SolicitudMayorista, SolicitudMayoristaItem, IntegracionExterna } = require('../src/models');
+  const { Business, BusinessLocation, Client, SolicitudMayorista, SolicitudMayoristaItem, IntegracionExterna } = require('../src/models');
   const integraciones = require('../src/services/integracionesService');
   const { errorHandler } = require('../src/middleware/errorHandler');
 
@@ -67,6 +67,17 @@ const tit = (t) => console.log(`\n\x1b[1m${t}\x1b[0m`);
   try {
     tit('1. SIN CREDENCIAL NO SE PREGUNTA NADA');
     chk('sin token: 401', 401, (await pedir('GET', '/productos?texto=jean', null, false)).status);
+
+    tit('1b. A QUÉ NEGOCIO APUNTA LA CREDENCIAL');
+    const neg = await pedir('GET', '/negocio');
+    chk('el nombre del negocio de la credencial', negocio.nombreNegocio, neg.json?.nombre);
+    const atienden = await BusinessLocation.findAll({ where: { businessId: negocio.id, activo: true, tipo: ['local', 'feria'] }, order: [['id', 'ASC']] });
+    chk('sus locales que atienden público, con dirección', atienden.map((l) => [l.nombre, l.direccion]),
+      (neg.json?.locales || []).map((l) => [l.nombre, l.direccion]));
+    const noAtienden = await BusinessLocation.count({ where: { businessId: negocio.id, tipo: ['deposito', 'online'] } });
+    chk(`ni depósitos ni la tienda online (la demo tiene ${noAtienden})`, false,
+      (neg.json?.locales || []).some((l) => /dep[oó]sito|online/i.test(l.nombre)));
+    chk('y la regla mayorista en texto', true, /mayorista/i.test(neg.json?.reglaMayorista?.texto || ''));
 
     tit('2. BUSCAR PRODUCTOS COMO LOS ESCRIBE UNA PERSONA');
     const jeans = await pedir('GET', '/productos?texto=jeans');

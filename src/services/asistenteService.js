@@ -1,5 +1,5 @@
 const { Op } = require('sequelize');
-const { Client } = require('../models');
+const { Business, BusinessLocation, Client } = require('../models');
 const tienda = require('./tiendaService');
 const { localesQueAbastecenOnline } = require('./stockService');
 const regla = require('./reglaMayoristaService');
@@ -42,6 +42,29 @@ async function reglaMayorista(businessId) {
   const [local] = await localesQueAbastecenOnline(businessId);
   const r = regla.normalizar(local || regla.POR_DEFECTO);
   return { ...r, texto: regla.describir(r) };
+}
+
+/*
+ * Lo fijo del negocio, para que el asistente lo sepa desde el arranque sin
+ * gastar una consulta por charla: cómo se llama (así se ve a qué cuenta apunta
+ * la credencial), los locales que atienden público y la regla mayorista.
+ */
+async function negocio(businessId) {
+  const [b, locales, mayorista] = await Promise.all([
+    Business.findByPk(businessId, { attributes: ['nombreNegocio'] }),
+    // Los depósitos y la tienda online no atienden gente: no se le pueden dar a un cliente.
+    BusinessLocation.findAll({
+      where: { businessId, activo: true, tipo: ['local', 'feria'] },
+      attributes: ['nombre', 'direccion', 'telefono'],
+      order: [['id', 'ASC']],
+    }),
+    reglaMayorista(businessId),
+  ]);
+  return {
+    nombre: b?.nombreNegocio || null,
+    locales: locales.map((l) => ({ nombre: l.nombre, direccion: l.direccion, telefono: l.telefono || null })),
+    reglaMayorista: mayorista,
+  };
 }
 
 async function buscarProductos({ businessId, texto, limite = TOPE_PRODUCTOS }) {
@@ -115,4 +138,4 @@ async function buscarClientes({ businessId, telefono, cuit, email }) {
     .map((c) => ({ id: c.id, nombre: c.nombre, apellido: c.apellido, cuit: c.cuit, tipo: c.tipo, mayorista: c.tipo === 'mayorista' }));
 }
 
-module.exports = { buscarProductos, buscarClientes, reglaMayorista, __coincide: coincide, __palabras: palabras };
+module.exports = { negocio, buscarProductos, buscarClientes, reglaMayorista, __coincide: coincide, __palabras: palabras };
