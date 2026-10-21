@@ -36,9 +36,10 @@ const TOPE_SKUS_CONSULTA = 500;
  * tienda —un producto con su selector de color y talle— y porque el SKU
  * agrupador es la clave con la que guarda lo suyo.
  */
-async function catalogo({ businessId }) {
+async function catalogo({ businessId, locales: deQueLocales = null }) {
   const [locales, variantes] = await Promise.all([
-    localesQueAbastecenOnline(businessId),
+    // El asistente pasa los suyos: vende de todos los locales, no sólo de los que abastecen lo online.
+    deQueLocales || localesQueAbastecenOnline(businessId),
     variantesPublicables(businessId, { soloActivas: true }),
   ]);
   const cantidades = locales.length

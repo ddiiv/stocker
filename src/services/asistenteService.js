@@ -70,7 +70,16 @@ async function negocio(businessId) {
 async function buscarProductos({ businessId, texto, limite = TOPE_PRODUCTOS }) {
   const pedidas = palabras(texto).filter((p) => !VACIAS.has(p)).map(raiz);
   const tope = Math.min(Math.max(1, Number(limite) || TOPE_PRODUCTOS), TOPE_PRODUCTOS);
-  const [catalogo, mayorista] = await Promise.all([tienda.catalogo({ businessId }), reglaMayorista(businessId)]);
+  /*
+   * El stock de todos los locales que venden, no sólo de los que abastecen lo
+   * online: el pedido del asistente lo acepta una persona y sale de su local.
+   * Con sólo los online, Isuwaya mostraba en cero lo que tenía en su local más
+   * grande y el asistente decía que no había. Depósitos y ferias no venden.
+   */
+  const locales = await BusinessLocation.findAll({
+    where: { businessId, activo: true, tipo: 'local' }, attributes: ['id', 'nombre'], order: [['id', 'ASC']],
+  });
+  const [catalogo, mayorista] = await Promise.all([tienda.catalogo({ businessId, locales }), reglaMayorista(businessId)]);
 
   /*
    * Las palabras que no están en ningún producto no filtran. La gente escribe
@@ -85,28 +94,42 @@ async function buscarProductos({ businessId, texto, limite = TOPE_PRODUCTOS }) {
     return { productos: [], reglaMayorista: mayorista, sinLocalesOnline: catalogo.sinLocalesOnline };
   }
 
-  const activas = (p) => p.variantes.filter((v) => v.activo);
-  // Primero, las variantes que tienen todas las palabras ("buzo negro m").
-  let elegidos = catalogo.productos
-    .map((p) => [p, activas(p).filter((v) => !buscadas.length || coincide(buscadas, textoDe(p, v)))])
-    .filter(([, vs]) => vs.length);
   /*
-   * Si nada las tiene todas, las palabras pueden ser de productos distintos:
-   * "cuello v loan" son dos. Va cada producto que nombra alguna, primero el
-   * que nombra más, con todas sus variantes: filtrarlas por un color o talle
-   * que quizá era del otro producto escondería lo que sí hay.
+   * Se elige el producto y se devuelve entero, con todos sus colores y talles:
+   * si no hay en el color pedido, el asistente ofrece los que sí hay (y el
+   * azul puede estar cargado como "Francia"). Eligen las palabras del producto
+   * (título, categoría, género); las de color o talle sólo ponen primero al
+   * que tiene eso en stock.
    */
-  if (!elegidos.length) {
-    // Una palabra que nombra pocos productos pesa más: "loan" es uno solo y "cuello" son muchos; sin esto el Loan quedaba fuera del tope.
-    const nombra = (b, p) => coincide([b], textoProducto(p));
-    const cuantos = new Map(buscadas.map((b) => [b, catalogo.productos.filter((p) => nombra(b, p)).length]));
-    elegidos = catalogo.productos
-      .map((p) => [p, activas(p), buscadas.filter((b) => nombra(b, p)).reduce((s, b) => s + 1 / cuantos.get(b), 0)])
-      .filter(([, vs, puntaje]) => puntaje && vs.length)
-      .sort((a, b) => b[2] - a[2]);
-  }
+  const nombra = (b, p) => coincide([b], textoProducto(p));
+  const deProducto = buscadas.filter((b) => catalogo.productos.some((p) => nombra(b, p)));
+  const deVariante = buscadas.filter((b) => !deProducto.includes(b));
+  // Una palabra que nombra pocos productos pesa más: "loan" es uno solo y "cuello" son muchos; sin esto el Loan quedaba fuera del tope.
+  const cuantos = new Map(deProducto.map((b) => [b, catalogo.productos.filter((p) => nombra(b, p)).length]));
+  const candidatos = catalogo.productos
+    .map((p) => {
+      const vs = p.variantes.filter((v) => v.activo);
+      const nombradas = deProducto.filter((b) => nombra(b, p));
+      return {
+        p,
+        vs,
+        todas: nombradas.length === deProducto.length,
+        puntaje: nombradas.reduce((s, b) => s + 1 / cuantos.get(b), 0),
+        justo: !deVariante.length || vs.some((v) => v.publicable > 0 && coincide(deVariante, textoDe(p, v))),
+      };
+    })
+    .filter((x) => x.vs.length && (deProducto.length ? x.puntaje > 0 : x.justo));
+  /*
+   * Si alguno tiene todas las palabras del producto, van ésos. Si no, las
+   * palabras pueden ser de productos distintos ("cuello v loan" son dos) y va
+   * cada uno que nombre alguna, primero el de la palabra más específica.
+   */
+  const conTodas = candidatos.filter((x) => x.todas);
+  const elegidos = conTodas.length
+    ? conTodas.sort((a, b) => b.justo - a.justo)
+    : candidatos.sort((a, b) => (b.puntaje - a.puntaje) || (b.justo - a.justo));
 
-  const productos = elegidos.slice(0, tope).map(([p, vs]) => ({
+  const productos = elegidos.slice(0, tope).map(({ p, vs }) => ({
     titulo: p.titulo, categoria: p.categoria, genero: p.genero,
     precioMayorista: p.precioMayorista, precioMinorista: p.precioMinorista,
     variantes: vs.map(({ id, activo, publicable, ...resto }) => ({ ...resto, disponible: publicable })),

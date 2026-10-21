@@ -25,7 +25,7 @@ const tit = (t) => console.log(`\n\x1b[1m${t}\x1b[0m`);
 (async () => {
   const express = require('express');
   const db = require('../src/config/database');
-  const { Business, BusinessLocation, Client, SolicitudMayorista, SolicitudMayoristaItem, IntegracionExterna } = require('../src/models');
+  const { Business, BusinessLocation, Client, Product, ProductVariant, VariantStock, SolicitudMayorista, SolicitudMayoristaItem, IntegracionExterna } = require('../src/models');
   const integraciones = require('../src/services/integracionesService');
   const { errorHandler } = require('../src/middleware/errorHandler');
 
@@ -100,13 +100,49 @@ const tit = (t) => console.log(`\n\x1b[1m${t}\x1b[0m`);
     chk('con tope, la palabra que nombra un solo producto no queda afuera', true,
       ((await pedir('GET', '/productos?texto=buzo%20canguro%20cargo&limite=2')).json?.productos || []).some((p) => /cargo/i.test(p.titulo)));
     const buzoM = await pedir('GET', '/productos?texto=buzo%20talle%20m');
-    chk('"buzo talle m" trae sólo las variantes M', true,
-      (buzoM.json?.productos || []).length > 0
-      && buzoM.json.productos.every((p) => p.variantes.every((v) => Object.values(v).some((x) => normal(x) === 'm'))));
+    // El producto entero, para ofrecer otro talle o color si el pedido no está; primero el que tiene M.
+    chk('"buzo talle m" trae los buzos enteros, primero uno con M en stock', [true, true, true],
+      [(buzoM.json?.productos || []).length > 0,
+        (buzoM.json?.productos || []).every((p) => /buzo/i.test(p.titulo) && p.variantes.some((v) => normal(v.talle) !== 'm')),
+        Boolean(buzoM.json?.productos?.[0]?.variantes.some((v) => normal(v.talle) === 'm' && v.disponible > 0))]);
+    // La remera oversize va primero en el catálogo pero no viene en verde: primero el buzo, que sí.
+    const verde = (await pedir('GET', '/productos?texto=oversize%20verde')).json?.productos || [];
+    chk('"oversize verde": primero un oversize con verde en stock, y siguen los otros oversize', [true, true],
+      [Boolean(verde[0]?.variantes.some((v) => normal(v.color) === 'verde' && v.disponible > 0)), verde.some((p) => /remera oversize/i.test(p.titulo))]);
     chk('algo que no existe no inventa nada', [], (await pedir('GET', '/productos?texto=heladera%20samsung')).json?.productos);
     chk('las palabras que no están en ningún producto no filtran ("buzo para mi local")', true,
       ((await pedir('GET', `/productos?texto=${encodeURIComponent('un buzo para mi local')}`)).json?.productos || [])
         .some((p) => /buzo/i.test(p.titulo)));
+
+    tit('2b. EL STOCK ES EL DE TODOS LOS LOCALES QUE VENDEN');
+    /*
+     * El pedido del asistente lo acepta una persona y sale de su local: cuenta
+     * el stock de todos los locales, no sólo de los que abastecen lo online.
+     * Belgrano deja de abastecer lo online durante la prueba y su stock tiene
+     * que seguir contando.
+     */
+    const belgrano = await BusinessLocation.findOne({ where: { businessId: negocio.id, nombre: 'Local Belgrano' } });
+    const abastecia = belgrano.abasteceOnline;
+    await belgrano.update({ abasteceOnline: false });
+    try {
+      const jean = (await pedir('GET', '/productos?texto=jean')).json?.productos?.[0];
+      const skus = (jean?.variantes || []).map((v) => v.sku);
+      const delNegocio = (await Product.findAll({ where: { businessId: negocio.id }, attributes: ['id'] })).map((p) => p.id);
+      const ids = new Map((await ProductVariant.findAll({ where: { sku: skus, productId: delNegocio }, attributes: ['id', 'sku'] })).map((v) => [v.id, v.sku]));
+      const queVenden = await BusinessLocation.findAll({ where: { businessId: negocio.id, activo: true, tipo: 'local' } });
+      const libre = new Map(skus.map((s) => [s, 0]));
+      let enBelgrano = 0;
+      for (const f of await VariantStock.findAll({ where: { businessId: negocio.id, productVariantId: [...ids.keys()], locationId: queVenden.map((l) => l.id) } })) {
+        const x = Math.max(0, Number(f.stock) - Number(f.reservado || 0));
+        libre.set(ids.get(f.productVariantId), libre.get(ids.get(f.productVariantId)) + x);
+        if (f.locationId === belgrano.id) enBelgrano += x;
+      }
+      chk(`la prueba tiene stock en Belgrano (${enBelgrano})`, true, enBelgrano > 0);
+      chk('disponible = lo libre de todos los locales que venden, sin depósito ni online', Object.fromEntries(libre),
+        Object.fromEntries((jean?.variantes || []).map((v) => [v.sku, v.disponible])));
+    } finally {
+      await belgrano.update({ abasteceOnline: abastecia });
+    }
 
     tit('3. RECONOCER AL CLIENTE');
     const porTel = await pedir('GET', '/clientes?telefono=%2B5491155551234');
