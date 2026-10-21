@@ -342,6 +342,18 @@ r.post('/integraciones/tienda/pedidos/:pedidoExterno/envio',    requireIntegraci
 r.post('/integraciones/tienda/cobros',   requireIntegracion('tienda'), integracionesCtrl.cobroDeTienda);
 
 /*
+ * ── El asistente con IA ───────────────────────────────────────────
+ *
+ * Busca productos como los escribe una persona, reconoce al cliente y deja
+ * pedidos en la bandeja de mayoristas, igual que el portal: una persona los
+ * acepta o los rechaza. El stock por SKU es el mismo que ve la tienda.
+ */
+r.get ('/integraciones/asistente/productos', requireIntegracion('asistente'), integracionesCtrl.productosAsistente);
+r.get ('/integraciones/asistente/stock',     requireIntegracion('asistente'), integracionesCtrl.stockTienda);
+r.get ('/integraciones/asistente/clientes',  requireIntegracion('asistente'), integracionesCtrl.clientesAsistente);
+r.post('/integraciones/asistente/pedidos',   requireIntegracion('asistente'), integracionesCtrl.recibirPedido);
+
+/*
  * ── La bandeja de pedidos mayoristas ──────────────────────────────
  *
  * Aceptar crea una venta, así que pide el permiso de ventas: es exactamente lo

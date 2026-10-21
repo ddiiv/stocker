@@ -8,6 +8,7 @@
 
 const integraciones = require('../services/integracionesService');
 const solicitudes = require('../services/solicitudMayoristaService');
+const asistente = require('../services/asistenteService');
 const { abrirSobre } = require('../utils/sobreMovimiento');
 
 /*
@@ -337,7 +338,32 @@ const revocar = async (req, res, next) => {
   } catch (e) { next(e); }
 };
 
+/*
+ * ── El asistente con IA ──────────────────────────────────────────
+ *
+ * GET /api/integraciones/asistente/productos?texto=remera negra m
+ *   → { productos: [...], reglaMayorista: { modo, cantidad, monto, texto } }
+ * GET /api/integraciones/asistente/clientes?telefono=|cuit=|email=
+ *   → { clientes: [{ id, nombre, apellido, cuit, tipo, mayorista }] }
+ * El stock por SKU y los pedidos usan los mismos de la tienda y del portal.
+ */
+const productosAsistente = async (req, res, next) => {
+  try {
+    res.json(await asistente.buscarProductos({
+      businessId: req.integracion.businessId, texto: req.query.texto, limite: req.query.limite,
+    }));
+  } catch (e) { next(e); }
+};
+
+const clientesAsistente = async (req, res, next) => {
+  try {
+    const { telefono, cuit, email } = req.query;
+    res.json({ clientes: await asistente.buscarClientes({ businessId: req.integracion.businessId, telefono, cuit, email }) });
+  } catch (e) { next(e); }
+};
+
 module.exports = {
+  productosAsistente, clientesAsistente,
   recibirPedido, resolucionesDePedidos, preciosPorSku, listar, revocar,
   catalogoTienda, stockTienda, pedidoDeTienda, cancelarPedidoDeTienda,
   resolucionesDeTienda, envioDeTienda, cobroDeTienda,
