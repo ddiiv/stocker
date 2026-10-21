@@ -10,6 +10,7 @@ import {
 } from "../services/solicitudMayoristaService";
 import { fetchLocalesDeVenta } from "../services/employeeService";
 import { fetchClients } from "../services/clientService";
+import ClienteRapidoModal from "../components/clients/ClienteRapidoModal";
 import { fetchPaymentMethods } from "../services/paymentMethodService";
 import { formatCurrency, formatDateTime } from "../utils/formatters";
 import { mensajeDeError } from "../utils/errores";
@@ -71,6 +72,7 @@ export default function PedidosMayoristasPage() {
   // Cómo se va a registrar la venta.
   const [locationId, setLocationId] = useState("");
   const [clientId, setClientId] = useState("");
+  const [altaCliente, setAltaCliente] = useState(false);
   const [condicionPago, setCondicionPago] = useState("contado");
   const [pagos, setPagos] = useState([]);
   const [llevaMercaderia, setLlevaMercaderia] = useState(true);
@@ -414,9 +416,12 @@ export default function PedidosMayoristasPage() {
                     {abierta.clienteSugerido && String(abierta.clienteSugerido.id) === clientId && (
                       <span className="mt-1 block text-xs text-teal-600">Matchea por CUIT con el que mandó el portal.</span>
                     )}
-                    {!abierta.clienteSugerido && (abierta.cliente?.cuit || abierta.comprador?.documento) && (
+                    {!abierta.clienteSugerido && (
                       <span className="mt-1 block text-xs text-ink-500">
-                        Ningún cliente de Stocker tiene ese CUIT. Si vas a fiar, cargalo primero en Clientes.
+                        {(abierta.cliente?.cuit || abierta.comprador?.documento) && "Ningún cliente de Stocker tiene ese CUIT. "}
+                        <button type="button" className="font-medium text-brass-600 underline" onClick={() => setAltaCliente(true)}>
+                          Crear cliente con los datos del pedido
+                        </button>
                       </span>
                     )}
                   </label>
@@ -529,6 +534,27 @@ export default function PedidosMayoristasPage() {
           </div>
         )}
       </div>
+
+      {/* Con los datos que mandó el portal; el que se crea (o el que ya existía con ese CUIT) queda elegido. */}
+      <ClienteRapidoModal
+        open={altaCliente}
+        onClose={() => setAltaCliente(false)}
+        inicial={abierta && {
+          nombre: abierta.cliente?.nombre || abierta.comprador?.nombre,
+          apellido: abierta.cliente?.apellido,
+          cuit: abierta.cliente?.cuit || abierta.comprador?.documento,
+          email: abierta.cliente?.email || abierta.comprador?.email,
+          telefono: abierta.cliente?.telefono,
+          whatsapp: abierta.cliente?.whatsapp,
+          direccion: abierta.cliente?.direccion
+            || [abierta.envio?.direccion, abierta.envio?.localidad, abierta.envio?.provincia].filter(Boolean).join(", "),
+          tipo: "mayorista",
+        }}
+        onCreado={(c) => {
+          setClientes((cs) => (cs.some((x) => x.id === c.id) ? cs : [c, ...cs]));
+          setClientId(String(c.id));
+        }}
+      />
     </div>
   );
 }

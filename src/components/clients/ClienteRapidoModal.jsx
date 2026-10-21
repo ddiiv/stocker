@@ -29,7 +29,12 @@ import { mensajeDeError } from "../../utils/errores";
 
 const VACIO = { cuit: "", nombre: "", apellido: "", direccion: "", email: "", telefono: "" };
 
-export default function ClienteRapidoModal({ open, onClose, onCreado }) {
+/*
+ * `inicial`: datos con los que arranca el formulario (por ejemplo, los que mandó
+ * el portal mayorista con el pedido). Con CUIT, se revisa igual si ya existe y
+ * se consulta ARCA, como si se hubiera tipeado.
+ */
+export default function ClienteRapidoModal({ open, onClose, onCreado, inicial = null }) {
   const [form, setForm] = useState(VACIO);
   const [padron, setPadron] = useState(null);   // { loading } | { data } | { error }
   /*
@@ -55,6 +60,16 @@ export default function ClienteRapidoModal({ open, onClose, onCreado }) {
   useEffect(() => {
     if (!open) return;
     setForm(VACIO); setPadron(null); setBloqueados([]); setError(""); setNombreRepetido(null);
+    if (!inicial) return;
+    const texto = (v) => String(v ?? "").trim();
+    setForm({
+      ...VACIO,
+      nombre: texto(inicial.nombre), apellido: texto(inicial.apellido), email: texto(inicial.email),
+      telefono: texto(inicial.telefono), direccion: texto(inicial.direccion),
+    });
+    if (inicial.cuit) cambiarCuit(texto(inicial.cuit));
+    // Sólo al abrir: con `inicial` en las dependencias, cada render del padre reiniciaría lo tipeado.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
   useEffect(() => () => clearTimeout(debounce.current), []);
@@ -158,6 +173,9 @@ export default function ClienteRapidoModal({ open, onClose, onCreado }) {
         email: form.email.trim() || null,
         telefono: form.telefono.trim() || null,
         direccion: form.direccion.trim() || null,
+        // Lo que no se ve en el formulario pero vino con los datos (p. ej. un pedido mayorista).
+        tipo: inicial?.tipo || undefined,
+        whatsapp: inicial?.whatsapp || undefined,
         forzar,
       });
       onCreado?.(cliente);
