@@ -85,6 +85,8 @@ const tit = (t) => console.log(`\n\x1b[1m${t}\x1b[0m`);
     chk('"jeans" encuentra los jeans (por la categoría, aunque el título diga "Jean")', true,
       (jeans.json?.productos || []).some((p) => normal(p.categoria) === 'jeans'));
     const uno = jeans.json?.productos?.[0];
+    chk('cada producto trae su SKU agrupador (la clave del producto en el portal mayorista)', true,
+      (jeans.json?.productos || []).length > 0 && jeans.json.productos.every((p) => typeof p.skuAgrupador === 'string' && p.skuAgrupador.length > 0));
     chk('cada variante trae SKU, disponible y los dos precios', true,
       Boolean(uno?.variantes?.every((v) => v.sku && Number.isFinite(v.disponible) && v.precioMayorista != null && v.precioMinorista != null)));
     chk('y la regla mayorista en texto, para decirla', true, /Mayorista|mayorista/.test(jeans.json?.reglaMayorista?.texto || ''));

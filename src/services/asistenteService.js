@@ -130,6 +130,8 @@ async function buscarProductos({ businessId, texto, limite = TOPE_PRODUCTOS }) {
     : candidatos.sort((a, b) => (b.puntaje - a.puntaje) || (b.justo - a.justo));
 
   const productos = elegidos.slice(0, tope).map(({ p, vs }) => ({
+    // La clave del producto en el portal mayorista, donde el asistente deja el pedido.
+    skuAgrupador: p.skuAgrupador,
     titulo: p.titulo, categoria: p.categoria, genero: p.genero,
     precioMayorista: p.precioMayorista, precioMinorista: p.precioMinorista,
     variantes: vs.map(({ id, activo, publicable, ...resto }) => ({ ...resto, disponible: publicable })),
