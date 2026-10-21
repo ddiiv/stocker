@@ -244,7 +244,35 @@ function toStr(v) {
   return String(v).trim();
 }
 
-async function importProductsXlsx(businessId, buffer, { locationId = null } = {}) {
+/*
+ * Una importación a la vez por negocio.
+ *
+ * La pantalla no avisa mientras corre y un archivo grande tarda minutos: subirlo
+ * de nuevo "porque no pasó nada" lanzaba una segunda importación sobre las
+ * mismas filas. Las dos leían el stock viejo y escribían el mismo ajuste, y el
+ * libro de movimientos quedaba con cada ajuste duplicado.
+ *
+ * shortcut: el candado vive en la memoria del proceso, no frena a otra instancia
+ * del backend; subirlo a la base si algún día se escala a más de una.
+ */
+const importando = new Set();
+
+async function importProductsXlsx(businessId, buffer, opciones = {}) {
+  if (importando.has(businessId)) {
+    throw Object.assign(
+      new Error('Ya hay una importación en curso para este negocio. Esperá a que termine antes de subir otro archivo.'),
+      { status: 409 },
+    );
+  }
+  importando.add(businessId);
+  try {
+    return await importarFilas(businessId, buffer, opciones);
+  } finally {
+    importando.delete(businessId);
+  }
+}
+
+async function importarFilas(businessId, buffer, { locationId = null } = {}) {
   // Local de respaldo: para archivos con una sola columna "Stock", sin nombre
   // de local. Sin indicarlo, el principal.
   // El local llega desde el formulario de importación: hay que comprobar que

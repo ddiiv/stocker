@@ -12,7 +12,7 @@
  */
 
 const { Op, literal } = require('sequelize');
-const { ProductVariant, VariantStock, BusinessLocation, StockMovement, Employee, Product } = require('../models');
+const { db, ProductVariant, VariantStock, BusinessLocation, StockMovement, Employee, Product } = require('../models');
 const { CON_STOCK } = require('../config/lugares');
 
 /*
@@ -130,11 +130,22 @@ async function localPorDefecto(businessId, transaction = null) {
  * "sin dato". Eso permite mostrar la grilla completa de locales sin huecos.
  */
 async function filaDe(variantId, locationId, businessId, t) {
+  /*
+   * Sin transacción de quien llama, se abre una acá y se pasa a findOrCreate.
+   *
+   * Si no, findOrCreate abre una interna y, cuando dos pedidos crean la misma
+   * fila a la vez, relee el ganador FUERA de ella. En SQL Server el INSERT que
+   * perdió sigue reteniendo su bloqueo hasta el commit, y esa relectura (otra
+   * conexión) espera a una transacción que espera la relectura: se traba hasta
+   * el timeout de 15 s del driver, con las lecturas de stock de todo el sistema
+   * detrás. Con la transacción propia la relectura corre en la misma conexión.
+   */
+  if (!t) return db.transaction((tx) => filaDe(variantId, locationId, businessId, tx));
   const [fila] = await VariantStock.findOrCreate({
     where: { productVariantId: variantId, locationId },
     defaults: { productVariantId: variantId, locationId, businessId, stock: 0 },
     transaction: t,
-    lock: t ? t.LOCK.UPDATE : undefined,
+    lock: t.LOCK.UPDATE,
   });
   return fila;
 }
