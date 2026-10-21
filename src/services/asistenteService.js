@@ -45,17 +45,28 @@ async function reglaMayorista(businessId) {
 }
 
 async function buscarProductos({ businessId, texto, limite = TOPE_PRODUCTOS }) {
-  const buscadas = palabras(texto).filter((p) => !VACIAS.has(p)).map(raiz);
+  const pedidas = palabras(texto).filter((p) => !VACIAS.has(p)).map(raiz);
   const tope = Math.min(Math.max(1, Number(limite) || TOPE_PRODUCTOS), TOPE_PRODUCTOS);
   const [catalogo, mayorista] = await Promise.all([tienda.catalogo({ businessId }), reglaMayorista(businessId)]);
+
+  /*
+   * Las palabras que no están en ningún producto no filtran. La gente escribe
+   * "un buzo para mi local" o "algo lindo": exigiendo todas, "local" dejaba
+   * afuera a todos los buzos. Si ninguna palabra está en el catálogo, no hay
+   * nada que mostrar ("heladera samsung" sigue sin traer nada).
+   */
+  const textoDe = (p, v) => `${p.titulo} ${p.categoria} ${p.genero} ${p.skuAgrupador} ${v.sku} ${Object.values(v).join(' ')}`;
+  const buscadas = pedidas.filter((b) => catalogo.productos.some((p) => p.variantes.some((v) => coincide([b], textoDe(p, v)))));
+  if (pedidas.length && !buscadas.length) {
+    return { productos: [], reglaMayorista: mayorista, sinLocalesOnline: catalogo.sinLocalesOnline };
+  }
 
   const productos = [];
   for (const p of catalogo.productos) {
     if (productos.length >= tope) break;
-    const delProducto = [p.titulo, p.categoria, p.genero, p.skuAgrupador].join(' ');
     const variantes = p.variantes
       .filter((v) => v.activo)
-      .filter((v) => !buscadas.length || coincide(buscadas, `${delProducto} ${v.sku} ${Object.values(v).join(' ')}`))
+      .filter((v) => !buscadas.length || coincide(buscadas, textoDe(p, v)))
       .map(({ id, activo, publicable, ...resto }) => ({ ...resto, disponible: publicable }));
     if (variantes.length) {
       productos.push({

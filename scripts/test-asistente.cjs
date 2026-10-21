@@ -37,7 +37,16 @@ const tit = (t) => console.log(`\n\x1b[1m${t}\x1b[0m`);
   const base = `http://127.0.0.1:${server.address().port}/api/integraciones/asistente`;
 
   const negocio = await Business.findOne({ where: { email: 'demo@stocker.app' } });
-  const { token, integracion } = await integraciones.emitir({ businessId: negocio.id, origen: 'asistente', nombre: 'QA asistente' });
+  /*
+   * La credencial de la prueba se crea directo y no con emitir(): emitir anula
+   * la que ya esté activa, y en una base de desarrollo esa es la del
+   * asistente-local que se está probando a mano.
+   */
+  const token = require('crypto').randomBytes(24).toString('base64url');
+  const integracion = await IntegracionExterna.create({
+    businessId: negocio.id, origen: 'asistente', nombre: 'QA asistente',
+    tokenHash: integraciones.__hash(token), pista: token.slice(-6), activa: true,
+  });
   const pedir = async (metodo, ruta, cuerpo, conToken = true) => {
     const r = await fetch(base + ruta, {
       method: metodo,
@@ -75,6 +84,9 @@ const tit = (t) => console.log(`\n\x1b[1m${t}\x1b[0m`);
       (buzoM.json?.productos || []).length > 0
       && buzoM.json.productos.every((p) => p.variantes.every((v) => Object.values(v).some((x) => normal(x) === 'm'))));
     chk('algo que no existe no inventa nada', [], (await pedir('GET', '/productos?texto=heladera%20samsung')).json?.productos);
+    chk('las palabras que no están en ningún producto no filtran ("buzo para mi local")', true,
+      ((await pedir('GET', `/productos?texto=${encodeURIComponent('un buzo para mi local')}`)).json?.productos || [])
+        .some((p) => /buzo/i.test(p.titulo)));
 
     tit('3. RECONOCER AL CLIENTE');
     const porTel = await pedir('GET', '/clientes?telefono=%2B5491155551234');
