@@ -320,6 +320,14 @@ r.post('/integraciones/isuwaya/pedidos', requireIntegracion('isuwaya'), integrac
 /* Lo que pasó con esos pedidos, y la lista de precios: las dos las pregunta el portal. */
 r.get('/integraciones/isuwaya/pedidos/resoluciones', requireIntegracion('isuwaya'), integracionesCtrl.resolucionesDePedidos);
 r.get('/integraciones/isuwaya/precios',              requireIntegracion('isuwaya'), integracionesCtrl.preciosPorSku);
+/*
+ * El catálogo (el mismo que lee la tienda) para que el portal se arme solo desde
+ * acá, y el stock de un local para mirar al revisar un pedido: el portal elige
+ * de qué local, o ninguno.
+ */
+r.get('/integraciones/isuwaya/catalogo',             requireIntegracion('isuwaya'), integracionesCtrl.catalogoTienda);
+r.get('/integraciones/isuwaya/locales',              requireIntegracion('isuwaya'), integracionesCtrl.localesPortal);
+r.get('/integraciones/isuwaya/stock',                requireIntegracion('isuwaya'), integracionesCtrl.stockPortal);
 
 /*
  * ── La tienda minorista ───────────────────────────────────────────

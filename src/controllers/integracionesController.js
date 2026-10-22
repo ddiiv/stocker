@@ -92,6 +92,20 @@ const preciosPorSku = async (req, res, next) => {
  */
 
 /* GET /api/integraciones/tienda/catalogo */
+const localesPortal = async (req, res, next) => {
+  try {
+    res.json(await require('../services/preciosIntegracionService').locales({ businessId: req.integracion.businessId }));
+  } catch (e) { next(e); }
+};
+
+const stockPortal = async (req, res, next) => {
+  try {
+    res.json(await require('../services/preciosIntegracionService').stockDelLocal({
+      businessId: req.integracion.businessId, local: req.query.local,
+    }));
+  } catch (e) { next(e); }
+};
+
 const catalogoTienda = async (req, res, next) => {
   try {
     const tienda = require('../services/tiendaService');
@@ -369,6 +383,6 @@ const clientesAsistente = async (req, res, next) => {
 module.exports = {
   negocioAsistente, productosAsistente, clientesAsistente,
   recibirPedido, resolucionesDePedidos, preciosPorSku, listar, revocar,
-  catalogoTienda, stockTienda, pedidoDeTienda, cancelarPedidoDeTienda,
+  catalogoTienda, stockTienda, localesPortal, stockPortal, pedidoDeTienda, cancelarPedidoDeTienda,
   resolucionesDeTienda, envioDeTienda, cobroDeTienda,
 };

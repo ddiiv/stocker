@@ -17,7 +17,7 @@
  */
 
 const { Op } = require('sequelize');
-const { Product, ProductVariant } = require('../models');
+const { Product, ProductVariant, VariantStock, BusinessLocation } = require('../models');
 const { precioMayorista, precioMinorista } = require('./precioService');
 
 // Un catálogo de indumentaria entra holgado; el tope existe para que una
@@ -90,4 +90,48 @@ async function precios({ businessId, desde = null }) {
   };
 }
 
-module.exports = { precios, TOPE };
+/*
+ * ── El stock de un local, para el portal ─────────────────────────
+ *
+ * El portal muestra, al revisar un pedido, cuánto hay de cada talle en el
+ * local que despacha (lo elige ISUWAYA desde su panel, o ninguno). Es lo libre:
+ * lo apartado para otro pedido no se puede volver a ofrecer.
+ */
+async function locales({ businessId }) {
+  const filas = await BusinessLocation.findAll({
+    where: { businessId, activo: true }, attributes: ['id', 'nombre', 'tipo'], order: [['id', 'ASC']],
+  });
+  return { locales: filas.map((l) => ({ id: l.id, nombre: l.nombre, tipo: l.tipo })) };
+}
+
+async function stockDelLocal({ businessId, local }) {
+  const id = Number(local);
+  if (!Number.isInteger(id) || id <= 0) throw Object.assign(new Error('Falta el local.'), { status: 400 });
+  // El local tiene que ser de este negocio: el id viaja en la dirección y lo puede cambiar cualquiera.
+  const lugar = await BusinessLocation.findOne({ where: { id, businessId }, attributes: ['id'] });
+  if (!lugar) throw Object.assign(new Error('Ese local no es de este negocio.'), { status: 404 });
+
+  /*
+   * shortcut: se manda todo el local aunque el portal pida "desde": no todos los
+   * movimientos de stock tocan la fecha de la fila, y un cambio perdido es peor
+   * que unos miles de renglones cada cuarto de hora. Si el catálogo crece mucho,
+   * hacer el corte por los movimientos del libro.
+   */
+  const filas = await VariantStock.findAll({
+    where: { businessId, locationId: id },
+    attributes: ['productVariantId', 'stock', 'reservado'],
+    include: [{ model: ProductVariant, as: 'variante', attributes: ['sku'], required: true, where: { sku: { [Op.ne]: null } } }],
+    limit: TOPE + 1,
+  });
+  const truncado = filas.length > TOPE;
+  return {
+    stock: filas.slice(0, TOPE).map((f) => ({
+      sku: f.variante.sku,
+      cantidad: Math.max(0, (Number(f.stock) || 0) - (Number(f.reservado) || 0)),
+    })),
+    truncado,
+    generadoEn: new Date(),
+  };
+}
+
+module.exports = { precios, locales, stockDelLocal, TOPE };

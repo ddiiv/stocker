@@ -439,6 +439,12 @@ mal. **La plataforma no guarda el precio ni el stock como dato propio.**
 | Mercado Libre | ✅ webhook + el barrido busca lo nuevo | — | en Stocker | ⛔ | en Stocker |
 | Jumpseller | ⚠️ **sólo si alguien aprieta importar** | — | en Stocker | ⛔ | en Stocker |
 
+**Lo que el portal mayorista lee de acá** (credencial `isuwaya`): `GET /api/integraciones/isuwaya/catalogo` (el mismo
+catálogo de la tienda: productos activos con agrupador, título, categoría, modelo, género y variantes con SKU, color,
+talle y precio mayorista; el portal se arma solo con esto, sin planilla), `…/precios?desde=`, `…/locales` (los activos
+del negocio) y `…/stock?local=<id>` (`{ stock: [{ sku, cantidad }], generadoEn, truncado }`, lo libre de ese local;
+404 si el local no es del negocio). El portal elige de qué local mira el stock, o ninguno.
+
 Los dos no están igual, y la diferencia importa. Mercado Libre avisa por webhook
 (`POST /api/mercadolibre/notificaciones`) y además el barrido de 15 minutos busca órdenes nuevas, así
 que una venta de ML entra sola. **Jumpseller no entra solo**: `importarPedidos` existe pero el barrido
