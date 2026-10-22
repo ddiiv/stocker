@@ -14,7 +14,7 @@ const { setAuthCookie } = require('../utils/authCookie');
 const { TERMINOS_VERSION } = require('../config/terminos');
 
 /*
- * Cuenta del dueño.
+ * Cuenta del dueño..
  *
  * Los datos comunes (nombre, teléfono, nombre del negocio) se editan directo.
  * El email y la contraseña no: son las dos llaves de acceso, y cambiarlas sin
