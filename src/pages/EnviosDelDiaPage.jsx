@@ -200,6 +200,11 @@ function HistorialReconciliacion({ paquetes }) {
         )}
       </Card>
 
+
+
+
+
+
       <Card className="p-0">
         <div className="border-b border-line px-4 py-3">
           <p className="font-display text-sm font-semibold text-ink-950">Confirmado por Mercado Libre</p>
