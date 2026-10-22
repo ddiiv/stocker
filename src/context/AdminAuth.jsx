@@ -2,7 +2,7 @@ import { createContext, useContext, useEffect, useState, useCallback } from "rea
 import * as api from "../lib/api";
 
 /*
- * Sesión del operador.
+ * Sesión del operador..
  *
  * Al montar se sonda `/backoffice/me`. Sin sesión responde 401 y el
  * interceptor de http.js deja pasar ese caso puntual sin redirigir, para que
