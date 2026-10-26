@@ -112,6 +112,25 @@ function ean13Interno(id) {
 }
 
 /*
+ * Qué se imprime en las barras. Lo elige cada negocio en la pantalla de
+ * Etiquetas, según lo que lea mejor su lector:
+ *   ean13     el código de barras de la variante en EAN-13 (si no tiene, el interno). El recomendado.
+ *   numero12  ese mismo número sin el dígito verificador, en Code 128. La caja lo reconoce igual.
+ *   sku       el SKU, en Code 128.
+ *   propio    el código de barras de la variante o, si no tiene, el SKU, en Code 128: como era antes.
+ */
+const TIPOS_CODIGO = ['ean13', 'numero12', 'sku', 'propio'];
+const ASIGNAN_CODIGO = ['ean13', 'numero12'];
+
+function codigoDeEtiqueta(variante, tipo = 'ean13') {
+  if (tipo === 'sku') return { texto: variante.sku };
+  const propio = variante.codigoBarras || variante.sku;
+  if (tipo === 'propio') return { texto: propio, soloCode128: true };
+  if (tipo === 'numero12' && esEan13(propio)) return { texto: propio.slice(0, 12) };
+  return { texto: propio };
+}
+
+/*
  * A las variantes sin código de barras se les asigna su EAN-13 interno y se
  * guarda. Se guarda —y no se calcula al vuelo— porque la caja, el armado de
  * pedidos y los envíos del día buscan por `codigoBarras`: así el número que
@@ -180,7 +199,7 @@ function armarEncabezado(doc, partes, maxAncho) {
  * barras y, debajo, en texto: se imprimen los dos para que un operario pueda
  * tipearlo a mano cuando la etiqueta se raya o se despega.
  */
-function dibujar(doc, { encabezado, talle, codigo, sku }) {
+function dibujar(doc, { encabezado, talle, codigo, soloCode128, sku }) {
   const izq = PAD;
   const der = ANCHO - PAD;
   const util = der - izq;
@@ -201,7 +220,7 @@ function dibujar(doc, { encabezado, talle, codigo, sku }) {
   let anchos;
   let modulo;
   let x;
-  if (esEan13(codigo)) {
+  if (!soloCode128 && esEan13(codigo)) {
     // 3 puntos exactos de la impresora por módulo y la zona muda de la norma (11 y 7 módulos), centrado.
     const [simbolo] = bwip.raw({ bcid: 'ean13', text: String(codigo) });
     anchos = String(simbolo.sbs).split(',').map(Number);
@@ -209,11 +228,23 @@ function dibujar(doc, { encabezado, talle, codigo, sku }) {
     const total = (anchos.reduce((a, b) => a + b, 0) + 11 + 7) * modulo;
     x = Math.round(((ANCHO - total) / 2 + 11 * modulo) / (PUNTO_IMPRESORA * MM)) * PUNTO_IMPRESORA * MM;
   } else {
-    // Otro código (alfanumérico, de largo raro): Code 128 con todo el ancho, como siempre.
+    /*
+     * Code 128. Si entra con módulos de puntos enteros (hasta 3) y su zona muda
+     * de 10 módulos por lado —un número de 12 dígitos o un SKU corto—, va así:
+     * es lo que mejor lee un lector económico. Si no entra (un SKU largo), con
+     * todo el ancho, como siempre.
+     */
     const p = patron(codigo);
     anchos = p.anchos;
-    x = MARGEN_BARRAS * MM;
-    modulo = (ANCHO - 2 * x) / p.modulos;
+    const disponible = ANCHO - 2 * MARGEN_BARRAS * MM;
+    const puntos = Math.min(3, Math.floor(disponible / ((p.modulos + 20) * PUNTO_IMPRESORA * MM)));
+    if (puntos >= 2) {
+      modulo = puntos * PUNTO_IMPRESORA * MM;
+      x = Math.round(((ANCHO - p.modulos * modulo) / 2) / (PUNTO_IMPRESORA * MM)) * PUNTO_IMPRESORA * MM;
+    } else {
+      x = MARGEN_BARRAS * MM;
+      modulo = disponible / p.modulos;
+    }
   }
   doc.fillColor('#000');
   for (let i = 0; i < anchos.length; i++) {
@@ -269,12 +300,12 @@ const MODULO_MINIMO_MM = 0.225;
  * etiqueta ilegible no se descubre al imprimirla: se descubre semanas después,
  * en la caja, con la prenda ya en la góndola y el cliente esperando.
  */
-function codigosDemasiadoLargos(items) {
+function codigosDemasiadoLargos(items, tipo = 'ean13') {
   const anchoBarras = ANCHO - 2 * MARGEN_BARRAS * MM;
   const vistos = new Map();
   for (const { variante } of items) {
-    const codigo = variante.codigoBarras || variante.sku;
-    if (vistos.has(codigo) || esEan13(codigo)) continue;
+    const { texto: codigo, soloCode128 } = codigoDeEtiqueta(variante, tipo);
+    if (vistos.has(codigo) || (!soloCode128 && esEan13(codigo))) continue;
     const { modulos } = patron(codigo);
     const moduloMm = (anchoBarras / modulos) / MM;
     if (moduloMm < MODULO_MINIMO_MM) vistos.set(codigo, moduloMm);
@@ -289,7 +320,7 @@ function codigosDemasiadoLargos(items) {
  * veces como diga `cantidad`, que es lo que permite imprimir "una etiqueta por
  * unidad en stock" sin que el llamador tenga que duplicar filas.
  */
-function generarEtiquetas(items) {
+function generarEtiquetas(items, { tipo = 'ean13' } = {}) {
   const total = items.reduce((s, i) => s + Math.max(0, Number(i.cantidad) || 0), 0);
   if (total === 0) {
     const err = new Error('No hay ninguna etiqueta para generar: todas las cantidades están en cero.');
@@ -304,12 +335,12 @@ function generarEtiquetas(items) {
     throw err;
   }
 
-  const largos = codigosDemasiadoLargos(items.filter((i) => Number(i.cantidad) > 0));
+  const largos = codigosDemasiadoLargos(items.filter((i) => Number(i.cantidad) > 0), tipo);
   if (largos.length) {
     const err = new Error(
       `${largos.length} código(s) no entran legibles en una etiqueta de 50 mm: ${largos.slice(0, 5).join(', ')}`
       + `${largos.length > 5 ? '…' : ''}. Máximo 16 caracteres. `
-      + `Acortalos desde Stock → Confección de SKU y volvé a generar.`
+      + `Acortalos desde Stock → Confección de SKU, o elegí EAN-13 como código de las etiquetas, y volvé a generar.`
     );
     err.status = 400;
     err.codigos = largos;
@@ -321,12 +352,12 @@ function generarEtiquetas(items) {
   for (const { producto, variante, cantidad } of items) {
     const n = Math.max(0, Number(cantidad) || 0);
     if (!n) continue;
+    const { texto, soloCode128 } = codigoDeEtiqueta(variante, tipo);
     const etiqueta = {
       encabezado: encabezadoDe(producto, variante),
       talle: variante.variante2Valor || null,
-      // Si la variante tiene código propio se imprime ése: es el que va a leer
-      // el escáner. Sin código, el SKU, que el lector también resuelve.
-      codigo: variante.codigoBarras || variante.sku,
+      codigo: texto,
+      soloCode128: Boolean(soloCode128),
       sku: variante.sku,
     };
     for (let i = 0; i < n; i++) {
@@ -339,6 +370,6 @@ function generarEtiquetas(items) {
 }
 
 module.exports = {
-  generarEtiquetas, asignarCodigosInternos, ean13Interno, esEan13, MM, ANCHO, ALTO, MODULO_MINIMO_MM,
+  generarEtiquetas, asignarCodigosInternos, ean13Interno, esEan13, digitoEan, TIPOS_CODIGO, ASIGNAN_CODIGO, MM, ANCHO, ALTO, MODULO_MINIMO_MM,
   __patron: patron, __encabezadoDe: encabezadoDe, __codigosDemasiadoLargos: codigosDemasiadoLargos,
 };

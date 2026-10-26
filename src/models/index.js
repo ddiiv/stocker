@@ -66,6 +66,8 @@ const Business = db.define('Business', {
   // Minutos sin uso hasta que se cierra la sesión, para el dueño y los
   // empleados (null = SESSION_IDLE_MINUTES). Ver utils/session.js.
   sesionInactividadMin: { type: DataTypes.INTEGER, allowNull: true },
+  // Qué va en las barras de las etiquetas (labelService.TIPOS_CODIGO). Vacío = EAN-13.
+  etiquetaCodigo: { type: DataTypes.STRING(12), allowNull: true },
   totpUltimoPaso:   { type: DataTypes.BIGINT, allowNull: true },
   totpRecuperacion: { type: DataTypes.TEXT, allowNull: true },
 

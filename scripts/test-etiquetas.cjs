@@ -132,6 +132,27 @@ const vari = (sku, color, talle, codigoBarras = null) =>
       // El EAN tiene que salir como EAN-13 (barras de 3 puntos), no como un Code 128 con dígitos.
       if (esEan13(esperado)) chk(`  y como EAN-13`, 'EAN13', String(r[0]?.format || '').replace(/[^A-Z0-9]/gi, '').toUpperCase());
     }
+
+    /*
+     * Cada tipo que se puede elegir en la pantalla de Etiquetas imprime lo suyo.
+     * Misma variante (con EAN interno) en los cuatro.
+     */
+    const ean = ean13Interno(40044);
+    const tipos = [
+      ['ean13', ean, 'EAN13'],
+      ['numero12', ean.slice(0, 12), 'CODE128'],
+      ['sku', 'ISUMIRREMAAZ2XL', 'CODE128'],
+      ['propio', ean, 'CODE128'],
+    ];
+    for (const [tipo, esperado, formato] of tipos) {
+      const { doc: d } = generarEtiquetas([{ producto: prod('Mirra', 'Remeras'), variante: vari('ISUMIRREMAAZ2XL', 'Francia', '2XL', ean), cantidad: 1 }], { tipo });
+      const pdf = path.join(dir, `t-${tipo}.pdf`);
+      await new Promise((res) => { const w = fs.createWriteStream(pdf); d.pipe(w); d.end(); w.on('finish', res); });
+      execFileSync('pdftoppm', ['-r', '203', '-png', '-singlefile', pdf, path.join(dir, `t-${tipo}`)]);
+      const r = await readBarcodes(new Blob([fs.readFileSync(path.join(dir, `t-${tipo}.png`))]), { tryHarder: true, formats: ['Code128', 'EAN13'] });
+      chk(`tipo ${tipo}: ${esperado} en ${formato}`, [esperado, formato],
+        [r[0]?.text || '(no leyó)', String(r[0]?.format || '').replace(/[^A-Z0-9]/gi, '').toUpperCase()]);
+    }
     fs.rmSync(dir, { recursive: true, force: true });
   }
 

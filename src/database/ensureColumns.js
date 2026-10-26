@@ -285,6 +285,8 @@ const COLUMNAS_ESPERADAS = {
     dobleFactorVentanaH: { type: DataTypes.INTEGER, allowNull: true },
     // Minutos sin uso hasta que se cierra la sesión. Ver el modelo.
     sesionInactividadMin: { type: DataTypes.INTEGER, allowNull: true },
+    // Qué va en las barras de las etiquetas. Ver el modelo.
+    etiquetaCodigo: { type: DataTypes.STRING(12), allowNull: true },
     // Quién aceptó los términos, cuándo y qué versión. Ver el modelo: sin la
     // versión, un booleano no prueba QUÉ texto se aceptó.
     terminosVersion:     { type: DataTypes.STRING(20), allowNull: true },

@@ -7,10 +7,10 @@
 
 const sequelize = require('../config/database');
 const {
-  StockIngreso, StockIngresoItem, BusinessLocation, Employee, ProductVariant, Product,
+  Business, StockIngreso, StockIngresoItem, BusinessLocation, Employee, ProductVariant, Product,
 } = require('../models');
 const deposito = require('../services/depositoService');
-const { generarEtiquetas, asignarCodigosInternos } = require('../services/labelService');
+const { generarEtiquetas, asignarCodigosInternos, ASIGNAN_CODIGO } = require('../services/labelService');
 
 /*
  * En qué depósito trabaja quien pide.
@@ -223,9 +223,11 @@ const etiquetas = async (req, res, next) => {
       return res.status(409).json({ message: 'Este ingreso no tiene ninguna línea con cantidad.' });
     }
 
-    // Las variantes sin código de barras reciben su EAN-13 interno, que es lo que el lector de la caja lee bien.
-    await asignarCodigosInternos(items);
-    const { doc, total } = generarEtiquetas(items);
+    // El código de las barras lo elige el negocio en la pantalla de Etiquetas. Con EAN-13 o número,
+    // las variantes sin código de barras reciben su EAN-13 interno.
+    const tipo = (await Business.findByPk(req.auth.businessId, { attributes: ['etiquetaCodigo'] }))?.etiquetaCodigo || 'ean13';
+    if (ASIGNAN_CODIGO.includes(tipo)) await asignarCodigosInternos(items);
+    const { doc, total } = generarEtiquetas(items, { tipo });
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="etiquetas-${ingreso.numero}-${total}.pdf"`);
     doc.pipe(res);

@@ -1,13 +1,13 @@
 const { Op, fn, col } = require('sequelize');
 const sequelize = require('../config/database');
-const { Product, ProductVariant, StockMovement, Employee, BusinessLocation, VariantStock } = require('../models');
+const { Business, Product, ProductVariant, StockMovement, Employee, BusinessLocation, VariantStock } = require('../models');
 const { NO_ES_FERIA } = require('../utils/feria');
 const { NO_ES_PACK, productoNoEsPack } = require('../utils/packs');
 const { ilikeOperator } = require('../utils/sqlHelpers');
 const { exportProductsXlsx, importProductsXlsx } = require('../services/productExcelService');
 const { exigirCupo } = require('../services/planService');
 const skuService = require('../services/skuService');
-const { generarEtiquetas, asignarCodigosInternos } = require('../services/labelService');
+const { generarEtiquetas, asignarCodigosInternos, ASIGNAN_CODIGO, TIPOS_CODIGO, digitoEan } = require('../services/labelService');
 const stockService = require('../services/stockService');
 const precioService = require('../services/precioService');
 const { liberarCodigos } = require('../utils/codigoDeBaja');
@@ -549,6 +549,10 @@ async function buscarPorCodigo(codigo, businessId, transaction = null) {
   return (
     await ProductVariant.findOne({ ...opciones, where: { ...opciones.where, codigoBarras: limpio } })
     || await ProductVariant.findOne({ ...opciones, where: { ...opciones.where, sku: limpio } })
+    // Una etiqueta impresa como "número de 12 dígitos" es el EAN-13 sin su verificador.
+    || (/^\d{12}$/.test(limpio)
+      ? await ProductVariant.findOne({ ...opciones, where: { ...opciones.where, codigoBarras: limpio + digitoEan(limpio) } })
+      : null)
   );
 }
 
@@ -2045,9 +2049,11 @@ const generarEtiquetasPdf = async (req, res, next) => {
       .filter((x) => x.variante && x.cantidad > 0)
       .map((x) => ({ producto: x.variante.producto, variante: x.variante, cantidad: x.cantidad }));
 
-    // Las variantes sin código de barras reciben su EAN-13 interno, que es lo que el lector de la caja lee bien.
-    await asignarCodigosInternos(items);
-    const { doc, total } = generarEtiquetas(items);
+    // El código de las barras lo elige el negocio en la pantalla de Etiquetas. Con EAN-13 o número,
+    // las variantes sin código de barras reciben su EAN-13 interno.
+    const tipo = (await Business.findByPk(req.auth.businessId, { attributes: ['etiquetaCodigo'] }))?.etiquetaCodigo || 'ean13';
+    if (ASIGNAN_CODIGO.includes(tipo)) await asignarCodigosInternos(items);
+    const { doc, total } = generarEtiquetas(items, { tipo });
 
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="etiquetas-${total}.pdf"`);
@@ -2057,6 +2063,27 @@ const generarEtiquetasPdf = async (req, res, next) => {
     if (error.status) return res.status(error.status).json({ message: error.message });
     next(error);
   }
+};
+
+// ── GET/PUT /api/products/etiquetas/ajustes ───────────────────────
+// Qué va en las barras de las etiquetas, para todo el negocio. Se elige en la
+// pantalla de Etiquetas según lo que lea mejor el lector de la caja.
+const ajustesEtiquetas = async (req, res, next) => {
+  try {
+    const b = await Business.findByPk(req.auth.businessId, { attributes: ['etiquetaCodigo'] });
+    res.json({ tipo: b?.etiquetaCodigo || 'ean13', tipos: TIPOS_CODIGO });
+  } catch (error) { next(error); }
+};
+
+const cambiarAjustesEtiquetas = async (req, res, next) => {
+  try {
+    const tipo = String(req.body?.tipo || '');
+    if (!TIPOS_CODIGO.includes(tipo)) {
+      return res.status(400).json({ message: `Elegí uno de estos: ${TIPOS_CODIGO.join(', ')}.` });
+    }
+    await Business.update({ etiquetaCodigo: tipo }, { where: { id: req.auth.businessId } });
+    res.json({ tipo, tipos: TIPOS_CODIGO });
+  } catch (error) { next(error); }
 };
 
 // ── GET /api/products/export ────────────────────────────────────────
@@ -2131,4 +2158,4 @@ const stockARegularizar = async (req, res, next) => {
   } catch (error) { next(error); }
 };
 
-module.exports = { getProducts, buscarVariantes, stockARegularizar, agregarVariantesMasivo, getProductPadreBySkuVariante, getProduct, createProduct, updateProduct, deleteProduct, addVariant, updateVariant, deleteVariant, adjustStock, getVariantMovements, getStockMovements, getStockPorLocal, getProductosPorLocal, getVariantesPorLocal, transferirStock, getIngresosDelDia, ajusteMasivo, preciosMasivo, generarEtiquetasPdf, exportProducts, importProducts, scanLookup, scanAdjustStock };
+module.exports = { ajustesEtiquetas, cambiarAjustesEtiquetas, getProducts, buscarVariantes, stockARegularizar, agregarVariantesMasivo, getProductPadreBySkuVariante, getProduct, createProduct, updateProduct, deleteProduct, addVariant, updateVariant, deleteVariant, adjustStock, getVariantMovements, getStockMovements, getStockPorLocal, getProductosPorLocal, getVariantesPorLocal, transferirStock, getIngresosDelDia, ajusteMasivo, preciosMasivo, generarEtiquetasPdf, exportProducts, importProducts, scanLookup, scanAdjustStock };
