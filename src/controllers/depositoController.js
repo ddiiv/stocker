@@ -10,7 +10,7 @@ const {
   StockIngreso, StockIngresoItem, BusinessLocation, Employee, ProductVariant, Product,
 } = require('../models');
 const deposito = require('../services/depositoService');
-const { generarEtiquetas } = require('../services/labelService');
+const { generarEtiquetas, asignarCodigosInternos } = require('../services/labelService');
 
 /*
  * En qué depósito trabaja quien pide.
@@ -223,6 +223,8 @@ const etiquetas = async (req, res, next) => {
       return res.status(409).json({ message: 'Este ingreso no tiene ninguna línea con cantidad.' });
     }
 
+    // Las variantes sin código de barras reciben su EAN-13 interno, que es lo que el lector de la caja lee bien.
+    await asignarCodigosInternos(items);
     const { doc, total } = generarEtiquetas(items);
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="etiquetas-${ingreso.numero}-${total}.pdf"`);

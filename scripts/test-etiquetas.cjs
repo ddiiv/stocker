@@ -12,7 +12,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { execFileSync } = require('child_process');
-const { generarEtiquetas, __patron, __encabezadoDe } = require('../src/services/labelService');
+const { generarEtiquetas, asignarCodigosInternos, ean13Interno, esEan13, __patron, __encabezadoDe } = require('../src/services/labelService');
 
 let ok = 0, ko = 0;
 const chk = (t, esperado, obtuvo) => {
@@ -57,6 +57,26 @@ const vari = (sku, color, talle, codigoBarras = null) =>
   chk('sin código propio, el SKU', 200, __patron('ISUBOSBUZCRE2XL').modulos);
   chk('el patrón alterna barra y espacio', true, __patron('ABC').anchos.length % 2 === 1);
 
+  tit('3b. EL EAN-13 INTERNO');
+  /*
+   * El lector de la caja lee bien un EAN-13 y mal un SKU largo en barras. Cada
+   * variante sin código propio recibe uno: 20 + su id + verificador.
+   */
+  chk('20 + id con diez cifras + verificador', '2000000400440', ean13Interno(40044));
+  chk('es un EAN-13 válido', true, esEan13(ean13Interno(40044)));
+  chk('ids distintos, códigos distintos', false, ean13Interno(1) === ean13Interno(10));
+  chk('un EAN con el verificador mal no se toma por EAN', false, esEan13('7791234567890'));
+  const guardados = [];
+  const conUpdate = (id, codigoBarras = null) => ({
+    id, sku: `S${id}`, codigoBarras,
+    async update(c) { guardados.push([this.id, c.codigoBarras]); Object.assign(this, c); },
+  });
+  const sinCodigo = conUpdate(7);
+  const conCodigo = conUpdate(8, '7791234567898');
+  await asignarCodigosInternos([{ variante: sinCodigo }, { variante: sinCodigo }, { variante: conCodigo }]);
+  chk('se guarda una vez, sólo en la que no tenía', [[7, ean13Interno(7)]], guardados);
+  chk('y la que tenía uno de fábrica lo conserva', '7791234567898', conCodigo.codigoBarras);
+
   // ── Lo que decide todo: ¿se lee? ──
   tit('4. LECTURA A 203 DPI (impresora térmica)');
   let pdftoppm = true;
@@ -75,6 +95,7 @@ const vari = (sku, color, talle, codigoBarras = null) =>
       vari('BA-010-BEIGEM', 'Beige', 'M'),
       vari('AB1', 'Rojo', 'S'),
       vari('CON-EAN', 'Verde', 'L', '7791234567898'),
+      vari('ISUMIRREMAAZ2XL', 'Francia', '2XL', ean13Interno(40044)),
     ];
     const { doc } = generarEtiquetas(casos.map((v) => ({ producto: prod('MOD', 'Cat'), variante: v, cantidad: 1 })));
     const archivo = path.join(dir, 'e.pdf');
@@ -105,9 +126,11 @@ const vari = (sku, color, talle, codigoBarras = null) =>
     const { readBarcodes } = await import(`file://${rutaLector}`);
     for (let i = 0; i < casos.length; i++) {
       const png = fs.readFileSync(path.join(dir, `p-${i + 1}.png`));
-      const r = await readBarcodes(new Blob([png]), { tryHarder: true, formats: ['Code128'] });
+      const r = await readBarcodes(new Blob([png]), { tryHarder: true, formats: ['Code128', 'EAN13'] });
       const esperado = casos[i].codigoBarras || casos[i].sku;
       chk(`lee "${esperado}"`, esperado, r[0]?.text || '(no leyó)');
+      // El EAN tiene que salir como EAN-13 (barras de 3 puntos), no como un Code 128 con dígitos.
+      if (esEan13(esperado)) chk(`  y como EAN-13`, 'EAN13', String(r[0]?.format || '').replace(/[^A-Z0-9]/gi, '').toUpperCase());
     }
     fs.rmSync(dir, { recursive: true, force: true });
   }

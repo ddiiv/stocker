@@ -65,6 +65,9 @@ const CODIGO_Y     = 23.0;
  */
 const MARGEN_BARRAS = 1.2;
 
+// Un punto de una impresora térmica de 203 dpi, en milímetros.
+const PUNTO_IMPRESORA = 25.4 / 203;
+
 /*
  * El patrón de barras de un Code 128.
  *
@@ -76,6 +79,52 @@ function patron(texto) {
   const [salida] = bwip.raw({ bcid: 'code128', text: String(texto) });
   const anchos = String(salida.sbs).split(',').map(Number);
   return { anchos, modulos: anchos.reduce((a, b) => a + b, 0) };
+}
+
+/*
+ * ── EAN-13 ───────────────────────────────────────────────────────
+ *
+ * El lector de la caja (un 1D económico, Prosoft S2100) no leía bien el SKU en
+ * barras: quince letras y números son 200 módulos en 50 mm, barras de 0,24 mm
+ * (1,9 puntos de la impresora, que redondea mal) y casi sin blanco a los lados.
+ * Se probó la misma etiqueta de cinco formas con el lector y la impresora del
+ * negocio (Nictom TB06, 203 dpi): el EAN-13 leyó siempre, de costado y con poca
+ * luz. Son 95 módulos: entran a 3 puntos exactos por módulo con todo el blanco
+ * que pide la norma, y su dígito verificador hace que el lector descarte una
+ * lectura mala en vez de mandar un número equivocado.
+ */
+function digitoEan(doce) {
+  const suma = [...doce].reduce((s, d, i) => s + Number(d) * (i % 2 ? 3 : 1), 0);
+  return String((10 - (suma % 10)) % 10);
+}
+
+const esEan13 = (c) => /^\d{13}$/.test(String(c || '')) && digitoEan(String(c).slice(0, 12)) === String(c)[12];
+
+/*
+ * El código que recibe una variante que no tiene uno propio: 20 + su id + el
+ * verificador. Los EAN que empiezan con 20 a 29 son de circulación interna por
+ * norma (GS1): no chocan con el de ningún fabricante. El id es único en todo
+ * Stocker, así que el código también.
+ */
+function ean13Interno(id) {
+  const doce = `20${String(id).padStart(10, '0')}`;
+  return doce + digitoEan(doce);
+}
+
+/*
+ * A las variantes sin código de barras se les asigna su EAN-13 interno y se
+ * guarda. Se guarda —y no se calcula al vuelo— porque la caja, el armado de
+ * pedidos y los envíos del día buscan por `codigoBarras`: así el número que
+ * sale en la etiqueta lo encuentran todos. Una variante con código propio (un
+ * EAN de fábrica, por ejemplo) lo conserva.
+ */
+async function asignarCodigosInternos(items, { transaction } = {}) {
+  const vistas = new Set();
+  for (const { variante } of items) {
+    if (!variante || variante.codigoBarras || vistas.has(variante.id)) continue;
+    vistas.add(variante.id);
+    await variante.update({ codigoBarras: ean13Interno(variante.id) }, { transaction });
+  }
 }
 
 /*
@@ -131,7 +180,7 @@ function armarEncabezado(doc, partes, maxAncho) {
  * barras y, debajo, en texto: se imprimen los dos para que un operario pueda
  * tipearlo a mano cuando la etiqueta se raya o se despega.
  */
-function dibujar(doc, { encabezado, talle, codigo }) {
+function dibujar(doc, { encabezado, talle, codigo, sku }) {
   const izq = PAD;
   const der = ANCHO - PAD;
   const util = der - izq;
@@ -149,13 +198,23 @@ function dibujar(doc, { encabezado, talle, codigo }) {
   doc.text(armarEncabezado(doc, encabezado, espacioTexto), izq, (CABECERA_Y + 0.9) * MM, { lineBreak: false });
 
   // ── Barras ──
-  const { anchos, modulos } = patron(codigo);
-  // Todo el ancho disponible para el símbolo: es lo que da el módulo más ancho
-  // y, con eso, la lectura más tolerante.
-  const izqBarras = MARGEN_BARRAS * MM;
-  const anchoBarras = ANCHO - 2 * izqBarras;
-  const modulo = anchoBarras / modulos;
-  let x = izqBarras;
+  let anchos;
+  let modulo;
+  let x;
+  if (esEan13(codigo)) {
+    // 3 puntos exactos de la impresora por módulo y la zona muda de la norma (11 y 7 módulos), centrado.
+    const [simbolo] = bwip.raw({ bcid: 'ean13', text: String(codigo) });
+    anchos = String(simbolo.sbs).split(',').map(Number);
+    modulo = 3 * PUNTO_IMPRESORA * MM;
+    const total = (anchos.reduce((a, b) => a + b, 0) + 11 + 7) * modulo;
+    x = Math.round(((ANCHO - total) / 2 + 11 * modulo) / (PUNTO_IMPRESORA * MM)) * PUNTO_IMPRESORA * MM;
+  } else {
+    // Otro código (alfanumérico, de largo raro): Code 128 con todo el ancho, como siempre.
+    const p = patron(codigo);
+    anchos = p.anchos;
+    x = MARGEN_BARRAS * MM;
+    modulo = (ANCHO - 2 * x) / p.modulos;
+  }
   doc.fillColor('#000');
   for (let i = 0; i < anchos.length; i++) {
     const w = anchos[i] * modulo;
@@ -164,10 +223,11 @@ function dibujar(doc, { encabezado, talle, codigo }) {
     x += w;
   }
 
-  // ── El código en texto, centrado ──
+  // ── El código en texto, centrado; con el SKU al lado, que es lo que se tipea a mano en la caja ──
   doc.font('Helvetica').fontSize(5.6).fillColor('#000');
-  const anchoCodigo = doc.widthOfString(codigo);
-  doc.text(codigo, izq + (util - anchoCodigo) / 2, CODIGO_Y * MM, { lineBreak: false });
+  const conSku = sku && sku !== codigo ? `${sku}   ${codigo}` : codigo;
+  const texto = doc.widthOfString(conSku) <= util ? conSku : codigo;
+  doc.text(texto, izq + (util - doc.widthOfString(texto)) / 2, CODIGO_Y * MM, { lineBreak: false });
 }
 
 /*
@@ -214,7 +274,7 @@ function codigosDemasiadoLargos(items) {
   const vistos = new Map();
   for (const { variante } of items) {
     const codigo = variante.codigoBarras || variante.sku;
-    if (vistos.has(codigo)) continue;
+    if (vistos.has(codigo) || esEan13(codigo)) continue;
     const { modulos } = patron(codigo);
     const moduloMm = (anchoBarras / modulos) / MM;
     if (moduloMm < MODULO_MINIMO_MM) vistos.set(codigo, moduloMm);
@@ -267,6 +327,7 @@ function generarEtiquetas(items) {
       // Si la variante tiene código propio se imprime ése: es el que va a leer
       // el escáner. Sin código, el SKU, que el lector también resuelve.
       codigo: variante.codigoBarras || variante.sku,
+      sku: variante.sku,
     };
     for (let i = 0; i < n; i++) {
       doc.addPage({ size: [ANCHO, ALTO], margin: 0 });
@@ -278,6 +339,6 @@ function generarEtiquetas(items) {
 }
 
 module.exports = {
-  generarEtiquetas, MM, ANCHO, ALTO, MODULO_MINIMO_MM,
+  generarEtiquetas, asignarCodigosInternos, ean13Interno, esEan13, MM, ANCHO, ALTO, MODULO_MINIMO_MM,
   __patron: patron, __encabezadoDe: encabezadoDe, __codigosDemasiadoLargos: codigosDemasiadoLargos,
 };

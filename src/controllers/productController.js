@@ -7,7 +7,7 @@ const { ilikeOperator } = require('../utils/sqlHelpers');
 const { exportProductsXlsx, importProductsXlsx } = require('../services/productExcelService');
 const { exigirCupo } = require('../services/planService');
 const skuService = require('../services/skuService');
-const { generarEtiquetas } = require('../services/labelService');
+const { generarEtiquetas, asignarCodigosInternos } = require('../services/labelService');
 const stockService = require('../services/stockService');
 const precioService = require('../services/precioService');
 const { liberarCodigos } = require('../utils/codigoDeBaja');
@@ -2045,6 +2045,8 @@ const generarEtiquetasPdf = async (req, res, next) => {
       .filter((x) => x.variante && x.cantidad > 0)
       .map((x) => ({ producto: x.variante.producto, variante: x.variante, cantidad: x.cantidad }));
 
+    // Las variantes sin código de barras reciben su EAN-13 interno, que es lo que el lector de la caja lee bien.
+    await asignarCodigosInternos(items);
     const { doc, total } = generarEtiquetas(items);
 
     res.setHeader('Content-Type', 'application/pdf');
