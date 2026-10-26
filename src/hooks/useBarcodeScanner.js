@@ -115,7 +115,16 @@ export function useBarcodeScanner({
       // preventDefault el foco saltaría al siguiente campo en cada lectura.
       if (e.key === "Enter" || e.key === "Tab") {
         const codigo = buffer.current;
-        if (emitir(codigo, esInputDeScanner ? target : null)) e.preventDefault();
+        // El buffer sólo junta teclas a velocidad de lector: si tiene un código, este Tab/Enter es del lector.
+        const delLector = codigo.trim().length >= minLargo;
+        emitir(codigo, esInputDeScanner ? target : null);
+        /*
+         * Se frena aunque la lectura se descarte por repetida. Antes sólo se
+         * frenaba si se emitía: la segunda lectura de la misma prenda dejaba
+         * pasar el Tab, el foco saltaba a un botón o a un campo, y las lecturas
+         * siguientes se escribían ahí y seguían saltando.
+         */
+        if (delLector) e.preventDefault();
         return;
       }
 
