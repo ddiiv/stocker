@@ -7,6 +7,7 @@ import {
   fetchDisponibilidad, registrarFaltante, despacharPedido, etiquetasDeIngreso,
 } from "../../services/depositoService";
 import { mensajeDeError } from "../../utils/errores";
+import { digitoEan } from "../../utils/ean";
 
 /*
  * Armado de un pedido en el depósito.
@@ -100,8 +101,10 @@ export default function ArmadoPedido({ pedidoId, onCerrar, onDespachado }) {
    */
   const buscarPorCodigo = (lista, codigo) => {
     const c = codigo.toLowerCase();
+    // Una etiqueta impresa como "número de 12 dígitos" es el EAN-13 sin el verificador.
+    const conVerificador = /^\d{12}$/.test(c) ? c + digitoEan(c) : null;
     return lista.find((l) => l.sku?.toLowerCase() === c)
-        || lista.find((l) => l.codigoBarras && String(l.codigoBarras).toLowerCase() === c);
+        || lista.find((l) => l.codigoBarras && [c, conVerificador].includes(String(l.codigoBarras).toLowerCase()));
   };
 
   function alEscanear(codigo) {

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { Tag, Printer, RotateCcw, Search, Loader2, AlertTriangle, PackagePlus, Info } from "lucide-react";
-import { fetchProductGroups, generarEtiquetas, fetchIngresosDelDia } from "../services/productService";
+import { fetchProductGroups, generarEtiquetas, fetchIngresosDelDia, fetchAjustesEtiquetas, guardarAjustesEtiquetas } from "../services/productService";
 import { fetchPos } from "../services/employeeService";
 import { PageHeader, Card, EmptyState } from "../components/ui/Layout";
 import StockTabs from "../components/stock/StockTabs";
@@ -20,6 +20,18 @@ import { ordenarVariantes, CRITERIOS } from "../utils/ordenVariantes";
  * ese orden y así se pega recorriendo la percha sin ir y volver.
  */
 
+/*
+ * Qué va en las barras. Se elige según lo que lea mejor el lector de la caja, y
+ * vale para todo el negocio (también para las etiquetas de los ingresos del
+ * depósito). Con cualquiera de ellos, escanear lleva a la prenda con su SKU.
+ */
+const TIPOS_CODIGO = [
+  { value: "ean13", label: "EAN-13 (recomendado)" },
+  { value: "numero12", label: "Número de 12 dígitos" },
+  { value: "sku", label: "SKU" },
+  { value: "propio", label: "Código propio o SKU (como antes)" },
+];
+
 export default function LabelsPage() {
   const [params, setParams] = useSearchParams();
   const [grupos, setGrupos] = useState([]);
@@ -30,6 +42,7 @@ export default function LabelsPage() {
   const [cantidades, setCantidades] = useState({});   // variantId → cantidad
   const [generando, setGenerando] = useState(false);
   const [error, setError] = useState("");
+  const [tipoCodigo, setTipoCodigo] = useState("");
 
   // Etiquetar por lo que ENTRÓ un día, en vez de por lo que hay.
   const [fuente, setFuente] = useState("stock");     // stock | ingresos
@@ -48,6 +61,23 @@ export default function LabelsPage() {
     }, 350);
     return () => clearTimeout(t);
   }, [texto, setParams]);
+
+  useEffect(() => {
+    fetchAjustesEtiquetas().then((a) => setTipoCodigo(a.tipo)).catch(() => setTipoCodigo("ean13"));
+  }, []);
+
+  async function cambiarTipoCodigo(tipo) {
+    const anterior = tipoCodigo;
+    setTipoCodigo(tipo); setError("");
+    try {
+      await guardarAjustesEtiquetas(tipo);
+    } catch (e) {
+      setTipoCodigo(anterior);
+      setError(e.response?.status === 403
+        ? "Para cambiar el código de las etiquetas hace falta permiso de editar stock."
+        : e.response?.data?.message || "No se pudo guardar el tipo de código.");
+    }
+  }
 
   const cargar = useCallback(() => {
     setCargando(true); setError("");
@@ -237,6 +267,13 @@ export default function LabelsPage() {
             </OpcionFiltro>
           ))}
         </GrupoFiltro>
+        <label className="flex items-center gap-1.5 text-xs text-ink-600">
+          Código de barras
+          <select className="input w-auto py-1.5 text-xs" value={tipoCodigo} disabled={!tipoCodigo}
+            onChange={(e) => cambiarTipoCodigo(e.target.value)}>
+            {TIPOS_CODIGO.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+          </select>
+        </label>
         <span className="text-xs text-ink-600">
           {total > 0 ? `${total} etiqueta${total === 1 ? "" : "s"} en el lote` : "Sin etiquetas seleccionadas"}
         </span>

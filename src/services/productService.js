@@ -202,6 +202,20 @@ export async function fetchStockMovements(filtros = {}) {
 }
 
 /*
+ * Qué va en las barras de las etiquetas, para todo el negocio:
+ * "ean13" | "numero12" | "sku" | "propio".
+ */
+export async function fetchAjustesEtiquetas() {
+  const { data } = await http.get("/products/etiquetas/ajustes");
+  return data;
+}
+
+export async function guardarAjustesEtiquetas(tipo) {
+  const { data } = await http.put("/products/etiquetas/ajustes", { tipo });
+  return data;
+}
+
+/*
  * PDF de etiquetas.
  *
  * Llega como blob y se descarga en el navegador. Los errores del backend vienen
