@@ -31,6 +31,7 @@ const {
 const stock = require('../src/services/stockService');
 const packs = require('../src/services/packService');
 const envios = require('../src/services/enviosDelDiaService');
+const tienda = require('../src/services/tiendaService');
 
 let ok = 0, ko = 0;
 const chk = (t, e, o) => {
@@ -191,6 +192,14 @@ function sesion() {
     ]);
     const recargado = await ProductVariant.findByPk(pack.id);
     chk('queda marcado como pack', true, recargado.esPack);
+
+    tit('1b. A LA TIENDA PROPIA VAN LAS PRENDAS, NO LOS PACKS');
+    const skusDe = (c) => c.productos.flatMap((p) => p.variantes.map((v) => v.sku));
+    const enTienda = skusDe(await tienda.catalogo({ businessId: negocio.id }));
+    chk('la remera suelta está en el catálogo de la tienda', true, enTienda.includes(remera.sku));
+    chk('el pack no', false, enTienda.includes(pack.sku));
+    chk('el asistente lo sigue viendo', true,
+      skusDe(await tienda.catalogo({ businessId: negocio.id, conPacks: true })).includes(pack.sku));
 
     await fijar(remera, 7);
     /*

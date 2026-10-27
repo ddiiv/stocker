@@ -79,7 +79,7 @@ async function buscarProductos({ businessId, texto, limite = TOPE_PRODUCTOS }) {
   const locales = await BusinessLocation.findAll({
     where: { businessId, activo: true, tipo: 'local' }, attributes: ['id', 'nombre'], order: [['id', 'ASC']],
   });
-  const [catalogo, mayorista] = await Promise.all([tienda.catalogo({ businessId, locales }), reglaMayorista(businessId)]);
+  const [catalogo, mayorista] = await Promise.all([tienda.catalogo({ businessId, locales, conPacks: true }), reglaMayorista(businessId)]);
 
   /*
    * Las palabras que no están en ningún producto no filtran. La gente escribe
