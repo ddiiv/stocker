@@ -211,9 +211,9 @@ export default function SubscriptionPage() {
         </Card>
       )}
 
-      <div className="grid gap-5 lg:grid-cols-3">
+      <div className="grid gap-5 xl:grid-cols-3">
         {/* ── Estado del plan ─────────────────────────────── */}
-        <Card className="lg:col-span-2">
+        <Card className="xl:col-span-2">
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div>
               <p className="text-xs uppercase tracking-wide text-ink-600">Plan actual</p>

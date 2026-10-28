@@ -57,7 +57,7 @@ export default function VariantTypesPage() {
       ) : types.length === 0 ? (
         <EmptyState icon={Tag} title="Sin variantes cargadas" description='Creá tu primera variante (ej. "Color" con Rojo, Azul, Verde).' />
       ) : (
-        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
           {types.map((v) => (
             <Card key={v.id}>
               <div className="mb-3 flex items-start justify-between gap-2">

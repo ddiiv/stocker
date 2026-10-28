@@ -850,9 +850,9 @@ export default function EnviosDelDiaPage() {
       ) : filtro === "historial" ? (
         <HistorialReconciliacion paquetes={jornada.paquetes} />
       ) : (
-        <div className="grid gap-5 lg:grid-cols-5">
+        <div className="grid gap-5 xl:grid-cols-5">
           {/* ── 1. El recorrido ──────────────────────────────── */}
-          <div className="lg:col-span-2">
+          <div className="xl:col-span-2">
             <Card className="p-0">
               <div className="border-b border-line px-4 py-3">
                 <p className="font-display text-sm font-semibold text-ink-950">1 · Qué bajar del estante</p>
@@ -906,7 +906,7 @@ export default function EnviosDelDiaPage() {
           </div>
 
           {/* ── 2. Los paquetes ──────────────────────────────── */}
-          <div className="lg:col-span-3 space-y-3">
+          <div className="xl:col-span-3 space-y-3">
             <div>
               <p className="font-display text-sm font-semibold text-ink-950">2 · Armado de paquetes</p>
               <p className="mt-0.5 text-xs text-ink-500">

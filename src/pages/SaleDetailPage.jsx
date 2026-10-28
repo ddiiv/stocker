@@ -290,8 +290,8 @@ export default function SaleDetailPage() {
         }
       />
 
-      <div className="grid gap-5 lg:grid-cols-3">
-        <Card className="lg:col-span-2">
+      <div className="grid gap-5 xl:grid-cols-3">
+        <Card className="xl:col-span-2">
           <p className="mb-4 font-display text-sm font-semibold text-ink-950">
             Detalle · {sale.esMayorista ? "Precio mayorista (≥3 prendas)" : "Precio minorista"}
           </p>

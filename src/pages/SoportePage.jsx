@@ -72,8 +72,8 @@ export default function SoportePage() {
         subtitle="Contanos qué pasó y lo miramos"
       />
 
-      <div className="grid gap-5 lg:grid-cols-3">
-        <Card className="lg:col-span-2">
+      <div className="grid gap-5 xl:grid-cols-3">
+        <Card className="xl:col-span-2">
           {enviado ? (
             <div className="py-8 text-center">
               <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-teal-50 text-teal-600">

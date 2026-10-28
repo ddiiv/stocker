@@ -220,8 +220,8 @@ export default function NewSalePage() {
       <PageHeader title="Nueva venta / cotización" subtitle="Seleccioná los productos, el cliente y el empleado" />
       <AvisoError error={error} className="mb-4" />
 
-      <div className="grid gap-5 lg:grid-cols-3">
-        <div className="space-y-5 lg:col-span-2">
+      <div className="grid gap-5 xl:grid-cols-3">
+        <div className="space-y-5 xl:col-span-2">
           <Card>
             <div className="mb-4 flex items-center gap-2">
               <TypeToggle tipo={tipo} setTipo={setTipo} />

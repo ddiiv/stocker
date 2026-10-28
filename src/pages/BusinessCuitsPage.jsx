@@ -77,7 +77,7 @@ export default function BusinessCuitsPage() {
       ) : cuits.length === 0 ? (
         <EmptyState icon={Building2} title="Sin CUITs cargados" description="Agregá el primer CUIT para poder facturar." />
       ) : (
-        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
           {cuits.map((c) => (
             <Card key={c.id}>
               <div className="mb-2 flex items-start justify-between gap-2">

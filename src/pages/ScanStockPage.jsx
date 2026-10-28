@@ -76,9 +76,9 @@ export default function ScanStockPage() {
       <PageHeader title="Stock" subtitle="Carga masiva con lector de código de barras" />
       <StockTabs />
 
-      <div className="grid gap-5 lg:grid-cols-3">
+      <div className="grid gap-5 xl:grid-cols-3">
         {/* Configuración */}
-        <div className="space-y-5 lg:col-span-1">
+        <div className="space-y-5 xl:col-span-1">
           <Card>
             {/* Como el lector aplica el modo apenas lee, tiene que quedar claro
                 de un vistazo qué va a pasar con la próxima lectura. */}
@@ -159,7 +159,7 @@ export default function ScanStockPage() {
         </div>
 
         {/* Historial */}
-        <div className="lg:col-span-2">
+        <div className="xl:col-span-2">
           {error && (
             <p className="mb-4 flex items-center gap-2 rounded-md bg-brick-50 px-3 py-2 text-sm text-brick-500">
               <XCircle size={15} /> {error}

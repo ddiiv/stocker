@@ -133,9 +133,9 @@ export default function SkuBuilderPage() {
       <PageHeader title="Stock" subtitle="Cómo se arman los códigos de las variantes" />
       <StockTabs />
 
-      <div className="grid gap-5 lg:grid-cols-5">
+      <div className="grid gap-5 xl:grid-cols-5">
         {/* Reglas */}
-        <div className="space-y-5 lg:col-span-2">
+        <div className="space-y-5 xl:col-span-2">
           <Card>
             <p className="mb-3 font-display text-sm font-semibold text-ink-950">La regla</p>
 
@@ -256,7 +256,7 @@ export default function SkuBuilderPage() {
         </div>
 
         {/* Vista previa */}
-        <div className="lg:col-span-3">
+        <div className="xl:col-span-3">
           <Card className="p-0">
             <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-4 py-3">
               <div>

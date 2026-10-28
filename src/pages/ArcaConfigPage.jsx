@@ -195,9 +195,9 @@ export default function ArcaConfigPage() {
       {/* ═══════════════════ CONFIG EN STOCKER ═══════════════════ */}
       <p className="mb-3 text-xs font-medium uppercase tracking-wide text-ink-600">Configuración en Stocker</p>
 
-      <div className="mb-6 grid gap-5 lg:grid-cols-3">
+      <div className="mb-6 grid gap-5 xl:grid-cols-3">
         {/* Paso 3 — cargar en Stocker */}
-        <Card className="lg:col-span-2">
+        <Card className="xl:col-span-2">
           <div className="mb-3 flex items-center gap-2">
             <span className="flex h-7 w-7 items-center justify-center rounded-full bg-brass-500 text-xs font-bold text-ink-950">3</span>
             <h3 className="font-display text-base font-semibold text-ink-950">Punto de venta y condición IVA</h3>
