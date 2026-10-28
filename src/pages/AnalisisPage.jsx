@@ -158,7 +158,7 @@ export default function AnalisisPage() {
             )}
 
             <div className="overflow-x-auto">
-              <table className="w-full min-w-[720px] text-sm">
+              <table className="w-full min-w-[600px] text-sm">
                 <thead>
                   <tr className="border-b border-line text-left text-xs uppercase tracking-wide text-ink-600">
                     <th className="py-2 font-medium">Mes</th>
@@ -204,7 +204,7 @@ export default function AnalisisPage() {
             </div>
           </Card>
 
-          <div className="grid gap-5 lg:grid-cols-2">
+          <div className="grid gap-5 xl:grid-cols-2">
             {/* ── Los que sostienen el negocio ── */}
             <Card>
               <h3 className="mb-1 font-display text-base font-semibold text-ink-950">
@@ -270,7 +270,7 @@ export default function AnalisisPage() {
           </Card>
 
           {/* ── Por local y por categoría ── */}
-          <div className="mt-5 grid gap-5 lg:grid-cols-2">
+          <div className="mt-5 grid gap-5 xl:grid-cols-2">
             <Card>
               <h3 className="mb-1 font-display text-base font-semibold text-ink-950">
                 <Store size={16} className="mr-1 inline text-ink-500" /> Por local

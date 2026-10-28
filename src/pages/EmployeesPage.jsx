@@ -126,26 +126,26 @@ export default function EmployeesPage() {
         <div className="card overflow-x-auto p-0">
           <table className="w-full min-w-[680px] text-sm">
             <thead><tr className="border-b border-line bg-paper-100 text-left text-xs uppercase tracking-wide text-ink-600">
-              <th className="px-4 py-3 font-medium">Empleado</th>
-              <th className="px-4 py-3 font-medium">Cargo</th>
-              <th className="px-4 py-3 font-medium">Local</th>
-              <th className="px-4 py-3 font-medium">Última conexión</th>
-              <th className="px-4 py-3 font-medium">Estado</th>
-              <th className="px-4 py-3 font-medium" />
+              <th className="px-3 py-3 font-medium">Empleado</th>
+              <th className="px-3 py-3 font-medium">Cargo</th>
+              <th className="px-3 py-3 font-medium">Local</th>
+              <th className="px-3 py-3 font-medium">Última conexión</th>
+              <th className="px-3 py-3 font-medium">Estado</th>
+              <th className="px-3 py-3 font-medium" />
             </tr></thead>
             <tbody>
               {employees.map((e) => (
                 <tr key={e.id} className="border-b border-line last:border-0 hover:bg-paper-100/70">
-                  <td className="px-4 py-3">
+                  <td className="px-3 py-3">
                     <div className="flex items-center gap-3">
-                      <div className="flex h-8 w-8 items-center justify-center rounded-full bg-ink-950 text-xs font-semibold text-paper-50">{initials(e.nombre, e.apellido)}</div>
-                      <div><p className="text-ink-900">{e.nombre} {e.apellido}</p><p className="text-xs text-ink-500">{e.email}</p></div>
+                      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-ink-950 text-xs font-semibold text-paper-50">{initials(e.nombre, e.apellido)}</div>
+                      <div><p className="text-ink-900">{e.nombre} {e.apellido}</p><p className="max-w-[140px] xl:max-w-none truncate text-xs text-ink-500" title={e.email}>{e.email}</p></div>
                     </div>
                   </td>
-                  <td className="px-4 py-3 text-ink-700">{e.cargo?.nombre || "Sin cargo"}</td>
-                  <td className="px-4 py-3 text-ink-700">{e.local?.nombre || "—"}</td>
-                  <td className="px-4 py-3 text-ink-500 text-xs">{e.ultimaConexion ? new Date(e.ultimaConexion).toLocaleString("es-AR") : "Nunca"}</td>
-                  <td className="px-4 py-3">
+                  <td className="px-3 py-3 text-ink-700">{e.cargo?.nombre || "Sin cargo"}</td>
+                  <td className="px-3 py-3 text-ink-700">{e.local?.nombre || "—"}</td>
+                  <td className="px-3 py-3 text-ink-500 text-xs">{e.ultimaConexion ? new Date(e.ultimaConexion).toLocaleString("es-AR") : "Nunca"}</td>
+                  <td className="px-3 py-3">
                     {!e.activo && e.suspendidoPorPlan ? (
                       <span className="badge badge-low" title="La cuenta pasó a un plan con menos usuarios. Vuelve solo si subís de plan.">
                         Suspendido por el plan
@@ -167,7 +167,7 @@ export default function EmployeesPage() {
                       </span>
                     )}
                   </td>
-                  <td className="px-4 py-3">
+                  <td className="px-3 py-3">
                     <div className="flex justify-end gap-1">
                       {e.bloqueo?.bloqueado && esDuenio && (
                         <button

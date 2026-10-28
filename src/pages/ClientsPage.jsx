@@ -104,7 +104,7 @@ export default function ClientsPage() {
         <EmptyState icon={UserCircle2} title="Sin clientes cargados" description={search ? `Sin resultados para "${search}".` : "Creá el primer cliente para tu base."} />
       ) : (
         <div className="card overflow-x-auto p-0">
-          <table className="w-full min-w-[720px] text-sm">
+          <table className="w-full min-w-[640px] text-sm">
             <thead>
               <tr className="border-b border-line bg-paper-100 text-left text-xs uppercase tracking-wide text-ink-600">
                 <th className="px-4 py-3 font-medium">Cliente</th>

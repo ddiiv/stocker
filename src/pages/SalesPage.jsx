@@ -258,33 +258,33 @@ export default function SalesPage() {
         )
       ) : (
         <div className="card overflow-x-auto p-0">
-          <table className="w-full min-w-[720px] text-sm">
+          <table className="w-full min-w-[640px] text-sm">
             <thead>
               <tr className="border-b border-line bg-paper-100 text-left text-xs uppercase tracking-wide text-ink-600">
-                <th className="px-4 py-3 font-medium">N°</th>
-                <th className="px-4 py-3 font-medium">Fecha</th>
-                <th className="px-4 py-3 font-medium">Cliente</th>
-                <th className="px-4 py-3 font-medium">Empleado</th>
-                <th className="px-4 py-3 font-medium">Ítems</th>
-                <th className="px-4 py-3 font-medium">Total</th>
-                <th className="px-4 py-3 font-medium">Pago</th>
-                <th className="px-4 py-3 font-medium">Estado</th>
-                <th className="px-4 py-3 font-medium" />
+                <th className="px-3 py-3 font-medium">N°</th>
+                <th className="px-3 py-3 font-medium">Fecha</th>
+                <th className="px-3 py-3 font-medium">Cliente</th>
+                <th className="px-3 py-3 font-medium">Empleado</th>
+                <th className="hidden px-3 py-3 font-medium xl:table-cell">Ítems</th>
+                <th className="px-3 py-3 font-medium">Total</th>
+                <th className="px-3 py-3 font-medium">Pago</th>
+                <th className="px-3 py-3 font-medium">Estado</th>
+                <th className="px-3 py-3 font-medium" />
               </tr>
             </thead>
             <tbody>
               {sales.map((s) => (
                 <tr key={s.id} className="border-b border-line last:border-0 hover:bg-paper-100/70">
-                  <td className="px-4 py-3">
-                    <Link to={`/ventas/${encodeURIComponent(s.numero)}`} className="font-mono text-xs text-brass-600 hover:underline">
+                  <td className="px-3 py-3">
+                    <Link to={`/ventas/${encodeURIComponent(s.numero)}`} className="whitespace-nowrap font-mono text-xs text-brass-600 hover:underline">
                       {s.numero}
                     </Link>
                   </td>
-                  <td className="px-4 py-3 text-ink-700">{formatDate(s.fecha)}</td>
-                  <td className="px-4 py-3 text-ink-900">{s.cliente ? `${s.cliente.nombre} ${s.cliente.apellido || ""}`.trim() : "—"}</td>
-                  <td className="px-4 py-3 text-ink-700">{s.empleado ? `${s.empleado.nombre} ${s.empleado.apellido || ""}`.trim() : "—"}</td>
-                  <td className="px-4 py-3 text-ink-700">{s.items?.length ?? 0}</td>
-                  <td className="px-4 py-3 font-medium text-ink-900">
+                  <td className="px-3 py-3 text-ink-700">{formatDate(s.fecha)}</td>
+                  <td className="px-3 py-3 text-ink-900">{s.cliente ? `${s.cliente.nombre} ${s.cliente.apellido || ""}`.trim() : "—"}</td>
+                  <td className="px-3 py-3 text-ink-700">{s.empleado ? `${s.empleado.nombre} ${s.empleado.apellido || ""}`.trim() : "—"}</td>
+                  <td className="hidden px-3 py-3 text-ink-700 xl:table-cell">{s.items?.length ?? 0}</td>
+                  <td className="px-3 py-3 font-medium text-ink-900">
                     {/* Con recargo, lo cobrado difiere del neto: se muestran los
                         dos para que el número no parezca un error de cálculo. */}
                     {/* Number(): en Postgres los DECIMAL vuelven como texto, y "0.00" es
@@ -297,7 +297,7 @@ export default function SalesPage() {
                       </span>
                     )}
                   </td>
-                  <td className="px-4 py-3">
+                  <td className="px-3 py-3">
                     {s.medioPago ? (
                       <span className={`badge ${medioPagoBadge(s.medioPago)}`}>{s.medioPago}</span>
                     ) : s.condicionPago === "cuenta_corriente" ? (
@@ -312,10 +312,10 @@ export default function SalesPage() {
                       </span>
                     )}
                   </td>
-                  <td className="px-4 py-3">
+                  <td className="px-3 py-3">
                     <span className={`badge ${ESTADO_BADGE[s.estado] || "badge-low"}`}>{s.estado}</span>
                   </td>
-                  <td className="px-4 py-3 text-right">
+                  <td className="px-3 py-3 text-right">
                     {s.tipo === "venta" && s.estado === "pendiente" && (
                       <button
                         className="btn-ghost px-2 py-1.5 text-xs"
