@@ -632,9 +632,9 @@ export default function PosPage() {
         onConfirmar={() => cobrar({ confirmarAltaStock: true })}
       />
 
-      <div className="grid gap-5 lg:grid-cols-3">
+      <div className="grid gap-5 xl:grid-cols-3">
         {/* Carrito */}
-        <div className="lg:col-span-2">
+        <div className="xl:col-span-2">
           <Card className="mb-4">
             <form onSubmit={submitManual}>
               <div className={`flex items-center gap-2 rounded-md border-2 border-dashed px-3 py-3 transition-colors ${
