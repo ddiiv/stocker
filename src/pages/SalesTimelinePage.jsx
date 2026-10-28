@@ -128,7 +128,7 @@ export default function SalesTimelinePage() {
           <Card className="p-0">
             <p className="border-b border-line px-4 py-3 font-display text-sm font-semibold text-ink-950">Detalle por período</p>
             <div className="overflow-x-auto">
-              <table className="w-full min-w-[760px] text-sm">
+              <table className="w-full min-w-[600px] xl:min-w-[760px] text-sm">
                 <thead>
                   <tr className="border-b border-line bg-paper-100 text-left text-xs uppercase tracking-wide text-ink-600">
                     <th className="px-4 py-2 font-medium">Período</th>
@@ -136,8 +136,8 @@ export default function SalesTimelinePage() {
                     <th className="px-4 py-2 font-medium">Ganancia</th>
                     <th className="px-4 py-2 font-medium">Margen</th>
                     <th className="px-4 py-2 font-medium">Ventas</th>
-                    <th className="px-4 py-2 font-medium">Unidades</th>
-                    <th className="px-4 py-2 font-medium">Ticket prom.</th>
+                    <th className="hidden px-4 py-2 font-medium xl:table-cell">Unidades</th>
+                    <th className="hidden px-4 py-2 font-medium xl:table-cell">Ticket prom.</th>
                     <th className="px-4 py-2 font-medium">vs. anterior</th>
                   </tr>
                 </thead>
@@ -149,8 +149,8 @@ export default function SalesTimelinePage() {
                       <td className="px-4 py-2 text-teal-600">{formatCurrency(p.ganancia)}</td>
                       <td className="px-4 py-2 text-ink-700">{p.margenPct}%</td>
                       <td className="px-4 py-2 text-ink-700">{p.ventas}</td>
-                      <td className="px-4 py-2 text-ink-700">{p.unidades} un.</td>
-                      <td className="px-4 py-2 text-ink-700">{formatCurrency(p.ticketPromedio)}</td>
+                      <td className="hidden px-4 py-2 text-ink-700 xl:table-cell">{p.unidades} un.</td>
+                      <td className="hidden px-4 py-2 text-ink-700 xl:table-cell">{formatCurrency(p.ticketPromedio)}</td>
                       <td className="px-4 py-2">
                         {p.variacionPct == null ? (
                           <span className="text-xs text-ink-500">—</span>

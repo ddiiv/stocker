@@ -100,7 +100,7 @@ export default function ProductMetricsPage() {
       ) : (
         <Card className="mb-5 p-0">
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[900px] text-sm">
+            <table className="w-full min-w-[600px] xl:min-w-[900px] text-sm">
               <thead>
                 <tr className="border-b border-line bg-paper-100 text-left text-xs uppercase tracking-wide text-ink-600">
                   <th className="px-3 py-2 font-medium" />
@@ -109,10 +109,10 @@ export default function ProductMetricsPage() {
                   <th className="px-3 py-2 font-medium">Facturado</th>
                   <th className="px-3 py-2 font-medium">Ganancia</th>
                   <th className="px-3 py-2 font-medium" title="Ganancia sobre lo facturado">Margen</th>
-                  <th className="px-3 py-2 font-medium" title="Ganancia promedio por unidad vendida">$/unidad</th>
-                  <th className="px-3 py-2 font-medium" title="En qué porcentaje de las ventas aparece este producto">Conversión</th>
-                  <th className="px-3 py-2 font-medium" title="Qué proporción del stock disponible ya se vendió">Rotación</th>
-                  <th className="px-3 py-2 font-medium">Mejor local</th>
+                  <th className="hidden px-3 py-2 font-medium xl:table-cell" title="Ganancia promedio por unidad vendida">$/unidad</th>
+                  <th className="hidden px-3 py-2 font-medium xl:table-cell" title="En qué porcentaje de las ventas aparece este producto">Conversión</th>
+                  <th className="hidden px-3 py-2 font-medium xl:table-cell" title="Qué proporción del stock disponible ya se vendió">Rotación</th>
+                  <th className="hidden px-3 py-2 font-medium xl:table-cell">Mejor local</th>
                 </tr>
               </thead>
               <tbody>
@@ -180,10 +180,10 @@ function FilaProducto({ producto: p, abierto, onToggle }) {
         <td className="px-3 py-2 text-ink-900">{formatCurrency(p.facturado)}</td>
         <td className="px-3 py-2 font-medium text-teal-600">{formatCurrency(p.ganancia)}</td>
         <td className="px-3 py-2 text-ink-700">{p.margenPct}%</td>
-        <td className="px-3 py-2 text-ink-700">{formatCurrency(p.gananciaPorUnidad)}</td>
-        <td className="px-3 py-2"><Barrita pct={p.conversionPct} color="bg-teal-500" sufijo={`${p.ventasCount} ventas`} /></td>
-        <td className="px-3 py-2"><Barrita pct={p.rotacionPct} color="bg-brass-500" sufijo={`quedan ${p.stockActual}`} /></td>
-        <td className="px-3 py-2 text-xs text-ink-600">{p.mejorLocal || "—"}</td>
+        <td className="hidden px-3 py-2 xl:table-cell text-ink-700">{formatCurrency(p.gananciaPorUnidad)}</td>
+        <td className="hidden px-3 py-2 xl:table-cell"><Barrita pct={p.conversionPct} color="bg-teal-500" sufijo={`${p.ventasCount} ventas`} /></td>
+        <td className="hidden px-3 py-2 xl:table-cell"><Barrita pct={p.rotacionPct} color="bg-brass-500" sufijo={`quedan ${p.stockActual}`} /></td>
+        <td className="hidden px-3 py-2 xl:table-cell text-xs text-ink-600">{p.mejorLocal || "—"}</td>
       </tr>
 
       {abierto && (
