@@ -16,6 +16,7 @@ import CargaRapidaStock from "../components/products/CargaRapidaStock";
 import CeldaPrecio from "../components/products/CeldaPrecio";
 import CeldaMargenMl from "../components/products/CeldaMargenMl";
 import { formatCurrency } from "../utils/formatters";
+import { ean13Interno } from "../utils/ean";
 import { Boxes, PencilLine, Check, X, Wand2, Loader2, Tag, ListPlus, Store, MapPin, LayoutGrid } from "lucide-react";
 
 export default function ProductDetailPage() {
@@ -320,6 +321,33 @@ export default function ProductDetailPage() {
  * verifica al guardar —es donde tiene que estar la garantía—, pero enterarse
  * recién al apretar Guardar significa perder lo tipeado y volver a empezar.
  */
+/*
+ * El código de barras de la variante, debajo del SKU. Es el que sale en la
+ * etiqueta: el propio si lo tiene (un EAN de fábrica) y, si no, el interno, que
+ * sale del id de la variante y no del SKU: cambiar el SKU no lo mueve. Hasta la
+ * primera impresión el interno todavía no está guardado (la caja no lo encuentra
+ * al escanear), por eso se ve apagado. Tocarlo lo copia.
+ */
+function EanDeVariante({ variant }) {
+  const [copiado, setCopiado] = useState(false);
+  const guardado = variant.codigoBarras;
+  const codigo = guardado || ean13Interno(variant.id);
+  async function copiar() {
+    try { await navigator.clipboard.writeText(codigo); setCopiado(true); setTimeout(() => setCopiado(false), 1200); }
+    catch { /* sin permiso del navegador: el número igual se ve y se puede seleccionar */ }
+  }
+  return (
+    <button
+      type="button"
+      onClick={copiar}
+      className={`mt-0.5 block text-left font-mono text-[11px] tabular-nums hover:text-ink-900 ${guardado ? "text-ink-600" : "text-ink-400"}`}
+      title={guardado ? "Código de barras de la etiqueta. Tocá para copiar." : "Todavía no se imprimió: se guarda con este número al imprimir la etiqueta. Tocá para copiar."}
+    >
+      {copiado ? "Copiado" : codigo}
+    </button>
+  );
+}
+
 function CeldaSku({ variant, agrupador, onSaved }) {
   const [editando, setEditando] = useState(false);
   const [valor, setValor] = useState(variant.sku);
@@ -458,10 +486,12 @@ function VariantEditRow({ variant, onAdjust, onDelete, agrupador, onSaved, local
 
   return (
     <tr className="border-b border-line last:border-0">
-      <td className="px-4 py-3">
+      {/* Sin cortar: un SKU partido en tres renglones no se lee, y con el EAN debajo es peor. */}
+      <td className="whitespace-nowrap px-3 py-3">
         {puedeEditar
           ? <CeldaSku variant={variant} agrupador={agrupador} onSaved={onSaved} />
           : <span className="tag-chip">{variant.sku}</span>}
+        <EanDeVariante variant={variant} />
       </td>
       <td className="px-4 py-3 text-ink-700">{variant.variante1Nombre && <><span className="text-ink-400 text-xs">{variant.variante1Nombre}:</span> {variant.variante1Valor}</>}</td>
       <td className="px-4 py-3 text-ink-700">{variant.variante2Nombre && <><span className="text-ink-400 text-xs">{variant.variante2Nombre}:</span> {variant.variante2Valor}</>}</td>

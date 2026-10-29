@@ -58,6 +58,7 @@ function groupBySkuAgrupador(products) {
     vars.forEach((v) => group.variants.push({
       id: v.id, productId: p.id,
       sku: v.sku,
+      codigoBarras: v.codigoBarras || null,
       talle: v.variante2Valor || v.variante1Valor,
       color: v.variante1Valor,
       variante1Nombre: v.variante1Nombre, variante1Valor: v.variante1Valor,
