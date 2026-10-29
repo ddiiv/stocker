@@ -1,9 +1,11 @@
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { Search, Boxes, RefreshCw, Plus, Download, Upload, Trash2, Store } from "lucide-react";
+import { Search, Boxes, RefreshCw, Plus, Download, Upload, Trash2, Store, ChevronRight, ChevronDown } from "lucide-react";
 import { fetchProductGroups, createProduct, deleteProduct, exportProductsExcel, importProductsExcel } from "../services/productService";
 import { fetchVariantTypes } from "../services/variantTypeService";
 import { formatCurrency } from "../utils/formatters";
+import { ordenarVariantes } from "../utils/ordenVariantes";
+import EanDeVariante from "../components/products/EanDeVariante";
 import { PageHeader, EmptyState } from "../components/ui/Layout";
 import Modal from "../components/ui/Modal";
 import { useForm } from "react-hook-form";
@@ -35,6 +37,9 @@ export default function StockPage() {
    */
   const [catalogo, setCatalogo] = useState("locales");
   const esEvento = catalogo === "evento";
+  // Los productos con las variantes a la vista, por SKU agrupador.
+  const [abiertos, setAbiertos] = useState(() => new Set());
+  const alternar = (sku) => setAbiertos((prev) => { const n = new Set(prev); if (!n.delete(sku)) n.add(sku); return n; });
   // Filtros por categoría y género, con las listas de Variantes y categorías.
   const [filtros, setFiltros] = useState({ categoria: "", genero: "" });
   const [listas, setListas] = useState({ categorias: [], generos: [] });
@@ -266,8 +271,22 @@ export default function StockPage() {
             </thead>
             <tbody>
               {groups.map((g) => (
-                <tr key={g.skuAgrupador} className="border-b border-line last:border-0 hover:bg-paper-100/70">
+                <Fragment key={g.skuAgrupador}>
+                <tr className="border-b border-line last:border-0 hover:bg-paper-100/70">
                   <td className="px-4 py-3">
+                    <div className="flex items-start gap-2">
+                    {!esEvento && (
+                      <button
+                        type="button"
+                        className="mt-0.5 rounded p-0.5 text-ink-400 hover:bg-paper-200 hover:text-ink-900"
+                        aria-expanded={abiertos.has(g.skuAgrupador)}
+                        title={abiertos.has(g.skuAgrupador) ? "Ocultar las variantes" : "Ver las variantes, con su SKU y su código de barras"}
+                        onClick={() => alternar(g.skuAgrupador)}
+                      >
+                        {abiertos.has(g.skuAgrupador) ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+                      </button>
+                    )}
+                    <div>
                     <p className="font-medium text-ink-900">{g.title}</p>
                     <div className="mt-1 flex flex-wrap items-center gap-1.5">
                       <span className="tag-chip">{g.skuAgrupador}</span>
@@ -301,6 +320,8 @@ export default function StockPage() {
                         </span>
                       )}
                     </div>
+                    </div>
+                    </div>
                   </td>
                   <td className="px-4 py-3 text-ink-700">{g.categoria} · {g.genero}</td>
                   {!esEvento && (
@@ -321,6 +342,38 @@ export default function StockPage() {
                     </div>
                   </td>
                 </tr>
+                {!esEvento && abiertos.has(g.skuAgrupador) && (
+                  <tr className="border-b border-line bg-paper-50 last:border-0">
+                    <td colSpan={6} className="px-4 py-3">
+                      <table className="w-full text-sm">
+                        <thead>
+                          <tr className="text-left text-xs uppercase tracking-wide text-ink-500">
+                            <th className="py-1 pl-6 pr-3 font-medium">Variante</th>
+                            <th className="px-3 py-1 font-medium">SKU y código de barras</th>
+                            <th className="px-3 py-1 text-right font-medium">Stock</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {ordenarVariantes(g.variants, "talle").map((v) => (
+                            <tr key={v.id} className="border-t border-line">
+                              <td className="whitespace-nowrap py-2 pl-6 pr-3 text-ink-800">
+                                {[v.variante1Valor, v.variante2Valor].filter(Boolean).join(" · ") || <span className="text-ink-400">—</span>}
+                              </td>
+                              <td className="whitespace-nowrap px-3 py-2">
+                                <span className="tag-chip">{v.sku}</span>
+                                <EanDeVariante id={v.id} codigoBarras={v.codigoBarras} />
+                              </td>
+                              <td className="px-3 py-2 text-right">
+                                <span className={`badge ${v.stock === 0 ? "badge-out" : v.stock <= v.stockMinimo ? "badge-low" : "badge-ok"}`}>{v.stock} un.</span>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </td>
+                  </tr>
+                )}
+                </Fragment>
               ))}
             </tbody>
           </table>
