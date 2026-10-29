@@ -1655,7 +1655,7 @@ const getVariantesPorLocal = async (req, res, next) => {
         const filas = desglose.get(v.id) || [];
         const porId = new Map(filas.map((f) => [f.locationId, f.stock]));
         return {
-          variantId: v.id, sku: v.sku,
+          variantId: v.id, sku: v.sku, codigoBarras: v.codigoBarras,
           variante1Valor: v.variante1Valor, variante2Valor: v.variante2Valor,
           stockMinimo: v.stockMinimo,
           total: Number(v.stock) || 0,
