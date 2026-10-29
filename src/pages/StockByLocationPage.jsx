@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { Boxes, Search, ArrowLeftRight, Loader2, AlertTriangle, Check, ChevronRight, ChevronDown, Store } from "lucide-react";
+import EanDeVariante from "../components/products/EanDeVariante";
 import { fetchProductosPorLocal, fetchVariantesPorLocal, transferirStock } from "../services/productService";
 import { PageHeader, Card, EmptyState } from "../components/ui/Layout";
 import StockTabs from "../components/stock/StockTabs";
@@ -290,7 +291,7 @@ function FilaProducto({ producto: p, local, nombreLocal, abierto, onAbrir, onTra
                           <td className="whitespace-nowrap px-4 py-2 text-ink-800">
                             {[v.variante1Valor, v.variante2Valor].filter(Boolean).join(" · ") || <span className="text-ink-400">—</span>}
                           </td>
-                          <td className="px-2 py-2"><span className="tag-chip">{v.sku}</span></td>
+                          <td className="whitespace-nowrap px-2 py-2"><span className="tag-chip">{v.sku}</span><EanDeVariante id={v.variantId} codigoBarras={v.codigoBarras} /></td>
                           {detalle.locales.map((l) => {
                             const n = v.porLocal.find((x) => x.locationId === l.id)?.stock || 0;
                             const esElElegido = String(l.id) === String(local);
