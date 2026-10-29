@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { Search, Boxes, RefreshCw, Plus, Download, Upload, Trash2, Store, ChevronRight, ChevronDown } from "lucide-react";
+import { Search, Boxes, RefreshCw, Plus, Download, Upload, Trash2, Store, ChevronRight, ChevronDown, ChevronsUpDown, ChevronsDownUp } from "lucide-react";
 import { fetchProductGroups, createProduct, deleteProduct, exportProductsExcel, importProductsExcel } from "../services/productService";
 import { fetchVariantTypes } from "../services/variantTypeService";
 import { formatCurrency } from "../utils/formatters";
@@ -39,6 +39,8 @@ export default function StockPage() {
   const esEvento = catalogo === "evento";
   // Los productos con las variantes a la vista, por SKU agrupador.
   const [abiertos, setAbiertos] = useState(() => new Set());
+  const todosAbiertos = groups.length > 0 && groups.every((g) => abiertos.has(g.skuAgrupador));
+  const alternarTodos = () => setAbiertos(todosAbiertos ? new Set() : new Set(groups.map((g) => g.skuAgrupador)));
   const alternar = (sku) => setAbiertos((prev) => { const n = new Set(prev); if (!n.delete(sku)) n.add(sku); return n; });
   // Filtros por categoría y género, con las listas de Variantes y categorías.
   const [filtros, setFiltros] = useState({ categoria: "", genero: "" });
@@ -216,8 +218,8 @@ export default function StockPage() {
           : "Productos con stock, que se venden en los locales y el canal online."}
       </p>
 
-      <div className="mb-5 flex items-center gap-3">
-        <div className="relative flex-1 max-w-md">
+      <div className="mb-5 flex flex-wrap items-center gap-3">
+        <div className="relative min-w-[14rem] flex-1 max-w-md">
           <Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-ink-400" />
           <input className="input pl-9" placeholder="Buscar por título, SKU, código, categoría o género…" value={search} onChange={(e) => setSearch(e.target.value)} />
         </div>
@@ -232,6 +234,12 @@ export default function StockPage() {
         <button className="btn-ghost" onClick={() => load(search)}>
           <RefreshCw size={15} /> Actualizar
         </button>
+        {!esEvento && groups.length > 0 && (
+          <button className="btn-ghost whitespace-nowrap" onClick={alternarTodos} title={todosAbiertos ? "Ocultar las variantes de todos los productos" : "Ver las variantes de todos los productos"}>
+            {todosAbiertos ? <ChevronsDownUp size={15} /> : <ChevronsUpDown size={15} />}
+            {todosAbiertos ? "Plegar todo" : "Desplegar todo"}
+          </button>
+        )}
       </div>
 
       {loading ? (
