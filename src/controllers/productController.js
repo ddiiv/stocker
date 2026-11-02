@@ -2115,14 +2115,8 @@ const exportCatalogo = async (req, res, next) => {
 const importProducts = async (req, res, next) => {
   try {
     if (!req.file) return res.status(400).json({ message: 'Falta el archivo .xlsx a importar.' });
-    /*
-     * La planilla puede traer miles de filas. Acá sólo se comprueba que quede
-     * al menos un lugar libre: cuántos SKUs nuevos trae el archivo se sabe
-     * recién al parsearlo, y el servicio de importación es el que corta cuando
-     * se llena. Sin este chequeo previo, una cuenta con el cupo agotado subiría
-     * un archivo de 5 MB para que después se rechace fila por fila.
-     */
-    await exigirCupo(req.auth.businessId, 'skus');
+    // El cupo de SKUs lo controla el servicio con las variantes que van a nacer: un chequeo
+    // previo de "al menos uno libre" rebotaba con el cupo lleno archivos que no crean ninguna.
     // El local de destino puede venir en el formulario; si no, el principal.
     const summary = await importProductsXlsx(req.auth.businessId, req.file.buffer, {
       locationId: req.body?.locationId ? Number(req.body.locationId) : null,

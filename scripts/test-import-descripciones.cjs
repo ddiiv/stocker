@@ -7,8 +7,10 @@
  * y pedía el título aunque el producto ya existiera.
  *
  * Lo que se prueba: a un producto existente sólo se le cambia lo que el archivo
- * trae con valor; el stock y el libro de movimientos no se mueven; y un
- * producto nuevo sigue exigiendo título y tomando los valores por defecto.
+ * trae (un texto vaciado se borra, un número vacío no); el stock y el libro
+ * de movimientos no se mueven; un producto nuevo sigue exigiendo título; un
+ * archivo de conteo no borra los datos de la variante; y con el cupo de SKUs
+ * lleno un archivo que no crea variantes entra igual.
  *
  * Uso:  API=http://localhost:3000 node scripts/test-import-descripciones.cjs
  */
@@ -17,8 +19,9 @@ require('dotenv').config({ path: __dirname + '/../.env' });
 const ExcelJS = require('exceljs');
 const API = process.env.API || 'http://localhost:3000';
 const {
-  Business, BusinessLocation, Product, ProductVariant, VariantStock, StockMovement,
+  Business, BusinessLocation, Product, ProductVariant, VariantStock, StockMovement, Subscription, Plan,
 } = require('../src/models');
+const { usoDe } = require('../src/services/planService');
 const stockService = require('../src/services/stockService');
 
 let ok = 0, ko = 0;
@@ -125,15 +128,43 @@ const tit = (t) => console.log(`\n\x1b[1m${t}\x1b[0m`);
     chk('con los valores por defecto de siempre', [skuNuevo, 'QA nuevo por planilla', 'Recién cargado', 0, 0],
       [nuevo?.skuAgrupador, nuevo?.titulo, nuevo?.descripcion, Number(nuevo?.precioMinorista), Number(nuevo?.precioMayorista)]);
 
-    tit('3. UNA CELDA CON VALOR SÍ SE ESCRIBE');
+    tit('3. UNA CELDA CON VALOR SÍ SE ESCRIBE; UN TEXTO VACIADO SE BORRA');
     const imp3 = await importar([
-      ['SKU Padre', 'Título', 'Descripción', 'Precio Minorista', 'Categoría'],
+      ['SKU Padre', 'Título', 'Descripción', 'Precio Minorista', 'Precio Mayorista'],
       // Con el título repetido, como viene de un export: antes eso alcanzaba para que los precios vacíos quedaran en 0.
       [prod.sku, prod.titulo, '', 19000, ''],
     ]);
     const p3 = await Product.findByPk(prod.id);
-    chk('cambia el precio y deja lo demás', [200, 19000, 'Remera de algodón peinado 24/1', 'Remeras', 12000],
-      [imp3.status, Number(p3.precioMinorista), p3.descripcion, p3.categoria, Number(p3.precioMayorista)]);
+    chk('cambia el precio, el mayorista vacío y la categoría ausente quedan', [200, 19000, 12000, 'Remeras'],
+      [imp3.status, Number(p3.precioMinorista), Number(p3.precioMayorista), p3.categoria]);
+    chk('la descripción vaciada a propósito se borra', '', p3.descripcion || '');
+
+    tit('4. UN ARCHIVO DE CONTEO NO BORRA LOS DATOS DE LA VARIANTE');
+    const antes4 = await foto();
+    const imp4 = await importar([
+      ['SKU Padre', 'SKU Variante', `Stock ${local.nombre}`],
+      [prod.sku, `QA-DESC-${marca}-S`, 9],
+    ]);
+    const despues4 = await foto();
+    chk('entra y ajusta el stock', [200, 1, 1], [imp4.status, imp4.json?.variantsUpdated, imp4.json?.stockAjustado]);
+    chk('talle, precio, código de barras y stock mínimo quedan', antes4.variantes.map((v) => v.slice(0, 5)),
+      despues4.variantes.map((v) => v.slice(0, 5)));
+    chk('con 9 en el local', 9, Number((await VariantStock.findOne({
+      where: { productVariantId: creados.variantes[0], locationId: local.id } })).stock));
+
+    tit('5. CON EL CUPO DE SKUS LLENO, UN ARCHIVO QUE NO CREA VARIANTES ENTRA');
+    const sub = await Subscription.findOne({ where: { businessId: negocio.id }, include: [{ model: Plan, as: 'plan' }] });
+    const topeAntes = sub.plan.maxSkus;
+    try {
+      await sub.plan.update({ maxSkus: (await usoDe(negocio.id)).skus.usado });
+      const imp5 = await importar([['SKU Padre', 'Descripción'], [prod.sku, 'Con el cupo lleno']]);
+      chk('se carga la descripción', [200, 'Con el cupo lleno'],
+        [imp5.status, (await Product.findByPk(prod.id)).descripcion]);
+      const imp6 = await importar([['SKU Padre', 'SKU Variante', 'Título'], [prod.sku, `QA-DESC-${marca}-XL`, '']]);
+      chk('pero una variante nueva rebota', 409, imp6.status);
+    } finally {
+      await sub.plan.update({ maxSkus: topeAntes });
+    }
   } finally {
     tit('Limpieza');
     await StockMovement.destroy({ where: { productVariantId: creados.variantes } });

@@ -233,6 +233,9 @@ function readSheetRows(worksheet, columnasStock = [], columnaStockSimple = null)
   return rows;
 }
 
+// Textos del padre que se pueden vaciar desde el archivo (el título no: es obligatorio).
+const TEXTOS_BORRABLES = ['skuAgrupador', 'descripcion', 'categoria', 'genero', 'modelo'];
+
 // Si la fila llega a la variante: trae stock, valores de variante o SKU de variante.
 const tocaVariante = (r) => Boolean(r._stockPorLocal?.length || !vacia(r._stockSimple)
   || toStr(r.variante1Valor) || toStr(r.variante2Valor) || toStr(r.skuVariante));
@@ -443,12 +446,15 @@ async function importarFilas(businessId, buffer, { locationId = null } = {}) {
       /*
        * A un producto que ya existe sólo se le pisa lo que el archivo trae.
        *
-       * Celda vacía o columna ausente = no se toca, igual que el stock. Antes
+       * Columna ausente = no se toca, igual que el stock. Antes
        * un archivo de tres columnas para cargar descripciones dejaba todos los
        * precios en cero y borraba la categoría de cada producto que tocaba.
        */
+      // Los textos (salvo el título) se borran con la columna presente y la celda vacía, como los
+      // precios de variante; los números del padre no, porque vaciarlos los dejaría en cero.
       await product.update(Object.fromEntries(Object.entries(fields)
-        .filter(([campo]) => campo === 'fechaActualizacion' || toStr(first[campo]))));
+        .filter(([campo]) => campo === 'fechaActualizacion'
+          || (TEXTOS_BORRABLES.includes(campo) ? campo in first : toStr(first[campo])))));
       summary.productsUpdated++;
     } else {
       product = await Product.create({ businessId, sku, variantes: {}, ...fields });
@@ -486,11 +492,14 @@ async function importarFilas(businessId, buffer, { locationId = null } = {}) {
         // Buscar variante SÓLO dentro del producto actual — dos productos distintos
         // (incluso de otros negocios) pueden tener variantes con el mismo SKU.
         let variant = await ProductVariant.findOne({ where: { productId: product.id, sku: skuVariante } });
+        // Columna ausente = undefined = no se toca: un archivo de conteo (SKU Variante + stock)
+        // borraba Color, Talle y código de barras de la variante.
+        const siViene = (campo, valor) => (campo in row ? valor : undefined);
         const variantFields = {
-          variante1Nombre: v1n || null, variante1Valor: v1v || null,
-          variante2Nombre: v2n || null, variante2Valor: v2v || null,
+          variante1Nombre: siViene('variante1Nombre', v1n || null), variante1Valor: siViene('variante1Valor', v1v || null),
+          variante2Nombre: siViene('variante2Nombre', v2n || null), variante2Valor: siViene('variante2Valor', v2v || null),
           stockMinimo: row.stockMinimo !== '' && row.stockMinimo !== undefined ? toNumber(row.stockMinimo, 5) : undefined,
-          codigoBarras: toStr(row.codigoBarras) || null,
+          codigoBarras: siViene('codigoBarras', toStr(row.codigoBarras) || null),
         };
 
         /*
@@ -527,7 +536,7 @@ async function importarFilas(businessId, buffer, { locationId = null } = {}) {
             productId: product.id, businessId, sku: skuVariante,
             variante1Nombre: v1n || null, variante1Valor: v1v || null,
             variante2Nombre: v2n || null, variante2Valor: v2v || null,
-            codigoBarras: variantFields.codigoBarras,
+            codigoBarras: variantFields.codigoBarras ?? null,
             costo: variantFields.costo ?? null,
             precioMinorista: variantFields.precioMinorista ?? null,
             precioMayorista: variantFields.precioMayorista ?? null,
