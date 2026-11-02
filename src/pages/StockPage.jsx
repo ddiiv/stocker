@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { Search, Boxes, RefreshCw, Plus, Download, Upload, Trash2, Store, ChevronRight, ChevronDown, ChevronsUpDown, ChevronsDownUp } from "lucide-react";
-import { fetchProductGroups, createProduct, deleteProduct, exportProductsExcel, importProductsExcel } from "../services/productService";
+import { fetchProductGroups, createProduct, deleteProduct, exportProductsExcel, exportCatalogoExcel, importProductsExcel } from "../services/productService";
 import { fetchVariantTypes } from "../services/variantTypeService";
 import { formatCurrency } from "../utils/formatters";
 import { ordenarVariantes } from "../utils/ordenVariantes";
@@ -20,6 +20,7 @@ export default function StockPage() {
   const [error, setError] = useState("");
   const [newProductOpen, setNewProductOpen] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [exportandoCatalogo, setExportandoCatalogo] = useState(false);
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState(null);
   const [importError, setImportError] = useState("");
@@ -109,6 +110,17 @@ export default function StockPage() {
     }
   }
 
+  async function handleCatalogo() {
+    setExportandoCatalogo(true);
+    try {
+      await exportCatalogoExcel();
+    } catch (e) {
+      setError(e.response?.data?.message || "Error al descargar el catálogo");
+    } finally {
+      setExportandoCatalogo(false);
+    }
+  }
+
   function handleImportClick() {
     fileInputRef.current?.click();
   }
@@ -162,6 +174,12 @@ export default function StockPage() {
             </button>
             <button className="btn-ghost" onClick={handleExport} disabled={exporting}>
               <Download size={15} /> {exporting ? "Exportando…" : "Exportar Excel"}
+            </button>
+            <button
+              className="btn-ghost" onClick={handleCatalogo} disabled={exportandoCatalogo}
+              title="Una fila por producto con sus variantes, precios y descripción. Es para compartir: no sirve para reimportar."
+            >
+              <Download size={15} /> {exportandoCatalogo ? "Descargando…" : "Catálogo"}
             </button>
             <button className="btn-accent" onClick={() => setNewProductOpen(true)}>
               <Plus size={15} /> Nuevo producto

@@ -145,17 +145,22 @@ export async function deleteProduct(id) {
 
 export function getStockFor() { return { costo: 0, precio: 0, stock: 0, stockMinimo: 5 }; }
 
-export async function exportProductsExcel() {
-  const { data } = await http.get("/products/export", { responseType: "blob" });
+async function descargarXlsx(ruta, nombre) {
+  const { data } = await http.get(ruta, { responseType: "blob" });
   const url = window.URL.createObjectURL(new Blob([data]));
   const a = document.createElement("a");
   a.href = url;
-  a.download = "productos.xlsx";
+  a.download = nombre;
   document.body.appendChild(a);
   a.click();
   a.remove();
   window.URL.revokeObjectURL(url);
 }
+
+export const exportProductsExcel = () => descargarXlsx("/products/export", "productos.xlsx");
+
+/** Una fila por producto padre, con sus variantes y precios: para mandar, no para reimportar. */
+export const exportCatalogoExcel = () => descargarXlsx("/products/catalogo", "catalogo-productos.xlsx");
 
 export async function importProductsExcel(file) {
   const formData = new FormData();
