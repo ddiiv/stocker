@@ -635,6 +635,7 @@ r.delete('/business-cuits/:id/logo', requireAuth, requirePermission('facturacion
 // ── Products ──────────────────────────────────────────────────────
 r.get   ('/products',                                     requireAuth, requirePermission('stock','ver'),    productCtrl.getProducts);
 r.get   ('/products/export',                              requireAuth, requirePermission('stock','ver'),    productCtrl.exportProducts);
+r.get   ('/products/catalogo',                            requireAuth, requirePermission('stock','ver'),    productCtrl.exportCatalogo);
 r.post  ('/products/import',    requireAuth, requirePermission('stock','editar'), requireFeature(FEATURES.IMPORTACION_MASIVA), upload.single('file'),    productCtrl.importProducts);
 r.get   ('/products/sku/:skuV', requireAuth, requirePermission('stock','ver'),    productCtrl.getProductPadreBySkuVariante);
 // Buscador de variantes para el alta de ventas. Vale con ver stock o ver

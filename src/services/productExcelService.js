@@ -233,6 +233,10 @@ function readSheetRows(worksheet, columnasStock = [], columnaStockSimple = null)
   return rows;
 }
 
+// Si la fila llega a la variante: trae stock, valores de variante o SKU de variante.
+const tocaVariante = (r) => Boolean(r._stockPorLocal?.length || !vacia(r._stockSimple)
+  || toStr(r.variante1Valor) || toStr(r.variante2Valor) || toStr(r.skuVariante));
+
 function toNumber(v, fallback = 0) {
   if (v === '' || v === null || v === undefined) return fallback;
   const n = Number(v);
@@ -379,7 +383,9 @@ async function importarFilas(businessId, buffer, { locationId = null } = {}) {
    */
   const skusEnArchivo = [...new Set(rows.map((r) => {
     const padre = toStr(r.sku);
-    if (!padre) return null;
+    // Una fila sólo con datos del producto no crea variante (ver el `continue` de abajo):
+    // contarla rebotaba contra el cupo un archivo de sólo descripciones.
+    if (!padre || !tocaVariante(r)) return null;
     const v1 = toStr(r.variante1Valor), v2 = toStr(r.variante2Valor);
     return toStr(r.skuVariante) || (v1 || v2 ? `${padre}-${[v1, v2].filter(Boolean).join('-')}` : padre);
   }).filter(Boolean))];
@@ -396,7 +402,10 @@ async function importarFilas(businessId, buffer, { locationId = null } = {}) {
     const first = productRows[0];
     const skuAgrupador = toStr(first.skuAgrupador) || sku;
     const titulo = toStr(first.titulo);
-    if (!titulo) { summary.errors.push(`Fila ${first._row}: falta "Título" para SKU ${sku}.`); continue; }
+
+    let product = await Product.findOne({ where: { businessId, sku } });
+    // El título se exige sólo para crear: a uno que ya existe se le puede subir nada más que la descripción.
+    if (!product && !titulo) { summary.errors.push(`Fila ${first._row}: falta "Título" para SKU ${sku}.`); continue; }
 
     const fields = {
       skuAgrupador, titulo,
@@ -409,8 +418,6 @@ async function importarFilas(businessId, buffer, { locationId = null } = {}) {
       precioMayorista: toNumber(first.precioMayorista, 0),
       fechaActualizacion: new Date(),
     };
-
-    let product = await Product.findOne({ where: { businessId, sku } });
 
     /*
      * Una planilla no puede tocar un producto de evento.
@@ -433,7 +440,15 @@ async function importarFilas(businessId, buffer, { locationId = null } = {}) {
     }
 
     if (product) {
-      await product.update(fields);
+      /*
+       * A un producto que ya existe sólo se le pisa lo que el archivo trae.
+       *
+       * Celda vacía o columna ausente = no se toca, igual que el stock. Antes
+       * un archivo de tres columnas para cargar descripciones dejaba todos los
+       * precios en cero y borraba la categoría de cada producto que tocaba.
+       */
+      await product.update(Object.fromEntries(Object.entries(fields)
+        .filter(([campo]) => campo === 'fechaActualizacion' || toStr(first[campo]))));
       summary.productsUpdated++;
     } else {
       product = await Product.create({ businessId, sku, variantes: {}, ...fields });
@@ -461,12 +476,11 @@ async function importarFilas(businessId, buffer, { locationId = null } = {}) {
       if (!stockPorLocal.length && !vacia(row._stockSimple) && locationId) {
         stockPorLocal.push({ locationId, unidades: toNumber(row._stockSimple, 0) });
       }
-      const hasStock = stockPorLocal.length > 0;
 
       if (v1n && v1v) (dims[v1n] ||= new Set()).add(v1v);
       if (v2n && v2v) (dims[v2n] ||= new Set()).add(v2v);
 
-      if (!hasStock && !v1v && !v2v && !toStr(row.skuVariante)) continue; // fila solo con datos del producto
+      if (!tocaVariante(row)) continue; // fila solo con datos del producto
 
       try {
         // Buscar variante SÓLO dentro del producto actual — dos productos distintos

@@ -5,6 +5,7 @@ const { NO_ES_FERIA } = require('../utils/feria');
 const { NO_ES_PACK, productoNoEsPack } = require('../utils/packs');
 const { ilikeOperator } = require('../utils/sqlHelpers');
 const { exportProductsXlsx, importProductsXlsx } = require('../services/productExcelService');
+const { generarCatalogoXlsx } = require('../services/catalogoService');
 const { exigirCupo } = require('../services/planService');
 const skuService = require('../services/skuService');
 const { generarEtiquetas, asignarCodigosInternos, ASIGNAN_CODIGO, TIPOS_CODIGO, digitoEan } = require('../services/labelService');
@@ -2098,6 +2099,18 @@ const exportProducts = async (req, res, next) => {
   } catch (error) { next(error); }
 };
 
+// ── GET /api/products/catalogo ──────────────────────────────────────
+const exportCatalogo = async (req, res, next) => {
+  try {
+    const buffer = await generarCatalogoXlsx(req.auth.businessId);
+    res.set({
+      'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'Content-Disposition': 'attachment; filename="catalogo-productos.xlsx"',
+    });
+    res.send(Buffer.from(buffer));
+  } catch (error) { next(error); }
+};
+
 // ── POST /api/products/import ───────────────────────────────────────
 const importProducts = async (req, res, next) => {
   try {
@@ -2158,4 +2171,4 @@ const stockARegularizar = async (req, res, next) => {
   } catch (error) { next(error); }
 };
 
-module.exports = { ajustesEtiquetas, cambiarAjustesEtiquetas, getProducts, buscarVariantes, stockARegularizar, agregarVariantesMasivo, getProductPadreBySkuVariante, getProduct, createProduct, updateProduct, deleteProduct, addVariant, updateVariant, deleteVariant, adjustStock, getVariantMovements, getStockMovements, getStockPorLocal, getProductosPorLocal, getVariantesPorLocal, transferirStock, getIngresosDelDia, ajusteMasivo, preciosMasivo, generarEtiquetasPdf, exportProducts, importProducts, scanLookup, scanAdjustStock };
+module.exports = { ajustesEtiquetas, cambiarAjustesEtiquetas, getProducts, buscarVariantes, stockARegularizar, agregarVariantesMasivo, getProductPadreBySkuVariante, getProduct, createProduct, updateProduct, deleteProduct, addVariant, updateVariant, deleteVariant, adjustStock, getVariantMovements, getStockMovements, getStockPorLocal, getProductosPorLocal, getVariantesPorLocal, transferirStock, getIngresosDelDia, ajusteMasivo, preciosMasivo, generarEtiquetasPdf, exportProducts, exportCatalogo, importProducts, scanLookup, scanAdjustStock };
