@@ -8,15 +8,23 @@ import { http } from "../lib/http";
  * servidor ya los separaba —devolvía sólo los normales salvo que se le pidiera
  * lo contrario— pero la pantalla no tenía cómo pedir los otros, así que el
  * catálogo de evento no se veía desde Stock en ningún lado.
+ *
+ * Se pide de a una página de grupos: el servidor pagina por SKU agrupador
+ * (porGrupo), así un grupo con varios productos padre no queda partido.
  */
-export async function fetchProductGroups({ search = "", evento = false, categoria = "", genero = "" } = {}) {
-  const params = { limit: 200 };
+export async function fetchProductGroupsPagina({ search = "", evento = false, categoria = "", genero = "", page = 1, limit = 50 } = {}) {
+  const params = { porGrupo: 1, page, limit };
   if (search) params.search = search;
   if (categoria) params.categoria = categoria;
   if (genero) params.genero = genero;
   if (evento) params.feria = 1;
   const { data } = await http.get("/products", { params });
-  return groupBySkuAgrupador(data.data || []);
+  return { groups: groupBySkuAgrupador(data.data || []), total: data.total || 0, totalPages: data.totalPages || 0 };
+}
+
+// shortcut: sólo la primera página (100 grupos, el tope del servidor); sirve para búsquedas puntuales.
+export async function fetchProductGroups(filtros = {}) {
+  return (await fetchProductGroupsPagina({ ...filtros, limit: 100 })).groups;
 }
 
 export async function getProductGroup(skuAgrupador) {

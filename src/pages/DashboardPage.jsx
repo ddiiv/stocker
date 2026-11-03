@@ -1,12 +1,19 @@
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { DollarSign, TrendingUp, ShoppingBag, PackageX, ReceiptText } from "lucide-react";
 import { getDashboardMetrics } from "../services/dashboardService";
 import { formatCurrency, formatDate } from "../utils/formatters";
 import { Card, PageHeader } from "../components/ui/Layout";
 import StatCard from "../components/dashboard/StatCard";
 import MetricsTabs from "../components/dashboard/MetricsTabs";
-import RevenueChart from "../components/dashboard/RevenueChart";
-import TopProductsChart from "../components/dashboard/TopProductsChart";
+
+/*
+ * Los gráficos llegan aparte: recharts es casi todo el peso de esta pantalla
+ * (~107 KB comprimidos) y es la de entrada. Así los números se pintan sin
+ * esperarlo. El hueco tiene el alto del gráfico (h-72) para que nada salte.
+ */
+const RevenueChart = lazy(() => import("../components/dashboard/RevenueChart"));
+const TopProductsChart = lazy(() => import("../components/dashboard/TopProductsChart"));
+const HuecoGrafico = () => <div className="h-72 w-full animate-pulse rounded-md bg-paper-200/60" />;
 
 const RANGE_OPTIONS = [
   { value: 7, label: "7 días" },
@@ -70,7 +77,7 @@ export default function DashboardPage() {
             <Card className="lg:col-span-3">
               <p className="mb-4 font-display text-sm font-semibold text-ink-950">Ingresos por día</p>
               {metrics.revenueSeries.length ? (
-                <RevenueChart data={metrics.revenueSeries} />
+                <Suspense fallback={<HuecoGrafico />}><RevenueChart data={metrics.revenueSeries} /></Suspense>
               ) : (
                 <p className="py-10 text-center text-sm text-ink-600">Sin ventas cobradas en este período.</p>
               )}
@@ -78,7 +85,7 @@ export default function DashboardPage() {
             <Card className="lg:col-span-2">
               <p className="mb-4 font-display text-sm font-semibold text-ink-950">Productos más vendidos</p>
               {metrics.topProducts.length ? (
-                <TopProductsChart data={metrics.topProducts} />
+                <Suspense fallback={<HuecoGrafico />}><TopProductsChart data={metrics.topProducts} /></Suspense>
               ) : (
                 <p className="py-10 text-center text-sm text-ink-600">Sin datos todavía.</p>
               )}

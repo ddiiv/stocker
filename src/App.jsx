@@ -9,8 +9,6 @@ import AppLayout from "./components/layout/AppLayout";
 import RedirigirRutaVieja from "./components/layout/RedirigirRutaVieja";
 import { PERMISOS_PLATAFORMAS } from "./utils/plataformas";
 
-import LoginPage from "./pages/LoginPage";
-
 /*
  * Cada pantalla se descarga cuando se entra a ella.
  *
@@ -24,9 +22,11 @@ import LoginPage from "./pages/LoginPage";
  * en un segundo o mirar una pantalla en blanco mientras hay gente esperando,
  * en una máquina vieja y con la conexión que haya.
  *
- * El login queda importado de entrada, junto con el armazón: es lo primero que
- * se ve y hacerle esperar un segundo pedido sería cambiar un problema por otro.
+ * El login también va aparte: con él de entrada, zod y react-hook-form viajaban
+ * en el archivo inicial para todos, también para quien ya tiene sesión y entra
+ * directo al panel, que es el caso de todos los días.
  */
+const LoginPage = lazy(() => import("./pages/LoginPage"));
 const PaymentMethodsPage = lazy(() => import("./pages/PaymentMethodsPage"));
 const CashPage = lazy(() => import("./pages/CashPage"));
 const AccountPage = lazy(() => import("./pages/AccountPage"));

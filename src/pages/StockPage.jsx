@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { Search, Boxes, RefreshCw, Plus, Download, Upload, Trash2, Store, ChevronRight, ChevronDown, ChevronsUpDown, ChevronsDownUp } from "lucide-react";
-import { fetchProductGroups, createProduct, deleteProduct, exportProductsExcel, exportCatalogoExcel, importProductsExcel } from "../services/productService";
+import { fetchProductGroupsPagina, createProduct, deleteProduct, exportProductsExcel, exportCatalogoExcel, importProductsExcel } from "../services/productService";
 import { fetchVariantTypes } from "../services/variantTypeService";
 import { formatCurrency } from "../utils/formatters";
 import { ordenarVariantes } from "../utils/ordenVariantes";
@@ -13,9 +13,14 @@ import StockTabs from "../components/stock/StockTabs";
 import SelectDeLista from "../components/products/SelectDeLista";
 import { fetchListasProducto } from "../services/variantTypeService";
 
+const POR_PAGINA = 50;
+
 export default function StockPage() {
   const [search, setSearch] = useState("");
   const [groups, setGroups] = useState([]);
+  // La página que se ve y cuántos grupos hay en total con este filtro.
+  const [page, setPage] = useState(1);
+  const [paginacion, setPaginacion] = useState({ total: 0, totalPages: 0 });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [newProductOpen, setNewProductOpen] = useState(false);
@@ -53,12 +58,20 @@ export default function StockPage() {
     load(search, catalogo, nuevos);
   }
 
-  async function load(term = "", cual = catalogo, f = filtros) {
+  /*
+   * Buscar, filtrar o cambiar de catálogo vuelve a la página 1 (el `p` por
+   * defecto). Sólo las recargas después de editar algo piden la página actual.
+   */
+  async function load(term = "", cual = catalogo, f = filtros, p = 1) {
     setLoading(true);
     setError("");
     try {
-      const data = await fetchProductGroups({ search: term, evento: cual === "evento", ...f });
-      setGroups(data);
+      const r = await fetchProductGroupsPagina({ search: term, evento: cual === "evento", ...f, page: p, limit: POR_PAGINA });
+      // Si se borró lo último de la última página, se muestra la anterior y no un "no hay productos".
+      if (!r.groups.length && p > 1) return await load(term, cual, f, p - 1);
+      setGroups(r.groups);
+      setPage(p);
+      setPaginacion({ total: r.total, totalPages: r.totalPages });
     } catch (e) {
       setError(e.response?.data?.message || "Error al cargar productos");
     } finally {
@@ -130,7 +143,7 @@ export default function StockPage() {
     try {
       // Un grupo puede tener varios productos padre; los eliminamos todos
       await Promise.all(g.variants.map((v) => deleteProduct(v.productId)));
-      await load(search);
+      await load(search, catalogo, filtros, page);
     } catch (err) {
       alert(err.response?.data?.message || "Error al eliminar el producto");
     }
@@ -249,7 +262,7 @@ export default function StockPage() {
           <option value="">Todos los géneros</option>
           {listas.generos.map((g) => <option key={g} value={g}>{g}</option>)}
         </select>
-        <button className="btn-ghost" onClick={() => load(search)}>
+        <button className="btn-ghost" onClick={() => load(search, catalogo, filtros, page)}>
           <RefreshCw size={15} /> Actualizar
         </button>
         {!esEvento && groups.length > 0 && (
@@ -403,6 +416,22 @@ export default function StockPage() {
               ))}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {/* Antes la lista se cortaba en 100 productos sin avisar. */}
+      {!loading && groups.length > 0 && (
+        <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-sm">
+          <p className="text-ink-600">
+            Mostrando {groups.length} de {paginacion.total} productos
+            {paginacion.totalPages > 1 && ` · página ${page} de ${paginacion.totalPages}`}
+          </p>
+          {paginacion.totalPages > 1 && (
+            <div className="flex gap-2">
+              <button className="btn-ghost" disabled={page <= 1} onClick={() => load(search, catalogo, filtros, page - 1)}>Anterior</button>
+              <button className="btn-ghost" disabled={page >= paginacion.totalPages} onClick={() => load(search, catalogo, filtros, page + 1)}>Siguiente</button>
+            </div>
+          )}
         </div>
       )}
 

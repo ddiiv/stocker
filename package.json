@@ -14,9 +14,7 @@
     "@hookform/resolvers": "^5.5.7",
     "axios": "^1.18.1",
     "barcode-detector": "^3.2.2",
-    "clsx": "^2.1.1",
     "compression": "^1.8.1",
-    "date-fns": "^4.4.0",
     "express": "^5.2.1",
     "http-proxy-middleware": "^4.2.0",
     "lucide-react": "^1.27.0",
@@ -25,8 +23,7 @@
     "react-hook-form": "^7.83.0",
     "react-router-dom": "^7.18.1",
     "recharts": "^3.10.1",
-    "zod": "^4.4.3",
-    "zustand": "^5.0.14"
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4.3.3",

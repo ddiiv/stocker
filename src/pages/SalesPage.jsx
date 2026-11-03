@@ -19,6 +19,8 @@ const FILTERS = [
 ];
 
 
+const POR_PAGINA = 50;
+
 const ESTADO_BADGE = {
   pagado: "badge-ok",
   pendiente: "badge-low",
@@ -40,6 +42,17 @@ export default function SalesPage() {
   const [payError, setPayError] = useState("");
   const [busy, setBusy] = useState(false);
   const [loadError, setLoadError] = useState("");
+  const [page, setPage] = useState(1);
+  const [paginacion, setPaginacion] = useState({ total: 0, totalPages: 0 });
+
+  /*
+   * Cambiar un filtro vuelve a la página 1, en el mismo render: con un efecto
+   * aparte se pedía primero la página vieja con el filtro nuevo (que puede no
+   * existir) y después la 1.
+   */
+  const claveFiltro = `${tipo}|${periodo}|${medioPago}`;
+  const [filtroVisto, setFiltroVisto] = useState(claveFiltro);
+  if (filtroVisto !== claveFiltro) { setFiltroVisto(claveFiltro); setPage(1); }
 
   // Lo que falta cobrar de la venta abierta, que no siempre es su total: el
   // cliente pudo haber pagado una parte a cuenta desde su ficha.
@@ -58,9 +71,10 @@ export default function SalesPage() {
       const r = await fetchSales({
         tipo: tipo || undefined,
         medioPago: medioPago || undefined,
-        desde, hasta,
+        desde, hasta, page, limit: POR_PAGINA,
       });
       setSales(r.ventas);
+      setPaginacion({ total: r.total, totalPages: r.totalPages });
       setResumen(r.resumen);
     } catch (e) {
       setLoadError(mensajeDeError(e, "No se pudieron cargar las ventas."));
@@ -69,7 +83,7 @@ export default function SalesPage() {
     }
   }
 
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, [tipo, periodo, medioPago]);
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, [tipo, periodo, medioPago, page]);
 
   // Los medios se piden una vez: alimentan el filtro y el modal de cobro.
   useEffect(() => {
@@ -257,6 +271,7 @@ export default function SalesPage() {
           <EmptyState icon={ShoppingCart} title="Sin operaciones todavía" description="Registrá tu primera venta o cotización." />
         )
       ) : (
+        <>
         <div className="card overflow-x-auto p-0">
           <table className="w-full min-w-[640px] text-sm">
             <thead>
@@ -283,7 +298,7 @@ export default function SalesPage() {
                   <td className="px-3 py-3 text-ink-700">{formatDate(s.fecha)}</td>
                   <td className="px-3 py-3 text-ink-900">{s.cliente ? `${s.cliente.nombre} ${s.cliente.apellido || ""}`.trim() : "—"}</td>
                   <td className="px-3 py-3 text-ink-700">{s.empleado ? `${s.empleado.nombre} ${s.empleado.apellido || ""}`.trim() : "—"}</td>
-                  <td className="hidden px-3 py-3 text-ink-700 xl:table-cell">{s.items?.length ?? 0}</td>
+                  <td className="hidden px-3 py-3 text-ink-700 xl:table-cell">{s.cantidadItems ?? 0}</td>
                   <td className="px-3 py-3 font-medium text-ink-900">
                     {/* Con recargo, lo cobrado difiere del neto: se muestran los
                         dos para que el número no parezca un error de cálculo. */}
@@ -331,6 +346,19 @@ export default function SalesPage() {
             </tbody>
           </table>
         </div>
+        {/* Sin esto la tabla mostraba las primeras cien y nada decía que había más. */}
+        <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-sm">
+          <p className="text-ink-600">
+            Mostrando {(page - 1) * POR_PAGINA + 1}–{(page - 1) * POR_PAGINA + sales.length} de {paginacion.total}
+          </p>
+          {paginacion.totalPages > 1 && (
+            <div className="flex gap-2">
+              <button className="btn-ghost" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>Anterior</button>
+              <button className="btn-ghost" disabled={page >= paginacion.totalPages} onClick={() => setPage((p) => p + 1)}>Siguiente</button>
+            </div>
+          )}
+        </div>
+        </>
       )}
 
       <Modal open={!!payingSale} onClose={() => setPayingSale(null)} title={`Cobrar venta ${payingSale?.numero || ""}`}>

@@ -11,8 +11,8 @@ import { http } from "../lib/http";
  * @param {string} [f.medioPago] id de un medio, "combinado" o "fiado"
  * @param {string} [f.desde] y [f.hasta] en formato YYYY-MM-DD
  */
-export async function fetchSales({ tipo, estado, medioPago, desde, hasta, limit = 100 } = {}) {
-  const params = { limit };
+export async function fetchSales({ tipo, estado, medioPago, desde, hasta, page = 1, limit = 50 } = {}) {
+  const params = { page, limit };
   if (tipo)       params.tipo       = tipo;
   if (estado)     params.estado     = estado;
   if (medioPago)  params.medioPago  = medioPago;
@@ -21,6 +21,8 @@ export async function fetchSales({ tipo, estado, medioPago, desde, hasta, limit 
   const { data } = await http.get("/sales", { params });
   return {
     ventas: data.data || [],
+    total: data.total || 0,
+    totalPages: data.totalPages || 0,
     resumen: data.resumen || { cantidad: 0, cobradas: 0, totalCobrado: 0, totalNeto: 0 },
   };
 }
