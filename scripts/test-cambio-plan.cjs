@@ -1088,7 +1088,7 @@ function llamar(handler, req) {
     const tokenOriginal = process.env.MP_ACCESS_TOKEN;
     const pedidos = [];
     global.fetch = async (url, op = {}) => {
-      pedidos.push({ url: String(url), method: op.method, headers: op.headers || {}, body: op.body ? JSON.parse(op.body) : null });
+      pedidos.push({ url: String(url), method: op.method, headers: op.headers || {}, body: op.body ? JSON.parse(op.body) : null, signal: op.signal });
       return { ok: true, status: 200, json: async () => ({ id: `QA-PREAP-${pedidos.length}`, init_point: 'https://example.invalid/debito' }) };
     };
     // Un token inventado: config() exige uno, y el fetch simulado no lo manda a ningún lado.
@@ -1116,6 +1116,18 @@ function llamar(handler, req) {
     chk('dos altas de débito, dos claves de idempotencia distintas', [2, true], [
       claves.filter(Boolean).length, claves[0] !== claves[1],
     ]);
+    chk('cada pedido a Mercado Pago lleva tope de tiempo', true, pedidos.every((p) => p.signal instanceof AbortSignal));
+
+    // Un Mercado Pago que no contesta termina en un error explicado, no en un 500 crudo.
+    global.fetch = async () => { throw Object.assign(new Error('timeout simulado'), { name: 'TimeoutError' }); };
+    process.env.MP_ACCESS_TOKEN = 'TEST-qa-token-inventado';
+    let errMp = null;
+    try { await originales.consultarPago('QA-1'); } catch (e) { errMp = e; } finally {
+      global.fetch = fetchOriginal;
+      if (tokenOriginal === undefined) delete process.env.MP_ACCESS_TOKEN; else process.env.MP_ACCESS_TOKEN = tokenOriginal;
+    }
+    chk('si Mercado Pago no responde, el error lo dice', [true, 502, 'No pudimos consultar ese pago en Mercado Pago.'],
+      [errMp instanceof mp.ErrorMercadoPago, errMp?.status, errMp?.message]);
 
     // ─────────────────────────────────────────────────────────────
     tit('17. LO QUE VE EL CLIENTE');

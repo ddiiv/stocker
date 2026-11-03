@@ -3,10 +3,12 @@ const { NO_ES_FERIA } = require('../utils/feria');
 const { cuitValido, emailValido, normalizarCuit } = require('../utils/identificadores');
 const { sanitizarPermisos } = require('../config/permisos');
 const bcrypt = require('bcryptjs');
-const { BusinessLocation, Role, Client, Sale, SaleItem, Invoice, ProductVariant, Product, StockMovement } = require('../models');
+const { BusinessLocation, Role, Client, ProductVariant, Product, StockMovement } = require('../models');
 const reglaMayorista = require('../services/reglaMayoristaService');
 const { TIPOS, NOMBRES } = require('../config/lugares');
-const { ilikeOperator } = require('../utils/sqlHelpers');
+const { ilikeOperator, citar } = require('../utils/sqlHelpers');
+const sequelize = require('../config/database');
+const { mesDe } = require('../services/analyticsService');
 
 /*
  * Toma del body sólo los campos permitidos.
@@ -543,100 +545,137 @@ const getDashboard = async (req, res, next) => {
     cutoff.setDate(cutoff.getDate() - rangeDays);
     const businessId = req.auth.businessId;
 
-    const sales = await Sale.findAll({
-      where: { businessId, tipo: 'venta', fecha: { [Op.gte]: cutoff.toISOString().slice(0,10) } },
-      include: [{ model: SaleItem, as: 'items' }],
-    });
+    const desde = cutoff.toISOString().slice(0, 10);
+    const q = (sql) => sequelize.query(sql, { replacements: { businessId, desde }, type: sequelize.QueryTypes.SELECT });
+    const mes = mesDe('s.fecha');
 
-    const paid    = sales.filter((s) => s.estado === 'pagado');
-    const revenue = paid.reduce((s, v) => s + Number(v.total), 0);
-    const pending = sales.filter((s) => s.estado === 'pendiente').reduce((s, v) => s + Number(v.total), 0);
+    /*
+     * Todo se agrega en la base y las consultas que no dependen entre sí van juntas.
+     *
+     * Antes se traían a memoria las ventas del período con sus ítems, TODAS las
+     * facturas emitidas y TODAS las ventas pagas de la historia con sus ítems,
+     * una consulta detrás de otra, para sumarlas en JavaScript. Lo histórico
+     * crecía sin límite con cada venta; ahora viajan las filas que se muestran.
+     */
+    const [porDia, lineas, [facturas], stockBajo, meses, unidadesMes] = await Promise.all([
+      q(`SELECT s.estado, s.fecha, COUNT(*) AS ventas, SUM(s.total) AS total
+           FROM sales s
+          WHERE s.${citar('businessId')} = :businessId AND s.tipo = 'venta' AND s.fecha >= :desde
+            AND s.estado IN ('pagado', 'pendiente')
+          GROUP BY s.estado, s.fecha`),
+      /*
+       * Una fila por SKU (y por cómo se llamaba al venderse) en vez de una por
+       * línea vendida. MIN(si.id) conserva el orden en que aparecían las
+       * líneas, que es el que desempata el top y elige el título que se muestra.
+       */
+      q(`SELECT si.sku, si.${citar('skuAgrupador')}, si.titulo,
+                si.${citar('variante1Nombre')}, si.${citar('variante1Valor')},
+                si.${citar('variante2Nombre')}, si.${citar('variante2Valor')},
+                SUM(si.cantidad) AS unidades, SUM(si.subtotal) AS facturado
+           FROM sales s JOIN sale_items si ON si.${citar('saleId')} = s.id
+          WHERE s.${citar('businessId')} = :businessId AND s.tipo = 'venta' AND s.fecha >= :desde AND s.estado = 'pagado'
+          GROUP BY si.sku, si.${citar('skuAgrupador')}, si.titulo,
+                   si.${citar('variante1Nombre')}, si.${citar('variante1Valor')},
+                   si.${citar('variante2Nombre')}, si.${citar('variante2Valor')}
+          ORDER BY MIN(si.id)`),
+      q(`SELECT COUNT(*) AS cantidad, SUM(total) AS total FROM invoices
+          WHERE ${citar('businessId')} = :businessId AND estado = 'emitida'`),
+      /*
+       * Sin packs ni artículos de evento.
+       *
+       * Un pack no tiene stock propio —lo que hay de él se calcula con lo que
+       * haya de las prendas que lleva adentro— así que su `stock` es siempre 0 y
+       * entraba en "stock bajo" como si estuviera agotado. Con veinte packs
+       * publicados, el aviso que tiene que mostrar las diez prendas por reponer
+       * mostraba diez packs que no hay nada que reponer.
+       *
+       * Los de evento tampoco llevan stock, por el mismo motivo.
+       */
+      ProductVariant.findAll({
+        where: { esPack: false },
+        include: [{ model: Product, as: 'producto', where: { businessId, ...NO_ES_FERIA } }],
+        order: [['stock', 'ASC']],
+        limit: 200,
+      }),
+      // ── Progreso histórico ──────────────────────────────────────────
+      // Sin filtro de fecha: el rango de arriba solo aplica a los KPIs del
+      // período, pero la evolución anual necesita todo el historial.
+      q(`SELECT ${mes} AS mes, COUNT(*) AS ventas, SUM(s.total) AS total
+           FROM sales s
+          WHERE s.${citar('businessId')} = :businessId AND s.tipo = 'venta' AND s.estado = 'pagado'
+          GROUP BY ${mes}`),
+      // Las unidades van aparte: sumar los ítems en la misma consulta
+      // multiplicaría cada venta por la cantidad de líneas que tiene.
+      q(`SELECT ${mes} AS mes, SUM(si.cantidad) AS unidades
+           FROM sales s JOIN sale_items si ON si.${citar('saleId')} = s.id
+          WHERE s.${citar('businessId')} = :businessId AND s.tipo = 'venta' AND s.estado = 'pagado'
+          GROUP BY ${mes}`),
+    ]);
+
+    let revenue = 0, pending = 0, salesCount = 0;
+    const byDay = new Map();
+    for (const d of porDia) {
+      const total = Number(d.total) || 0;
+      const fecha = String(d.fecha).slice(0, 10);
+      if (d.estado === 'pendiente') { pending += total; continue; }
+      revenue += total;
+      salesCount += Number(d.ventas);
+      byDay.set(fecha, (byDay.get(fecha) || 0) + total);
+    }
 
     // Costo de mercadería
-    const allSkus = [...new Set(paid.flatMap((s) => s.items.map((i) => i.sku)))];
+    const allSkus = [...new Set(lineas.map((i) => i.sku))];
     // El SKU es único por negocio, no en toda la plataforma: el índice es
     // (businessId, sku). Sin filtrar, dos inquilinos que usen el mismo código
     // —"REMERA-M", "001"— se pisan y el margen sale con el costo del otro.
     const variants = allSkus.length ? await ProductVariant.findAll({
       where: { sku: allSkus, businessId: req.auth.businessId },
-      include: [{ model: Product, as: 'producto' }],
+      attributes: ['sku'],
+      include: [{ model: Product, as: 'producto', attributes: ['costo'] }],
     }) : [];
     const costMap  = new Map(variants.map((v) => [v.sku, Number(v.producto.costo)]));
 
     let cogs = 0;
     const byGroup = new Map();
-    for (const s of paid) {
-      for (const i of s.items) {
-        cogs += (costMap.get(i.sku) || 0) * i.cantidad;
-        const key = i.skuAgrupador || i.sku;
-        const acc = byGroup.get(key) || { titulo: i.titulo, unidades: 0, facturado: 0 };
-        acc.unidades  += i.cantidad;
-        acc.facturado += Number(i.subtotal);
-        byGroup.set(key, acc);
-      }
-    }
-
     // Top de variantes individuales (SKU exacto), además del agrupado por padre.
     // Sirve para ver qué talle/color concreto tiene más salida.
     const byVariant = new Map();
-    for (const s of paid) {
-      for (const i of s.items) {
-        const acc = byVariant.get(i.sku) || {
-          sku: i.sku, titulo: i.titulo, skuAgrupador: i.skuAgrupador,
-          variante1Nombre: i.variante1Nombre, variante1Valor: i.variante1Valor,
-          variante2Nombre: i.variante2Nombre, variante2Valor: i.variante2Valor,
-          unidades: 0, facturado: 0,
-        };
-        acc.unidades  += i.cantidad;
-        acc.facturado += Number(i.subtotal);
-        byVariant.set(i.sku, acc);
-      }
+    for (const i of lineas) {
+      const unidades = Number(i.unidades) || 0;
+      const facturado = Number(i.facturado) || 0;
+      cogs += (costMap.get(i.sku) || 0) * unidades;
+
+      const key = i.skuAgrupador || i.sku;
+      const acc = byGroup.get(key) || { titulo: i.titulo, unidades: 0, facturado: 0 };
+      acc.unidades  += unidades;
+      acc.facturado += facturado;
+      byGroup.set(key, acc);
+
+      const accV = byVariant.get(i.sku) || {
+        sku: i.sku, titulo: i.titulo, skuAgrupador: i.skuAgrupador,
+        variante1Nombre: i.variante1Nombre, variante1Valor: i.variante1Valor,
+        variante2Nombre: i.variante2Nombre, variante2Valor: i.variante2Valor,
+        unidades: 0, facturado: 0,
+      };
+      accV.unidades  += unidades;
+      accV.facturado += facturado;
+      byVariant.set(i.sku, accV);
     }
 
-    const byDay = new Map();
-    for (const s of paid) byDay.set(s.fecha, (byDay.get(s.fecha) || 0) + Number(s.total));
-
-    const invoices = await Invoice.findAll({ where: { businessId, estado: 'emitida' } });
-    /*
-     * Sin packs ni artículos de evento.
-     *
-     * Un pack no tiene stock propio —lo que hay de él se calcula con lo que
-     * haya de las prendas que lleva adentro— así que su `stock` es siempre 0 y
-     * entraba en "stock bajo" como si estuviera agotado. Con veinte packs
-     * publicados, el aviso que tiene que mostrar las diez prendas por reponer
-     * mostraba diez packs que no hay nada que reponer.
-     *
-     * Los de evento tampoco llevan stock, por el mismo motivo.
-     */
-    const stockBajo = await ProductVariant.findAll({
-      where: { esPack: false },
-      include: [{ model: Product, as: 'producto', where: { businessId, ...NO_ES_FERIA } }],
-      order: [['stock', 'ASC']],
-      limit: 200,
-    });
-
-    // ── Progreso histórico ──────────────────────────────────────────
-    // Query aparte sin filtro de fecha: el rango de arriba solo aplica a los
-    // KPIs del período, pero la evolución anual necesita todo el historial.
-    const historicas = await Sale.findAll({
-      where: { businessId, tipo: 'venta', estado: 'pagado' },
-      include: [{ model: SaleItem, as: 'items' }],
-    });
-
+    const unidadesPorMes = new Map(unidadesMes.map((u) => [u.mes, Number(u.unidades) || 0]));
     const byYear  = new Map();
     const byMonth = new Map();
-    for (const s of historicas) {
-      const anio = String(s.fecha).slice(0, 4);
-      const mes  = String(s.fecha).slice(0, 7); // YYYY-MM
-      const unidades = s.items.reduce((n, i) => n + i.cantidad, 0);
+    for (const m of meses) {
+      const anio = m.mes.slice(0, 4);
+      const total = Number(m.total) || 0;
+      const ventas = Number(m.ventas) || 0;
+      const unidades = unidadesPorMes.get(m.mes) || 0;
 
       const ay = byYear.get(anio) || { anio, total: 0, ventas: 0, unidades: 0 };
-      ay.total += Number(s.total); ay.ventas += 1; ay.unidades += unidades;
+      ay.total += total; ay.ventas += ventas; ay.unidades += unidades;
       byYear.set(anio, ay);
 
-      const am = byMonth.get(mes) || { mes, total: 0, ventas: 0, unidades: 0 };
-      am.total += Number(s.total); am.ventas += 1; am.unidades += unidades;
-      byMonth.set(mes, am);
+      byMonth.set(m.mes, { mes: m.mes, total, ventas, unidades });
     }
 
     const serieAnual = Array.from(byYear.values()).sort((a, b) => a.anio.localeCompare(b.anio));
@@ -650,16 +689,16 @@ const getDashboard = async (req, res, next) => {
       revenue, cogs, margin: revenue - cogs,
       marginPct: revenue ? Math.round(((revenue - cogs) / revenue) * 100) : 0,
       pendingAmount: pending,
-      salesCount: paid.length,
-      ticketPromedio: paid.length ? Math.round(revenue / paid.length) : 0,
+      salesCount,
+      ticketPromedio: salesCount ? Math.round(revenue / salesCount) : 0,
       topProducts: Array.from(byGroup.entries()).map(([k, v]) => ({ skuAgrupador: k, ...v })).sort((a, b) => b.unidades - a.unidades).slice(0, 8),
       topVariants: Array.from(byVariant.values()).sort((a, b) => b.unidades - a.unidades).slice(0, 10),
       revenueSeries: Array.from(byDay.entries()).map(([fecha, total]) => ({ fecha, total })).sort((a, b) => a.fecha > b.fecha ? 1 : -1),
       serieAnual,
       serieMensual: Array.from(byMonth.values()).sort((a, b) => a.mes.localeCompare(b.mes)),
       lowStock: stockBajo.filter((v) => v.stock <= v.stockMinimo).slice(0, 10).map((v) => ({ sku: v.sku, titulo: v.producto.titulo, talle: v.variante2Valor, color: v.variante1Valor, stock: v.stock, stockMinimo: v.stockMinimo })),
-      invoicesCount: invoices.length,
-      invoicesTotal: invoices.reduce((s, i) => s + Number(i.total), 0),
+      invoicesCount: Number(facturas?.cantidad) || 0,
+      invoicesTotal: Number(facturas?.total) || 0,
     });
   } catch (e) { next(e); }
 };

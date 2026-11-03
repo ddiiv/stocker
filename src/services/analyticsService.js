@@ -545,4 +545,4 @@ async function panel({ businessId, desde, hasta, limite = 8 }) {
   };
 }
 
-module.exports = { panel, resumen, porMes, porDimension, compararInteranual, porProducto, catalogoConStock, clasificarABC, armarTops, tendencia };
+module.exports = { mesDe, panel, resumen, porMes, porDimension, compararInteranual, porProducto, catalogoConStock, clasificarABC, armarTops, tendencia };

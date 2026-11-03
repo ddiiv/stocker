@@ -36,6 +36,7 @@ const axios = require('axios');
 const { Op } = require('sequelize');
 const { MercadoLibreAccount, PedidoPlataforma } = require('../models');
 const ml = require('./mercadolibreService');
+// Las consultas van por ml.httpML (timeout y agente propios): axios suelto espera para siempre.
 const cola = require('./colaVentasOnlineService');
 const enviosDelDia = require('./enviosDelDiaService');
 const { log } = require('../utils/logger');
@@ -170,7 +171,7 @@ function motivoDeCancelacion(orden) {
 
 async function traerOrden(cuenta, ordenId) {
   const token = await ml.tokenValido(cuenta);
-  const { data } = await axios.get(`${ML_API}/orders/${ordenId}`, {
+  const { data } = await ml.httpML.get(`${ML_API}/orders/${ordenId}`, {
     headers: { Authorization: `Bearer ${token}` },
   });
   return {
@@ -217,7 +218,7 @@ function tipoDeEnvio(envio) {
 async function traerEnvio(cuenta, envioId, { conPlazo = true } = {}) {
   const token = await ml.tokenValido(cuenta);
   const cabeceras = { Authorization: `Bearer ${token}`, ...FORMATO_NUEVO };
-  const { data } = await axios.get(`${ML_API}/shipments/${envioId}`, { headers: cabeceras });
+  const { data } = await ml.httpML.get(`${ML_API}/shipments/${envioId}`, { headers: cabeceras });
 
   const estadoMl = data.status || null;
 
@@ -235,7 +236,7 @@ async function traerEnvio(cuenta, envioId, { conPlazo = true } = {}) {
     || null;
   if (conPlazo && ESTADOS_CON_PLAZO.includes(estadoMl)) {
     try {
-      const { data: sla } = await axios.get(`${ML_API}/shipments/${envioId}/sla`, { headers: cabeceras });
+      const { data: sla } = await ml.httpML.get(`${ML_API}/shipments/${envioId}/sla`, { headers: cabeceras });
       if (sla?.expected_date) limite = sla.expected_date;
     } catch {
       // Sin SLA se usa el respaldo: que falte el plazo no invalida el envío.
@@ -266,7 +267,7 @@ async function traerEnvio(cuenta, envioId, { conPlazo = true } = {}) {
  */
 async function ordenesDelEnvio(cuenta, envioId) {
   const token = await ml.tokenValido(cuenta);
-  const { data } = await axios.get(`${ML_API}/shipments/${envioId}/orders`, {
+  const { data } = await ml.httpML.get(`${ML_API}/shipments/${envioId}/orders`, {
     headers: { Authorization: `Bearer ${token}`, 'X-New-Domain': 'true' },
   });
   const lista = Array.isArray(data) ? data : (data?.orders || []);
@@ -679,7 +680,7 @@ async function importarPedidos(businessId, { desde = null, dias = 7, tope = 200,
   let total = null;
   for (let offset = 0; offset < limite; offset += 50) {
     if (offset >= offsetMaximo()) { truncado = true; break; }
-    const { data } = await axios.get(`${ML_API}/orders/search`, {
+    const { data } = await ml.httpML.get(`${ML_API}/orders/search`, {
       headers: { Authorization: `Bearer ${token}` },
       params: {
         seller: cuenta.mlUserId,
@@ -1011,7 +1012,7 @@ async function reconciliar(cuenta) {
   try {
     const token = await ml.tokenValido(cuenta);
     for (let offset = 0; offset < 200; offset += 50) {
-      const { data } = await axios.get(`${ML_API}/orders/search`, {
+      const { data } = await ml.httpML.get(`${ML_API}/orders/search`, {
         headers: { Authorization: `Bearer ${token}` },
         params: {
           seller: cuenta.mlUserId,

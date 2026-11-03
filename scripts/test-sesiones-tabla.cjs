@@ -16,7 +16,7 @@
  *     ACTIVIDAD —no la más vieja—, la que entra nunca es la desplazada, y seis
  *     ingresos simultáneos no se pasan del tope.
  *   · En modo sombra no se cierra nada y queda la marca en el log.
- *   · Los empleados no tienen tope.
+ *   · Los empleados no tienen tope, y su última conexión se anota una vez por minuto.
  *   · El dueño ve todas las sesiones del negocio; un empleado, sólo las suyas.
  *     Nadie ve ni cierra las de otro negocio.
  *   · Cambio de contraseña, olvidé mi contraseña, cerrar todas y cambiarle la
@@ -438,6 +438,15 @@ console.warn = (...args) => { avisos.push(args.join(' ')); };
     chk('y no le cuentan al dueño', 1, await activasDelDueno());
     const filaEmp = await filaDe(deEmp[0]);
     chk('su fila es de empleado', ['employee', empleado.id], [filaEmp.tipo, filaEmp.employeeId]);
+    // La última conexión se anota como mucho una vez por minuto, no en cada
+    // pedido. La escritura no se espera: se le da un respiro antes y después.
+    await new Promise((r) => setTimeout(r, 150));
+    const marcada = new Date(Date.now() - 10 * 60 * 1000);
+    await Employee.update({ ultimaConexion: marcada }, { where: { id: empleado.id } });
+    await pasa(deEmp[1]);
+    await new Promise((r) => setTimeout(r, 150));
+    chk('un pedido dentro del minuto no reescribe la última conexión', marcada.getTime(),
+      new Date((await Employee.findByPk(empleado.id)).ultimaConexion).getTime());
 
     tit('12. LA LISTA: EL DUEÑO VE TODO, EL EMPLEADO SÓLO LO SUYO');
     // Una sesión vieja ya cerrada, una abandonada, y una de otro negocio.

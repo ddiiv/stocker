@@ -162,6 +162,8 @@ class ErrorMercadoPago extends Error {
  *   endpoint necesita el suyo: decir "no se pudo generar el pago" cuando lo que
  *   falló fue una consulta manda a la persona a intentar algo que no era.
  */
+const TIMEOUT_MS = 15000;
+
 async function llamar(ruta, { method = 'GET', body, idempotencia, queFalla } = {}) {
   const { token } = config();
   if (!token) throw new ErrorMercadoPago('Mercado Pago no está configurado en este entorno.', 503);
@@ -175,6 +177,12 @@ async function llamar(ruta, { method = 'GET', body, idempotencia, queFalla } = {
       ...(idempotencia ? { 'X-Idempotency-Key': idempotencia } : {}),
     },
     ...(body ? { body: JSON.stringify(body) } : {}),
+    // Sin tope, un Mercado Pago colgado dejaba el pedido esperando para siempre.
+    // Se reintenta seguro: lo que crea algo lleva clave de idempotencia.
+    signal: AbortSignal.timeout(TIMEOUT_MS),
+  }).catch((e) => {
+    log.error('mercadopago', `${method} ${ruta} no respondió`, { motivo: e.name });
+    throw new ErrorMercadoPago(queFalla || 'Mercado Pago no respondió. Probá de nuevo en unos minutos.');
   });
 
   const datos = await res.json().catch(() => ({}));

@@ -584,6 +584,37 @@ const INDICES = [
     requiere: `SELECT COUNT(*) AS faltan FROM (SELECT 1 AS x FROM ${tabla} GROUP BY ${columnas.join(', ')} HAVING COUNT(*) > 1) d`,
     requierePg: `SELECT COUNT(*) AS faltan FROM (SELECT 1 AS x FROM ${tabla} GROUP BY ${columnas.map((c) => `"${c}"`).join(', ')} HAVING COUNT(*) > 1) d`,
   })),
+  /*
+   * Índices de búsqueda, no de unicidad.
+   *
+   * Los del .sql (mismos nombres) sólo existen en las bases creadas con él; una
+   * creada por el arranque no tenía ninguno, y sin el de variantes por producto
+   * cada listado de Stock recorre la tabla entera de variantes. Los otros
+   * cuatro no estaban en ningún lado: los pagos de una venta, el extracto de un
+   * cliente, los movimientos de un turno de caja y el orden del listado de
+   * ventas (más nuevas primero).
+   */
+  ...[
+    ['products', 'idx_products_biz', ['businessId']],
+    ['products', 'idx_products_agrup', ['skuAgrupador']],
+    ['product_variants', 'idx_variants_product', ['productId']],
+    ['stock_movements', 'idx_sm_variant', ['productVariantId']],
+    ['stock_movements', 'idx_sm_employee', ['employeeId']],
+    ['stock_movements', 'idx_sm_fecha', ['fechaMovimiento']],
+    ['sales', 'idx_sales_biz', ['businessId']],
+    ['sales', 'idx_sales_client', ['clientId']],
+    ['sales', 'idx_sales_fecha', ['fecha']],
+    ['clients', 'idx_clients_biz', ['businessId']],
+    ['clients', 'idx_clients_cuit', ['cuit']],
+    ['invoices', 'idx_invoices_biz', ['businessId']],
+    ['invoices', 'idx_invoices_fecha', ['fechaEmision']],
+    ['employee_sessions', 'idx_empsess_employee_seen', ['employeeId', 'lastSeenAt']],
+    ['password_reset_codes', 'idx_prc_biz', ['businessId', 'expiresAt']],
+    ['sale_payments', 'idx_sale_payments_venta', ['saleId']],
+    ['client_account_entries', 'idx_cae_cliente_fecha', ['clientId', 'fecha']],
+    ['cash_movements', 'idx_cash_movements_turno', ['cashShiftId']],
+    ['sales', 'idx_sales_biz_creado', ['businessId', 'createdAt']],
+  ].map(([tabla, nombre, columnas]) => ({ tabla, nombre, columnas, unico: false })),
 ];
 
 /*

@@ -197,18 +197,29 @@ const getSales = async (req, res, next) => {
       else where[Op.and] = [...(where[Op.and] || []), porMedio];
     }
 
-    const offset = (Math.max(1, Number(page)) - 1) * Math.min(Number(limit), 100);
+    const tope = Math.min(Math.max(1, Number(limit) || 30), 100);
+    const pagina = Math.max(1, Number(page) || 1);
+    const offset = (pagina - 1) * tope;
+    /*
+     * La lista no lleva los ítems ni los pagos, sólo cuántos ítems hay.
+     *
+     * Es lo único que la tabla muestra de ellos, y traerlos completos eran
+     * ~116 KB de JSON cada cien ventas. El detalle de la venta los trae todos.
+     */
+    const si = citar('sale_items');
+    const cantidadItems = sequelize.literal(
+      // El CAST porque Postgres devuelve COUNT como bigint, que llega como texto.
+      `CAST((SELECT COUNT(*) FROM ${si} WHERE ${si}.${citar('saleId')} = ${citar('Sale')}.${citar('id')}) AS INTEGER)`
+    );
     const { count, rows } = await Sale.findAndCountAll({
-      where, offset, limit: Math.min(Number(limit), 100),
+      where, offset, limit: tope,
+      attributes: { include: [[cantidadItems, 'cantidadItems']] },
       include: [
-        { model: SaleItem, as: 'items' },
-        { association: 'pagos' },
         { association: 'cliente', attributes: ['id', 'nombre', 'apellido', 'cuit'] },
         { association: 'empleado', attributes: ['id', 'nombre', 'apellido'] },
         { association: 'local',   attributes: ['id', 'nombre'] },
       ],
       order: [['createdAt', 'DESC']],
-      distinct: true,
     });
 
     /*
@@ -240,8 +251,8 @@ const getSales = async (req, res, next) => {
 
     res.json({
       total: count,
-      page: Number(page),
-      totalPages: Math.ceil(count / limit),
+      page: pagina,
+      totalPages: Math.ceil(count / tope),
       data: rows,
       resumen: {
         cantidad: count,

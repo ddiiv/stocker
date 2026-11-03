@@ -205,15 +205,48 @@ const getProducts = async (req, res, next) => {
 
     if (condiciones.length) where[Op.and] = condiciones;
 
-    const offset = (Math.max(1, Number(page)) - 1) * Math.min(Number(limit), 100);
+    // totalPages se calcula con el límite que se aplicó, no con el pedido: con
+    // limit=200 el tope lo bajaba a 100 y la cuenta decía la mitad de páginas.
+    const tope = Math.min(Math.max(1, Number(limit) || 20), 100);
+    const pagina = Math.max(1, Number(page) || 1);
+    const offset = (pagina - 1) * tope;
+    const variantes = { model: ProductVariant, as: 'productVariants', where: { activo: true }, required: false };
+
+    /*
+     * porGrupo=1 pagina por SKU agrupador y no por producto.
+     *
+     * La pantalla de Stock muestra grupos, y un grupo puede tener más de un
+     * producto padre. Paginando por producto, un grupo que cae en el borde
+     * aparecía partido en dos páginas, cada mitad con su stock parcial. Acá se
+     * eligen primero los agrupadores de la página y después se traen todos sus
+     * productos. El orden (el menor título del grupo) es el mismo en que el
+     * front arma los grupos.
+     */
+    if (req.query.porGrupo === '1') {
+      const [total, grupos] = await Promise.all([
+        Product.count({ where, distinct: true, col: 'skuAgrupador' }),
+        Product.findAll({
+          where, attributes: ['skuAgrupador'], group: ['skuAgrupador'], raw: true,
+          order: [[fn('MIN', col('titulo')), 'ASC'], ['skuAgrupador', 'ASC']],
+          offset, limit: tope,
+        }),
+      ]);
+      const rows = grupos.length ? await Product.findAll({
+        where: { ...where, skuAgrupador: grupos.map((g) => g.skuAgrupador) },
+        include: [variantes],
+        order: [['titulo', 'ASC'], ['skuAgrupador', 'ASC']],
+      }) : [];
+      return res.json({ total, page: pagina, totalPages: Math.ceil(total / tope), data: rows });
+    }
+
     const { count, rows } = await Product.findAndCountAll({
-      where, offset, limit: Math.min(Number(limit), 100),
-      include: [{ model: ProductVariant, as: 'productVariants', where: { activo: true }, required: false }],
+      where, offset, limit: tope,
+      include: [variantes],
       order: [['titulo', 'ASC']],
       distinct: true,
     });
 
-    res.json({ total: count, page: Number(page), totalPages: Math.ceil(count / limit), data: rows });
+    res.json({ total: count, page: pagina, totalPages: Math.ceil(count / tope), data: rows });
   } catch (error) { next(error); }
 };
 

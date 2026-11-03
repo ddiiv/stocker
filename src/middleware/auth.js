@@ -16,6 +16,11 @@ function extractToken(req) {
   return header.startsWith('Bearer ') ? header.slice(7) : null;
 }
 
+// Cuándo se anotó por última vez la conexión de cada empleado (en este proceso).
+// Una entrada por empleado: no crece con los pedidos.
+const MARCA_MS = 60 * 1000;
+const ultimaMarca = new Map();
+
 // req.auth = { type:'business'|'employee', businessId, sid, employeeId?, permisos?, roleId? }
 // req.sesion = la fila de SesionCuenta de este token (ver sesionesService)
 async function requireAuth(req, res, next) {
@@ -180,9 +185,13 @@ async function requireAuth(req, res, next) {
     const bloqueo = await motivoDeBloqueo(req);
     if (bloqueo) return res.status(402).json(bloqueo);
 
-    // Última conexión y sesión más reciente: no bloquean el pedido.
-    if (req.auth.type === 'employee' && req.auth.employeeId) {
+    // Última conexión y sesión más reciente: no bloquean el pedido. Como mucho
+    // una vez por minuto por empleado, igual que sesiones.tocar: eran dos
+    // escrituras y una lectura en CADA llamada a la API de un cajero.
+    if (req.auth.type === 'employee' && req.auth.employeeId &&
+        Date.now() - (ultimaMarca.get(req.auth.employeeId) || 0) >= MARCA_MS) {
       const now = new Date();
+      ultimaMarca.set(req.auth.employeeId, now.getTime());
       Employee.update({ ultimaConexion: now }, { where: { id: req.auth.employeeId } }).catch(() => {});
       // Refrescar lastSeenAt sólo si la última sesión es de las últimas 12 horas
       EmployeeSession.findOne({

@@ -1308,6 +1308,7 @@ function marcarParaSync(businessId, sku) {
 }
 
 module.exports = {
+  httpML,
   estaConfigurado,
   marcarParaSync,
   urlAutorizacion,
