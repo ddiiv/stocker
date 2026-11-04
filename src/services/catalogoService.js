@@ -8,7 +8,6 @@
  * SKUs de variante, ni nada que no se pueda leer de un vistazo.
  */
 
-const ExcelJS = require('exceljs');
 const { Op } = require('sequelize');
 const { Product, ProductVariant } = require('../models');
 const { NO_ES_FERIA } = require('../utils/feria');
@@ -139,6 +138,7 @@ async function datosDeCatalogo(businessId) {
 
 async function generarCatalogoXlsx(businessId) {
   const filas = await datosDeCatalogo(businessId);
+  const ExcelJS = require('exceljs');
   const workbook = new ExcelJS.Workbook();
   const sheet = workbook.addWorksheet('Catálogo', { views: [{ state: 'frozen', ySplit: 1 }] });
   const pesos = { numFmt: '"$" #,##0' };

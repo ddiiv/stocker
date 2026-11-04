@@ -25,8 +25,6 @@
  * cambia el stock: el despacho.
  */
 
-const PDFDocument = require('pdfkit');
-
 // A4 vertical en puntos. Vertical y no apaisado: entra en una tablilla.
 const ANCHO = 595.28;
 const ALTO  = 841.89;
@@ -143,6 +141,7 @@ function tituloSeccion(doc, y, texto, bajada) {
 async function generarPickingPdf(jornada, { nombreNegocio = 'Stocker', local = null } = {}) {
   const cab = { nombreNegocio, local, fecha: jornada.fecha, resumen: jornada.resumen };
 
+  const PDFDocument = require('pdfkit');
   const doc = new PDFDocument({ size: [ANCHO, ALTO], margin: 0 });
   const trozos = [];
   doc.on('data', (d) => trozos.push(d));

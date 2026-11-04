@@ -7,7 +7,7 @@
     "node": ">=20.0.0"
   },
   "scripts": {
-    "start": "node index.js",
+    "start": "node --max-old-space-size=512 index.js",
     "dev": "nodemon index.js",
     "db:sync": "node src/database/syncModels.js",
     "db:seed": "node src/database/seedProducts.js",

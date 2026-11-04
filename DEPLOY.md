@@ -4,7 +4,7 @@ Cuatro servicios en el mismo proyecto y environment:
 
 | Servicio | Carpeta | Dominio público | Arranque |
 |---|---|---|---|
-| `backend` | `back/stocker` | **no** | `node index.js` |
+| `backend` | `back/stocker` | **no** | `npm start` (= `node --max-old-space-size=512 index.js`) |
 | `app` | `front/stocker` | sí | `npm start` |
 | `backoffice` | `front/backoffice` | sí | `npm start` |
 | `landing` | `front/landing` | sí | `npm start` |

@@ -11,7 +11,6 @@ const NOMBRE_COMPROBANTE = {
 };
 const nombreComprobante = (invoice) => NOMBRE_COMPROBANTE[invoice?.clase] || 'Factura';
 
-const nodemailer = require('nodemailer');
 const correo = require('../config/correo');
 const { log, mask } = require('../utils/logger');
 
@@ -67,6 +66,7 @@ function transport(cuenta = correo.CUENTA_ENVIO) {
   const port   = parseInt(process.env.MAIL_PORT, 10) || 465;
   const secure = process.env.MAIL_SECURE === 'true' || (process.env.MAIL_SECURE == null && port === 465);
 
+  const nodemailer = require('nodemailer');
   const t = nodemailer.createTransport({
     host: process.env.MAIL_HOST || 'smtp.gmail.com',
     port,

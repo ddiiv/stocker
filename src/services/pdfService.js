@@ -1,4 +1,3 @@
-const PDFDocument = require('pdfkit');
 const fs          = require('fs-extra');
 const path        = require('path');
 
@@ -243,6 +242,7 @@ async function generateSalePdf(sale, items, business, { cliente, emisor } = {}) 
   const filepath = path.join(PDF_DIR, filename);
 
   return new Promise((resolve, reject) => {
+    const PDFDocument = require('pdfkit');
     const doc = new PDFDocument({ size: 'A4', margin: 50 });
     const stream = fs.createWriteStream(filepath);
     doc.pipe(stream);
@@ -337,6 +337,7 @@ async function generateSaleTicketPdf(sale, items, business, { cliente, emisor } 
 
   return new Promise((resolve, reject) => {
     const W = 227; // 80mm en pt (redondeado)
+    const PDFDocument = require('pdfkit');
     const doc = new PDFDocument({
       size: [W, 800], // alto amplio; la impresora corta al final del contenido
       margins: { top: 8, bottom: 8, left: 8, right: 8 },
@@ -535,6 +536,7 @@ async function generateSaleTicketPdf(sale, items, business, { cliente, emisor } 
 async function generateSubscriptionReceiptPdf(pago, negocio, plan) {
   await ensureDir();
   const ruta = path.join(PDF_DIR, `recibo-suscripcion-${pago.id}.pdf`);
+  const PDFDocument = require('pdfkit');
   const doc = new PDFDocument({ size: 'A4', margin: 50 });
   const stream = fs.createWriteStream(ruta);
   doc.pipe(stream);

@@ -13,9 +13,6 @@
  * vectores, la impresora resuelve cada barra a su máxima resolución.
  */
 
-const PDFDocument = require('pdfkit');
-const bwip = require('bwip-js');
-
 // pdfkit trabaja en puntos tipográficos.
 const MM = 72 / 25.4;
 
@@ -76,6 +73,7 @@ const PUNTO_IMPRESORA = 25.4 / 203;
  * la etiqueta.
  */
 function patron(texto) {
+  const bwip = require('bwip-js');
   const [salida] = bwip.raw({ bcid: 'code128', text: String(texto) });
   const anchos = String(salida.sbs).split(',').map(Number);
   return { anchos, modulos: anchos.reduce((a, b) => a + b, 0) };
@@ -222,6 +220,7 @@ function dibujar(doc, { encabezado, talle, codigo, soloCode128, sku }) {
   let x;
   if (!soloCode128 && esEan13(codigo)) {
     // 3 puntos exactos de la impresora por módulo y la zona muda de la norma (11 y 7 módulos), centrado.
+    const bwip = require('bwip-js');
     const [simbolo] = bwip.raw({ bcid: 'ean13', text: String(codigo) });
     anchos = String(simbolo.sbs).split(',').map(Number);
     modulo = 3 * PUNTO_IMPRESORA * MM;
@@ -347,6 +346,7 @@ function generarEtiquetas(items, { tipo = 'ean13' } = {}) {
     throw err;
   }
 
+  const PDFDocument = require('pdfkit');
   const doc = new PDFDocument({ size: [ANCHO, ALTO], margin: 0, autoFirstPage: false });
 
   for (const { producto, variante, cantidad } of items) {

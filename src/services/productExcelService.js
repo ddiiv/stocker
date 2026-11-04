@@ -1,4 +1,4 @@
-const ExcelJS = require('exceljs');
+const { Readable } = require('stream');
 const { Op } = require('sequelize');
 const { Product, ProductVariant, BusinessLocation } = require('../models');
 const { exigirCupo } = require('./planService');
@@ -101,6 +101,7 @@ async function buildExportWorkbook(businessId) {
    * vaciando los demás. Con una columna por local el archivo dice dónde está
    * cada unidad y se puede editar como una planilla de inventario.
    */
+  const ExcelJS = require('exceljs');
   const workbook = new ExcelJS.Workbook();
   const sheet = workbook.addWorksheet('Productos');
   sheet.columns = [
@@ -279,6 +280,57 @@ async function importProductsXlsx(businessId, buffer, opciones = {}) {
   }
 }
 
+/*
+ * El rechazo por cantidad de filas. `texto` es lo que se le dice a la persona
+ * ("1.994", "más de 10.000") y `filas` el número para la pantalla.
+ *
+ * Va en `detalles` porque es lo que el manejador de errores vuelca en la
+ * respuesta. Puesto suelto en el error, la pantalla recibe el 413 sin saber
+ * que es por el tope y no puede decir cuántas filas sobran.
+ */
+function archivoMuyGrande(texto, filas) {
+  return Object.assign(
+    new Error(
+      `El archivo tiene ${texto} filas y el máximo por importación es `
+      + `${MAX_FILAS.toLocaleString('es-AR')}. Cada fila es un producto con su variante. `
+      + 'Partilo en varios archivos y subilos de a uno.'
+    ),
+    { status: 413, detalles: { codigo: 'ARCHIVO_MUY_GRANDE', filas, maximo: MAX_FILAS } },
+  );
+}
+
+/*
+ * Cuenta las filas con datos SIN cargar el archivo: lo lee en streaming y corta
+ * apenas pasa el doble del tope. Existe porque `workbook.xlsx.load` arma el
+ * libro entero en memoria antes de que se pueda mirar MAX_FILAS, y un .xlsx de
+ * 7 MB con 120.000 filas se comía más de 500 MB: con el tope de heap del
+ * arranque eso tira abajo el proceso (y las ventas en curso de todos los
+ * negocios) en vez de devolver un 413.
+ *
+ * El doble del tope y no el tope justo: acá se cuenta cualquier fila con algún
+ * valor, y el conteo fino (sólo las columnas que se reconocen) lo hace
+ * readSheetRows después. Esto es sólo la red de seguridad de la memoria.
+ * Si el archivo no se puede leer así, se sigue: el load de abajo da el error.
+ */
+async function rechazarSiDesborda(buffer) {
+  const ExcelJS = require('exceljs');
+  const limite = MAX_FILAS * 2;
+  let filas = 0;
+  try {
+    const lector = new ExcelJS.stream.xlsx.WorkbookReader(Readable.from([buffer]), {
+      worksheets: 'emit', sharedStrings: 'ignore', hyperlinks: 'ignore', styles: 'ignore',
+    });
+    for await (const hoja of lector) {
+      for await (const fila of hoja) {
+        if (fila.hasValues && ++filas > limite) throw archivoMuyGrande(`más de ${limite.toLocaleString('es-AR')}`, filas);
+      }
+      break; // sólo la primera hoja, que es la que se importa
+    }
+  } catch (e) {
+    if (e.status === 413) throw e;
+  }
+}
+
 async function importarFilas(businessId, buffer, { locationId = null } = {}) {
   // Local de respaldo: para archivos con una sola columna "Stock", sin nombre
   // de local. Sin indicarlo, el principal.
@@ -286,6 +338,8 @@ async function importarFilas(businessId, buffer, { locationId = null } = {}) {
   // sea de este negocio antes de cargarle mil filas de stock encima.
   locationId = await stockService.resolverLocal({ locationId, businessId });
 
+  await rechazarSiDesborda(buffer);
+  const ExcelJS = require('exceljs');
   const workbook = new ExcelJS.Workbook();
   await workbook.xlsx.load(buffer);
   const worksheet = workbook.worksheets[0];
@@ -344,21 +398,7 @@ async function importarFilas(businessId, buffer, { locationId = null } = {}) {
    * Más que esto se parte en varios archivos: es una molestia chica comparada
    * con el servidor caído.
    */
-  if (rows.length > MAX_FILAS) {
-    throw Object.assign(
-      new Error(
-        `El archivo tiene ${rows.length.toLocaleString('es-AR')} filas y el máximo por importación es `
-        + `${MAX_FILAS.toLocaleString('es-AR')}. Cada fila es un producto con su variante. `
-        + 'Partilo en varios archivos y subilos de a uno.'
-      ),
-      /*
-       * En `detalles` porque es lo que el manejador de errores vuelca en la
-       * respuesta. Puesto suelto en el error, la pantalla recibe el 413 sin
-       * saber que es por el tope y no puede decir cuántas filas sobran.
-       */
-      { status: 413, detalles: { codigo: 'ARCHIVO_MUY_GRANDE', filas: rows.length, maximo: MAX_FILAS } },
-    );
-  }
+  if (rows.length > MAX_FILAS) throw archivoMuyGrande(rows.length.toLocaleString('es-AR'), rows.length);
 
   const summary = { productsCreated: 0, productsUpdated: 0, variantsCreated: 0, variantsUpdated: 0, errors: [] };
 
@@ -588,4 +628,4 @@ async function importarFilas(businessId, buffer, { locationId = null } = {}) {
   return summary;
 }
 
-module.exports = { exportProductsXlsx, importProductsXlsx, MAX_FILAS };
+module.exports = { exportProductsXlsx, importProductsXlsx, MAX_FILAS, rechazarSiDesborda };

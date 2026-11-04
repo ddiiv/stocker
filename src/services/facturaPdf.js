@@ -17,8 +17,6 @@
  * guardados en la factura. Acá sólo se los dice.
  */
 
-const PDFDocument = require('pdfkit');
-const bwip = require('bwip-js');
 const {
   CBTE_TIPO, ALICUOTA_IVA, CONDICIONES_IVA_RECEPTOR, docTipoFromCliente,
 } = require('./arcaService');
@@ -186,6 +184,7 @@ function urlQr(invoice) {
 async function qrDelComprobante(invoice) {
   const url = urlQr(invoice);
   if (!url) return null;
+  const bwip = require('bwip-js');
   try {
     return await bwip.toBuffer({ bcid: 'qrcode', text: url, scale: 3, includetext: false });
   } catch {
@@ -934,6 +933,7 @@ function documentoNuevo(extra = {}) {
    * con sólo el pie. Acá cada posición la decide el armado, y lo que no entra
    * se pagina a mano.
    */
+  const PDFDocument = require('pdfkit');
   return new PDFDocument({ size: 'A4', margin: 0, ...extra });
 }
 

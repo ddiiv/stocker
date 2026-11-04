@@ -13,7 +13,6 @@
  * No usa librería SOAP: los XMLs son simples y los armamos a mano con templates.
  */
 
-const forge = require('node-forge');
 const axios = require('axios');
 const https = require('node:https');
 
@@ -167,6 +166,7 @@ async function getTA({ cert, key, ambiente, service = 'wsfe', forzar = false }) 
 
 // PKCS#7 signed data (base64) — el formato que espera WSAA
 function signCMS(content, certPem, keyPem) {
+  const forge = require('node-forge');
   const p7 = forge.pkcs7.createSignedData();
   p7.content = forge.util.createBuffer(content, 'utf8');
   p7.addCertificate(certPem);
@@ -271,6 +271,7 @@ function extractSoapFault(data) {
 
 // Extraer CUIT del serialNumber del cert (formato "CUIT NNNNNNNNNNN")
 function extractCuitFromCert(certPem) {
+  const forge = require('node-forge');
   try {
     const cert = forge.pki.certificateFromPem(certPem);
     // OJO: cert.subject.getField('serialNumber') NO sirve — node-forge trata

@@ -14,7 +14,6 @@
  * se lee, y un renglón que no se lee convierte la lista en un adorno.
  */
 
-const PDFDocument = require('pdfkit');
 const { Op } = require('sequelize');
 const { Product, ProductVariant } = require('../models');
 const { __patron: patron, MODULO_MINIMO_MM } = require('./labelService');
@@ -247,6 +246,7 @@ function dibujarFila(doc, fila, y) {
 async function generarListaPrecios(businessId, negocio = null) {
   const filas = await datosDeLista(businessId);
 
+  const PDFDocument = require('pdfkit');
   const doc = new PDFDocument({ size: [ANCHO, ALTO], margin: 0 });
   const trozos = [];
   doc.on('data', (d) => trozos.push(d));

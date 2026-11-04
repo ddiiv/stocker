@@ -7,7 +7,6 @@ const { log, mask } = require('../utils/logger');
 const identidad = require('../services/identityRegistry');
 const { corteDeSesiones, INACTIVIDADES_MIN, IDLE_MIN } = require('../utils/session');
 const sesiones = require('../services/sesionesService');
-const QRCode = require('qrcode');
 const totp = require('../utils/totp');
 const dosFactores = require('../services/dosFactoresService');
 const { setAuthCookie } = require('../utils/authCookie');
@@ -426,6 +425,7 @@ const iniciar2FA = async (req, res, next) => {
      */
     let qr = null;
     try {
+      const QRCode = require('qrcode');
       qr = await QRCode.toDataURL(uri, { margin: 1, width: 240, errorCorrectionLevel: 'M' });
     } catch (e) {
       log.warn('cuenta', 'no se pudo generar el QR del segundo factor', { motivo: e.message });

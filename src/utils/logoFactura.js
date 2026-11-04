@@ -25,7 +25,6 @@
  */
 
 const zlib = require('zlib');
-const PDFDocument = require('pdfkit');
 const { PNG } = require('pngjs');
 
 // Lo que el dueño puede subir: 300 KB. Un logo para imprimir a 6 cm de ancho
@@ -274,6 +273,8 @@ function leerJpeg(datos) {
  */
 function exigirQuePdfkitLoLea(datos, leido) {
   const formato = leido.formato === 'png' ? 'PNG' : 'JPG';
+  // Fuera del try: si pdfkit no carga, que no se lo cuente al usuario como archivo dañado.
+  const PDFDocument = require('pdfkit');
   let img;
   try {
     img = new PDFDocument({ autoFirstPage: false }).openImage(datos);
