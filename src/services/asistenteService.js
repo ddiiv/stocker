@@ -76,9 +76,7 @@ async function buscarProductos({ businessId, texto, limite = TOPE_PRODUCTOS }) {
    * Con sólo los online, Isuwaya mostraba en cero lo que tenía en su local más
    * grande y el asistente decía que no había. Depósitos y ferias no venden.
    */
-  const locales = await BusinessLocation.findAll({
-    where: { businessId, activo: true, tipo: 'local' }, attributes: ['id', 'nombre'], order: [['id', 'ASC']],
-  });
+  const locales = await tienda.localesQueVenden(businessId);
   const [catalogo, mayorista] = await Promise.all([tienda.catalogo({ businessId, locales, conPacks: true }), reglaMayorista(businessId)]);
 
   /*

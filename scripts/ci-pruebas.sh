@@ -42,7 +42,7 @@ PRUEBAS=(
   etiquetas factura-cliente factura-impresa factura-qr factura-transparencia feria import-descripciones inactividad integraciones-backoffice listas-producto
   legales mayorista ml-postventa ml-token packs pagos-caja planes plataformas precios rellenos reposicion
   reservas serializar-cuenta series sesiones sesiones-tabla sku solicitud-mayorista portal-catalogo etiquetas-codigo stock-concurrente stock-local
-  tareas-periodicas tienda-feed tienda-pago venta-local listados import-memoria
+  tareas-periodicas tienda-feed tienda-pago venta-local listados import-memoria stock-todos-los-locales
 )
 
 fallaron=()

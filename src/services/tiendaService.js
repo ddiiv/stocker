@@ -17,7 +17,7 @@
  */
 
 const { Op } = require('sequelize');
-const { Product, ProductVariant } = require('../models');
+const { Product, ProductVariant, BusinessLocation } = require('../models');
 const { variantesPublicables, cantidadesPublicables } = require('./stockPublicableService');
 const { localesQueAbastecenOnline } = require('./stockService');
 const { precioMinorista, precioMayorista, tieneValor } = require('./precioService');
@@ -36,6 +36,17 @@ const TOPE_SKUS_CONSULTA = 500;
  * tienda —un producto con su selector de color y talle— y porque el SKU
  * agrupador es la clave con la que guarda lo suyo.
  */
+/*
+ * Los locales que venden: todos los de tipo local, abastezcan o no lo online.
+ * Depósitos y ferias no venden. Es el stock que mira el asistente (el pedido
+ * lo acepta una persona y sale de su local) y el catálogo de WhatsApp.
+ */
+function localesQueVenden(businessId) {
+  return BusinessLocation.findAll({
+    where: { businessId, activo: true, tipo: 'local' }, attributes: ['id', 'nombre'], order: [['id', 'ASC']],
+  });
+}
+
 async function catalogo({ businessId, locales: deQueLocales = null, conPacks = false }) {
   const [locales, publicables] = await Promise.all([
     // El asistente pasa los suyos: vende de todos los locales, no sólo de los que abastecen lo online.
@@ -397,7 +408,7 @@ function leerCursor(valor) {
   return { en, id };
 }
 module.exports = {
-  catalogo, stockDeSkus, resoluciones,
+  catalogo, stockDeSkus, resoluciones, localesQueVenden,
   TOPE_SKUS_CONSULTA, TOPE_RESOLUCIONES, __queCambio: queCambio, __cursorDe: cursorDe,
   // Expuestas para probarlas sin depender de qué datos tenga la base de turno.
   __ejesDe: ejesDe, __precioParaPublicar: precioParaPublicar,

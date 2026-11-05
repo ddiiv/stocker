@@ -109,7 +109,10 @@ const stockPortal = async (req, res, next) => {
 const catalogoTienda = async (req, res, next) => {
   try {
     const tienda = require('../services/tiendaService');
-    res.json(await tienda.catalogo({ businessId: req.integracion.businessId }));
+    const { businessId } = req.integracion;
+    // ?locales=todos: el stock de todos los locales que venden, no sólo de los que abastecen lo online (el catálogo de WhatsApp).
+    const locales = req.query.locales === 'todos' ? await tienda.localesQueVenden(businessId) : null;
+    res.json(await tienda.catalogo({ businessId, locales }));
   } catch (e) { next(e); }
 };
 
