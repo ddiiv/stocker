@@ -21,9 +21,48 @@ const VACIAS = new Set(['de', 'del', 'la', 'el', 'los', 'las', 'un', 'una', 'uno
   'y', 'o', 'que', 'hay', 'tenes', 'tienen', 'tenés', 'busco', 'quiero', 'talle', 'color', 'por', 'favor']);
 
 const normal = (t) => String(t || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
-// "remeras" encuentra "remera": se compara sin la s final de las palabras largas.
-const raiz = (p) => (p.length > 3 && p.endsWith('s') ? p.slice(0, -1) : p);
+/*
+ * Sin el plural: "remeras" → "remera", y "pantalones" → "pantalon", "mujeres" →
+ * "mujer", "colores" → "color" (con sólo sacar la s, "pantalone" no encontraba
+ * "pantalón"). El -es sale sólo tras vocal y l, n, r, d, s o z, y en palabras
+ * largas: "hombres", "nenes", "bebes", "verdes" y "pares" pierden nada más la s.
+ */
+const raiz = (p) => (p.length > 5 && /[aeiou][lnrdsz]es$/.test(p) ? p.slice(0, -2) : p.length > 3 && p.endsWith('s') ? p.slice(0, -1) : p);
 const palabras = (t) => normal(t).split(/[^a-z0-9]+/).filter(Boolean);
+
+/*
+ * Lo que escribe la gente por lo que hay cargado: "caballero" es Hombre,
+ * "nena" es Niños, "remería" es remera. Sólo sinónimos de verdad, la misma
+ * prenda con otro nombre: remera, musculosa y top son prendas distintas, igual
+ * que short y bermuda; y un estilo ("chupín", "jogger") no es sinónimo de
+ * pantalón, porque pedir un chupín traería todos los pantalones. Lo Unisex
+ * entra al pedir hombre o mujer (después de lo de ese género), pero pedir
+ * unisex no trae lo de hombre. Afuera a propósito: "playera" (la ojota),
+ * "camiseta" (la térmica o la de fútbol), "canguro" (también es riñonera).
+ *
+ * El sinónimo se compara por palabra entera: por comienzo, "male" encontraba
+ * "Malena" y "calza" encuentra "Calzado". Por comienzo sigue sólo lo que
+ * escribió la persona ("rem" encuentra "remera").
+ */
+const GRUPOS = [
+  [['hombre', 'caballero', 'masculino', 'masculina', 'varon', 'senor'], ['unisex']],
+  [['mujer', 'dama', 'femenino', 'femenina', 'senora'], ['unisex']],
+  [['nino', 'nina', 'nene', 'nena', 'chico', 'chica', 'pibe', 'piba', 'kid', 'infantil']],
+  [['remera', 'remeria', 'remeron', 'remerita']],
+  [['calza', 'calzita', 'legging', 'leggin']],
+  [['buzo', 'buzito', 'hoodie', 'sudadera']],
+  [['campera', 'camperita', 'chaqueta', 'jacket']],
+];
+const SINONIMOS = new Map(); // palabra → la misma prenda o público con otro nombre
+const ADEMAS = new Map(); // palabra → lo que entra además, después (Unisex)
+for (const [grupo, ademas = []] of GRUPOS) {
+  for (const p of grupo) {
+    SINONIMOS.set(raiz(p), grupo.map(raiz));
+    ADEMAS.set(raiz(p), ademas.map(raiz));
+  }
+}
+// Las palabras de género o edad: solas no eligen el tipo de prenda (ver buscarProductos).
+const DE_PUBLICO = new Set(GRUPOS.slice(0, 3).flatMap(([g]) => g.map(raiz)));
 
 /*
  * ¿La variante tiene todas las palabras buscadas?
@@ -32,9 +71,10 @@ const palabras = (t) => normal(t).split(/[^a-z0-9]+/).filter(Boolean);
  * encontrar "remera" ni "mom". Las palabras de tres letras o más sí pueden ser
  * el comienzo ("rem" encuentra "remera").
  */
-function coincide(buscadas, texto) {
+function coincide(buscadas, texto, { sinAdemas = false } = {}) {
   const propias = palabras(texto).map(raiz);
-  return buscadas.every((b) => propias.some((p) => (b.length >= 3 ? p.startsWith(b) : p === b)));
+  return buscadas.every((b) => propias.some((p) => (b.length >= 3 ? p.startsWith(b) : p === b))
+    || [...(SINONIMOS.get(b) || []), ...(sinAdemas ? [] : ADEMAS.get(b) || [])].some((s) => propias.includes(s)));
 }
 
 /** La regla mayorista del local que abastece lo online, con su texto para decirla. */
@@ -78,6 +118,8 @@ async function buscarProductos({ businessId, texto, limite = TOPE_PRODUCTOS }) {
    */
   const locales = await tienda.localesQueVenden(businessId);
   const [catalogo, mayorista] = await Promise.all([tienda.catalogo({ businessId, locales, conPacks: true }), reglaMayorista(businessId)]);
+  // OFERTA no es un tipo de prenda: son combos que el asistente no ofrece (el portal tampoco los publica).
+  catalogo.productos = catalogo.productos.filter((p) => normal(p.categoria) !== 'oferta');
 
   /*
    * Las palabras que no están en ningún producto no filtran. La gente escribe
@@ -112,6 +154,10 @@ async function buscarProductos({ businessId, texto, limite = TOPE_PRODUCTOS }) {
         p,
         vs,
         todas: nombradas.length === deProducto.length,
+        // Lo del género pedido antes que lo Unisex: con el tope, lo Unisex dejaba afuera remeras de hombre.
+        directas: nombradas.filter((b) => coincide([b], textoProducto(p), { sinAdemas: true })).length,
+        // Sin todas las palabras, una de género sola no trae otra prenda ("chalecos de mujer" traía remeras de mujer).
+        deTipo: nombradas.some((b) => !DE_PUBLICO.has(b)) || deProducto.every((b) => DE_PUBLICO.has(b)),
         puntaje: nombradas.reduce((s, b) => s + 1 / cuantos.get(b), 0),
         justo: !deVariante.length || vs.some((v) => v.publicable > 0 && coincide(deVariante, textoDe(p, v))),
       };
@@ -124,8 +170,8 @@ async function buscarProductos({ businessId, texto, limite = TOPE_PRODUCTOS }) {
    */
   const conTodas = candidatos.filter((x) => x.todas);
   const elegidos = conTodas.length
-    ? conTodas.sort((a, b) => b.justo - a.justo)
-    : candidatos.sort((a, b) => (b.puntaje - a.puntaje) || (b.justo - a.justo));
+    ? conTodas.sort((a, b) => (b.directas - a.directas) || (b.justo - a.justo))
+    : candidatos.filter((x) => x.deTipo).sort((a, b) => (b.puntaje - a.puntaje) || (b.directas - a.directas) || (b.justo - a.justo));
 
   const productos = elegidos.slice(0, tope).map(({ p, vs }) => ({
     // La clave del producto en el portal mayorista, donde el asistente deja el pedido.
@@ -174,4 +220,8 @@ async function buscarClientes({ businessId, telefono, cuit, email }) {
     .map((c) => ({ id: c.id, nombre: c.nombre, apellido: c.apellido, cuit: c.cuit, tipo: c.tipo, mayorista: c.tipo === 'mayorista' }));
 }
 
-module.exports = { negocio, buscarProductos, buscarClientes, reglaMayorista, __coincide: coincide, __palabras: palabras };
+module.exports = {
+  negocio, buscarProductos, buscarClientes, reglaMayorista,
+  // Para probar sin base: el pedido pasa por lo mismo que en buscarProductos.
+  __coincide: (pedido, texto) => coincide(palabras(pedido).filter((p) => !VACIAS.has(p)).map(raiz), texto), __palabras: palabras,
+};
