@@ -1940,33 +1940,55 @@ const preciosMasivo = async (req, res, next) => {
 /*
  * ── POST /api/products/precios-porcentaje ─────────────────────────
  *
- * Sube o baja el precio MINORISTA de muchos productos por un porcentaje, con
- * vista previa (`aplicar: false` calcula y no escribe nada).
+ * Sube o baja el precio minorista o el mayorista de muchos productos, con vista
+ * previa (`aplicar: false` calcula y no escribe nada).
  *
- * Toca el precio del producto y el precio PROPIO de sus variantes. Las que no
- * tienen (null) heredan el nuevo del producto, así que no se tocan; nunca se
- * toca el mayorista ni el costo. Un producto sin precio (0) se saltea: no hay
- * de dónde sacar el porcentaje.
+ * Cuerpo: { precio: 'minorista'|'mayorista', base: 'mismo'|'mayorista'|'costo',
+ *   modo: 'porcentaje'|'importe', valor, redondeo (1|10|100|1000, hacia arriba),
+ *   categorias?: [nombres] (vacío = todo el catálogo), aplicar }
  *
- * Cuerpo: { porcentaje (-50..200, ≠0, 2 decimales), redondeo (1|10|100|1000,
- * hacia arriba), categorias?: [nombres] (vacío = todo el catálogo), aplicar }
+ *   · base "mismo": se mueve el precio actual (porcentaje −50..200, ≠0; importe
+ *     ≠0, nunca dejando un precio ≤ 0: ese precio no cambia).
+ *   · base "mayorista" (para el minorista) o "costo" (para el mayorista): el
+ *     precio sale de la base (porcentaje 0..500, importe ≥ 0), o sea nunca por
+ *     debajo de ella.
+ *
+ * Toca el precio del producto y el de las variantes que tienen precio propio o
+ * base propia; la que no tiene ninguno sigue heredando. Si el valor de una
+ * variante termina igual al del producto, vuelve a heredar (null) en vez de
+ * copiar el número. Un producto sin base (0) se saltea. Nunca toca el costo ni
+ * el otro precio.
  *
  * Las categorías de Stocker son un texto del producto (`categoria`), no una
  * tabla: por eso se piden por nombre y no por id, y no hay subcategorías.
  * Todo se escribe en UNA transacción: o cambia todo o no cambia nada.
  */
 const TOPE_FILAS_PORCENTAJE = 20000;
+const CAMPO_PRECIO = { minorista: 'precioMinorista', mayorista: 'precioMayorista' };
+const BASES_DE = { minorista: ['mismo', 'mayorista'], mayorista: ['mismo', 'costo'] };
 
 const preciosPorcentaje = async (req, res, next) => {
   const t = await sequelize.transaction();
   try {
-    const { porcentaje, redondeo, aplicar } = req.body || {};
+    const { precio, base, modo, valor, redondeo, aplicar } = req.body || {};
     const categorias = req.body?.categorias == null ? [] : req.body.categorias;
     const falla = async (status, message) => { await t.rollback(); return res.status(status).json({ message }); };
 
-    if (typeof porcentaje !== 'number' || !Number.isFinite(porcentaje) || porcentaje === 0
-      || porcentaje < -50 || porcentaje > 200 || Math.round(porcentaje * 100) / 100 !== porcentaje) {
-      return falla(400, 'El porcentaje tiene que ser un número entre -50 y 200, distinto de 0, con hasta 2 decimales.');
+    if (!CAMPO_PRECIO[precio]) return falla(400, 'El precio a cambiar tiene que ser "minorista" o "mayorista".');
+    if (!BASES_DE[precio].includes(base)) {
+      return falla(400, `El precio ${precio} se puede calcular sobre: ${BASES_DE[precio].map((b) => `"${b}"`).join(' o ')}.`);
+    }
+    if (!['porcentaje', 'importe'].includes(modo)) return falla(400, 'El modo tiene que ser "porcentaje" o "importe".');
+    const mismo = base === 'mismo';
+    const dosDecimales = typeof valor === 'number' && Math.round(valor * 100) / 100 === valor;
+    if (typeof valor !== 'number' || !Number.isFinite(valor) || !dosDecimales || (mismo && valor === 0)) {
+      return falla(400, 'El valor tiene que ser un número distinto de 0 (o 0 o más si se calcula sobre otra base), con hasta 2 decimales.');
+    }
+    if (modo === 'porcentaje' && (mismo ? (valor < -50 || valor > 200) : (valor < 0 || valor > 500))) {
+      return falla(400, mismo ? 'El porcentaje tiene que estar entre -50 y 200.' : 'El porcentaje sobre la base tiene que estar entre 0 y 500.');
+    }
+    if (modo === 'importe' && (Math.abs(valor) > MAX_MONEDA || (!mismo && valor < 0))) {
+      return falla(400, mismo ? 'El importe es demasiado grande.' : 'El importe sobre la base no puede ser negativo.');
     }
     if (![1, 10, 100, 1000].includes(redondeo)) return falla(400, 'El redondeo tiene que ser 1, 10, 100 o 1000.');
     if (typeof aplicar !== 'boolean') return falla(400, 'Indicá si querés aplicar el cambio (true) o sólo ver la vista previa (false).');
@@ -1990,30 +2012,44 @@ const preciosPorcentaje = async (req, res, next) => {
       where, include: [{ model: ProductVariant, as: 'productVariants', required: false }], transaction: t,
     });
 
+    const campo = CAMPO_PRECIO[precio];
+    const campoBase = mismo ? campo : (base === 'costo' ? 'costo' : 'precioMayorista');
+
     // Se calcula en centavos y se redondea antes del techo: 1000 × 1,10 da
     // 1100.0000000000002 en coma flotante y el techo lo subiría a 1101.
-    const nuevoPrecio = (antes) => {
-      const bruto = Math.round(antes * (100 + porcentaje)) / 100;
-      const despues = Math.ceil(Math.round(bruto * 100) / 100 / redondeo) * redondeo;
+    // null = este precio no cambia (la base no sirve, o quedaría ≤ 0).
+    const nuevoPrecio = (desde, actual) => {
+      if (!(desde > 0)) return null;
+      const bruto = modo === 'porcentaje' ? Math.round(desde * (100 + valor)) / 100 : Math.round((desde + valor) * 100) / 100;
+      let despues = Math.ceil(Math.round(bruto * 100) / 100 / redondeo) * redondeo;
       // Bajando, el redondeo hacia arriba no puede terminar subiendo el precio.
-      return porcentaje < 0 ? Math.min(despues, antes) : despues;
+      if (mismo && valor < 0) despues = Math.min(despues, actual);
+      return despues > 0 ? despues : null;
     };
 
-    const cambios = [];   // { producto, variante?, antes, despues }
+    const cambios = [];   // { producto, variante?, antes, despues (null = vuelve a heredar), base? }
     for (const p of productos) {
-      const antes = Number(p.precioMinorista) || 0;
-      if (antes > 0) {
-        const despues = nuevoPrecio(antes);
+      const antes = Number(p[campo]) || 0;
+      const baseP = Number(p[campoBase]) || 0;
+      let precioProducto = antes;
+      const despues = nuevoPrecio(baseP, antes);
+      if (despues !== null) {
         if (despues > MAX_MONEDA) return falla(400, `El precio de "${p.titulo}" pasaría el máximo de ${MAX_MONEDA.toLocaleString('es-AR')}.`);
-        if (despues !== antes) cambios.push({ producto: p, antes, despues });
+        if (despues !== antes) cambios.push({ producto: p, antes, despues, base: mismo ? undefined : baseP });
+        precioProducto = despues;
       }
       for (const v of p.productVariants || []) {
-        if (!precioService.tieneValor(v.precioMinorista)) continue;   // hereda: no se toca
-        const vAntes = Number(v.precioMinorista) || 0;
-        if (vAntes <= 0) continue;
-        const vDespues = nuevoPrecio(vAntes);
+        const tieneDestino = precioService.tieneValor(v[campo]);
+        const tieneBase = !mismo && precioService.tieneValor(v[campoBase]);
+        if (!tieneDestino && !tieneBase) continue;   // hereda: no se toca
+        const baseV = Number(precioService.tieneValor(v[campoBase]) ? v[campoBase] : p[campoBase]) || 0;
+        const vAntes = Number(tieneDestino ? v[campo] : p[campo]) || 0;
+        const vDespues = nuevoPrecio(baseV, vAntes);
+        if (vDespues === null) continue;
         if (vDespues > MAX_MONEDA) return falla(400, `El precio de ${v.sku} pasaría el máximo de ${MAX_MONEDA.toLocaleString('es-AR')}.`);
-        if (vDespues !== vAntes) cambios.push({ producto: p, variante: v, antes: vAntes, despues: vDespues });
+        const escribir = vDespues === precioProducto ? null : vDespues;
+        const actual = tieneDestino ? Number(v[campo]) : null;
+        if (escribir !== actual) cambios.push({ producto: p, variante: v, antes: vAntes, despues: escribir });
       }
     }
 
@@ -2024,8 +2060,8 @@ const preciosPorcentaje = async (req, res, next) => {
     if (aplicar) {
       const ahora = new Date();
       for (const c of cambios) {
-        if (c.variante) await c.variante.update({ precioMinorista: c.despues }, { transaction: t });
-        else await c.producto.update({ precioMinorista: c.despues, fechaActualizacion: ahora }, { transaction: t });
+        if (c.variante) await c.variante.update({ [campo]: c.despues }, { transaction: t });
+        else await c.producto.update({ [campo]: c.despues, fechaActualizacion: ahora }, { transaction: t });
       }
     }
     await t.commit();
@@ -2035,7 +2071,10 @@ const preciosPorcentaje = async (req, res, next) => {
       productos: delProducto.length,
       variantes: cambios.length - delProducto.length,
       aplicado: aplicar,
-      muestra: delProducto.slice(0, 20).map((c) => ({ productoId: c.producto.id, nombre: c.producto.titulo, antes: c.antes, despues: c.despues })),
+      muestra: delProducto.slice(0, 20).map((c) => ({
+        productoId: c.producto.id, nombre: c.producto.titulo, antes: c.antes, despues: c.despues,
+        ...(mismo ? {} : { base: c.base }),
+      })),
     });
   } catch (error) {
     await t.rollback().catch(() => {});

@@ -68,7 +68,7 @@ async function llamar(auth, cuerpo) {
     X: await Product.findByPk(pAjeno.id, { raw: true }), S: await Product.findByPk(pSinPrecio.id, { raw: true }),
     vp: await ProductVariant.findByPk(vProp.id, { raw: true }), vh: await ProductVariant.findByPk(vHer.id, { raw: true }),
   });
-  const base = { porcentaje: 10, redondeo: 1, aplicar: false };
+  const base = { precio: 'minorista', base: 'mismo', modo: 'porcentaje', valor: 10, redondeo: 1, aplicar: false };
   const cat = [`QA-Cat-A-${SUF}`];
 
   try {
@@ -97,30 +97,38 @@ async function llamar(auth, cuerpo) {
     chk('producto sin precio sigue en 0', 0, Number(d.S.precioMinorista));
 
     tit('3. REDONDEO hacia arriba y baja');
-    const r3 = await llamar(duenio, { porcentaje: 3.5, redondeo: 100, categorias: [`QA-Cat-B-${SUF}`], aplicar: true });
+    const r3 = await llamar(duenio, { ...base, valor: 3.5, redondeo: 100, categorias: [`QA-Cat-B-${SUF}`], aplicar: true });
     chk('1000 +3,5% redondeado a 100 = 1100', 1100, r3.json.muestra[0].despues);
-    const r3b = await llamar(duenio, { porcentaje: -10, redondeo: 1000, categorias: [`QA-Cat-B-${SUF}`], aplicar: false });
+    const r3b = await llamar(duenio, { ...base, valor: -10, redondeo: 1000, categorias: [`QA-Cat-B-${SUF}`], aplicar: false });
     chk('1100 -10% = 990, redondeado hacia arriba a 1000', 1000, r3b.json.muestra[0].despues);
-    const r3c = await llamar(duenio, { porcentaje: -1, redondeo: 1000, categorias: [`QA-Cat-B-${SUF}`], aplicar: false });
+    const r3c = await llamar(duenio, { ...base, valor: -1, redondeo: 1000, categorias: [`QA-Cat-B-${SUF}`], aplicar: false });
     chk('bajando, el redondeo nunca sube el precio (1100 -1% daría 2000: no cambia)', 0, r3c.json.productos);
 
     tit('4. SIN CATEGORÍAS = todo el negocio, y no toca otros');
-    await llamar(duenio, { porcentaje: 100, redondeo: 1, aplicar: true });
+    await llamar(duenio, { ...base, valor: 100, redondeo: 1, aplicar: true });
     const e = await leer();
     chk('B se duplicó', 2200, Number(e.B.precioMinorista));
     chk('otro negocio sigue igual', 1000, Number(e.X.precioMinorista));
 
     tit('5. VALIDACIONES');
     const malos = [
-      ['porcentaje 0', { ...base, porcentaje: 0 }], ['porcentaje 201', { ...base, porcentaje: 201 }],
-      ['porcentaje -51', { ...base, porcentaje: -51 }], ['3 decimales', { ...base, porcentaje: 1.234 }],
-      ['porcentaje texto', { ...base, porcentaje: '10' }], ['redondeo 5', { ...base, redondeo: 5 }],
-      ['sin aplicar', { porcentaje: 10, redondeo: 1 }], ['categorias no lista', { ...base, categorias: 'x' }],
+      ['valor 0', { ...base, valor: 0 }], ['valor 201', { ...base, valor: 201 }],
+      ['valor -51', { ...base, valor: -51 }], ['3 decimales', { ...base, valor: 1.234 }],
+      ['valor texto', { ...base, valor: '10' }], ['redondeo 5', { ...base, redondeo: 5 }],
+      ['sin aplicar', { ...base, aplicar: undefined }], ['categorias no lista', { ...base, categorias: 'x' }],
     ];
     for (const [n, c] of malos) {
       const r = await llamar(duenio, c);
       chk(`${n} → 400 con mensaje`, [400, true], [r.status, typeof r.json?.message === 'string']);
     }
+    const extra = [
+      ['minorista desde costo', { ...base, base: 'costo' }], ['mayorista desde mayorista', { ...base, precio: 'mayorista', base: 'mayorista' }],
+      ['precio inválido', { ...base, precio: 'costo' }], ['modo inválido', { ...base, modo: 'x' }],
+      ['porcentaje sobre base -1', { ...base, base: 'mayorista', valor: -1 }], ['porcentaje sobre base 501', { ...base, base: 'mayorista', valor: 501 }],
+      ['importe sobre base negativo', { ...base, base: 'mayorista', modo: 'importe', valor: -5 }],
+      ['importe 0', { ...base, modo: 'importe', valor: 0 }],
+    ];
+    for (const [n, c] of extra) chk(`${n} → 400`, 400, (await llamar(duenio, c)).status);
     const r404 = await llamar(duenio, { ...base, categorias: ['No existe'] });
     chk('categoría inexistente → 404', 404, r404.status);
     chk('categoría de otro negocio → 404', 404, (await llamar(duenio, { ...base, categorias: [`QA-Cat-X-${SUF}`] })).status);
@@ -128,6 +136,50 @@ async function llamar(auth, cuerpo) {
     tit('6. PERMISO');
     chk('sin permiso de editar stock → 403', 403, (await llamar({ Authorization: `Bearer ${tokEmp}` }, base)).status);
     chk('sin sesión → 401', 401, (await llamar({}, base)).status);
+    tit('7. MAYORISTA Y OTRAS BASES (producto N1 con variantes, N2 sin costo)');
+    const CN = `QA-Cat-N-${SUF}`;
+    const n1 = await crear(negocio.id, `QPN1-${SUF}`, CN);
+    const n2 = await crear(negocio.id, `QPN2-${SUF}`, CN, { costo: 0 });
+    const w1 = await ProductVariant.create({ productId: n1.id, businessId: negocio.id, sku: `QPN1-${SUF}-A`, precioMinorista: 1500, stock: 0 });
+    const w2 = await ProductVariant.create({ productId: n1.id, businessId: negocio.id, sku: `QPN1-${SUF}-B`, stock: 0 });
+    const w3 = await ProductVariant.create({ productId: n1.id, businessId: negocio.id, sku: `QPN1-${SUF}-C`, costo: 600, stock: 0 });
+    ids.p.push(n1.id, n2.id); ids.v.push(w1.id, w2.id, w3.id);
+    const g = async () => ({
+      n1: await Product.findByPk(n1.id, { raw: true }), n2: await Product.findByPk(n2.id, { raw: true }),
+      w1: await ProductVariant.findByPk(w1.id, { raw: true }), w2: await ProductVariant.findByPk(w2.id, { raw: true }),
+      w3: await ProductVariant.findByPk(w3.id, { raw: true }),
+    });
+    const num = (x) => (x === null ? null : Number(x));
+    const cN = { categorias: [CN], aplicar: true };
+
+    let r = await llamar(duenio, { ...base, ...cN, precio: 'mayorista', valor: 10 });
+    let x = await g();
+    chk('mayorista mismo +10%: 2 productos, ninguna variante (heredan)', [2, 0], [r.json.productos, r.json.variantes]);
+    chk('   mayorista 880, minorista y costo intactos', [880, 1000, 400], [num(x.n1.precioMayorista), num(x.n1.precioMinorista), num(x.n1.costo)]);
+
+    r = await llamar(duenio, { ...base, ...cN, modo: 'importe', valor: 250 });
+    x = await g();
+    chk('minorista mismo +$250: 2 productos y la variante con precio propio', [2, 1], [r.json.productos, r.json.variantes]);
+    chk('   producto 1250, variante propia 1750, la que hereda sigue null',
+      [1250, 1750, null], [num(x.n1.precioMinorista), num(x.w1.precioMinorista), num(x.w2.precioMinorista)]);
+    chk('   mayorista intacto', 880, num(x.n1.precioMayorista));
+
+    r = await llamar(duenio, { ...base, ...cN, base: 'mayorista', valor: 50 });
+    x = await g();
+    chk('minorista desde mayorista +50%: 880 → 1320', [1320, 880], [num(x.n1.precioMinorista), r.json.muestra.find((m) => m.productoId === n1.id).base]);
+    chk('   la variante que da igual al producto vuelve a heredar (null)', null, num(x.w1.precioMinorista));
+    chk('   mayorista y costo intactos', [880, 400], [num(x.n1.precioMayorista), num(x.n1.costo)]);
+
+    r = await llamar(duenio, { ...base, ...cN, precio: 'mayorista', base: 'costo', modo: 'importe', valor: 100 });
+    x = await g();
+    chk('mayorista desde costo +$100: sólo N1 (N2 no tiene costo y se saltea)', 1, r.json.productos);
+    chk('   producto 500, variante con costo propio 700, la que hereda null',
+      [500, 700, null], [num(x.n1.precioMayorista), num(x.w3.precioMayorista), num(x.w2.precioMayorista)]);
+    chk('   N2 mayorista sigue en 880', 880, num(x.n2.precioMayorista));
+    chk('   costo y minorista intactos', [400, 600, 1320], [num(x.n1.costo), num(x.w3.costo), num(x.n1.precioMinorista)]);
+
+    r = await llamar(duenio, { ...base, ...cN, aplicar: false, modo: 'importe', valor: -5000 });
+    chk('importe que dejaría ≤ 0: no cambia nada', [0, 0], [r.json.productos, r.json.variantes]);
   } finally {
     // Sólo lo creado acá, por id exacto.
     await ProductVariant.destroy({ where: { id: ids.v } });
