@@ -202,7 +202,7 @@ export default function StockPage() {
             </button>
             {canEdit(user, "stock") && (
               <button className="btn-ghost" onClick={() => setPreciosOpen(true)}>
-                <TrendingUp size={15} /> Aumentar precios
+                <TrendingUp size={15} /> Cambiar precios en masa
               </button>
             )}
             <button className="btn-accent" onClick={() => setNewProductOpen(true)}>
