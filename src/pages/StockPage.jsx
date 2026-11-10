@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { Search, Boxes, RefreshCw, Plus, Download, Upload, Trash2, Store, ChevronRight, ChevronDown, ChevronsUpDown, ChevronsDownUp } from "lucide-react";
+import { TrendingUp, Search, Boxes, RefreshCw, Plus, Download, Upload, Trash2, Store, ChevronRight, ChevronDown, ChevronsUpDown, ChevronsDownUp } from "lucide-react";
 import { fetchProductGroupsPagina, createProduct, deleteProduct, exportProductsExcel, exportCatalogoExcel, importProductsExcel } from "../services/productService";
 import { fetchVariantTypes } from "../services/variantTypeService";
 import { formatCurrency } from "../utils/formatters";
@@ -8,6 +8,9 @@ import { ordenarVariantes } from "../utils/ordenVariantes";
 import EanDeVariante from "../components/products/EanDeVariante";
 import { PageHeader, EmptyState } from "../components/ui/Layout";
 import Modal from "../components/ui/Modal";
+import AumentarPreciosModal from "../components/products/AumentarPreciosModal";
+import { useAuth } from "../context/AuthContext";
+import { canEdit } from "../utils/permissions";
 import { useForm } from "react-hook-form";
 import StockTabs from "../components/stock/StockTabs";
 import SelectDeLista from "../components/products/SelectDeLista";
@@ -16,6 +19,9 @@ import { fetchListasProducto } from "../services/variantTypeService";
 const POR_PAGINA = 50;
 
 export default function StockPage() {
+  const { user } = useAuth();
+  const [preciosOpen, setPreciosOpen] = useState(false);
+  const [aviso, setAviso] = useState("");
   const [search, setSearch] = useState("");
   const [groups, setGroups] = useState([]);
   // La página que se ve y cuántos grupos hay en total con este filtro.
@@ -194,6 +200,11 @@ export default function StockPage() {
             >
               <Download size={15} /> {exportandoCatalogo ? "Descargando…" : "Catálogo"}
             </button>
+            {canEdit(user, "stock") && (
+              <button className="btn-ghost" onClick={() => setPreciosOpen(true)}>
+                <TrendingUp size={15} /> Aumentar precios
+              </button>
+            )}
             <button className="btn-accent" onClick={() => setNewProductOpen(true)}>
               <Plus size={15} /> Nuevo producto
             </button>
@@ -204,6 +215,7 @@ export default function StockPage() {
       <StockTabs />
 
       {error && <p className="mb-4 rounded-md bg-brick-50 px-3 py-2 text-sm text-brick-500">{error}</p>}
+      {aviso && <p role="status" className="mb-4 rounded-md bg-paper-200 px-3 py-2 text-sm text-ink-900">{aviso}</p>}
       {importError && <p className="mb-4 rounded-md bg-brick-50 px-3 py-2 text-sm text-brick-500">{importError}</p>}
       {importResult && (
         <div className="mb-4 rounded-md border border-line bg-paper-100 px-3 py-2 text-sm text-ink-700">
@@ -435,6 +447,7 @@ export default function StockPage() {
         </div>
       )}
 
+      <AumentarPreciosModal open={preciosOpen} onClose={() => setPreciosOpen(false)} onAplicado={(m) => { setAviso(m); load(search, catalogo, filtros, page); }} />
       <NewProductModal open={newProductOpen} onClose={() => setNewProductOpen(false)} onCreated={() => { setNewProductOpen(false); load(search); }} />
     </div>
   );

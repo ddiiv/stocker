@@ -330,3 +330,9 @@ export async function variantesMasivo(productId, payload) {
   const { data } = await http.post(`/products/${productId}/variants/masivo`, payload);
   return data;
 }
+
+/** Sube (o baja) el precio minorista por porcentaje. `aplicar:false` sólo muestra cómo quedaría. */
+export async function preciosPorPorcentaje(payload) {
+  const { data } = await http.post("/products/precios-porcentaje", payload);
+  return data;
+}
