@@ -1938,6 +1938,112 @@ const preciosMasivo = async (req, res, next) => {
 };
 
 /*
+ * ── POST /api/products/precios-porcentaje ─────────────────────────
+ *
+ * Sube o baja el precio MINORISTA de muchos productos por un porcentaje, con
+ * vista previa (`aplicar: false` calcula y no escribe nada).
+ *
+ * Toca el precio del producto y el precio PROPIO de sus variantes. Las que no
+ * tienen (null) heredan el nuevo del producto, así que no se tocan; nunca se
+ * toca el mayorista ni el costo. Un producto sin precio (0) se saltea: no hay
+ * de dónde sacar el porcentaje.
+ *
+ * Cuerpo: { porcentaje (-50..200, ≠0, 2 decimales), redondeo (1|10|100|1000,
+ * hacia arriba), categorias?: [nombres] (vacío = todo el catálogo), aplicar }
+ *
+ * Las categorías de Stocker son un texto del producto (`categoria`), no una
+ * tabla: por eso se piden por nombre y no por id, y no hay subcategorías.
+ * Todo se escribe en UNA transacción: o cambia todo o no cambia nada.
+ */
+const TOPE_FILAS_PORCENTAJE = 20000;
+
+const preciosPorcentaje = async (req, res, next) => {
+  const t = await sequelize.transaction();
+  try {
+    const { porcentaje, redondeo, aplicar } = req.body || {};
+    const categorias = req.body?.categorias == null ? [] : req.body.categorias;
+    const falla = async (status, message) => { await t.rollback(); return res.status(status).json({ message }); };
+
+    if (typeof porcentaje !== 'number' || !Number.isFinite(porcentaje) || porcentaje === 0
+      || porcentaje < -50 || porcentaje > 200 || Math.round(porcentaje * 100) / 100 !== porcentaje) {
+      return falla(400, 'El porcentaje tiene que ser un número entre -50 y 200, distinto de 0, con hasta 2 decimales.');
+    }
+    if (![1, 10, 100, 1000].includes(redondeo)) return falla(400, 'El redondeo tiene que ser 1, 10, 100 o 1000.');
+    if (typeof aplicar !== 'boolean') return falla(400, 'Indicá si querés aplicar el cambio (true) o sólo ver la vista previa (false).');
+    if (!Array.isArray(categorias) || categorias.some((c) => typeof c !== 'string' || !c.trim())) {
+      return falla(400, 'Las categorías tienen que ser una lista de nombres.');
+    }
+
+    const where = { businessId: req.auth.businessId, activo: true };
+    const nombres = [...new Set(categorias.map((c) => c.trim()))];
+    if (nombres.length) {
+      const existentes = await Product.findAll({
+        where: { businessId: req.auth.businessId, categoria: nombres }, attributes: ['categoria'], group: ['categoria'], raw: true, transaction: t,
+      });
+      const hay = new Set(existentes.map((e) => e.categoria));
+      const falta = nombres.find((n) => !hay.has(n));
+      if (falta) return falla(404, `La categoría "${falta}" no existe en este negocio.`);
+      where.categoria = nombres;
+    }
+
+    const productos = await Product.findAll({
+      where, include: [{ model: ProductVariant, as: 'productVariants', required: false }], transaction: t,
+    });
+
+    // Se calcula en centavos y se redondea antes del techo: 1000 × 1,10 da
+    // 1100.0000000000002 en coma flotante y el techo lo subiría a 1101.
+    const nuevoPrecio = (antes) => {
+      const bruto = Math.round(antes * (100 + porcentaje)) / 100;
+      const despues = Math.ceil(Math.round(bruto * 100) / 100 / redondeo) * redondeo;
+      // Bajando, el redondeo hacia arriba no puede terminar subiendo el precio.
+      return porcentaje < 0 ? Math.min(despues, antes) : despues;
+    };
+
+    const cambios = [];   // { producto, variante?, antes, despues }
+    for (const p of productos) {
+      const antes = Number(p.precioMinorista) || 0;
+      if (antes > 0) {
+        const despues = nuevoPrecio(antes);
+        if (despues > MAX_MONEDA) return falla(400, `El precio de "${p.titulo}" pasaría el máximo de ${MAX_MONEDA.toLocaleString('es-AR')}.`);
+        if (despues !== antes) cambios.push({ producto: p, antes, despues });
+      }
+      for (const v of p.productVariants || []) {
+        if (!precioService.tieneValor(v.precioMinorista)) continue;   // hereda: no se toca
+        const vAntes = Number(v.precioMinorista) || 0;
+        if (vAntes <= 0) continue;
+        const vDespues = nuevoPrecio(vAntes);
+        if (vDespues > MAX_MONEDA) return falla(400, `El precio de ${v.sku} pasaría el máximo de ${MAX_MONEDA.toLocaleString('es-AR')}.`);
+        if (vDespues !== vAntes) cambios.push({ producto: p, variante: v, antes: vAntes, despues: vDespues });
+      }
+    }
+
+    if (cambios.length > TOPE_FILAS_PORCENTAJE) {
+      return falla(400, `Cambiarían ${cambios.length} precios y el máximo por vez es ${TOPE_FILAS_PORCENTAJE}. Elegí menos categorías.`);
+    }
+
+    if (aplicar) {
+      const ahora = new Date();
+      for (const c of cambios) {
+        if (c.variante) await c.variante.update({ precioMinorista: c.despues }, { transaction: t });
+        else await c.producto.update({ precioMinorista: c.despues, fechaActualizacion: ahora }, { transaction: t });
+      }
+    }
+    await t.commit();
+
+    const delProducto = cambios.filter((c) => !c.variante);
+    res.json({
+      productos: delProducto.length,
+      variantes: cambios.length - delProducto.length,
+      aplicado: aplicar,
+      muestra: delProducto.slice(0, 20).map((c) => ({ productoId: c.producto.id, nombre: c.producto.titulo, antes: c.antes, despues: c.despues })),
+    });
+  } catch (error) {
+    await t.rollback().catch(() => {});
+    next(error);
+  }
+};
+
+/*
  * ── GET /api/stock/ingresos ───────────────────────────────────────
  *
  * Lo que entró en un día, por variante.
@@ -2198,4 +2304,4 @@ const stockARegularizar = async (req, res, next) => {
   } catch (error) { next(error); }
 };
 
-module.exports = { ajustesEtiquetas, cambiarAjustesEtiquetas, getProducts, buscarVariantes, stockARegularizar, agregarVariantesMasivo, getProductPadreBySkuVariante, getProduct, createProduct, updateProduct, deleteProduct, addVariant, updateVariant, deleteVariant, adjustStock, getVariantMovements, getStockMovements, getStockPorLocal, getProductosPorLocal, getVariantesPorLocal, transferirStock, getIngresosDelDia, ajusteMasivo, preciosMasivo, generarEtiquetasPdf, exportProducts, exportCatalogo, importProducts, scanLookup, scanAdjustStock };
+module.exports = { ajustesEtiquetas, cambiarAjustesEtiquetas, getProducts, buscarVariantes, stockARegularizar, agregarVariantesMasivo, getProductPadreBySkuVariante, getProduct, createProduct, updateProduct, deleteProduct, addVariant, updateVariant, deleteVariant, adjustStock, getVariantMovements, getStockMovements, getStockPorLocal, getProductosPorLocal, getVariantesPorLocal, transferirStock, getIngresosDelDia, ajusteMasivo, preciosMasivo, preciosPorcentaje, generarEtiquetasPdf, exportProducts, exportCatalogo, importProducts, scanLookup, scanAdjustStock };
