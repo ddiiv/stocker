@@ -300,7 +300,7 @@ function Modelo({ m, tienda }) {
     <div className="mb-3 rounded-md border border-line bg-paper-100 px-4 py-3 text-xs text-ink-700">
       <p>
         <strong>Modelo:</strong> {m.titulo} ({m.itemId}) · categoría {m.categoriaId} · tipo {m.tipo}
-        {m.tresCuotas ? " · con 3 cuotas" : ""} · {m.guia ? `guía de talles "${m.guia.nombre}" (${m.guia.talles.join(", ")})` : "sin guía de talles"}
+        {m.tresCuotas ? " · con 3 cuotas" : ""}{m.genero ? ` · género ${m.genero}` : ""} · {m.guia ? `guía de talles "${m.guia.nombre}" (${m.guia.talles.join(", ")})` : "sin guía de talles"}
       </p>
       <p className="mt-1">Tienda: {tienda.productos} productos leídos{tienda.fallidos > 0 && <span className="text-brick-600"> · {tienda.fallidos} no se pudieron leer</span>}</p>
     </div>
