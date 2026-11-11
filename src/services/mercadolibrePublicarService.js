@@ -314,6 +314,7 @@ async function leerModelo(itemId, { headers, http = ml.httpML, mlUserId = null }
     categoriaId: item.category_id,
     tipo: item.listing_type_id,
     tresCuotas: tiene3Cuotas(item),
+    genero: atributos.find((a) => a.id === 'GENDER')?.value_name || null,
     atributos,
     guia,
     envio: { mode: envio.mode || 'me2', logistic_type: envio.logistic_type || null, local_pick_up: envio.local_pick_up ?? null },
@@ -327,6 +328,22 @@ async function leerModelo(itemId, { headers, http = ml.httpML, mlUserId = null }
 // ── Qué se publica ────────────────────────────────────────────────
 
 const problema = (codigo, mensaje) => ({ codigo, mensaje });
+
+/*
+ * El público de un género, igual para Stocker ("Hombre", "Niños", "Unisex") y
+ * para el GENDER de ML ("Hombre", "Niñas", "Sin género infantil"…). El género y
+ * la guía de talles se copian del modelo: con uno de otro público ML rechaza
+ * ("the words in the title match the gender") o deja una guía que no corresponde.
+ */
+function publicoDe(genero) {
+  const g = String(genero || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+  if (!g) return null;
+  if (/nin|bebe|infantil|kid/.test(g)) return 'niños';
+  if (/unisex|sin genero/.test(g)) return 'unisex';
+  if (/mujer|dama|femenin/.test(g)) return 'mujer';
+  if (/hombre|caballero|masculin/.test(g)) return 'hombre';
+  return null;
+}
 
 function textoPlano(html) {
   return String(html || '')
@@ -370,6 +387,11 @@ function armarVista({ productos, datos, parametros: params, modelo, fotos, publi
       avisos.push(`El título pasaba de ${TOPE_FAMILY_NAME} caracteres: se publica como "${familyName}".`);
     }
     const costoProducto = Number(d.costo) || 0;
+    const [suPublico, elDelModelo] = [publicoDe(d.genero), publicoDe(modelo.genero)];
+    // Un producto unisex puede ir con cualquier modelo (se avisa); uno de hombre, mujer o niños, sólo con uno de su público.
+    const otroPublico = suPublico && elDelModelo && suPublico !== elDelModelo;
+    const generoDistinto = otroPublico && suPublico !== 'unisex';
+    if (otroPublico && !generoDistinto) avisos.push(`El producto es unisex y la publicación modelo es de ${modelo.genero}: se publica con ese género y su guía de talles.`);
     const variantes = d.variantes.map((v) => {
       const costo = Number(v.costo) > 0 ? Number(v.costo) : costoProducto;
       const precio = costo > 0 ? precioMl(costo, p) : null;
@@ -391,7 +413,7 @@ function armarVista({ productos, datos, parametros: params, modelo, fotos, publi
         precio, fotos: urls.slice(0, modelo.maxFotos), filaGuia: fila, talleGuia,
         yaPublicada: ya ? { itemId: ya.mlItemId, link: ya.permalink || ml.enlaceDe(ya.mlItemId) } : null,
         problemas,
-        publicable: !ya && !problemas.length,
+        publicable: !ya && !problemas.length && !generoDistinto,
       };
     });
     if (modelo.tipo === 'gold_pro' && variantes.some((v) => v.precio && !v.precio.llevaCuotas)) {
@@ -405,7 +427,10 @@ function armarVista({ productos, datos, parametros: params, modelo, fotos, publi
       costo: costoProducto,
       precio: costoProducto > 0 ? precioMl(costoProducto, p) : null,
       avisos,
-      problemas: variantes.length ? [] : [problema('SIN_VARIANTES', 'No tiene variantes activas.')],
+      problemas: [
+        ...(variantes.length ? [] : [problema('SIN_VARIANTES', 'No tiene variantes activas.')]),
+        ...(generoDistinto ? [problema('GENERO_DISTINTO', `Este producto es de ${d.genero} y la publicación modelo es de ${modelo.genero}: elegí un modelo de ${d.genero} (el género y la guía de talles se copian del modelo).`)] : []),
+      ],
       publicables: variantes.filter((v) => v.publicable).length,
       variantes,
     };
@@ -620,7 +645,7 @@ async function datosDeStocker(businessId, skus) {
   for (const v of variantes) {
     const prod = v.producto;
     if (!datos.has(prod.skuAgrupador)) {
-      datos.set(prod.skuAgrupador, { titulo: prod.titulo, descripcion: prod.descripcion, costo: prod.costo, variantes: [] });
+      datos.set(prod.skuAgrupador, { titulo: prod.titulo, descripcion: prod.descripcion, costo: prod.costo, genero: prod.genero, variantes: [] });
     }
     const { color, talle } = ejesDe(v);
     datos.get(prod.skuAgrupador).variantes.push({
@@ -651,7 +676,7 @@ async function prepararVista(businessId, pedido, { fresco = false, http } = {}) 
 }
 
 const resumenDeModelo = (m) => ({
-  itemId: m.itemId, titulo: m.titulo, categoriaId: m.categoriaId, tipo: m.tipo, tresCuotas: m.tresCuotas,
+  itemId: m.itemId, titulo: m.titulo, categoriaId: m.categoriaId, tipo: m.tipo, tresCuotas: m.tresCuotas, genero: m.genero,
   envio: m.envio, garantia: m.saleTerms, maxFotos: m.maxFotos,
   atributos: m.atributos.map((a) => ({ id: a.id, valor: a.value_name })),
   guia: m.guia ? { id: m.guia.id, nombre: m.guia.nombre, talles: Object.keys(m.guia.filas) } : null,

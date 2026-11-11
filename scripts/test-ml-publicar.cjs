@@ -189,6 +189,15 @@ const sinEspera = async () => {};
   chk('modelo Premium sin el tag: bloquea', ['MODELO_SIN_3_CUOTAS'], vistaCon({ ...modelo, tresCuotas: false }).problemas.map((x) => x.codigo));
   chk('modelo Premium con el tag: publicable', true, vistaCon(modelo).publicable);
 
+  // El género y la guía se copian del modelo (acá, de Hombre): con un producto de otro público ML rechaza por el título.
+  const conGenero = (genero) => s.armarVista({ productos: [{ skuAgrupador: 'REM' }], datos: new Map([['REM', { ...datos.get('REM'), genero }]]), parametros: P, modelo, fotos, publicados: new Map() })[0];
+  chk('el modelo trae su género', 'Hombre', modelo.genero);
+  chk('producto de mujer con modelo de hombre: no se publica nada y dice por qué', [['GENERO_DISTINTO'], 0], [conGenero('Mujer').problemas.map((x) => x.codigo), conGenero('Mujer').publicables]);
+  chk('producto de niños con modelo de hombre: tampoco', ['GENERO_DISTINTO'], conGenero('Niños').problemas.map((x) => x.codigo));
+  chk('mismo género: se publica', [[], true], [conGenero('Hombre').problemas, conGenero('Hombre').publicables > 0]);
+  chk('unisex con modelo de hombre: se publica, con aviso', [[], true], [conGenero('Unisex').problemas, conGenero('Unisex').avisos.some((a) => /unisex/.test(a))]);
+  chk('sin género cargado en Stocker: no se frena', [], conGenero(null).problemas);
+
   const item = s.armarItem({ modelo, producto: rem, variante: por['REM-N-S'] });
   chk('family_name y sin title ni variations', [true, false, false], [item.family_name === 'Remera Lisa', 'title' in item, 'variations' in item]);
   chk('SELLER_SKU de Stocker', 'REM-N-S', item.attributes.find((a) => a.id === 'SELLER_SKU').value_name);
