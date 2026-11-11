@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import {
   RefreshCw, Link2, Unlink, AlertCircle, CheckCircle2, ExternalLink, Check,
   ArrowUpDown, PackageSearch, Trash2, Plus, Store, AlertTriangle,
@@ -249,7 +249,10 @@ export default function MercadoLibrePage() {
         subtitle="Sincronizá el stock de tus publicaciones con Stocker usando el SKU"
         actions={
           status?.conectado && (
-            <button className="btn-ghost" onClick={desconectar}><Unlink size={15} /> Desconectar</button>
+            <>
+              <Link className="btn-accent" to="/plataformas/mercadolibre/publicar"><Plus size={15} /> Publicar productos</Link>
+              <button className="btn-ghost" onClick={desconectar}><Unlink size={15} /> Desconectar</button>
+            </>
           )
         }
       />

@@ -145,3 +145,38 @@ export async function sincronizarPostventa() {
   const { data } = await http.post("/mercadolibre/postventa/sincronizar");
   return data;
 }
+
+/*
+ * Publicar productos de Stocker en Mercado Libre, en tanda. Todas las rutas
+ * piden permiso de integraciones; los parámetros son los márgenes del negocio.
+ */
+export async function getMlPublicarParametros() {
+  const { data } = await http.get("/mercadolibre/publicar/parametros");
+  return data;
+}
+
+export async function setMlPublicarParametros(parametros) {
+  const { data } = await http.put("/mercadolibre/publicar/parametros", parametros);
+  return data;
+}
+
+export async function vistaPreviaMlPublicar(cuerpo) {
+  const { data } = await http.post("/mercadolibre/publicar/vista-previa", cuerpo);
+  return data;
+}
+
+/** Valida contra ML sin publicar. Sincrónico, de a un ítem: puede tardar. */
+export async function validarMlPublicar(cuerpo) {
+  const { data } = await http.post("/mercadolibre/publicar/validar", cuerpo, { timeout: 600000 });
+  return data;
+}
+
+export async function publicarMl(cuerpo) {
+  const { data } = await http.post("/mercadolibre/publicar", cuerpo);
+  return data;
+}
+
+export async function getMlPublicarEstado() {
+  const { data } = await http.get("/mercadolibre/publicar/estado");
+  return data;
+}
