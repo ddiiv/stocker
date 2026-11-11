@@ -2,6 +2,7 @@ const { Op } = require('sequelize');
 const { Product, ProductVariant, BusinessLocation } = require('../models');
 const { NO_ES_FERIA } = require('../utils/feria');
 const { exigirCupo } = require('./planService');
+const historial = require('./precioHistorialService');
 
 /*
  * Productos de feria.
@@ -362,7 +363,7 @@ async function generar({ businessId, productIds, prefijo, precio, transaction: t
  * mano. La base sigue siendo el producto original, así que la regla se aplica
  * sobre los mismos números que la primera vez.
  */
-async function reaplicarPrecios({ businessId, productIds, precio, transaction: t }) {
+async function reaplicarPrecios({ businessId, auth, productIds, precio, transaction: t }) {
   const ids = [...new Set((Array.isArray(productIds) ? productIds : []).map(Number).filter(Boolean))];
   if (!ids.length) throw error('Elegí al menos un producto de evento.');
 
@@ -384,6 +385,7 @@ async function reaplicarPrecios({ businessId, productIds, precio, transaction: t
 
   const actualizados = [];
   const sinOrigen = [];
+  const filasHistorial = [];
 
   for (const p of deFeria) {
     const orig = porId.get(p.origenProductId);
@@ -395,12 +397,18 @@ async function reaplicarPrecios({ businessId, productIds, precio, transaction: t
     if (!orig) { sinOrigen.push({ id: p.id, sku: p.sku, titulo: p.titulo }); continue; }
 
     const { minorista, mayorista } = preciosDe(orig, reglaPrecio);
-    await p.update({ precioMinorista: minorista, precioMayorista: mayorista, fechaActualizacion: new Date() }, { transaction: t });
+    const valores = { precioMinorista: minorista, precioMayorista: mayorista, fechaActualizacion: new Date() };
+    filasHistorial.push(...historial.diferencias(p, valores, p.id));
+    await p.update(valores, { transaction: t });
     actualizados.push({
       id: p.id, sku: p.sku, titulo: p.titulo,
       precio: minorista, precioMayorista: mayorista,
     });
   }
+
+  await historial.agregar(
+    historial.nuevoLote({ businessId, auth: auth || { type: 'business', businessId }, origen: 'feria' }), filasHistorial, t,
+  );
 
   const alReves = actualizados.filter((c) => c.precioMayorista > c.precio);
   return {

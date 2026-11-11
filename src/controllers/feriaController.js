@@ -69,7 +69,7 @@ const postPrecios = async (req, res, next) => {
   try {
     const { productIds, precio } = req.body || {};
     const r = await feriaService.reaplicarPrecios({
-      businessId: req.auth.businessId, productIds, precio, transaction: t,
+      businessId: req.auth.businessId, auth: req.auth, productIds, precio, transaction: t,
     });
     await t.commit();
     res.json({

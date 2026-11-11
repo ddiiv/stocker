@@ -1,9 +1,9 @@
 const { Op, fn, col } = require('sequelize');
 const sequelize = require('../config/database');
-const { Business, Product, ProductVariant, StockMovement, Employee, BusinessLocation, VariantStock } = require('../models');
+const { Business, Product, ProductVariant, StockMovement, Employee, BusinessLocation, VariantStock, PrecioCambio, PrecioCambioDetalle } = require('../models');
 const { NO_ES_FERIA } = require('../utils/feria');
 const { NO_ES_PACK, productoNoEsPack } = require('../utils/packs');
-const { ilikeOperator } = require('../utils/sqlHelpers');
+const { ilikeOperator, citar } = require('../utils/sqlHelpers');
 const { exportProductsXlsx, importProductsXlsx } = require('../services/productExcelService');
 const { generarCatalogoXlsx } = require('../services/catalogoService');
 const { exigirCupo } = require('../services/planService');
@@ -11,6 +11,7 @@ const skuService = require('../services/skuService');
 const { generarEtiquetas, asignarCodigosInternos, ASIGNAN_CODIGO, TIPOS_CODIGO, digitoEan } = require('../services/labelService');
 const stockService = require('../services/stockService');
 const precioService = require('../services/precioService');
+const historial = require('../services/precioHistorialService');
 const { liberarCodigos } = require('../utils/codigoDeBaja');
 
 /*
@@ -537,9 +538,11 @@ const updateProduct = async (req, res, next) => {
     const err = (variantes ? validateVariantes(variantes) : null) || validarPrecios(req.body);
     if (err) return res.status(400).json({ message: err });
 
-    await product.update({
-      ...soloCampos(req.body, CAMPOS_PRODUCTO),
-      fechaActualizacion: new Date(),
+    await historial.actualizar({
+      instancia: product,
+      valores: { ...soloCampos(req.body, CAMPOS_PRODUCTO), fechaActualizacion: new Date() },
+      productId: product.id,
+      lote: historial.nuevoLote({ businessId: req.auth.businessId, auth: req.auth, origen: 'manual' }),
     });
     const full = await Product.findByPk(product.id, { include: [{ model: ProductVariant, as: 'productVariants' }] });
     res.json(full);
@@ -1147,7 +1150,13 @@ const updateVariant = async (req, res, next) => {
       req.body.margenMl = margen;
     }
 
-    await variant.update(soloCampos(req.body, CAMPOS_VARIANTE));
+    await historial.actualizar({
+      instancia: variant,
+      valores: soloCampos(req.body, CAMPOS_VARIANTE),
+      productId: variant.productId,
+      variantId: variant.id,
+      lote: historial.nuevoLote({ businessId: req.auth.businessId, auth: req.auth, origen: 'manual' }),
+    });
     res.json(variant);
   } catch (error) { next(error); }
 };
@@ -1895,6 +1904,7 @@ const preciosMasivo = async (req, res, next) => {
 
     const CAMPOS = ['precioMinorista', 'precioMayorista', 'costo'];
     let aplicadas = 0;
+    const filasHistorial = [];
 
     for (const linea of lineas) {
       const v = porId.get(Number(linea.variantId));
@@ -1926,9 +1936,16 @@ const preciosMasivo = async (req, res, next) => {
         patch[campo] = n;
       }
 
-      if (Object.keys(patch).length) { await v.update(patch, { transaction: t }); aplicadas++; }
+      if (Object.keys(patch).length) {
+        filasHistorial.push(...historial.diferencias(v, patch, v.productId, v.id));
+        await v.update(patch, { transaction: t });
+        aplicadas++;
+      }
     }
 
+    await historial.agregar(
+      historial.nuevoLote({ businessId: req.auth.businessId, auth: req.auth, origen: 'variantes' }), filasHistorial, t,
+    );
     await t.commit();
     res.json({ ok: true, aplicadas });
   } catch (error) {
@@ -1966,6 +1983,32 @@ const preciosMasivo = async (req, res, next) => {
 const TOPE_FILAS_PORCENTAJE = 20000;
 const CAMPO_PRECIO = { minorista: 'precioMinorista', mayorista: 'precioMayorista' };
 const BASES_DE = { minorista: ['mismo', 'mayorista'], mayorista: ['mismo', 'costo'] };
+
+/*
+ * Cambia un precio de muchas filas con un UPDATE por tanda en vez de uno por
+ * fila (20.000 filas eran 20.000 viajes a la base). `filas`: [{ id, valor }],
+ * valor null = la variante vuelve a heredar. Sólo parámetros, nunca texto
+ * pegado. Pone también la fecha de modificación que `update` ponía solo: el
+ * portal mayorista se entera de los precios nuevos por `updatedAt`.
+ *
+ * Cada fila usa 3 parámetros: 500 por tanda queda bajo el tope de 2.100 de SQL Server.
+ */
+const FILAS_POR_UPDATE = 500;
+async function actualizarPrecios({ tabla, campo, filas, ahora, transaction }) {
+  for (let i = 0; i < filas.length; i += FILAS_POR_UPDATE) {
+    const tanda = filas.slice(i, i + FILAS_POR_UPDATE);
+    const bind = [];
+    const param = (v) => { bind.push(v); return '$' + bind.length; };
+    const casos = tanda.map((f) => `WHEN ${param(f.id)} THEN CAST(${param(f.valor)} AS DECIMAL(12,2))`).join(' ');
+    const fecha = param(ahora);
+    const sets = [`${citar(campo)} = CASE ${citar('id')} ${casos} END`, `${citar('updatedAt')} = ${fecha}`];
+    if (tabla === 'products') sets.push(`${citar('fechaActualizacion')} = ${fecha}`);
+    await sequelize.query(
+      `UPDATE ${citar(tabla)} SET ${sets.join(', ')} WHERE ${citar('id')} IN (${tanda.map((f) => param(f.id)).join(', ')})`,
+      { bind, transaction },
+    );
+  }
+}
 
 const preciosPorcentaje = async (req, res, next) => {
   const t = await sequelize.transaction();
@@ -2049,7 +2092,7 @@ const preciosPorcentaje = async (req, res, next) => {
         if (vDespues > MAX_MONEDA) return falla(400, `El precio de ${v.sku} pasaría el máximo de ${MAX_MONEDA.toLocaleString('es-AR')}.`);
         const escribir = vDespues === precioProducto ? null : vDespues;
         const actual = tieneDestino ? Number(v[campo]) : null;
-        if (escribir !== actual) cambios.push({ producto: p, variante: v, antes: vAntes, despues: escribir });
+        if (escribir !== actual) cambios.push({ producto: p, variante: v, antes: vAntes, despues: escribir, guardado: actual });
       }
     }
 
@@ -2059,10 +2102,26 @@ const preciosPorcentaje = async (req, res, next) => {
 
     if (aplicar) {
       const ahora = new Date();
-      for (const c of cambios) {
-        if (c.variante) await c.variante.update({ [campo]: c.despues }, { transaction: t });
-        else await c.producto.update({ [campo]: c.despues, fechaActualizacion: ahora }, { transaction: t });
-      }
+      await actualizarPrecios({
+        tabla: 'products', campo, ahora, transaction: t,
+        filas: cambios.filter((c) => !c.variante).map((c) => ({ id: c.producto.id, valor: c.despues })),
+      });
+      await actualizarPrecios({
+        tabla: 'product_variants', campo, ahora, transaction: t,
+        filas: cambios.filter((c) => c.variante).map((c) => ({ id: c.variante.id, valor: c.despues })),
+      });
+      // En el historial, null en una variante es "hereda el del producto".
+      await historial.agregar(
+        historial.nuevoLote({
+          businessId: req.auth.businessId, auth: req.auth, origen: 'masivo',
+          resumen: { precio, base, modo, valor, redondeo, categorias: nombres },
+        }),
+        cambios.map((c) => ({
+          productId: c.producto.id, variantId: c.variante?.id ?? null, campo,
+          antes: historial.redondeo(c.variante ? c.guardado : c.antes), despues: historial.redondeo(c.despues),
+        })),
+        t,
+      );
     }
     await t.commit();
 
@@ -2080,6 +2139,87 @@ const preciosPorcentaje = async (req, res, next) => {
     await t.rollback().catch(() => {});
     next(error);
   }
+};
+
+/*
+ * ── GET /api/products/precios-historial ───────────────────────────
+ *
+ * Los cambios de precio del negocio, del más nuevo al más viejo. Filtros:
+ * `productoId` (los que tocaron ese producto o alguna variante) y `origen`.
+ * Siempre por el negocio de la sesión: el historial de otro no se ve ni
+ * pidiéndolo por id.
+ */
+const TOPE_DETALLE = 2000;
+const usuarioDe = (c) => ({ id: c.employeeId, nombre: c.usuarioNombre });
+
+const preciosHistorial = async (req, res, next) => {
+  try {
+    const pagina = Math.max(1, parseInt(req.query.pagina, 10) || 1);
+    const limite = Math.min(50, Math.max(1, parseInt(req.query.limite, 10) || 20));
+    const where = { businessId: req.auth.businessId };
+
+    if (req.query.origen) {
+      if (!historial.ORIGENES.includes(req.query.origen)) {
+        return res.status(400).json({ message: `El origen tiene que ser: ${historial.ORIGENES.join(', ')}.` });
+      }
+      where.origen = req.query.origen;
+    }
+    if (req.query.productoId) {
+      const productoId = Number(req.query.productoId);
+      if (!Number.isInteger(productoId) || productoId <= 0) return res.status(400).json({ message: 'El producto no es válido.' });
+      const filas = await PrecioCambioDetalle.findAll({
+        where: { productId: productoId }, attributes: ['precioCambioId'], group: ['precioCambioId'], raw: true,
+      });
+      where.id = filas.map((f) => f.precioCambioId);
+    }
+
+    const { rows, count } = await PrecioCambio.findAndCountAll({
+      where, order: [['fecha', 'DESC'], ['id', 'DESC']], limit: limite, offset: (pagina - 1) * limite,
+    });
+    res.json({
+      cambios: rows.map((c) => ({
+        id: c.id, fecha: c.fecha, origen: c.origen, usuario: usuarioDe(c), resumen: c.resumen, filas: c.filas,
+      })),
+      total: count,
+    });
+  } catch (error) { next(error); }
+};
+
+// ── GET /api/products/precios-historial/:id ───────────────────────
+const preciosHistorialDetalle = async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    const cambio = Number.isInteger(id) ? await PrecioCambio.findOne({ where: { id, businessId: req.auth.businessId } }) : null;
+    if (!cambio) return res.status(404).json({ message: 'Cambio de precios no encontrado.' });
+
+    const filas = await PrecioCambioDetalle.findAll({
+      where: { precioCambioId: cambio.id }, order: [['id', 'ASC']], limit: TOPE_DETALLE, raw: true,
+    });
+    const [productos, variantes] = await Promise.all([
+      Product.findAll({ where: { id: [...new Set(filas.map((f) => f.productId))] }, attributes: ['id', 'titulo'], raw: true }),
+      ProductVariant.findAll({
+        where: { id: [...new Set(filas.map((f) => f.variantId).filter(Boolean))] },
+        attributes: ['id', 'sku', 'variante1Valor', 'variante2Valor'], raw: true,
+      }),
+    ]);
+    const titulo = new Map(productos.map((p) => [p.id, p.titulo]));
+    const variante = new Map(variantes.map((v) => [v.id, [v.variante1Valor, v.variante2Valor].filter(Boolean).join(' · ') || v.sku]));
+    const num = (v) => (v === null ? null : Number(v));
+
+    res.json({
+      id: cambio.id, fecha: cambio.fecha, origen: cambio.origen, usuario: usuarioDe(cambio), resumen: cambio.resumen,
+      detalle: filas.map((f) => ({
+        productId: f.productId, productoNombre: titulo.get(f.productId) ?? null,
+        variantId: f.variantId, varianteNombre: f.variantId ? (variante.get(f.variantId) ?? null) : null,
+        campo: f.campo, antes: num(f.antes), despues: num(f.despues),
+      })),
+      // Más de 2000 filas no se mandan: la pantalla avisa que el detalle está recortado.
+      ...(cambio.filas > TOPE_DETALLE ? {
+        truncado: true, totalFilas: cambio.filas,
+        aviso: `Se muestran las primeras ${TOPE_DETALLE} de ${cambio.filas} filas.`,
+      } : {}),
+    });
+  } catch (error) { next(error); }
 };
 
 /*
@@ -2298,6 +2438,7 @@ const importProducts = async (req, res, next) => {
     // El local de destino puede venir en el formulario; si no, el principal.
     const summary = await importProductsXlsx(req.auth.businessId, req.file.buffer, {
       locationId: req.body?.locationId ? Number(req.body.locationId) : null,
+      auth: req.auth,
     });
     res.json(summary);
   } catch (error) { next(error); }
@@ -2343,4 +2484,4 @@ const stockARegularizar = async (req, res, next) => {
   } catch (error) { next(error); }
 };
 
-module.exports = { ajustesEtiquetas, cambiarAjustesEtiquetas, getProducts, buscarVariantes, stockARegularizar, agregarVariantesMasivo, getProductPadreBySkuVariante, getProduct, createProduct, updateProduct, deleteProduct, addVariant, updateVariant, deleteVariant, adjustStock, getVariantMovements, getStockMovements, getStockPorLocal, getProductosPorLocal, getVariantesPorLocal, transferirStock, getIngresosDelDia, ajusteMasivo, preciosMasivo, preciosPorcentaje, generarEtiquetasPdf, exportProducts, exportCatalogo, importProducts, scanLookup, scanAdjustStock };
+module.exports = { ajustesEtiquetas, cambiarAjustesEtiquetas, getProducts, buscarVariantes, stockARegularizar, agregarVariantesMasivo, getProductPadreBySkuVariante, getProduct, createProduct, updateProduct, deleteProduct, addVariant, updateVariant, deleteVariant, adjustStock, getVariantMovements, getStockMovements, getStockPorLocal, getProductosPorLocal, getVariantesPorLocal, transferirStock, getIngresosDelDia, ajusteMasivo, preciosMasivo, preciosPorcentaje, preciosHistorial, preciosHistorialDetalle, generarEtiquetasPdf, exportProducts, exportCatalogo, importProducts, scanLookup, scanAdjustStock };

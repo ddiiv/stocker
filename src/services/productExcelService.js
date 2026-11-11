@@ -6,6 +6,7 @@ const { NO_ES_FERIA } = require('../utils/feria');
 const { productoNoEsPack } = require('../utils/packs');
 const stockService = require('./stockService');
 const precioService = require('./precioService');
+const historial = require('./precioHistorialService');
 
 /*
  * Columnas fijas de la planilla.
@@ -331,7 +332,7 @@ async function rechazarSiDesborda(buffer) {
   }
 }
 
-async function importarFilas(businessId, buffer, { locationId = null } = {}) {
+async function importarFilas(businessId, buffer, { locationId = null, auth = null } = {}) {
   // Local de respaldo: para archivos con una sola columna "Stock", sin nombre
   // de local. Sin indicarlo, el principal.
   // El local llega desde el formulario de importación: hay que comprobar que
@@ -441,6 +442,11 @@ async function importarFilas(businessId, buffer, { locationId = null } = {}) {
     if (nuevas > 0) await exigirCupo(businessId, 'skus', nuevas);
   }
 
+  // Un solo registro de historial para toda la importación (ver precioHistorialService).
+  const lote = historial.nuevoLote({
+    businessId, auth: auth || { type: 'business', businessId }, origen: 'excel', compartido: true,
+  });
+
   for (const [sku, productRows] of bySku) {
     const first = productRows[0];
     const skuAgrupador = toStr(first.skuAgrupador) || sku;
@@ -492,9 +498,12 @@ async function importarFilas(businessId, buffer, { locationId = null } = {}) {
        */
       // Los textos (salvo el título) se borran con la columna presente y la celda vacía, como los
       // precios de variante; los números del padre no, porque vaciarlos los dejaría en cero.
-      await product.update(Object.fromEntries(Object.entries(fields)
-        .filter(([campo]) => campo === 'fechaActualizacion'
-          || (TEXTOS_BORRABLES.includes(campo) ? campo in first : toStr(first[campo])))));
+      await historial.actualizar({
+        instancia: product, productId: product.id, lote,
+        valores: Object.fromEntries(Object.entries(fields)
+          .filter(([campo]) => campo === 'fechaActualizacion'
+            || (TEXTOS_BORRABLES.includes(campo) ? campo in first : toStr(first[campo])))),
+      });
       summary.productsUpdated++;
     } else {
       product = await Product.create({ businessId, sku, variantes: {}, ...fields });
@@ -569,7 +578,10 @@ async function importarFilas(businessId, buffer, { locationId = null } = {}) {
          * que es donde se busca cuando un conteo no cierra.
          */
         if (variant) {
-          await variant.update(Object.fromEntries(Object.entries(variantFields).filter(([, v]) => v !== undefined)));
+          await historial.actualizar({
+            instancia: variant, productId: product.id, variantId: variant.id, lote,
+            valores: Object.fromEntries(Object.entries(variantFields).filter(([, v]) => v !== undefined)),
+          });
           summary.variantsUpdated++;
         } else {
           variant = await ProductVariant.create({
@@ -625,6 +637,7 @@ async function importarFilas(businessId, buffer, { locationId = null } = {}) {
     }
   }
 
+  await historial.cerrar(lote);
   return summary;
 }
 

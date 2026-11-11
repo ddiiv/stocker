@@ -1490,6 +1490,64 @@ ProductVariant.addHook('beforeValidate', async (variante, opciones) => {
 });
 
 /*
+ * ─── Historial de cambios de precio ──────────────────────────────
+ *
+ * Una cabecera por cambio (un aplicar masivo, una edición, una importación) y
+ * una fila de detalle por cada valor que cambió. Se separan porque el cambio
+ * masivo toca hasta 20.000 valores con los mismos datos de quién, cuándo y con
+ * qué parámetros: repetirlos en cada fila multiplica el tamaño por nada, y la
+ * lista de "qué se cambió y cuándo" lee sólo cabeceras.
+ *
+ * Ninguna columna apunta a productos, variantes ni empleados con una clave
+ * foránea: el historial tiene que sobrevivir a que se borren. El nombre de
+ * quien lo hizo se guarda copiado por lo mismo.
+ */
+const PrecioCambio = db.define('PrecioCambio', {
+  id:         { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
+  businessId: { type: DataTypes.INTEGER, allowNull: false },
+  // Null = lo hizo el dueño de la cuenta (no es un empleado).
+  employeeId: { type: DataTypes.INTEGER, allowNull: true },
+  usuarioNombre: { type: DataTypes.STRING(150), allowNull: true },
+  fecha:      { type: DataTypes.DATE, allowNull: false, defaultValue: DataTypes.NOW },
+  // masivo | manual | excel | variantes | feria
+  origen:     { type: DataTypes.STRING(12), allowNull: false },
+  // Para 'masivo', los parámetros (precio/base/modo/valor/redondeo/categorias) y
+  // cuántos productos y variantes cambió. Para los demás, sólo los conteos.
+  resumen: {
+    type: DataTypes.TEXT,
+    allowNull: true,
+    get() { try { return JSON.parse(this.getDataValue('resumen')); } catch { return null; } },
+    set(val) { this.setDataValue('resumen', val == null ? null : JSON.stringify(val)); },
+  },
+  // Cuántas filas de detalle tiene: la lista las muestra sin contarlas.
+  filas:      { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
+}, {
+  tableName: 'precio_cambios',
+  timestamps: false,
+  indexes: [{ name: 'idx_precio_cambios_negocio_fecha', fields: ['businessId', 'fecha'] }],
+});
+
+const PrecioCambioDetalle = db.define('PrecioCambioDetalle', {
+  id:             { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
+  precioCambioId: { type: DataTypes.INTEGER, allowNull: false },
+  productId:      { type: DataTypes.INTEGER, allowNull: false },
+  // Null = el cambio es del precio del producto, no de una variante.
+  variantId:      { type: DataTypes.INTEGER, allowNull: true },
+  // precioMinorista | precioMayorista | costo
+  campo:          { type: DataTypes.STRING(20), allowNull: false },
+  // Null en una variante = hereda el del producto.
+  antes:          { type: DataTypes.DECIMAL(12, 2), allowNull: true },
+  despues:        { type: DataTypes.DECIMAL(12, 2), allowNull: true },
+}, {
+  tableName: 'precio_cambio_detalle',
+  timestamps: false,
+  indexes: [
+    { name: 'idx_precio_detalle_cambio', fields: ['precioCambioId'] },
+    { name: 'idx_precio_detalle_producto', fields: ['productId'] },
+  ],
+});
+
+/*
  * ─── VariantStock: el stock de una variante EN UN LOCAL ──────────
  *
  * Cada local tiene los mismos productos y distinto stock. Esta tabla es la
@@ -2377,6 +2435,11 @@ ProductVariant.hasMany(PackComponente, { foreignKey: 'packVariantId', as: 'compo
 PackComponente.belongsTo(ProductVariant, { foreignKey: 'packVariantId', as: 'pack' });
 PackComponente.belongsTo(ProductVariant, { foreignKey: 'componenteVariantId', as: 'componente' });
 
+// Sin cascada hacia el negocio: borrar una cuenta no tiene por qué llevarse el
+// historial a una tabla que se consulta aparte, y así hay un solo camino de borrado.
+PrecioCambio.hasMany(PrecioCambioDetalle, { foreignKey: 'precioCambioId', as: 'detalle', onDelete: 'CASCADE' });
+PrecioCambioDetalle.belongsTo(PrecioCambio, { foreignKey: 'precioCambioId', as: 'cambio' });
+
 Product.hasMany(ProductVariant, { foreignKey: 'productId', as: 'productVariants', onDelete: 'CASCADE' });
 ProductVariant.belongsTo(Product, { foreignKey: 'productId', as: 'producto' });
 
@@ -2532,7 +2595,7 @@ module.exports = {
   JumpsellerAccount, MercadoLibreLink, MercadoLibreMensaje, MercadoLibreReclamo,
   PedidoPlataforma, PedidoPlataformaItem, PlataformaCobro,
   Role, Employee, EmployeeSession, SesionCuenta, PasswordResetCode, AccountChangeCode, Client,
-  Product, ProductVariant, StockMovement,
+  Product, ProductVariant, StockMovement, PrecioCambio, PrecioCambioDetalle,
   Sale, SaleItem, Invoice, InvoiceItem,
   PaymentMethod, SalePayment, CashShift, CashMovement,
   ClientAccountEntry,

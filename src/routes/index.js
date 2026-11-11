@@ -638,6 +638,9 @@ r.get   ('/products/export',                              requireAuth, requirePe
 r.get   ('/products/catalogo',                            requireAuth, requirePermission('stock','ver'),    productCtrl.exportCatalogo);
 r.post  ('/products/import',    requireAuth, requirePermission('stock','editar'), requireFeature(FEATURES.IMPORTACION_MASIVA), upload.single('file'),    productCtrl.importProducts);
 r.get   ('/products/sku/:skuV', requireAuth, requirePermission('stock','ver'),    productCtrl.getProductPadreBySkuVariante);
+// Antes de /products/:id para que no los capture.
+r.get   ('/products/precios-historial',                    requireAuth, requirePermission('stock','ver'),    productCtrl.preciosHistorial);
+r.get   ('/products/precios-historial/:id',                requireAuth, requirePermission('stock','ver'),    productCtrl.preciosHistorialDetalle);
 // Buscador de variantes para el alta de ventas. Vale con ver stock o ver
 // ventas: quien vende necesita encontrar la prenda aunque no tenga el módulo
 // de stock, y es sólo consulta.
