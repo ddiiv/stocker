@@ -36,7 +36,7 @@ const tiene3Cuotas = (item) => (item?.tags || []).includes(TAG_3_CUOTAS) || (ite
 // De las condiciones de venta sólo se copia la garantía: el resto (cuotas, facturación) lo decide ML.
 const TERMINOS_COPIABLES = new Set(['WARRANTY_TYPE', 'WARRANTY_TIME']);
 // Atributos que ML calcula solo: mandarlos no rompe, pero llena el resultado de avisos "ignored because it is not modifiable".
-const ATRIBUTO_DE_ML = /^(FILTRABLE_|PACKAGE_|IS_\w+_BRAND$|SYI_PYMES_ID$|VERTICAL_TAGS$|WITH_VIRTUAL_TRY_ON$)/;
+const ATRIBUTO_DE_ML = /^(FILTRABLE_|PACKAGE_|IS_\w+_BRAND$|SYI_PYMES_ID$|VERTICAL_TAGS$|WITH_VIRTUAL_TRY_ON$|AGE_GROUP$)/;
 // Lo que cabe en family_name en moda (max_title_length del dominio de remeras).
 const TOPE_FAMILY_NAME = 60;
 const TOPE_FOTOS_DEFECTO = 10;
@@ -487,7 +487,7 @@ function armarItem({ modelo, producto, variante }) {
   atributos.push({ id: 'SELLER_SKU', value_name: variante.sku });
 
   const envio = { mode: modelo.envio.mode };
-  if (modelo.envio.logistic_type) envio.logistic_type = modelo.envio.logistic_type;
+  // El tipo de logística (logistic_type) no se manda: lo asigna ML, y copiarlo da "Client not allowed to update item null logistic_type".
   if (modelo.envio.local_pick_up != null) envio.local_pick_up = modelo.envio.local_pick_up;
   if (modelo.envio.mode === 'me2') envio.free_shipping = variante.precio.llevaEnvio;
 

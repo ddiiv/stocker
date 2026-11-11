@@ -220,6 +220,7 @@ const sinEspera = async () => {};
   chk('categoría, garantía y stock', ['MLA109042', 'WARRANTY_TYPE', 4], [item.category_id, item.sale_terms[0].id, item.available_quantity]);
   chk('fotos de su color', [u('neg0'), u('neg1'), u('neg2')], item.pictures.map((x) => x.source));
   chk('descripción en texto plano', { plain_text: 'Algodón' }, item.description);
+  chk('el tipo de logística del modelo no se manda (lo asigna ML)', ['me2', undefined], [item.shipping.mode, item.shipping.logistic_type]);
   chk('bajo el umbral: Clásica, sin tag ni envío gratis', ['gold_special', undefined, false], [item.listing_type_id, item.tags, item.shipping.free_shipping]);
   const itemCaro = s.armarItem({ modelo, producto: rem, variante: por['REM-N-L'] });
   chk('sobre el umbral: tipo del modelo, tag de 3 cuotas y envío gratis', ['gold_pro', ['3x_campaign'], true], [itemCaro.listing_type_id, itemCaro.tags, itemCaro.shipping.free_shipping]);
