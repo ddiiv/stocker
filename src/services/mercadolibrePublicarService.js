@@ -30,6 +30,13 @@ const { NO_ES_FERIA } = require('../utils/feria');
 
 const ML_API = 'https://api.mercadolibre.com';
 const TAG_3_CUOTAS = '3x_campaign';
+// La campaña de cuotas también figura como condición de venta, pero esa la pone ML: mandarla da "Not allowed to modify sale term".
+const TERMINO_CUOTAS = 'INSTALLMENTS_CAMPAIGN';
+const tiene3Cuotas = (item) => (item?.tags || []).includes(TAG_3_CUOTAS) || (item?.sale_terms || []).some((t) => t.id === TERMINO_CUOTAS);
+// De las condiciones de venta sólo se copia la garantía: el resto (cuotas, facturación) lo decide ML.
+const TERMINOS_COPIABLES = new Set(['WARRANTY_TYPE', 'WARRANTY_TIME']);
+// Atributos que ML calcula solo: mandarlos no rompe, pero llena el resultado de avisos "ignored because it is not modifiable".
+const ATRIBUTO_DE_ML = /^(FILTRABLE_|PACKAGE_|IS_\w+_BRAND$|SYI_PYMES_ID$|VERTICAL_TAGS$|WITH_VIRTUAL_TRY_ON$)/;
 // Lo que cabe en family_name en moda (max_title_length del dominio de remeras).
 const TOPE_FAMILY_NAME = 60;
 const TOPE_FOTOS_DEFECTO = 10;
@@ -289,7 +296,7 @@ async function leerModelo(itemId, { headers, http = ml.httpML, mlUserId = null }
   for (const a of item.attributes || []) {
     const valor = a.value_name ?? a.values?.[0]?.name;
     if (a.id === 'SIZE_GRID_ID') { sizeGridId = valor || a.value_id || null; continue; }
-    if (ATRIBUTOS_PROPIOS.has(a.id) || valor == null || valor === '') continue;
+    if (ATRIBUTOS_PROPIOS.has(a.id) || ATRIBUTO_DE_ML.test(a.id) || valor == null || valor === '') continue;
     atributos.push(a.value_id && a.value_id !== '-1'
       ? { id: a.id, value_id: String(a.value_id), value_name: String(valor) }
       : { id: a.id, value_name: String(valor) });
@@ -306,12 +313,12 @@ async function leerModelo(itemId, { headers, http = ml.httpML, mlUserId = null }
     titulo: item.title || item.family_name || null,
     categoriaId: item.category_id,
     tipo: item.listing_type_id,
-    tresCuotas: (item.tags || []).includes(TAG_3_CUOTAS),
+    tresCuotas: tiene3Cuotas(item),
     atributos,
     guia,
     envio: { mode: envio.mode || 'me2', logistic_type: envio.logistic_type || null, local_pick_up: envio.local_pick_up ?? null },
     saleTerms: (item.sale_terms || [])
-      .filter((t) => t.id && (t.value_name != null || t.value_id != null))
+      .filter((t) => TERMINOS_COPIABLES.has(t.id) && (t.value_name != null || t.value_id != null))
       .map((t) => (t.value_id ? { id: t.id, value_id: String(t.value_id), value_name: t.value_name } : { id: t.id, value_name: t.value_name })),
     maxFotos,
   };
@@ -512,12 +519,16 @@ async function publicarItems({ items, publicados, http = ml.httpML, headers, esp
         const { data } = await mandar(`${ML_API}/items`, payload, { http, headers, esperar });
         vistos.add(sku);
         porSku[sku] = { estado: 'publicada', itemId: data.id, link: data.permalink || ml.enlaceDe(data.id) };
+        // La campaña de 3 cuotas se pide con el tag, pero la decide ML: si no quedó, que se sepa (una Premium sin ella ofrece 6 cuotas, que cuestan más).
+        if ((payload.tags || []).includes(TAG_3_CUOTAS) && !tiene3Cuotas(data)) {
+          porSku[sku].avisos = ['Se publicó, pero Mercado Libre no le puso las 3 cuotas sin interés: revisala en ML (una Premium sin esa campaña ofrece 6 cuotas, que te cuestan más).'];
+        }
         if (fantasma) {
           try {
             await con429(() => http.put(`${ML_API}/items/${data.id}`, { available_quantity: 0 }, { headers }), { esperar });
             porSku[sku].pausada = true;
           } catch (e) {
-            porSku[sku].avisos = [`OJO: se publicó con 1 unidad que no existe y no se pudo pasar a 0 (${textoDeError(e)}). Pausala a mano en Mercado Libre.`];
+            porSku[sku].avisos = [...(porSku[sku].avisos || []), `OJO: se publicó con 1 unidad que no existe y no se pudo pasar a 0 (${textoDeError(e)}). Pausala a mano en Mercado Libre.`];
           }
         }
         // Sin esto, la búsqueda de ML tarda en mostrar lo recién creado y reintentar la tanda lo duplicaría.

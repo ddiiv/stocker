@@ -112,8 +112,9 @@ const sinEspera = async () => {};
       return { data: {
         id: 'MLA1', seller_id: 77, title: 'Remera modelo', category_id: 'MLA109042', listing_type_id: 'gold_pro',
         tags: ['3x_campaign'], shipping: { mode: 'me2', logistic_type: 'xd_drop_off', free_shipping: false, dimensions: '1x1x1,1' },
-        sale_terms: [{ id: 'WARRANTY_TYPE', value_id: '2230280', value_name: 'Garantía del vendedor' }],
+        sale_terms: [{ id: 'WARRANTY_TYPE', value_id: '2230280', value_name: 'Garantía del vendedor' }, { id: 'INSTALLMENTS_CAMPAIGN', value_name: '3x_campaign' }],
         attributes: [
+          { id: 'PACKAGE_WEIGHT', value_name: '300 g' }, { id: 'FILTRABLE_GENDER', value_name: 'Hombre' }, { id: 'IS_TOM_BRAND', value_name: 'No' },
           { id: 'BRAND', value_name: 'Isuwaya' }, { id: 'GENDER', value_id: '339665', value_name: 'Hombre' },
           { id: 'COLOR', value_name: 'Verde' }, { id: 'SELLER_SKU', value_name: 'VIEJO' }, { id: 'SIZE', value_name: 'M' },
           { id: 'GTIN', value_name: '123' }, { id: 'MODEL', value_name: null }, { id: 'SIZE_GRID_ID', value_name: '555' },
@@ -130,6 +131,7 @@ const sinEspera = async () => {};
   const modelo = await s.leerModelo('MLA1', { headers: {}, http: mlFalso(), mlUserId: '77' });
   chk('copia categoría, tipo, tag de cuotas y fotos máximas', ['MLA109042', 'gold_pro', true, 3], [modelo.categoriaId, modelo.tipo, modelo.tresCuotas, modelo.maxFotos]);
   chk('no copia lo propio de cada variante ni lo vacío', ['BRAND', 'GENDER'], modelo.atributos.map((a) => a.id));
+  chk('de las condiciones de venta copia sólo la garantía (la campaña de cuotas la pone ML)', ['WARRANTY_TYPE'], modelo.saleTerms.map((t) => t.id));
   chk('guía: talle → fila', { S: '555:1', M: '555:2', L: '555:3' }, modelo.guia.filas);
   let ajena = 'aceptó';
   try { await s.leerModelo('MLA1', { headers: {}, http: mlFalso(), mlUserId: '99' }); } catch (e) { ajena = e.status; }
@@ -227,12 +229,12 @@ const sinEspera = async () => {};
   chk('queda marcada como pausada', [true, undefined], [rF.porSku.F.pausada, rF.porSku.G.pausada]);
   const httpFalla = { post: async () => ({ data: { id: 'MLA901' } }), put: async () => { throw Object.assign(new Error('500'), { response: { status: 500, data: { message: 'caído' } } }); } };
   const rFalla0 = await s.publicarItems({ items: [{ ...mkItems(['H'])[0], fantasma: true }], publicados: new Set(), http: httpFalla, headers: {}, esperar: sinEspera });
-  chk('si no se pudo pasar a 0, queda avisado para pausarla a mano', [true, undefined], [/Pausala a mano/.test(rFalla0.porSku.H.avisos?.[0] || ''), rFalla0.porSku.H.pausada]);
+  chk('si no se pudo pasar a 0, queda avisado para pausarla a mano', [true, undefined], [/Pausala a mano/.test((rFalla0.porSku.H.avisos || []).join(' ')), rFalla0.porSku.H.pausada]);
   const creados = [];
   await s.publicarItems({ items: mkItems(['N1', 'N2']), publicados: new Set(), http, headers: {}, esperar: sinEspera, alCrear: async (c) => { creados.push(c.sku); if (c.sku === 'N2') throw new Error('base caída'); } });
   chk('cada ítem creado se guarda (alCrear)', ['N1', 'N2'], creados);
   const rFalla = await s.publicarItems({ items: mkItems(['N2']), publicados: new Set(), http, headers: {}, esperar: sinEspera, alCrear: async () => { throw new Error('base caída'); } });
-  chk('si no se puede guardar el vínculo, igual queda publicada y se avisa', ['publicada', true], [rFalla.porSku.N2.estado, /vinculalo a mano/.test(rFalla.porSku.N2.avisos[0])]);
+  chk('si no se puede guardar el vínculo, igual queda publicada y se avisa', ['publicada', true], [rFalla.porSku.N2.estado, /vinculalo a mano/.test(rFalla.porSku.N2.avisos.join(' '))]);
   posts.length = 0;
   await s.publicarItems({ items: mkItems(['A', 'A']), publicados: new Set(), http, headers: {}, esperar: sinEspera });
   chk('el mismo SKU dos veces en una tanda se manda una sola', ['A'], posts);
@@ -272,6 +274,13 @@ const sinEspera = async () => {};
   const r5 = await s.publicarItems({ items: [conTag('T1'), conTag('T2')], publicados: new Set(), http: httpTag, headers: {}, esperar: sinEspera });
   chk('si ML rechaza el tag no se publica sin él (saldría con 6 cuotas): error tal cual', ['error', true], [r5.porSku.T1.estado, /3x_campaign/.test(r5.porSku.T1.error)]);
   chk('un solo pedido por variante, con el tag', [['3x_campaign'], ['3x_campaign']], cuerpos);
+
+  // Con el tag pedido, si ML no dejó las 3 cuotas se avisa; si las dejó, no.
+  const httpSin = { post: async () => ({ data: { id: 'MLA700', tags: [] } }) };
+  const httpCon = { post: async () => ({ data: { id: 'MLA701', sale_terms: [{ id: 'INSTALLMENTS_CAMPAIGN', value_name: '3x_campaign' }] } }) };
+  const r6 = await s.publicarItems({ items: [conTag('Q1')], publicados: new Set(), http: httpSin, headers: {}, esperar: sinEspera });
+  const r7 = await s.publicarItems({ items: [conTag('Q2')], publicados: new Set(), http: httpCon, headers: {}, esperar: sinEspera });
+  chk('publicada sin las 3 cuotas: avisa; con ellas: nada', [true, undefined], [/3 cuotas/.test(r6.porSku.Q1.avisos?.[0] || ''), r7.porSku.Q2.avisos]);
 
   tit('Validar');
   const httpVal = { post: async (url, c) => {
