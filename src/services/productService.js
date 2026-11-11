@@ -336,3 +336,17 @@ export async function preciosPorPorcentaje(payload) {
   const { data } = await http.post("/products/precios-porcentaje", payload);
   return data;
 }
+
+/** Historial de cambios de precio: una fila por operación (masivo, manual, Excel, variantes). */
+export async function fetchPreciosHistorial({ pagina = 1, limite = 20, productoId = "", origen = "" } = {}) {
+  const params = { pagina, limite };
+  if (productoId) params.productoId = productoId;
+  if (origen) params.origen = origen;
+  const { data } = await http.get("/products/precios-historial", { params });
+  return data;
+}
+
+export async function fetchPreciosHistorialDetalle(id) {
+  const { data } = await http.get(`/products/precios-historial/${id}`);
+  return data;
+}

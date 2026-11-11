@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { TrendingUp, Search, Boxes, RefreshCw, Plus, Download, Upload, Trash2, Store, ChevronRight, ChevronDown, ChevronsUpDown, ChevronsDownUp } from "lucide-react";
+import { TrendingUp, History, Search, Boxes, RefreshCw, Plus, Download, Upload, Trash2, Store, ChevronRight, ChevronDown, ChevronsUpDown, ChevronsDownUp } from "lucide-react";
 import { fetchProductGroupsPagina, createProduct, deleteProduct, exportProductsExcel, exportCatalogoExcel, importProductsExcel } from "../services/productService";
 import { fetchVariantTypes } from "../services/variantTypeService";
 import { formatCurrency } from "../utils/formatters";
@@ -200,6 +200,7 @@ export default function StockPage() {
             >
               <Download size={15} /> {exportandoCatalogo ? "Descargando…" : "Catálogo"}
             </button>
+            <Link to="/stock/precios-historial" className="btn-ghost"><History size={15} /> Historial de precios</Link>
             {canEdit(user, "stock") && (
               <button className="btn-ghost" onClick={() => setPreciosOpen(true)}>
                 <TrendingUp size={15} /> Cambiar precios en masa

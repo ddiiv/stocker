@@ -52,6 +52,7 @@ const JumpsellerPage = lazy(() => import("./pages/JumpsellerPage"));
 const SalesTimelinePage = lazy(() => import("./pages/SalesTimelinePage"));
 const ProductMetricsPage = lazy(() => import("./pages/ProductMetricsPage"));
 const StockMovementsPage = lazy(() => import("./pages/StockMovementsPage"));
+const PreciosHistorialPage = lazy(() => import("./pages/PreciosHistorialPage"));
 const SkuBuilderPage = lazy(() => import("./pages/SkuBuilderPage"));
 const LabelsPage = lazy(() => import("./pages/LabelsPage"));
 const StockByLocationPage = lazy(() => import("./pages/StockByLocationPage"));
@@ -105,6 +106,7 @@ export default function App() {
             {/* Antes de la ruta con parámetro: si no, "movimientos" se lee
                 como un skuAgrupador y cae en el detalle de producto. */}
             <Route path="/stock/movimientos"            element={<PermissionRoute permission="stock"><StockMovementsPage /></PermissionRoute>} />
+            <Route path="/stock/precios-historial"      element={<PermissionRoute permission="stock"><PreciosHistorialPage /></PermissionRoute>} />
             <Route path="/stock/sku"                    element={<PermissionRoute permission="stock"><SkuBuilderPage /></PermissionRoute>} />
             <Route path="/stock/etiquetas"              element={<PermissionRoute permission="stock"><LabelsPage /></PermissionRoute>} />
             <Route path="/stock/por-local"              element={<PermissionRoute permission="stock"><StockByLocationPage /></PermissionRoute>} />

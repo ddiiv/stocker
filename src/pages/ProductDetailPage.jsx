@@ -17,7 +17,7 @@ import CeldaPrecio from "../components/products/CeldaPrecio";
 import CeldaMargenMl from "../components/products/CeldaMargenMl";
 import { formatCurrency } from "../utils/formatters";
 import EanDeVariante from "../components/products/EanDeVariante";
-import { Boxes, PencilLine, Check, X, Wand2, Loader2, Tag, ListPlus, Store, MapPin, LayoutGrid } from "lucide-react";
+import { Boxes, History, PencilLine, Check, X, Wand2, Loader2, Tag, ListPlus, Store, MapPin, LayoutGrid } from "lucide-react";
 
 export default function ProductDetailPage() {
   /*
@@ -180,6 +180,12 @@ export default function ProductDetailPage() {
           <Link to={`/stock/etiquetas?producto=${encodeURIComponent(group.skuAgrupador)}`} className="btn-ghost">
             <Tag size={15} /> Etiquetas
           </Link>
+          {/* Con más de un producto padre en el grupo el historial no es de "uno": se ve desde Stock. */}
+          {new Set(group.variants.map((v) => v.productId)).size === 1 && (
+            <Link to={`/stock/precios-historial?producto=${group.variants[0].productId}`} className="btn-ghost">
+              <History size={15} /> Ver historial de precios
+            </Link>
+          )}
           {/* Las tres modifican el catálogo: sin permiso de edición no se
               muestran. Etiquetas y la vista por local quedan para todos. */}
           {puedeEditar && (
