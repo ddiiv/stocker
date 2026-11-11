@@ -1309,6 +1309,8 @@ function marcarParaSync(businessId, sku) {
 
 module.exports = {
   httpML,
+  enParalelo,
+  enlaceDe,
   estaConfigurado,
   marcarParaSync,
   urlAutorizacion,
@@ -1316,6 +1318,7 @@ module.exports = {
   conectarConCodigo,
   tokenValido,
   listarPublicaciones,
+  destinosDeLaCuenta,
   mapearPorSku,
   sincronizarStock,
   coberturaMl,

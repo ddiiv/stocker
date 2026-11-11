@@ -578,6 +578,20 @@ r.get   ('/mercadolibre/locales',     requireAuth, requirePermission('integracio
 r.put   ('/mercadolibre/locales',     requireAuth, requirePermission('integraciones','editar'), mlCtrl.setLocales);
 r.post  ('/mercadolibre/sync',        requireAuth, requirePermission('integraciones','editar'), requireFeature(FEATURES.ECOMMERCE), mlCtrl.sync);
 r.get   ('/mercadolibre/links',       requireAuth, requirePermission('integraciones','ver'),    mlCtrl.listLinks);
+/*
+ * Publicar productos de Stocker en Mercado Libre, en tanda. Crea publicaciones
+ * activas, así que va con editar y la feature de ecommerce, igual que sincronizar.
+ * Los parámetros (multiplicador, packing) son márgenes del negocio: tampoco se
+ * leen con sólo ver. Ver mercadolibrePublicarService.
+ */
+const permisoPublicar = [requireAuth, requirePermission('integraciones','editar'), requireFeature(FEATURES.ECOMMERCE)];
+r.get   ('/mercadolibre/publicar/parametros',   ...permisoPublicar, mlCtrl.publicarParametros);
+r.put   ('/mercadolibre/publicar/parametros',   ...permisoPublicar, mlCtrl.publicarGuardarParametros);
+r.post  ('/mercadolibre/publicar/vista-previa', ...permisoPublicar, mlCtrl.publicarVistaPrevia);
+r.post  ('/mercadolibre/publicar/validar',      ...permisoPublicar, mlCtrl.publicarValidar);
+r.post  ('/mercadolibre/publicar',              ...permisoPublicar, mlCtrl.publicarTanda);
+r.get   ('/mercadolibre/publicar/estado',       ...permisoPublicar, mlCtrl.publicarEstado);
+
 r.post  ('/mercadolibre/links',       requireAuth, requirePermission('integraciones','editar'), requireFeature(FEATURES.ECOMMERCE), mlCtrl.upsertLink);
 r.delete('/mercadolibre/links/:id',   requireAuth, requirePermission('integraciones','editar'), mlCtrl.deleteLink);
 

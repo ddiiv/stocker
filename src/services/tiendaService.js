@@ -411,5 +411,5 @@ module.exports = {
   catalogo, stockDeSkus, resoluciones, localesQueVenden,
   TOPE_SKUS_CONSULTA, TOPE_RESOLUCIONES, __queCambio: queCambio, __cursorDe: cursorDe,
   // Expuestas para probarlas sin depender de qué datos tenga la base de turno.
-  __ejesDe: ejesDe, __precioParaPublicar: precioParaPublicar,
+  ejesDe, __ejesDe: ejesDe, __precioParaPublicar: precioParaPublicar,
 };

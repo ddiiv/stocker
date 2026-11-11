@@ -70,6 +70,8 @@ const COLUMNAS_ESPERADAS = {
     locationId: { type: DataTypes.INTEGER, allowNull: true },
     // La última reconciliación de envíos con ML. Ver el modelo.
     ultimaSyncEnvios: { type: DataTypes.DATE, allowNull: true },
+    // Los parámetros de la publicación en tanda (precio, tienda de las fotos). Ver mercadolibrePublicarService.
+    publicarConfig: { type: DataTypes.TEXT, allowNull: true },
   },
   plataforma_pedido_items: {
     // El reparto de la reserva entre locales. Ver el modelo: sin esto, un

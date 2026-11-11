@@ -911,6 +911,13 @@ const MercadoLibreAccount = db.define('MercadoLibreAccount', {
    * tape unos envíos que hace horas que no se revisan.
    */
   ultimaSyncEnvios: { type: DataTypes.DATE, allowNull: true },
+  /*
+   * Los parámetros de la publicación en tanda, como JSON: multiplicador, packing,
+   * comisión, tienda de las fotos, etc. Texto y no columnas sueltas porque son
+   * de este negocio y se leen y escriben juntos; los que faltan caen al valor
+   * por defecto. Ver mercadolibrePublicarService.
+   */
+  publicarConfig: { type: DataTypes.TEXT, allowNull: true },
 }, { tableName: 'mercadolibre_accounts' });
 
 // ─── MercadoLibreLink (vínculo SKU Stocker ↔ publicación ML) ─────

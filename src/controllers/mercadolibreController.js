@@ -1,5 +1,6 @@
 const ml = require('../services/mercadolibreService');
 const mlPedidos = require('../services/mercadolibrePedidosService');
+const mlPublicar = require('../services/mercadolibrePublicarService');
 const trabajos = require('../services/trabajosService');
 const { log, sinDatos } = require('../utils/logger');
 const { Op } = require('sequelize');
@@ -205,6 +206,52 @@ const importarEstado = async (req, res, next) => {
 };
 
 /*
+ * Publicar en Mercado Libre desde Stocker. Ver mercadolibrePublicarService.
+ *
+ * GET/PUT /mercadolibre/publicar/parametros   precio, tienda de las fotos
+ * POST    /mercadolibre/publicar/vista-previa { productos, modeloItemId }
+ * POST    /mercadolibre/publicar/validar      igual + skus?: lo que diría ML, sin crear
+ * POST    /mercadolibre/publicar              igual + skus?: arranca la tanda (202)
+ * GET     /mercadolibre/publicar/estado       cómo viene la tanda
+ */
+const publicarParametros = async (req, res, next) => {
+  try { res.json(await mlPublicar.parametros(req.auth.businessId)); } catch (e) { next(e); }
+};
+
+const publicarGuardarParametros = async (req, res, next) => {
+  try { res.json(await mlPublicar.guardarParametros(req.auth.businessId, req.body)); } catch (e) { next(e); }
+};
+
+const publicarVistaPrevia = async (req, res, next) => {
+  try { res.json(await mlPublicar.vistaPrevia(req.auth.businessId, req.body || {})); } catch (e) { next(e); }
+};
+
+const publicarValidar = async (req, res, next) => {
+  try { res.json(await mlPublicar.validar(req.auth.businessId, req.body || {})); } catch (e) { next(e); }
+};
+
+/*
+ * Contesta que arrancó, no el resultado: cien variantes en serie son minutos y
+ * el proxy corta el pedido. Se valida acá antes de arrancar para que un cuerpo
+ * mal armado sea un 400 y no un trabajo que falla en silencio.
+ */
+const publicarTanda = async (req, res, next) => {
+  try {
+    const { businessId } = req.auth;
+    const pedido = req.body || {};
+    mlPublicar.validarPedido(pedido);
+    const trabajo = trabajos.iniciar(`ml-publicar:${businessId}`, (avisar) => mlPublicar
+      .publicar(businessId, pedido, { onProgreso: avisar })
+      .then((r) => ({ ok: true, ...r })));
+    res.status(202).json(trabajo);
+  } catch (e) { next(e); }
+};
+
+const publicarEstado = async (req, res, next) => {
+  try { res.json(trabajos.estado(`ml-publicar:${req.auth.businessId}`)); } catch (e) { next(e); }
+};
+
+/*
  * GET  /api/mercadolibre/locales
  * PUT  /api/mercadolibre/locales   { locationIds: [1, 5] }
  *
@@ -374,4 +421,5 @@ const notificacion = async (req, res) => {
   }
 };
 
-module.exports = { status, authUrl, callback, disconnect, preview, sync, importarPedidos, getLocales, setLocales, listLinks, upsertLink, deleteLink, notificacion, cobertura, republicar, reactivar, importarEstado };
+module.exports = { status, authUrl, callback, disconnect, preview, sync, importarPedidos, getLocales, setLocales, listLinks, upsertLink, deleteLink, notificacion, cobertura, republicar, reactivar, importarEstado,
+  publicarParametros, publicarGuardarParametros, publicarVistaPrevia, publicarValidar, publicarTanda, publicarEstado };
