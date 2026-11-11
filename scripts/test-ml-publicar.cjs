@@ -198,6 +198,19 @@ const sinEspera = async () => {};
   chk('unisex con modelo de hombre: se publica, con aviso', [[], true], [conGenero('Unisex').problemas, conGenero('Unisex').avisos.some((a) => /unisex/.test(a))]);
   chk('sin género cargado en Stocker: no se frena', [], conGenero(null).problemas);
 
+  // Un producto que ya tiene publicación: las variantes que faltan se suman a ESA (su family_name y su ficha), no al modelo elegido.
+  const suya = { ...modelo, itemId: 'MLA9', familyName: 'ISU Remera Lisa Hombre Algodón', precio: 19999, link: 'https://ml/MLA9', categoriaId: 'MLA_SUYA', atributos: [{ id: 'BRAND', value_name: 'ISU' }] };
+  const conPropia = (propio) => s.armarVista({ productos: [{ skuAgrupador: 'REM', familyName: 'Otro título' }], datos, parametros: P, modelo, propios: new Map([['REM', propio]]), fotos, publicados })[0];
+  const sumada = conPropia(suya);
+  chk('usa el título de la publicación que ya tiene, no el elegido', 'ISU Remera Lisa Hombre Algodón', sumada.familyName);
+  chk('dice a cuál se suma', ['MLA9', 19999, true], [sumada.existente.itemId, sumada.existente.precio, sumada.avisos.some((a) => /ya tiene publicación/.test(a))]);
+  const nueva = s.armarItem({ modelo: suya, producto: sumada, variante: sumada.variantes.find((v) => v.sku === 'REM-N-S') });
+  chk('la variante nueva va con la categoría y la ficha de la existente', ['ISU Remera Lisa Hombre Algodón', 'MLA_SUYA', 'ISU'], [nueva.family_name, nueva.category_id, nueva.attributes.find((a) => a.id === 'BRAND').value_name]);
+  chk('la que ya estaba publicada sigue salteada', false, sumada.variantes.find((v) => v.sku === 'REM-B-S').publicable);
+  chk('publicación del formato viejo (sin family_name): no abre otra', [['PUBLICACION_EXISTENTE'], 0], [conPropia({ ...suya, familyName: null }).problemas.map((x) => x.codigo), conPropia({ ...suya, familyName: null }).publicables]);
+  chk('si no se pudo leer la existente: tampoco, y lo dice', ['PUBLICACION_EXISTENTE'], conPropia({ error: 'ML 500' }).problemas.map((x) => x.codigo));
+  chk('sin publicación propia: sigue con el modelo elegido', [null, 'Otro título'], [conPropia(undefined).existente, conPropia(undefined).familyName]);
+
   const item = s.armarItem({ modelo, producto: rem, variante: por['REM-N-S'] });
   chk('family_name y sin title ni variations', [true, false, false], [item.family_name === 'Remera Lisa', 'title' in item, 'variations' in item]);
   chk('SELLER_SKU de Stocker', 'REM-N-S', item.attributes.find((a) => a.id === 'SELLER_SKU').value_name);

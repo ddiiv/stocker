@@ -311,6 +311,10 @@ async function leerModelo(itemId, { headers, http = ml.httpML, mlUserId = null }
   return {
     itemId: String(item.id || itemId),
     titulo: item.title || item.family_name || null,
+    // Para sumar variantes a esta misma publicación: en User Products se agrupan por family_name.
+    familyName: item.family_name || null,
+    precio: item.price ?? null,
+    link: item.permalink || null,
     categoriaId: item.category_id,
     tipo: item.listing_type_id,
     tresCuotas: tiene3Cuotas(item),
@@ -370,9 +374,18 @@ function recortarFamilyName(nombre) {
  * variante (no el resto del producto): publicarla igual sería un error de ML
  * (talle fuera de la guía, sin foto) o una pérdida (sin costo).
  */
-function armarVista({ productos, datos, parametros: params, modelo, fotos, publicados }) {
+/*
+ * `propios`: skuAgrupador → la publicación que ese producto YA tiene en ML
+ * (leída como modelo), o { error } si no se pudo leer. Un producto con alguna
+ * variante publicada no abre otra familia: las que faltan se suman a la suya,
+ * con SU family_name, categoría, ficha y guía de talles, que es lo que hace que
+ * ML las agrupe en la misma publicación. El modelo elegido es para los nuevos.
+ */
+function armarVista({ productos, datos, parametros: params, modelo: elegido, propios = new Map(), fotos, publicados }) {
   return productos.map((pedido) => {
     const d = datos.get(pedido.skuAgrupador);
+    const propio = propios.get(pedido.skuAgrupador) || null;
+    const modelo = propio && !propio.error ? propio : elegido;
     if (!d) {
       return {
         skuAgrupador: pedido.skuAgrupador, familyName: null, variantes: [], publicables: 0, avisos: [],
@@ -381,17 +394,29 @@ function armarVista({ productos, datos, parametros: params, modelo, fotos, publi
     }
     const extraPct = pedido.extra != null ? Number(pedido.extra) : params.extraPct;
     const p = { ...params, extraPct };
-    const familyName = recortarFamilyName(pedido.familyName || d.titulo);
     const avisos = [];
-    if (familyName !== String(pedido.familyName || d.titulo).trim().replace(/\s+/g, ' ')) {
+    const existente = propio && !propio.error && propio.familyName ? propio : null;
+    // Con publicación propia el título no se elige: tiene que ser el de ella, o ML arma otra familia.
+    const titulo = existente ? existente.familyName : (pedido.familyName || d.titulo);
+    const familyName = existente ? existente.familyName : recortarFamilyName(titulo);
+    if (existente) {
+      avisos.push(`Este producto ya tiene publicación en Mercado Libre ("${existente.familyName}"): las variantes que faltan se suman a esa, con su categoría, ficha y guía de talles.`);
+    } else if (familyName !== String(titulo).trim().replace(/\s+/g, ' ')) {
       avisos.push(`El título pasaba de ${TOPE_FAMILY_NAME} caracteres: se publica como "${familyName}".`);
     }
+    // No se pudo leer la publicación que ya tiene, o es del formato viejo (con variaciones adentro): abrir otra la duplicaría.
+    const sinPropia = propio && !existente
+      ? problema('PUBLICACION_EXISTENTE', propio.error
+        ? `Este producto ya tiene publicación en Mercado Libre pero no se pudo leer (${propio.error}): probá de nuevo en un rato.`
+        : 'Este producto ya tiene una publicación del formato viejo (con las variantes adentro): las que faltan se agregan a mano en Mercado Libre.')
+      : null;
     const costoProducto = Number(d.costo) || 0;
     const [suPublico, elDelModelo] = [publicoDe(d.genero), publicoDe(modelo.genero)];
     // Un producto unisex puede ir con cualquier modelo (se avisa); uno de hombre, mujer o niños, sólo con uno de su público.
     const otroPublico = suPublico && elDelModelo && suPublico !== elDelModelo;
-    const generoDistinto = otroPublico && suPublico !== 'unisex';
-    if (otroPublico && !generoDistinto) avisos.push(`El producto es unisex y la publicación modelo es de ${modelo.genero}: se publica con ese género y su guía de talles.`);
+    // Si se suma a su propia publicación, el género ya es el de ella y ML ya lo aceptó: no se frena.
+    const generoDistinto = !existente && otroPublico && suPublico !== 'unisex';
+    if (!existente && otroPublico && !generoDistinto) avisos.push(`El producto es unisex y la publicación modelo es de ${modelo.genero}: se publica con ese género y su guía de talles.`);
     const variantes = d.variantes.map((v) => {
       const costo = Number(v.costo) > 0 ? Number(v.costo) : costoProducto;
       const precio = costo > 0 ? precioMl(costo, p) : null;
@@ -413,7 +438,7 @@ function armarVista({ productos, datos, parametros: params, modelo, fotos, publi
         precio, fotos: urls.slice(0, modelo.maxFotos), filaGuia: fila, talleGuia,
         yaPublicada: ya ? { itemId: ya.mlItemId, link: ya.permalink || ml.enlaceDe(ya.mlItemId) } : null,
         problemas,
-        publicable: !ya && !problemas.length && !generoDistinto,
+        publicable: !ya && !problemas.length && !generoDistinto && !sinPropia,
       };
     });
     if (modelo.tipo === 'gold_pro' && variantes.some((v) => v.precio && !v.precio.llevaCuotas)) {
@@ -427,8 +452,10 @@ function armarVista({ productos, datos, parametros: params, modelo, fotos, publi
       costo: costoProducto,
       precio: costoProducto > 0 ? precioMl(costoProducto, p) : null,
       avisos,
+      existente: existente ? { itemId: existente.itemId, link: existente.link || ml.enlaceDe(existente.itemId), familyName: existente.familyName, precio: existente.precio } : null,
       problemas: [
         ...(variantes.length ? [] : [problema('SIN_VARIANTES', 'No tiene variantes activas.')]),
+        ...(sinPropia ? [sinPropia] : []),
         ...(generoDistinto ? [problema('GENERO_DISTINTO', `Este producto es de ${d.genero} y la publicación modelo es de ${modelo.genero}: elegí un modelo de ${d.genero} (el género y la guía de talles se copian del modelo).`)] : []),
       ],
       publicables: variantes.filter((v) => v.publicable).length,
@@ -671,8 +698,20 @@ async function prepararVista(businessId, pedido, { fresco = false, http } = {}) 
     conCache(clavePublicados, TTL_PUBLICADOS_MS, async () => (await ml.destinosDeLaCuenta(cuenta, businessId)).porSku),
     datosDeStocker(businessId, productos.map((p) => p.skuAgrupador)),
   ]);
-  const vista = armarVista({ productos, datos, parametros: params, modelo, fotos: indice.porSku, publicados });
-  return { vista, modelo, params, headers, publicados, tienda: { url: params.tiendaUrl, fotosUrl: params.fotosUrl, productos: indice.productos, fallidos: indice.fallidos } };
+  const propios = new Map();
+  for (const { skuAgrupador } of productos) {
+    const ya = (datos.get(skuAgrupador)?.variantes || []).map((v) => publicados.get(v.sku)).find(Boolean);
+    if (!ya) continue;
+    try {
+      propios.set(skuAgrupador, await conCache(`modelo:${businessId}:${ya.mlItemId}`, TTL_MODELO_MS, () => leerModelo(ya.mlItemId, { headers, mlUserId: cuenta.mlUserId })));
+    } catch (e) {
+      propios.set(skuAgrupador, { error: e.message });
+    }
+  }
+  const vista = armarVista({ productos, datos, parametros: params, modelo, propios, fotos: indice.porSku, publicados });
+  // El modelo de cada producto: su propia publicación si ya tiene una, o el elegido.
+  const modeloDe = (prod) => { const m = propios.get(prod.skuAgrupador); return m && !m.error ? m : modelo; };
+  return { vista, modelo, modeloDe, params, headers, publicados, tienda: { url: params.tiendaUrl, fotosUrl: params.fotosUrl, productos: indice.productos, fallidos: indice.fallidos } };
 }
 
 const resumenDeModelo = (m) => ({
@@ -688,21 +727,21 @@ async function vistaPrevia(businessId, pedido) {
 }
 
 /** Los ítems a mandar: las variantes publicables, de los productos elegidos (y de `skus`, si se pide un subconjunto). */
-function itemsDe(vista, modelo, skus) {
+function itemsDe(vista, modeloDe, skus) {
   const items = [];
   for (const prod of vista) {
     for (const v of prod.variantes) {
       if (!v.publicable || (skus && !skus.includes(v.sku))) continue;
-      items.push({ sku: v.sku, payload: armarItem({ modelo, producto: prod, variante: v }), fantasma: !(v.stock > 0) });
+      items.push({ sku: v.sku, payload: armarItem({ modelo: modeloDe(prod), producto: prod, variante: v }), fantasma: !(v.stock > 0) });
     }
   }
   return items;
 }
 
 async function validar(businessId, pedido) {
-  const { vista, modelo, headers } = await prepararVista(businessId, pedido);
+  const { vista, modeloDe, headers } = await prepararVista(businessId, pedido);
   const skus = Array.isArray(pedido.skus) && pedido.skus.length ? pedido.skus.map(String) : null;
-  return validarItems({ items: itemsDe(vista, modelo, skus), headers });
+  return validarItems({ items: itemsDe(vista, modeloDe, skus), headers });
 }
 
 /*
@@ -711,9 +750,9 @@ async function validar(businessId, pedido) {
  * salteada (ya estaba), omitida (con sus problemas) o con el error de ML.
  */
 async function publicar(businessId, pedido, { onProgreso = () => {}, http } = {}) {
-  const { vista, modelo, headers, publicados } = await prepararVista(businessId, pedido, { fresco: true, http });
+  const { vista, modeloDe, headers, publicados } = await prepararVista(businessId, pedido, { fresco: true, http });
   const skus = Array.isArray(pedido.skus) && pedido.skus.length ? pedido.skus.map(String) : null;
-  const items = itemsDe(vista, modelo, skus);
+  const items = itemsDe(vista, modeloDe, skus);
   const alCrear = ({ sku, itemId, titulo }) => MercadoLibreLink.findOrCreate({
     where: { businessId, sku }, defaults: { businessId, sku, mlItemId: String(itemId), mlVariationId: null, titulo: titulo || null },
   });
