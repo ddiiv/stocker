@@ -230,6 +230,14 @@ const publicarValidar = async (req, res, next) => {
   try { res.json(await mlPublicar.validar(req.auth.businessId, req.body || {})); } catch (e) { next(e); }
 };
 
+const publicarDescuento = async (req, res, next) => {
+  try {
+    const pedido = req.body || {};
+    mlPublicar.validarPedido(pedido);
+    res.json(await mlPublicar.descontarPublicadas(req.auth.businessId, pedido));
+  } catch (e) { next(e); }
+};
+
 /*
  * Contesta que arrancó, no el resultado: cien variantes en serie son minutos y
  * el proxy corta el pedido. Se valida acá antes de arrancar para que un cuerpo
@@ -422,4 +430,4 @@ const notificacion = async (req, res) => {
 };
 
 module.exports = { status, authUrl, callback, disconnect, preview, sync, importarPedidos, getLocales, setLocales, listLinks, upsertLink, deleteLink, notificacion, cobertura, republicar, reactivar, importarEstado,
-  publicarParametros, publicarGuardarParametros, publicarVistaPrevia, publicarValidar, publicarTanda, publicarEstado };
+  publicarParametros, publicarGuardarParametros, publicarVistaPrevia, publicarValidar, publicarDescuento, publicarTanda, publicarEstado };

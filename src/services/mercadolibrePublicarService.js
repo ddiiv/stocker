@@ -816,6 +816,32 @@ async function validar(businessId, pedido) {
 }
 
 /*
+ * El descuento para lo que YA está publicado, de los productos elegidos: cada
+ * variante publicada queda anotada con el extra de su producto y se le pone en
+ * el momento si está activa (las pausadas, cuando se activen; después se renueva
+ * solo). Es para lo publicado antes de que existiera el descuento automático.
+ */
+async function descontarPublicadas(businessId, pedido, { http } = {}) {
+  const { vista, publicados } = await prepararVista(businessId, pedido, { fresco: true });
+  let marcadas = 0;
+  for (const prod of vista) {
+    if (!(prod.extraPct >= DESCUENTO_MIN_PCT)) continue;
+    for (const v of prod.variantes) {
+      const ya = publicados.get(v.sku);
+      if (!ya) continue;
+      const [link, nuevo] = await MercadoLibreLink.findOrCreate({
+        where: { businessId, sku: v.sku },
+        defaults: { businessId, sku: v.sku, mlItemId: String(ya.mlItemId), mlVariationId: ya.mlVariationId || null, descuentoPct: prod.extraPct },
+      });
+      if (!nuevo) await link.update({ descuentoPct: prod.extraPct, descuentoHasta: null });
+      marcadas += 1;
+    }
+  }
+  const r = marcadas ? await renovarDescuentos(await cuentaDe(businessId), { http }) : { renovados: 0, fallaron: 0 };
+  return { marcadas, puestos: r.renovados, fallaron: r.fallaron };
+}
+
+/*
  * La tanda. Corre como trabajo en segundo plano (ver el controlador): cien
  * variantes en serie son minutos. Devuelve cómo terminó cada SKU: publicada,
  * salteada (ya estaba), omitida (con sus problemas) o con el error de ML.
@@ -850,6 +876,6 @@ module.exports = {
   parametros, guardarParametros, validarParametros,
   precioMl, fotosPorColor, indiceDeFotos, leerModelo, armarVista, armarItem,
   publicarItems, validarItems, con429, ponerDescuento, renovarDescuentos,
-  vistaPrevia, validar, publicar, validarPedido,
+  vistaPrevia, validar, publicar, validarPedido, descontarPublicadas,
   __limpiarCache: () => cache.clear(),
 };

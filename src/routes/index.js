@@ -589,6 +589,7 @@ r.get   ('/mercadolibre/publicar/parametros',   ...permisoPublicar, mlCtrl.publi
 r.put   ('/mercadolibre/publicar/parametros',   ...permisoPublicar, mlCtrl.publicarGuardarParametros);
 r.post  ('/mercadolibre/publicar/vista-previa', ...permisoPublicar, mlCtrl.publicarVistaPrevia);
 r.post  ('/mercadolibre/publicar/validar',      ...permisoPublicar, mlCtrl.publicarValidar);
+r.post  ('/mercadolibre/publicar/descuento',    ...permisoPublicar, mlCtrl.publicarDescuento);
 r.post  ('/mercadolibre/publicar',              ...permisoPublicar, mlCtrl.publicarTanda);
 r.get   ('/mercadolibre/publicar/estado',       ...permisoPublicar, mlCtrl.publicarEstado);
 
