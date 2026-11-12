@@ -6,7 +6,7 @@ import {
 } from "lucide-react";
 import {
   previewMlSync, getMlPublicarParametros, setMlPublicarParametros, vistaPreviaMlPublicar,
-  validarMlPublicar, publicarMl, getMlPublicarEstado,
+  validarMlPublicar, descontarMlPublicadas, publicarMl, getMlPublicarEstado,
 } from "../services/mercadolibreService";
 import { fetchProductGroups } from "../services/productService";
 import { PageHeader, Card } from "../components/ui/Layout";
@@ -54,6 +54,7 @@ export default function MercadoLibrePublicarPage() {
   const [validacion, setValidacion] = useState(null);
   const [validando, setValidando] = useState(false);
   const [confirmar, setConfirmar] = useState(false);
+  const [descontando, setDescontando] = useState(false);
   const [trabajo, setTrabajo] = useState(null);
   const timer = useRef(null);
 
@@ -138,6 +139,18 @@ export default function MercadoLibrePublicarPage() {
     try { setValidacion((await validarMlPublicar(cuerpo())).porSku); }
     catch (e) { setError(msg(e, "No se pudo probar contra Mercado Libre.")); }
     setValidando(false);
+  }
+
+  // Las ya publicadas de los productos con 5 % o más de extra (ML no acepta menos).
+  const yaPublicadas = (previa?.productos || []).filter((p) => p.extraPct >= 5).reduce((n, p) => n + p.variantes.filter((v) => v.yaPublicada).length, 0);
+  async function descontar() {
+    if (!window.confirm(`Se le pone a ${yaPublicadas} publicación(es) que ya están en Mercado Libre un descuento igual al extra de su producto. Baja lo que paga el comprador: hacelo sólo si ese precio ya se publicó con el extra adentro. ¿Seguimos?`)) return;
+    setDescontando(true); setError(""); setAviso("");
+    try {
+      const r = await descontarMlPublicadas(cuerpo());
+      setAviso(`Descuento: ${r.puestos} puesto(s) ahora${r.fallaron ? `, ${r.fallaron} que Mercado Libre rechazó (se reintentan mañana)` : ""}. Las pausadas lo reciben cuando se activen.`);
+    } catch (e) { setError(msg(e, "No se pudo poner el descuento.")); }
+    setDescontando(false);
   }
 
   async function publicar() {
@@ -276,6 +289,11 @@ export default function MercadoLibrePublicarPage() {
             <button className="btn-accent" onClick={() => setConfirmar(true)} disabled={corriendo || desactualizada || !publicables}>
               Publicar {publicables} variante{publicables === 1 ? "" : "s"}
             </button>
+            {yaPublicadas > 0 && (
+              <button className="btn-ghost" onClick={descontar} disabled={descontando || corriendo || desactualizada}>
+                {descontando ? "Poniendo descuento…" : `Poner descuento a las ${yaPublicadas} ya publicadas`}
+              </button>
+            )}
             {validacion && <ResumenPrueba v={validacion} />}
           </div>
         </div>

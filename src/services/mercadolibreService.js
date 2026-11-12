@@ -165,6 +165,12 @@ export async function vistaPreviaMlPublicar(cuerpo) {
   return data;
 }
 
+/** Pone el descuento (el extra de cada producto) a las variantes ya publicadas de los productos elegidos. */
+export async function descontarMlPublicadas(cuerpo) {
+  const { data } = await http.post("/mercadolibre/publicar/descuento", cuerpo, { timeout: 600000 });
+  return data;
+}
+
 /** Valida contra ML sin publicar. Sincrónico, de a un ítem: puede tardar. */
 export async function validarMlPublicar(cuerpo) {
   const { data } = await http.post("/mercadolibre/publicar/validar", cuerpo, { timeout: 600000 });
