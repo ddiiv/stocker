@@ -952,6 +952,10 @@ const MercadoLibreLink = db.define('MercadoLibreLink', {
   ultimoStockEnviado: { type: DataTypes.INTEGER },
   ultimaSync:      { type: DataTypes.DATE },
   ultimoError:     { type: DataTypes.STRING(500) },
+  // El descuento propio que lleva esta publicación (el "extra" con que se publicó) y hasta cuándo está puesto
+  // en ML, que lo deja durar 14 días: el barrido lo renueva. Ver mercadolibrePublicarService.renovarDescuentos.
+  descuentoPct:    { type: DataTypes.FLOAT },
+  descuentoHasta:  { type: DataTypes.DATE },
 }, { tableName: 'mercadolibre_links' });
 
 /* ─── MercadoLibreMensaje (lo que escribe el comprador) ──────────

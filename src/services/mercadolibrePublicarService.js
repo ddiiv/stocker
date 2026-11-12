@@ -21,6 +21,7 @@
  */
 
 const axios = require('axios');
+const { Op } = require('sequelize');
 const { MercadoLibreAccount, MercadoLibreLink, Product, ProductVariant } = require('../models');
 const stockService = require('./stockService');
 const ml = require('./mercadolibreService');
@@ -539,6 +540,65 @@ async function con429(fn, { intentos = 4, baseMs = 1000, esperar = dormir } = {}
  */
 const mandar = (url, payload, { http, headers, esperar }) => con429(() => http.post(url, payload, { headers }), { esperar });
 
+// ── El descuento propio (seller-promotions, PRICE_DISCOUNT) ───────
+/*
+ * El precio se publica inflado por el "extra" justamente para poder mostrar
+ * ese descuento: acá se pone. ML lo deja durar 14 días como mucho (se piden 13
+ * para no pisar el borde) y exige 5 % o más, ítem activo y reputación verde;
+ * por eso una publicación pausada no lo recibe al crearse y `renovarDescuentos`
+ * lo pone cuando se activa y lo vuelve a poner cada vez que vence.
+ */
+const DESCUENTO_MIN_PCT = 5;
+const DIAS_DESCUENTO = 13;
+const UN_DIA_MS = 24 * 60 * 60 * 1000;
+const diaAr = (fecha) => new Date(fecha.getTime() - 3 * 60 * 60 * 1000).toISOString().slice(0, 10);
+
+async function ponerDescuento({ itemId, precio, pct, headers, http = ml.httpML, esperar = dormir, ahora = new Date() }) {
+  const hasta = new Date(ahora.getTime() + DIAS_DESCUENTO * UN_DIA_MS);
+  await con429(() => http.post(`${ML_API}/seller-promotions/items/${itemId}?app_version=v2`, {
+    // Para abajo: redondeado para arriba, un 5 % justo quedaría en 4,9 % y ML lo rechaza.
+    deal_price: Math.floor(precio * (1 - pct / 100)),
+    start_date: `${diaAr(ahora)}T00:00:00`,
+    finish_date: `${diaAr(hasta)}T00:00:00`,
+    promotion_type: 'PRICE_DISCOUNT',
+  }, { headers }), { esperar });
+  return hasta;
+}
+
+/*
+ * Pone el descuento a las publicaciones de la cuenta que lo llevan y no lo
+ * tienen vigente: las que vencieron y las que se crearon pausadas y ya están
+ * activas. Si ML lo rechaza (reputación, una oferta de ML encima) se reintenta
+ * al día siguiente, no en cada vuelta.
+ */
+async function renovarDescuentos(cuenta, { http = ml.httpML, esperar = dormir, ahora = new Date() } = {}) {
+  const links = await MercadoLibreLink.findAll({ where: {
+    businessId: cuenta.businessId, descuentoPct: { [Op.gte]: DESCUENTO_MIN_PCT },
+    [Op.or]: [{ descuentoHasta: null }, { descuentoHasta: { [Op.lt]: ahora } }],
+  } });
+  const r = { renovados: 0, fallaron: 0 };
+  if (!links.length) return r;
+  const headers = { Authorization: `Bearer ${await ml.tokenValido(cuenta)}` };
+  for (let i = 0; i < links.length; i += 20) {
+    const tanda = links.slice(i, i + 20);
+    const { data } = await con429(() => http.get(`${ML_API}/items`, { headers, params: { ids: tanda.map((l) => l.mlItemId).join(','), attributes: 'id,price,original_price,status' } }), { esperar });
+    const items = new Map((data || []).filter((x) => x.code === 200).map((x) => [String(x.body.id), x.body]));
+    for (const link of tanda) {
+      const item = items.get(link.mlItemId);
+      if (!item || item.status !== 'active') continue; // pausada: se mira de nuevo en la próxima vuelta
+      try {
+        const hasta = await ponerDescuento({ itemId: link.mlItemId, precio: item.original_price || item.price, pct: link.descuentoPct, headers, http, esperar, ahora });
+        await link.update({ descuentoHasta: hasta });
+        r.renovados += 1;
+      } catch (e) {
+        r.fallaron += 1;
+        await link.update({ descuentoHasta: new Date(ahora.getTime() + UN_DIA_MS), ultimoError: `Descuento: ${textoDeError(e)}`.slice(0, 500) }).catch(() => {});
+      }
+    }
+  }
+  return r;
+}
+
 /*
  * Publica los ítems de a uno (en serie: ML limita los pedidos por app y un 429
  * a mitad de tanda es peor que ir de a uno).
@@ -563,7 +623,7 @@ async function publicarItems({ items, publicados, http = ml.httpML, headers, esp
   const vistos = new Set(publicados instanceof Map ? publicados.keys() : publicados);
   onProgreso({ total: items.length, hechos: 0, porSku });
   let hechos = 0;
-  for (const { sku, payload, fantasma } of items) {
+  for (const { sku, payload, fantasma, descuentoPct = null } of items) {
     if (vistos.has(sku)) {
       porSku[sku] = { estado: 'salteada', motivo: 'Ese SKU ya está publicado en Mercado Libre.' };
     } else {
@@ -583,8 +643,19 @@ async function publicarItems({ items, publicados, http = ml.httpML, headers, esp
             porSku[sku].avisos = [...(porSku[sku].avisos || []), `OJO: se publicó con 1 unidad que no existe y no se pudo pasar a 0 (${textoDeError(e)}). Pausala a mano en Mercado Libre.`];
           }
         }
+        // El descuento por el que se infló el precio. La pausada no lo admite: lo pone el barrido cuando se active.
+        const llevaDescuento = descuentoPct >= DESCUENTO_MIN_PCT;
+        let descuentoHasta = null;
+        if (llevaDescuento && !fantasma) {
+          try {
+            descuentoHasta = await ponerDescuento({ itemId: data.id, precio: payload.price, pct: descuentoPct, headers, http, esperar });
+            porSku[sku].descuentoPct = descuentoPct;
+          } catch (e) {
+            porSku[sku].avisos = [...(porSku[sku].avisos || []), `Se publicó, pero Mercado Libre no aceptó el descuento del ${descuentoPct} % (${textoDeError(e)}). Se vuelve a intentar solo en una hora.`];
+          }
+        }
         // Sin esto, la búsqueda de ML tarda en mostrar lo recién creado y reintentar la tanda lo duplicaría.
-        try { await alCrear({ sku, itemId: data.id, titulo: payload.family_name }); } catch (e) {
+        try { await alCrear({ sku, itemId: data.id, titulo: payload.family_name, descuentoPct: llevaDescuento ? descuentoPct : null, descuentoHasta }); } catch (e) {
           porSku[sku].avisos = [...(porSku[sku].avisos || []), `Se publicó, pero no se pudo guardar el vínculo con el SKU (${e.message}): vinculalo a mano para que se sincronice el stock.`];
         }
       } catch (err) {
@@ -732,7 +803,7 @@ function itemsDe(vista, modeloDe, skus) {
   for (const prod of vista) {
     for (const v of prod.variantes) {
       if (!v.publicable || (skus && !skus.includes(v.sku))) continue;
-      items.push({ sku: v.sku, payload: armarItem({ modelo: modeloDe(prod), producto: prod, variante: v }), fantasma: !(v.stock > 0) });
+      items.push({ sku: v.sku, payload: armarItem({ modelo: modeloDe(prod), producto: prod, variante: v }), fantasma: !(v.stock > 0), descuentoPct: prod.extraPct });
     }
   }
   return items;
@@ -753,8 +824,8 @@ async function publicar(businessId, pedido, { onProgreso = () => {}, http } = {}
   const { vista, modeloDe, headers, publicados } = await prepararVista(businessId, pedido, { fresco: true, http });
   const skus = Array.isArray(pedido.skus) && pedido.skus.length ? pedido.skus.map(String) : null;
   const items = itemsDe(vista, modeloDe, skus);
-  const alCrear = ({ sku, itemId, titulo }) => MercadoLibreLink.findOrCreate({
-    where: { businessId, sku }, defaults: { businessId, sku, mlItemId: String(itemId), mlVariationId: null, titulo: titulo || null },
+  const alCrear = ({ sku, itemId, titulo, descuentoPct, descuentoHasta }) => MercadoLibreLink.findOrCreate({
+    where: { businessId, sku }, defaults: { businessId, sku, mlItemId: String(itemId), mlVariationId: null, titulo: titulo || null, descuentoPct, descuentoHasta },
   });
   const { porSku } = await publicarItems({ items, publicados, headers, onProgreso, alCrear });
   cache.delete(`publicados:${businessId}`);
@@ -778,7 +849,7 @@ module.exports = {
   PARAMETROS_POR_DEFECTO,
   parametros, guardarParametros, validarParametros,
   precioMl, fotosPorColor, indiceDeFotos, leerModelo, armarVista, armarItem,
-  publicarItems, validarItems, con429,
+  publicarItems, validarItems, con429, ponerDescuento, renovarDescuentos,
   vistaPrevia, validar, publicar, validarPedido,
   __limpiarCache: () => cache.clear(),
 };

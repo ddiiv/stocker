@@ -31,6 +31,7 @@ const jumpseller = require('./jumpsellerService');
 const arca = require('./arcaService');
 const postventa = require('./mercadolibrePostventaService');
 const mlPedidos = require('./mercadolibrePedidosService');
+const mlPublicar = require('./mercadolibrePublicarService');
 const cola = require('./colaVentasOnlineService');
 const planes = require('./planService');
 const { MercadoLibreAccount, JumpsellerAccount } = require('../models');
@@ -54,6 +55,9 @@ const DEMORA_INICIAL_MS = 60 * 1000;
 
 let timer = null;
 let corriendo = false;
+// Los descuentos duran días: con mirarlos una vez por hora alcanza, no en cada barrido.
+const DESCUENTOS_CADA_MS = 60 * 60 * 1000;
+let ultimosDescuentos = 0;
 
 /**
  * Un barrido: cada cuenta conectada y con sincronización activa.
@@ -79,7 +83,20 @@ async function barrerStockMl() {
   let reclamosNuevos = 0;
   let enviosCambiados = 0;
 
+  const tocanDescuentos = Date.now() - ultimosDescuentos >= DESCUENTOS_CADA_MS;
+  if (tocanDescuentos) ultimosDescuentos = Date.now();
+
   for (const cuenta of conectadas) {
+    // Los descuentos propios que vencieron (ML los deja durar 14 días). En su try: no pueden frenar el stock.
+    if (tocanDescuentos) {
+      try {
+        const d = await mlPublicar.renovarDescuentos(cuenta);
+        if (d.renovados || d.fallaron) log.info('ml-descuentos', 'barrido periódico', { businessId: cuenta.businessId, ...d });
+      } catch (e) {
+        log.warn('ml-descuentos', 'la renovación de descuentos falló', { businessId: cuenta.businessId, motivo: e.message?.slice(0, 200) });
+      }
+    }
+
     /*
      * Los mensajes y los reclamos van en su propio try.
      *

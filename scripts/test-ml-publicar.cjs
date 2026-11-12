@@ -262,6 +262,51 @@ const sinEspera = async () => {};
   await s.publicarItems({ items: mkItems(['A', 'A']), publicados: new Set(), http, headers: {}, esperar: sinEspera });
   chk('el mismo SKU dos veces en una tanda se manda una sola', ['A'], posts);
 
+  // El descuento propio: se pone al crear si el extra llega al 5 %, y no a la pausada.
+  const promos = [];
+  const httpD = { post: async (url, c) => {
+    if (url.includes('/seller-promotions/')) { promos.push([url.split('/items/')[1].split('?')[0], c.deal_price, c.promotion_type, c.finish_date > c.start_date]); return { data: {} }; }
+    return { data: { id: `MLA${url.length}${promos.length}` } };
+  }, put: async () => ({ data: {} }) };
+  const conD = (sku, extra) => ({ ...mkItems([sku])[0], payload: { ...mkItems([sku])[0].payload, price: 20001 }, ...extra });
+  const guardados = [];
+  const rD = await s.publicarItems({
+    items: [conD('D1', { descuentoPct: 5 }), conD('D2', { descuentoPct: 5, fantasma: true }), conD('D3', { descuentoPct: 3 }), conD('D4', {})],
+    publicados: new Set(), http: httpD, headers: {}, esperar: sinEspera, alCrear: async (c) => { guardados.push([c.sku, c.descuentoPct, !!c.descuentoHasta]); },
+  });
+  chk('descuento sólo a la activa con extra de 5 % o más, redondeado para abajo', [[rD.porSku.D1.itemId, 19000, 'PRICE_DISCOUNT', true]], promos);
+  chk('se guarda cuál lleva descuento (la pausada también, para cuando se active)', [['D1', 5, true], ['D2', 5, false], ['D3', null, false], ['D4', null, false]], guardados);
+  const httpDFalla = { post: async (url) => { if (url.includes('/seller-promotions/')) throw Object.assign(new Error('400'), { response: { status: 400, data: { message: 'buyer_discount_not_in_range' } } }); return { data: { id: 'MLA77' } }; } };
+  const rDF = await s.publicarItems({ items: [conD('D5', { descuentoPct: 10 })], publicados: new Set(), http: httpDFalla, headers: {}, esperar: sinEspera });
+  chk('si ML rechaza el descuento, queda publicada y avisado', ['publicada', true], [rDF.porSku.D5.estado, /no aceptó el descuento/.test(rDF.porSku.D5.avisos.join(' '))]);
+
+  // La renovación: sólo a las activas; si ML la rechaza, se reintenta al día siguiente. (Los vínculos y el token, falsos.)
+  const { MercadoLibreLink } = require('../src/models');
+  const mlSrv = require('../src/services/mercadolibreService');
+  const [findAllReal, tokenReal] = [MercadoLibreLink.findAll, mlSrv.tokenValido];
+  const mkLink = (id) => ({ mlItemId: id, descuentoPct: 10, cambios: null, async update(c) { this.cambios = c; } });
+  const links = [mkLink('MLA1'), mkLink('MLA2'), mkLink('MLA3')];
+  MercadoLibreLink.findAll = async () => links;
+  mlSrv.tokenValido = async () => 't';
+  const ahora = new Date('2026-11-11T15:00:00Z');
+  const renovadas = [];
+  const httpR = {
+    get: async () => ({ data: [
+      { code: 200, body: { id: 'MLA1', price: 900, original_price: 1000, status: 'active' } },
+      { code: 200, body: { id: 'MLA2', price: 1000, status: 'paused' } },
+      { code: 200, body: { id: 'MLA3', price: 1000, status: 'active' } },
+    ] }),
+    post: async (url, c) => {
+      if (url.includes('MLA3')) throw Object.assign(new Error('400'), { response: { status: 400, data: { message: 'no' } } });
+      renovadas.push([c.deal_price, c.start_date, c.finish_date]); return { data: {} };
+    },
+  };
+  const rR = await s.renovarDescuentos({ businessId: 1 }, { http: httpR, esperar: sinEspera, ahora });
+  MercadoLibreLink.findAll = findAllReal; mlSrv.tokenValido = tokenReal;
+  chk('renueva la activa sobre el precio sin descuento, por 13 días', [[900, '2026-11-11T00:00:00', '2026-11-24T00:00:00']], renovadas);
+  chk('cuenta renovadas y fallidas', { renovados: 1, fallaron: 1 }, rR);
+  chk('la pausada no se toca; la rechazada se reintenta mañana', [true, null, '2026-11-12T15:00:00.000Z'], [links[0].cambios.descuentoHasta > ahora, links[1].cambios, links[2].cambios.descuentoHasta.toISOString()]);
+
   let intentos = 0;
   const esperas = [];
   const http429 = { post: async () => {

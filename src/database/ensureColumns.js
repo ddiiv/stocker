@@ -73,6 +73,11 @@ const COLUMNAS_ESPERADAS = {
     // Los parámetros de la publicación en tanda (precio, tienda de las fotos). Ver mercadolibrePublicarService.
     publicarConfig: { type: DataTypes.TEXT, allowNull: true },
   },
+  mercadolibre_links: {
+    // El descuento propio de la publicación y hasta cuándo está puesto. Ver el modelo.
+    descuentoPct: { type: DataTypes.FLOAT, allowNull: true },
+    descuentoHasta: { type: DataTypes.DATE, allowNull: true },
+  },
   plataforma_pedido_items: {
     // El reparto de la reserva entre locales. Ver el modelo: sin esto, un
     // pedido repartido no se podía despachar ni devolver.
