@@ -31,7 +31,7 @@ const clave = (v) => String(v ?? "").trim().normalize("NFD").replace(/[̀-ͯ]/g,
 const claveFila = (valores = []) => valores.map((v) => clave(v.valor)).join("|");
 
 export default function BulkVariantsModal({ open, onClose, group, onCreated }) {
-  const productId = group?.variants?.[0]?.productId;
+  const productId = group?.variants?.[0]?.productId ?? group?.productId;
 
   const [tipos, setTipos] = useState([]);
   const [cargandoTipos, setCargandoTipos] = useState(false);
@@ -57,10 +57,18 @@ export default function BulkVariantsModal({ open, onClose, group, onCreated }) {
 
   // Los ejes del producto: los define la variante de referencia, no la tabla
   // maestra. Un producto de Color/Talle no puede recibir uno por Sabor.
+  // Sin variantes todavía no hay referencia: los ejes se eligen acá, de la tabla maestra (hasta dos).
+  const sinVariantes = !group?.variants?.length;
+  const [ejesElegidos, setEjesElegidos] = useState([]);
   const ejes = useMemo(() => {
-    const v = group?.variants?.[0];
+    if (sinVariantes) return ejesElegidos;
+    const v = group.variants[0];
     return [v?.variante1Nombre, v?.variante2Nombre].filter(Boolean);
-  }, [group]);
+  }, [group, sinVariantes, ejesElegidos]);
+  const alternarEje = (nombre) => {
+    setEjesElegidos((prev) => (prev.includes(nombre) ? prev.filter((n) => n !== nombre) : prev.length < 2 ? [...prev, nombre] : prev));
+    setElegidos((prev) => ({ ...prev, [nombre]: new Set() }));
+  };
 
   // Qué combinaciones ya tiene el producto, para marcarlas en los chips.
   const yaUsados = useMemo(() => {
@@ -77,7 +85,12 @@ export default function BulkVariantsModal({ open, onClose, group, onCreated }) {
     if (!open) return;
     setError(""); setPlan(null); setElegidos({}); setStock(0); setManuales({});
     setCargandoTipos(true);
-    fetchVariantTypes().then(setTipos).catch(() => setTipos([])).finally(() => setCargandoTipos(false));
+    setEjesElegidos([]);
+    fetchVariantTypes().then((ts) => {
+      setTipos(ts);
+      // Lo de siempre en ropa, ya tildado: Color primero y Talle después, si el negocio los tiene.
+      setEjesElegidos(["color", "talle"].map((n) => ts.find((t) => clave(t.nombre) === n && t.valores?.length)?.nombre).filter(Boolean));
+    }).catch(() => setTipos([])).finally(() => setCargandoTipos(false));
     fetchPos().then((ls) => {
       setLocales(ls);
       if (ls.length === 1) setLocationId(String(ls[0].id));
@@ -187,6 +200,29 @@ export default function BulkVariantsModal({ open, onClose, group, onCreated }) {
             No hay valores cargados para {faltanEnMaestra.join(" ni ")} en la tabla maestra.{" "}
             <Link to="/stock/variantes" className="underline">Cargalos ahí</Link> y volvé.
           </p>
+        )}
+
+        {!cargandoTipos && sinVariantes && (
+          <div>
+            <label className="label">Este producto todavía no tiene variantes. ¿Por qué se diferencian? (hasta dos; el primero que elijas va primero)</label>
+            {tipos.filter((t) => t.valores?.length).length ? (
+              <div className="flex flex-wrap gap-1.5">
+                {tipos.filter((t) => t.valores?.length).map((t) => {
+                  const en = ejesElegidos.indexOf(t.nombre);
+                  return (
+                    <button type="button" key={t.nombre} onClick={() => alternarEje(t.nombre)} aria-pressed={en >= 0}
+                      className={`rounded-full border px-3 py-1 text-xs transition-colors ${en >= 0 ? "border-teal-600 bg-teal-600 text-paper-50" : "border-line bg-paper-50 text-ink-700 hover:bg-paper-100"}`}>
+                      {en >= 0 && `${en + 1}. `}{t.nombre}
+                    </button>
+                  );
+                })}
+              </div>
+            ) : (
+              <p className="rounded-md bg-brass-50 px-3 py-2 text-xs text-brass-800">
+                La tabla maestra está vacía. <Link to="/stock/variantes" className="underline">Cargá ahí los colores y talles</Link> y volvé.
+              </p>
+            )}
+          </div>
         )}
 
         {maestras.map(({ eje, valores }) => valores?.length ? (

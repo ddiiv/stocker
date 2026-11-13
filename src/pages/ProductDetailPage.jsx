@@ -114,7 +114,7 @@ export default function ProductDetailPage() {
    * uno solo.
    */
   async function handleCreateVariant(values) {
-    const productId = group?.variants?.[0]?.productId;
+    const productId = group?.variants?.[0]?.productId ?? group?.productId;
     if (!productId) throw new Error("Este producto no tiene una variante de referencia.");
     await createVariant(productId, values);
     await load();

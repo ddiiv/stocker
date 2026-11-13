@@ -49,6 +49,8 @@ function groupBySkuAgrupador(products) {
     if (!map.has(key)) {
       map.set(key, {
         skuAgrupador: key,
+        // Para el producto que todavía no tiene variantes: sin esto no hay de dónde sacar su id.
+        productId: p.id,
         title: p.titulo,
         modelo: p.modelo,
         // La descripción viaja porque el formulario de edición la precarga: sin
