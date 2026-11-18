@@ -48,3 +48,12 @@ stocker/
 backisu_project/
 Ventoy/
 .aider*
+
+# Credenciales: nunca al repo (el repo es público). Los .env.example sí se versionan.
+.env.*
+!.env.example
+*.env
+!*.env.example
+*.pfx
+certs/
+.claude/settings.local.json
