@@ -479,7 +479,9 @@ function armarItem({ modelo, producto, variante }) {
   const llevaCuotas = variante.precio.llevaCuotas;
   const tipo = !llevaCuotas && modelo.tipo === 'gold_pro' ? 'gold_special' : modelo.tipo;
   const atributos = [...modelo.atributos];
-  if (variante.color) atributos.push({ id: 'COLOR', value_name: String(variante.color) });
+  // Si la publicación ya tiene ese color, el MISMO valor de ML: con otro nombre ("Azul" y "Azul marino") ML lo muestra como otro color.
+  if (variante.colorMl) atributos.push({ ...variante.colorMl });
+  else if (variante.color) atributos.push({ id: 'COLOR', value_name: String(variante.color) });
   if (variante.talle) atributos.push({ id: 'SIZE', value_name: String(variante.talleGuia || variante.talle) });
   if (modelo.guia) {
     atributos.push({ id: 'SIZE_GRID_ID', value_name: modelo.guia.id });
@@ -510,6 +512,63 @@ function armarItem({ modelo, producto, variante }) {
   if (producto.descripcion) item.description = { plain_text: producto.descripcion };
   if (modelo.tresCuotas && llevaCuotas) item.tags = [TAG_3_CUOTAS];
   return item;
+}
+
+// ── El color con que ya está publicada cada variante ──────────────
+/*
+ * En User Products cada variante es un ítem y ML arma el selector de color con
+ * el atributo COLOR de cada uno: dos ítems del mismo color de Stocker con
+ * valores distintos ("Azul" y "Azul marino") aparecen como dos colores. Pasa
+ * cuando la publicación vieja se hizo con un nombre y Stocker usa otro.
+ *
+ * Por cada color de Stocker (el cruce es por SKU, no por nombre) devuelve el
+ * valor que tiene la mayoría de sus ítems (a igualdad, el del ítem más viejo)
+ * y los ítems que se desviaron de él.
+ */
+const claveColor = (c) => String(c ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase();
+const mismoColor = (a, b) => (a.value_id && b.value_id ? a.value_id === b.value_id : claveColor(a.value_name) === claveColor(b.value_name));
+const numeroDeItem = (id) => Number(String(id).replace(/\D/g, '')) || 0;
+
+async function coloresPublicados({ variantes, publicados, headers, http = ml.httpML, esperar = dormir }) {
+  const colorDeItem = new Map();
+  for (const v of variantes) {
+    const p = publicados.get(v.sku);
+    // Con mlVariationId es una publicación del formato viejo: ahí el color es de la variación, no del ítem.
+    if (p?.mlItemId && !p.mlVariationId && v.color) colorDeItem.set(String(p.mlItemId), v.color);
+  }
+  const ids = [...colorDeItem.keys()];
+  const porColor = new Map();
+  for (let i = 0; i < ids.length; i += 20) {
+    const { data } = await con429(() => http.get(`${ML_API}/items`, { headers, params: { ids: ids.slice(i, i + 20).join(','), attributes: 'id,attributes' } }), { esperar });
+    for (const r of data || []) {
+      if (r.code !== 200 || !r.body) continue;
+      const a = (r.body.attributes || []).find((x) => x.id === 'COLOR');
+      if (!a || (a.value_name == null && !a.value_id)) continue;
+      const color = colorDeItem.get(String(r.body.id));
+      const attr = a.value_id && a.value_id !== '-1'
+        ? { id: 'COLOR', value_id: String(a.value_id), value_name: String(a.value_name ?? '') }
+        : { id: 'COLOR', value_name: String(a.value_name) };
+      const k = claveColor(color);
+      if (!porColor.has(k)) porColor.set(k, { color, items: [] });
+      porColor.get(k).items.push({ itemId: String(r.body.id), attr });
+    }
+  }
+  const salida = new Map();
+  for (const [k, { color, items }] of porColor) {
+    const valores = [];
+    for (const it of items) {
+      const g = valores.find((x) => mismoColor(x.attr, it.attr));
+      if (g) { g.n += 1; g.viejo = Math.min(g.viejo, numeroDeItem(it.itemId)); } else valores.push({ attr: it.attr, n: 1, viejo: numeroDeItem(it.itemId) });
+    }
+    valores.sort((a, b) => b.n - a.n || a.viejo - b.viejo);
+    const canonico = valores[0].attr;
+    salida.set(k, {
+      color, canonico,
+      valores: valores.map((x) => x.attr.value_name),
+      aCambiar: items.filter((it) => !mismoColor(it.attr, canonico)).map((it) => ({ itemId: it.itemId, de: it.attr.value_name })),
+    });
+  }
+  return salida;
 }
 
 // ── Hablar con ML ─────────────────────────────────────────────────
@@ -780,6 +839,22 @@ async function prepararVista(businessId, pedido, { fresco = false, http } = {}) 
     }
   }
   const vista = armarVista({ productos, datos, parametros: params, modelo, propios, fotos: indice.porSku, publicados });
+  // Producto con publicación: cada variante nueva va con el color tal como ya figura en ML, y se avisa si hay colores repetidos.
+  for (const prod of vista) {
+    const m = propios.get(prod.skuAgrupador);
+    if (!m || m.error) continue;
+    try {
+      const colores = await coloresPublicados({ variantes: prod.variantes, publicados, headers, http });
+      for (const v of prod.variantes) { const c = colores.get(claveColor(v.color)); if (c) v.colorMl = c.canonico; }
+      prod.coloresDispersos = [...colores.values()].filter((c) => c.aCambiar.length)
+        .map((c) => ({ color: c.color, queda: c.canonico.value_name, valores: c.valores, aCambiar: c.aCambiar }));
+      for (const c of prod.coloresDispersos) {
+        prod.avisos.push(`En Mercado Libre el color ${c.color} figura repartido como ${c.valores.map((x) => `"${x}"`).join(' y ')}: con "Unificar colores" quedan ${c.aCambiar.length} variante(s) como "${c.queda}".`);
+      }
+    } catch (e) {
+      prod.avisos.push(`No se pudo leer cómo figuran los colores en Mercado Libre (${textoDeError(e)}): las variantes nuevas van con el nombre de Stocker.`);
+    }
+  }
   // El modelo de cada producto: su propia publicación si ya tiene una, o el elegido.
   const modeloDe = (prod) => { const m = propios.get(prod.skuAgrupador); return m && !m.error ? m : modelo; };
   return { vista, modelo, modeloDe, params, headers, publicados, tienda: { url: params.tiendaUrl, fotosUrl: params.fotosUrl, productos: indice.productos, fallidos: indice.fallidos } };
@@ -813,6 +888,32 @@ async function validar(businessId, pedido) {
   const { vista, modeloDe, headers } = await prepararVista(businessId, pedido);
   const skus = Array.isArray(pedido.skus) && pedido.skus.length ? pedido.skus.map(String) : null;
   return validarItems({ items: itemsDe(vista, modeloDe, skus), headers });
+}
+
+/*
+ * Unifica los colores repetidos de las publicaciones que ya existen: a cada
+ * ítem que se desvió le pone el COLOR que tiene la mayoría de su color de
+ * Stocker. Sólo toca ese atributo.
+ */
+async function unificarColores(businessId, pedido, { http = ml.httpML, esperar = dormir } = {}) {
+  const { vista, headers } = await prepararVista(businessId, pedido, { fresco: true, http });
+  const porItem = {};
+  for (const prod of vista) {
+    for (const c of prod.coloresDispersos || []) {
+      const canonico = prod.variantes.find((v) => claveColor(v.color) === claveColor(c.color))?.colorMl;
+      for (const { itemId, de } of c.aCambiar) {
+        try {
+          await con429(() => http.put(`${ML_API}/items/${itemId}`, { attributes: [canonico] }, { headers }), { esperar });
+          porItem[itemId] = { estado: 'unificado', de, a: c.queda };
+        } catch (e) {
+          porItem[itemId] = { estado: 'error', de, a: c.queda, error: textoDeError(e) };
+        }
+      }
+    }
+  }
+  cache.delete(`publicados:${businessId}`);
+  const n = (estado) => Object.values(porItem).filter((r) => r.estado === estado).length;
+  return { unificados: n('unificado'), fallaron: n('error'), porItem };
 }
 
 /*
@@ -876,6 +977,6 @@ module.exports = {
   parametros, guardarParametros, validarParametros,
   precioMl, fotosPorColor, indiceDeFotos, leerModelo, armarVista, armarItem,
   publicarItems, validarItems, con429, ponerDescuento, renovarDescuentos,
-  vistaPrevia, validar, publicar, validarPedido, descontarPublicadas,
+  vistaPrevia, validar, publicar, validarPedido, descontarPublicadas, unificarColores, coloresPublicados,
   __limpiarCache: () => cache.clear(),
 };

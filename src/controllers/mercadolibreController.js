@@ -230,6 +230,14 @@ const publicarValidar = async (req, res, next) => {
   try { res.json(await mlPublicar.validar(req.auth.businessId, req.body || {})); } catch (e) { next(e); }
 };
 
+const publicarUnificarColores = async (req, res, next) => {
+  try {
+    const pedido = req.body || {};
+    mlPublicar.validarPedido(pedido);
+    res.json(await mlPublicar.unificarColores(req.auth.businessId, pedido));
+  } catch (e) { next(e); }
+};
+
 const publicarDescuento = async (req, res, next) => {
   try {
     const pedido = req.body || {};
@@ -430,4 +438,4 @@ const notificacion = async (req, res) => {
 };
 
 module.exports = { status, authUrl, callback, disconnect, preview, sync, importarPedidos, getLocales, setLocales, listLinks, upsertLink, deleteLink, notificacion, cobertura, republicar, reactivar, importarEstado,
-  publicarParametros, publicarGuardarParametros, publicarVistaPrevia, publicarValidar, publicarDescuento, publicarTanda, publicarEstado };
+  publicarParametros, publicarGuardarParametros, publicarVistaPrevia, publicarValidar, publicarDescuento, publicarUnificarColores, publicarTanda, publicarEstado };

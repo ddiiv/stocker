@@ -307,6 +307,24 @@ const sinEspera = async () => {};
   chk('cuenta renovadas y fallidas', { renovados: 1, fallaron: 1 }, rR);
   chk('la pausada no se toca; la rechazada se reintenta mañana', [true, null, '2026-11-12T15:00:00.000Z'], [links[0].cambios.descuentoHasta > ahora, links[1].cambios, links[2].cambios.descuentoHasta.toISOString()]);
 
+  // Colores ya publicados: el cruce es por SKU; gana el valor de la mayoría y, a igualdad, el del ítem más viejo.
+  const pubC = new Map([['AZ-S', { mlItemId: 'MLA10' }], ['AZ-M', { mlItemId: 'MLA11' }], ['AZ-L', { mlItemId: 'MLA30' }], ['NE-S', { mlItemId: 'MLA12' }], ['NE-M', { mlItemId: 'MLA40' }], ['VIEJA', { mlItemId: 'MLA5', mlVariationId: '9' }]]);
+  const colorItem = { MLA10: { value_id: '52028', value_name: 'Azul' }, MLA11: { value_id: '52028', value_name: 'Azul' }, MLA30: { value_name: 'Azul marino' }, MLA12: { value_name: 'Negro' }, MLA40: { value_name: 'negro ' } };
+  const pedidos = [];
+  const httpC = { get: async (url, o) => { pedidos.push(o.params.ids); return { data: o.params.ids.split(',').map((id) => ({ code: 200, body: { id, attributes: [{ id: 'COLOR', ...colorItem[id] }] } })) }; } };
+  const varsC = [{ sku: 'AZ-S', color: 'Azul marino' }, { sku: 'AZ-M', color: 'Azul marino' }, { sku: 'AZ-L', color: 'Azul marino' }, { sku: 'NE-S', color: 'Negro' }, { sku: 'NE-M', color: 'Negro' }, { sku: 'VIEJA', color: 'Rojo' }, { sku: 'NUEVA', color: 'Azul marino' }];
+  const cols = await s.coloresPublicados({ variantes: varsC, publicados: pubC, headers: {}, http: httpC, esperar: sinEspera });
+  const azul = cols.get('azul marino');
+  chk('el color de la mayoría (con su value_id) es el que queda', { id: 'COLOR', value_id: '52028', value_name: 'Azul' }, azul.canonico);
+  chk('el que se desvió queda para cambiar', [{ itemId: 'MLA30', de: 'Azul marino' }], azul.aCambiar);
+  chk('mismo nombre con mayúsculas o espacios no cuenta como distinto', [], cols.get('negro').aCambiar);
+  chk('la del formato viejo (con variación) no se lee', false, pedidos.join(',').includes('MLA5'));
+  const conColorMl = s.armarItem({ modelo: { ...modelo, guia: null }, producto: { familyName: 'X' }, variante: { color: 'Azul marino', colorMl: azul.canonico, sku: 'NUEVA', precio: { publicado: 1, llevaCuotas: false, llevaEnvio: false }, stock: 1, fotos: [] } });
+  chk('la variante nueva va con el color tal como figura en ML', azul.canonico, conColorMl.attributes.find((a) => a.id === 'COLOR'));
+  const empate = await s.coloresPublicados({ variantes: [{ sku: 'A', color: 'Azul' }, { sku: 'B', color: 'Azul' }], publicados: new Map([['A', { mlItemId: 'MLA90' }], ['B', { mlItemId: 'MLA20' }]]), headers: {}, esperar: sinEspera,
+    http: { get: async () => ({ data: [{ code: 200, body: { id: 'MLA90', attributes: [{ id: 'COLOR', value_name: 'Celeste' }] } }, { code: 200, body: { id: 'MLA20', attributes: [{ id: 'COLOR', value_name: 'Azul' }] } }] }) } });
+  chk('a igualdad, el del ítem más viejo', ['Azul', 'MLA90'], [empate.get('azul').canonico.value_name, empate.get('azul').aCambiar[0].itemId]);
+
   let intentos = 0;
   const esperas = [];
   const http429 = { post: async () => {
