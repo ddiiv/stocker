@@ -165,6 +165,12 @@ export async function vistaPreviaMlPublicar(cuerpo) {
   return data;
 }
 
+/** Unifica los colores repetidos (mismo color de Stocker con distinto nombre en ML) de las publicaciones de los productos elegidos. */
+export async function unificarColoresMl(cuerpo) {
+  const { data } = await http.post("/mercadolibre/publicar/unificar-colores", cuerpo, { timeout: 600000 });
+  return data;
+}
+
 /** Pone el descuento (el extra de cada producto) a las variantes ya publicadas de los productos elegidos. */
 export async function descontarMlPublicadas(cuerpo) {
   const { data } = await http.post("/mercadolibre/publicar/descuento", cuerpo, { timeout: 600000 });

@@ -6,7 +6,7 @@ import {
 } from "lucide-react";
 import {
   previewMlSync, getMlPublicarParametros, setMlPublicarParametros, vistaPreviaMlPublicar,
-  validarMlPublicar, descontarMlPublicadas, publicarMl, getMlPublicarEstado,
+  validarMlPublicar, descontarMlPublicadas, unificarColoresMl, publicarMl, getMlPublicarEstado,
 } from "../services/mercadolibreService";
 import { fetchProductGroups } from "../services/productService";
 import { PageHeader, Card } from "../components/ui/Layout";
@@ -55,6 +55,7 @@ export default function MercadoLibrePublicarPage() {
   const [validando, setValidando] = useState(false);
   const [confirmar, setConfirmar] = useState(false);
   const [descontando, setDescontando] = useState(false);
+  const [unificando, setUnificando] = useState(false);
   const [trabajo, setTrabajo] = useState(null);
   const timer = useRef(null);
 
@@ -143,6 +144,19 @@ export default function MercadoLibrePublicarPage() {
 
   // Las ya publicadas de los productos con 5 % o más de extra (ML no acepta menos).
   const yaPublicadas = (previa?.productos || []).filter((p) => p.extraPct >= 5).reduce((n, p) => n + p.variantes.filter((v) => v.yaPublicada).length, 0);
+  const aUnificar = (previa?.productos || []).reduce((n, p) => n + (p.coloresDispersos || []).reduce((m, c) => m + c.aCambiar.length, 0), 0);
+  async function unificar() {
+    if (!window.confirm(`Se le cambia el color en Mercado Libre a ${aUnificar} variante(s) ya publicadas, para que cada color de Stocker figure con un solo nombre. ¿Seguimos?`)) return;
+    setUnificando(true); setError(""); setAviso("");
+    try {
+      const r = await unificarColoresMl(cuerpo());
+      const errores = Object.entries(r.porItem).filter(([, x]) => x.estado === "error").map(([id, x]) => `${id}: ${x.error}`);
+      setAviso(`Colores: ${r.unificados} variante(s) unificadas.${r.fallaron ? ` ${r.fallaron} no se pudieron: ${errores.join(" · ")}` : ""}`);
+      await armarPrevia();
+    } catch (e) { setError(msg(e, "No se pudieron unificar los colores.")); }
+    setUnificando(false);
+  }
+
   async function descontar() {
     if (!window.confirm(`Se le pone a ${yaPublicadas} publicación(es) que ya están en Mercado Libre un descuento igual al extra de su producto. Baja lo que paga el comprador: hacelo sólo si ese precio ya se publicó con el extra adentro. ¿Seguimos?`)) return;
     setDescontando(true); setError(""); setAviso("");
@@ -289,6 +303,11 @@ export default function MercadoLibrePublicarPage() {
             <button className="btn-accent" onClick={() => setConfirmar(true)} disabled={corriendo || desactualizada || !publicables}>
               Publicar {publicables} variante{publicables === 1 ? "" : "s"}
             </button>
+            {aUnificar > 0 && (
+              <button className="btn-ghost" onClick={unificar} disabled={unificando || corriendo || desactualizada}>
+                {unificando ? "Unificando colores…" : `Unificar colores (${aUnificar})`}
+              </button>
+            )}
             {yaPublicadas > 0 && (
               <button className="btn-ghost" onClick={descontar} disabled={descontando || corriendo || desactualizada}>
                 {descontando ? "Poniendo descuento…" : `Poner descuento a las ${yaPublicadas} ya publicadas`}
