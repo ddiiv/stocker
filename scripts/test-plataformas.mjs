@@ -39,11 +39,11 @@ const NADA = emp({ clientes: 'ver' });
 const STOCK_VIEJO = emp({ stock: 'ver' });
 
 tit('1. QUIÉN VE QUÉ PESTAÑA');
-chk('el dueño ve las cinco', ['/plataformas', '/plataformas/mercadolibre', '/plataformas/jumpseller', '/plataformas/tienda', '/plataformas/mayoristas'],
+chk('el dueño ve las cuatro', ['/plataformas', '/plataformas/mercadolibre', '/plataformas/tienda', '/plataformas/mayoristas'],
   pestanasDePlataformas(DUENIO).map((t) => t.to));
 chk('un vendedor: Resumen y Mayoristas (la bandeja de siempre)', ['/plataformas', '/plataformas/mayoristas'],
   pestanasDePlataformas(VENTAS).map((t) => t.to));
-chk('integraciones sin ventas: todo menos Mayoristas', ['/plataformas', '/plataformas/mercadolibre', '/plataformas/jumpseller', '/plataformas/tienda'],
+chk('integraciones sin ventas: todo menos Mayoristas', ['/plataformas', '/plataformas/mercadolibre', '/plataformas/tienda'],
   pestanasDePlataformas(INTEGR_VER).map((t) => t.to));
 chk('un cargo sin ninguno de los dos no ve nada', [], pestanasDePlataformas(NADA));
 chk('sin sesión, nada', [], pestanasDePlataformas(null));
@@ -65,7 +65,6 @@ chk('Mercado Libre, con la query del regreso intacta', '/plataformas/mercadolibr
   destinoDeRutaVieja('/integraciones/mercadolibre', '?ml_ok=1'));
 chk('   y con el error de Mercado Libre', '/plataformas/mercadolibre?ml_error=Algo%20fall%C3%B3',
   destinoDeRutaVieja('/integraciones/mercadolibre', '?ml_error=Algo%20fall%C3%B3'));
-chk('Jumpseller', '/plataformas/jumpseller', destinoDeRutaVieja('/integraciones/jumpseller'));
 chk('Pedidos mayoristas, con el ancla', '/plataformas/mayoristas#x', destinoDeRutaVieja('/pedidos-mayoristas', '', '#x'));
 chk('una dirección que no es vieja no se toca', null, destinoDeRutaVieja('/stock'));
 
@@ -84,7 +83,6 @@ tit('4. LAS RUTAS, LAS PESTAÑAS Y EL MENÚ DICEN LO MISMO');
 // Cada pestaña existe como ruta hija, con la puerta del permiso que dice la pestaña.
 const hijas = {
   '/plataformas/mercadolibre': /path="mercadolibre"\s+element={<PermissionRoute permission="integraciones">/,
-  '/plataformas/jumpseller': /path="jumpseller"\s+element={<PermissionRoute permission="integraciones">/,
   '/plataformas/tienda': /path="tienda"\s+element={<PermissionRoute permission="integraciones">/,
   '/plataformas/mayoristas': /path="mayoristas"\s+element={<PermissionRoute permission="ventas">/,
 };
@@ -104,8 +102,8 @@ chk('quien sólo tiene integraciones rebota a Plataformas, no a la ruta vieja', 
 const sidebar = leer('src/components/layout/Sidebar.jsx');
 chk('el menú tiene UN ítem Plataformas', 1, (sidebar.match(/label: "Plataformas"/g) || []).length);
 chk('   que se ve con integraciones o ventas', true, /to: "\/plataformas", label: "Plataformas", icon: Plug, permisos: PERMISOS_PLATAFORMAS/.test(sidebar));
-chk('   y ya no están los tres ítems sueltos', [false, false, false],
-  ['/integraciones/mercadolibre', '/integraciones/jumpseller', '/pedidos-mayoristas'].map((r) => sidebar.includes(`to: "${r}"`)));
+chk('   y ya no están los ítems sueltos', [false, false],
+  ['/integraciones/mercadolibre', '/pedidos-mayoristas'].map((r) => sidebar.includes(`to: "${r}"`)));
 chk('el grupo se llama "Negocio" (no "Configuración")', [true, false],
   [/titulo: "Negocio"/.test(sidebar), /titulo: "Configuración"/.test(sidebar)]);
 chk('el menú sabe mirar una lista de permisos', true, /l\.permisos\.some\(\(p\) => canView\(user, p\)\)/.test(sidebar));
@@ -121,7 +119,7 @@ const recorrer = (dir) => {
 };
 recorrer(path.join(aqui, '..', 'src'));
 const conViejas = archivos
-  .filter((f) => /["'`]\/(integraciones\/(mercadolibre|jumpseller)|pedidos-mayoristas)/.test(readFileSync(f, 'utf8')))
+  .filter((f) => /["'`]\/(integraciones\/(mercadolibre)|pedidos-mayoristas)/.test(readFileSync(f, 'utf8')))
   .map((f) => path.relative(path.join(aqui, '..'), f)).sort();
 chk('nadie más enlaza a las direcciones viejas', ['src/App.jsx', 'src/utils/plataformas.js'], conViejas);
 

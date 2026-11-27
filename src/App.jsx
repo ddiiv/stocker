@@ -50,7 +50,6 @@ const VariantTypesPage = lazy(() => import("./pages/VariantTypesPage"));
 const MercadoLibrePage = lazy(() => import("./pages/MercadoLibrePage"));
 const MercadoLibrePublicarPage = lazy(() => import("./pages/MercadoLibrePublicarPage"));
 const MercadoLibrePublicacionesPage = lazy(() => import("./pages/MercadoLibrePublicacionesPage"));
-const JumpsellerPage = lazy(() => import("./pages/JumpsellerPage"));
 const SalesTimelinePage = lazy(() => import("./pages/SalesTimelinePage"));
 const ProductMetricsPage = lazy(() => import("./pages/ProductMetricsPage"));
 const StockMovementsPage = lazy(() => import("./pages/StockMovementsPage"));
@@ -159,14 +158,12 @@ export default function App() {
               <Route path="mercadolibre"  element={<PermissionRoute permission="integraciones"><MercadoLibrePage /></PermissionRoute>} />
               <Route path="mercadolibre/publicar" element={<PermissionRoute permission="integraciones"><MercadoLibrePublicarPage /></PermissionRoute>} />
               <Route path="mercadolibre/publicaciones" element={<PermissionRoute permission="integraciones"><MercadoLibrePublicacionesPage /></PermissionRoute>} />
-              <Route path="jumpseller"    element={<PermissionRoute permission="integraciones"><JumpsellerPage /></PermissionRoute>} />
               <Route path="tienda"        element={<PermissionRoute permission="integraciones"><TiendaPropiaPage /></PermissionRoute>} />
               <Route path="mayoristas"    element={<PermissionRoute permission="ventas"><MayoristasPage /></PermissionRoute>} />
             </Route>
             {/* Las direcciones de antes redirigen con la query intacta: el
                 regreso de Mercado Libre (?ml_ok=1) en vuelo y los favoritos. */}
             <Route path="/integraciones/mercadolibre"   element={<RedirigirRutaVieja />} />
-            <Route path="/integraciones/jumpseller"     element={<RedirigirRutaVieja />} />
 
             {/*
               Dirección que no existe.

@@ -87,7 +87,7 @@ const GRUPOS = [
       { to: "/pagos",     label: "Métodos de pago", icon: CreditCard, permission: "pagos" },
       /*
        * Un solo ítem para todo lo que conecta el negocio con dónde vende
-       * (decisión del dueño): Mercado Libre, Jumpseller, la tienda propia y
+       * (decisión del dueño): Mercado Libre, la tienda propia y
        * los pedidos mayoristas son pestañas adentro. Lo ve quien tiene
        * integraciones O ventas: la bandeja mayorista es de los vendedores y
        * vive acá, así que pedir sólo integraciones se la habría escondido.

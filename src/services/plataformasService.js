@@ -5,7 +5,7 @@ import { http } from "../lib/http";
  * cotización de un desarrollo a medida.
  *
  * El estado no trae ningún token (ni de las credenciales de máquina, ni de
- * Mercado Libre, ni de Jumpseller): sólo si está conectada, desde cuándo y
+ * Mercado Libre): sólo si está conectada, desde cuándo y
  * cuándo se usó por última vez.
  */
 

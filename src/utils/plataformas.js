@@ -7,7 +7,7 @@ import { canView, canEdit, esAdministradorTotal } from "./permissions.js";
  * Es UN solo ítem del menú (decisión del dueño) con pestañas que reusan las
  * pantallas de siempre. Cada pestaña conserva el permiso que tenía su pantalla:
  *
- *   · Mercado Libre, Jumpseller y Tienda propia → integraciones.
+ *   · Mercado Libre y Tienda propia → integraciones.
  *   · Mayoristas → ventas, como la bandeja de antes. Pasarla a integraciones
  *     le habría sacado la bandeja a los vendedores que la usan todos los días.
  *   · Resumen → cualquiera de los dos: es la puerta de la sección.
@@ -18,7 +18,6 @@ import { canView, canEdit, esAdministradorTotal } from "./permissions.js";
 export const PESTANAS_PLATAFORMAS = [
   { to: "/plataformas",              label: "Resumen",       end: true, permisos: ["integraciones", "ventas"] },
   { to: "/plataformas/mercadolibre", label: "Mercado Libre",            permisos: ["integraciones"] },
-  { to: "/plataformas/jumpseller",   label: "Jumpseller",               permisos: ["integraciones"] },
   { to: "/plataformas/tienda",       label: "Tienda propia",            permisos: ["integraciones"] },
   { to: "/plataformas/mayoristas",   label: "Mayoristas",               permisos: ["ventas"] },
 ];
@@ -54,7 +53,6 @@ export function puedePedirCotizacion(user) {
  */
 export const RUTAS_VIEJAS = {
   "/integraciones/mercadolibre": "/plataformas/mercadolibre",
-  "/integraciones/jumpseller": "/plataformas/jumpseller",
   "/pedidos-mayoristas": "/plataformas/mayoristas",
 };
 

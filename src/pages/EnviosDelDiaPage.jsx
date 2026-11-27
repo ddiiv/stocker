@@ -843,7 +843,7 @@ export default function EnviosDelDiaPage() {
                 : "No hay envíos para despachar en esta jornada."}
             </p>
             <p className="mt-1 text-xs text-ink-500">
-              Los pedidos aparecen acá apenas entran de Mercado Libre o Jumpseller.
+              Los pedidos aparecen acá apenas entran de Mercado Libre, tu tienda o el portal mayorista.
             </p>
           </div>
         </Card>

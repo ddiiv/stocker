@@ -24,7 +24,7 @@ import { useAuth } from "../../context/AuthContext";
  */
 const QUE_HACE = [
   "Tu página muestra el catálogo, los precios y el stock que Stocker tiene para vender online (los locales que abastecen la venta web, menos el margen de seguridad).",
-  "Cada venta de la página entra a Stocker y aparta la mercadería en el momento, por la misma cola que Mercado Libre y Jumpseller: dos canales nunca venden la última unidad.",
+  "Cada venta de la página entra a Stocker y aparta la mercadería en el momento, por la misma cola que Mercado Libre: dos canales nunca venden la última unidad.",
   "Los cobros que registra la página y los despachos que hacés en Stocker quedan unidos al mismo pedido, y la página se entera de cada cambio.",
 ];
 

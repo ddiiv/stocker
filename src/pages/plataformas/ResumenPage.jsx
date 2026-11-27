@@ -25,12 +25,6 @@ const TARJETAS = [
     como: "Autorizás tu cuenta de Mercado Libre. Stocker publica el stock por SKU y trae las ventas.",
   },
   {
-    clave: "jumpseller",
-    icono: Store,
-    to: "/plataformas/jumpseller",
-    como: "Cargás la clave de tu tienda Jumpseller. Stocker le manda el stock y trae los pedidos.",
-  },
-  {
     clave: "tienda",
     icono: Globe,
     to: "/plataformas/tienda",
