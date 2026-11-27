@@ -56,7 +56,11 @@ http.interceptors.response.use(
     }
     // Un empleado suspendido por el plan que intenta entrar no es un permiso
     // que le falta: el login muestra el motivo que manda el servidor.
-    if (status === 403 && onForbidden && err.response?.data?.codigo !== "EMPLEADO_SUSPENDIDO_PLAN") {
+    // En "Mis publicaciones" un 403 también es "esa publicación no es de tu
+    // cuenta": la pantalla muestra ese texto, no el aviso de permisos.
+    const idAjeno = /\/mercadolibre\/admin\//.test(err.config?.url || "")
+      && /no son de tu cuenta/.test(err.response?.data?.message || "");
+    if (status === 403 && onForbidden && !idAjeno && err.response?.data?.codigo !== "EMPLEADO_SUSPENDIDO_PLAN") {
       const msg = err.response?.data?.message || "";
       // Parseamos "Sin permiso de <level> en <modulo>." para mostrar el modal correcto
       const match = msg.match(/Sin permiso de (\w+) en (\w+)/);

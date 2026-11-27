@@ -25,6 +25,7 @@ const CAMPOS = [
   ["impuestos", "Impuestos", "$"],
   ["umbral", "Desde qué precio lleva envío y cuotas", "$"],
   ["extraPct", "Extra para descuentos (por defecto)", "%"],
+  ["pesoGramos", "Peso del paquete (para calcular costos)", "gramos"],
 ];
 
 export default function MercadoLibrePublicarPage() {
@@ -187,7 +188,12 @@ export default function MercadoLibrePublicarPage() {
       <PageHeader
         title="Publicar en Mercado Libre"
         subtitle="Elegí productos de Stocker y publicalos de a muchos, con los datos de una publicación tuya como modelo"
-        actions={<Link className="btn-ghost" to="/plataformas/mercadolibre"><ArrowLeft size={15} /> Volver</Link>}
+        actions={
+          <>
+            <Link className="btn-ghost" to="/plataformas/mercadolibre/publicaciones">Mis publicaciones</Link>
+            <Link className="btn-ghost" to="/plataformas/mercadolibre"><ArrowLeft size={15} /> Volver</Link>
+          </>
+        }
       />
 
       {error && (

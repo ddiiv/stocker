@@ -192,3 +192,60 @@ export async function getMlPublicarEstado() {
   const { data } = await http.get("/mercadolibre/publicar/estado");
   return data;
 }
+
+/*
+ * "Mis publicaciones" y la calculadora de precios. Las escrituras de muchos
+ * ítems y la vista previa se mandan en tandas desde la pantalla: el proxy corta
+ * a los 30 segundos.
+ */
+const ADMIN = "/mercadolibre/admin";
+
+export async function getMlPublicaciones(params) {
+  const { data } = await http.get(`${ADMIN}/publicaciones`, { params });
+  return data;
+}
+
+export async function getMlDescripcion(itemId) {
+  const { data } = await http.get(`${ADMIN}/descripcion/${encodeURIComponent(itemId)}`);
+  return data;
+}
+
+export async function setMlDescripcion(itemIds, texto) {
+  const { data } = await http.put(`${ADMIN}/descripcion`, { itemIds, texto });
+  return data;
+}
+
+export async function renombrarMl(itemIds, nombre) {
+  const { data } = await http.put(`${ADMIN}/nombre`, { itemIds, nombre });
+  return data;
+}
+
+export async function setMlEstadoPublicaciones(itemIds, estado) {
+  const { data } = await http.post(`${ADMIN}/estado`, { itemIds, estado });
+  return data;
+}
+
+export async function unificarColoresPublicacionesMl(itemIds) {
+  const { data } = await http.post(`${ADMIN}/unificar-colores`, { itemIds });
+  return data;
+}
+
+export async function calcularPrecioMl(cuerpo) {
+  const { data } = await http.post(`${ADMIN}/calcular`, cuerpo);
+  return data;
+}
+
+export async function vistaPreviaPreciosMl(cuerpo) {
+  const { data } = await http.post(`${ADMIN}/precios/vista-previa`, cuerpo);
+  return data;
+}
+
+export async function aplicarPreciosMl(cambios) {
+  const { data } = await http.post(`${ADMIN}/precios/aplicar`, { cambios });
+  return data;
+}
+
+export async function getMlPreciosEstado() {
+  const { data } = await http.get(`${ADMIN}/precios/estado`);
+  return data;
+}

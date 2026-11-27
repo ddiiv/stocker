@@ -251,6 +251,7 @@ export default function MercadoLibrePage() {
           status?.conectado && (
             <>
               <Link className="btn-accent" to="/plataformas/mercadolibre/publicar"><Plus size={15} /> Publicar productos</Link>
+              <Link className="btn-ghost" to="/plataformas/mercadolibre/publicaciones">Mis publicaciones</Link>
               <button className="btn-ghost" onClick={desconectar}><Unlink size={15} /> Desconectar</button>
             </>
           )

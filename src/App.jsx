@@ -49,6 +49,7 @@ const ClientAccountsPage = lazy(() => import("./pages/ClientAccountsPage"));
 const VariantTypesPage = lazy(() => import("./pages/VariantTypesPage"));
 const MercadoLibrePage = lazy(() => import("./pages/MercadoLibrePage"));
 const MercadoLibrePublicarPage = lazy(() => import("./pages/MercadoLibrePublicarPage"));
+const MercadoLibrePublicacionesPage = lazy(() => import("./pages/MercadoLibrePublicacionesPage"));
 const JumpsellerPage = lazy(() => import("./pages/JumpsellerPage"));
 const SalesTimelinePage = lazy(() => import("./pages/SalesTimelinePage"));
 const ProductMetricsPage = lazy(() => import("./pages/ProductMetricsPage"));
@@ -157,6 +158,7 @@ export default function App() {
               <Route index                element={<PlataformasResumenPage />} />
               <Route path="mercadolibre"  element={<PermissionRoute permission="integraciones"><MercadoLibrePage /></PermissionRoute>} />
               <Route path="mercadolibre/publicar" element={<PermissionRoute permission="integraciones"><MercadoLibrePublicarPage /></PermissionRoute>} />
+              <Route path="mercadolibre/publicaciones" element={<PermissionRoute permission="integraciones"><MercadoLibrePublicacionesPage /></PermissionRoute>} />
               <Route path="jumpseller"    element={<PermissionRoute permission="integraciones"><JumpsellerPage /></PermissionRoute>} />
               <Route path="tienda"        element={<PermissionRoute permission="integraciones"><TiendaPropiaPage /></PermissionRoute>} />
               <Route path="mayoristas"    element={<PermissionRoute permission="ventas"><MayoristasPage /></PermissionRoute>} />
