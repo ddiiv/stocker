@@ -36,6 +36,18 @@ const r2 = (n) => Math.round(n * 100) / 100;
 const numero = (x) => (x == null || x === '' || !Number.isFinite(Number(x)) ? null : Number(x));
 const dormir = (ms) => new Promise((listo) => setTimeout(listo, ms));
 
+/*
+ * Un rechazo de ML fuera de los PUT por ítem (leer el catálogo, renovar el
+ * token) llega sin `status` y el manejador lo tapaba con "Error interno del
+ * servidor": acá sale con el pedido que falló y el texto de ML.
+ */
+function conMotivo(e) {
+  if (e.status || !(e.isAxiosError || e.response)) return e;
+  // Sin la query: no aporta y puede llevar datos.
+  const pedido = `${String(e.config?.method || '').toUpperCase()} ${String(e.config?.url || '').replace(ML_API, '').split('?')[0]}`.trim();
+  return Object.assign(new Error(`Mercado Libre rechazó un pedido (${pedido || 'sin datos'}). ${pub.textoDeError(e)}`), { status: 502 });
+}
+
 async function conectar(businessId) {
   const cuenta = await MercadoLibreAccount.findOne({ where: { businessId } });
   if (!cuenta) throw error400('No hay una cuenta de MercadoLibre conectada.');
@@ -780,6 +792,7 @@ async function aplicarPrecios({ businessId, cuenta, headers, plan }, { onProgres
 }
 
 module.exports = {
+  conMotivo,
   listar, leerDescripcion, guardarDescripcion, renombrar, cambiarEstado, unificarColores,
   calcular, vistaPreviaPrecios, prepararPrecios, aplicarPrecios,
   agrupar, problemasDe, cotizar, buscarPrecio,

@@ -273,7 +273,7 @@ const publicarEstado = async (req, res, next) => {
  * Todo contesta en el pedido salvo aplicar precios, que va como trabajo.
  */
 const admin = (fn) => async (req, res, next) => {
-  try { res.json(await fn(req.auth.businessId, req)); } catch (e) { next(e); }
+  try { res.json(await fn(req.auth.businessId, req)); } catch (e) { next(mlAdmin.conMotivo(e)); }
 };
 
 const adminListar = admin((negocio, { query }) => mlAdmin.listar(negocio, {

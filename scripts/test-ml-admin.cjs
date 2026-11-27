@@ -135,6 +135,11 @@ publicables.cantidadesPublicables = async () => new Map([[1, { cantidad: 4 }], [
   chk('un error no frena al resto y sale textual', [2, 1, 'ML 400: item.description.type.invalid'], [d.cambiadas, d.fallaron, d.resultados[1].error]);
   chk('texto plano tal cual lo escribió', 'Talle < 40 >\nAlgodón', escrituras[0][1].plain_text);
 
+  const deMl = a.conMotivo(Object.assign(new Error('x'), { isAxiosError: true, config: { method: 'get', url: 'https://api.mercadolibre.com/items/bulk?ids=MLA1' }, response: { status: 429, data: { message: 'too_many_requests' } } }));
+  chk('un rechazo de ML sale con el pedido y su texto, no como error interno', [502, true], [deMl.status, /GET \/items\/bulk\). ML 429: too_many_requests/.test(deMl.message)]);
+  const propio = new Error('bug');
+  chk('un error que no es de ML queda como estaba', [propio, undefined], [a.conMotivo(propio), propio.status]);
+
   tit('Renombrar: se corta en el primer error');
   escrituras.length = 0;
   const n = await a.renombrar(1, { itemIds: ['MLA1', 'MLA2', 'MLA3'], nombre: 'Remera  Nueva' });
