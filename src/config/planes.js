@@ -27,7 +27,7 @@
  */
 const FEATURES = {
   FACTURACION:          'facturacion',          // emitir comprobantes ARCA
-  ECOMMERCE:            'ecommerce',            // Mercado Libre y Jumpseller
+  ECOMMERCE:            'ecommerce',            // Mercado Libre
   CUENTAS_CORRIENTES:   'cuentasCorrientes',    // fiado / B2B
   /*
    * Las dos conexiones de máquina: una página propia que vende online y el
@@ -93,10 +93,10 @@ const CATALOGO_FEATURES = [
   { clave: FEATURES.EVENTOS,            label: 'Eventos: vender sin llevar stock',    ayuda: 'Catálogo de evento: se registra qué se vendió, no cuánto queda.' },
   { clave: FEATURES.CUENTAS_CORRIENTES, label: 'Cuentas corrientes y fiado',          ayuda: 'Vender a cuenta y llevar el saldo del cliente.' },
   /*
-   * Decía «Mercado Libre» a secas, pero la misma clave abre Jumpseller: un
+   * La clave se llama `ecommerce` y hoy abre Mercado Libre: un
    * plan que la incluye da las dos, y la tarjeta tiene que decirlo.
    */
-  { clave: FEATURES.ECOMMERCE,          label: 'Mercado Libre y Jumpseller',          ayuda: 'Sincronizar el stock y traer las ventas de Mercado Libre y de una tienda Jumpseller.' },
+  { clave: FEATURES.ECOMMERCE,          label: 'Mercado Libre',                       ayuda: 'Publicar, sincronizar el stock y traer las ventas de Mercado Libre.' },
   { clave: FEATURES.TIENDA_PROPIA,      label: 'Tienda online propia conectada',      ayuda: 'Una página propia que pregunta catálogo, precios y stock, y manda sus ventas a Stocker. La credencial la emite el equipo de Stocker.' },
   { clave: FEATURES.PORTAL_MAYORISTA,   label: 'Portal de pedidos mayoristas',        ayuda: 'Los pedidos que arman los clientes mayoristas en su portal llegan a una bandeja para aceptarlos o rechazarlos.' },
   { clave: FEATURES.DEPOSITO,           label: 'Depósito: ingreso de mercadería',     ayuda: 'Recibir mercadería, cargarla por series y generar etiquetas.' },
@@ -161,7 +161,7 @@ const PLANES = [
   {
     codigo: 'pro',
     nombre: 'Plan Pro',
-    descripcion: 'Para vender por varios canales: depósito, Mercado Libre, Jumpseller, tienda propia y portal mayorista.',
+    descripcion: 'Para vender por varios canales: depósito, Mercado Libre, tienda propia y portal mayorista.',
     precioMensual: 97800,
     maxCuits: 2,
     maxEmpleados: 10,

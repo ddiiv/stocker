@@ -921,27 +921,6 @@ const MercadoLibreAccount = db.define('MercadoLibreAccount', {
 }, { tableName: 'mercadolibre_accounts' });
 
 // ─── MercadoLibreLink (vínculo SKU Stocker ↔ publicación ML) ─────
-/* ─── JumpsellerAccount (la tienda conectada) ────────────────────
- *
- * Una tienda por negocio, con la clave que el dueño copia de su panel
- * (Cuenta → Preferencias → API): un Login Key y un Auth Token que se mandan
- * como usuario y contraseña. Jumpseller también tiene OAuth, pero eso exige
- * registrar una app y aprobarla; con la clave el negocio conecta su tienda hoy.
- *
- * La clave es de la tienda entera: se guarda acá, no en el código ni en una
- * variable de entorno, porque cada negocio tiene la suya.
- */
-const JumpsellerAccount = db.define('JumpsellerAccount', {
-  id:              { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
-  businessId:      { type: DataTypes.INTEGER, allowNull: false, unique: true },
-  tienda:          { type: DataTypes.STRING(120) },
-  loginKey:        { type: DataTypes.TEXT },
-  authToken:       { type: DataTypes.TEXT },
-  syncActiva:      { type: DataTypes.BOOLEAN, defaultValue: true },
-  ultimaSync:      { type: DataTypes.DATE },
-  ultimoError:     { type: DataTypes.STRING(500) },
-}, { tableName: 'jumpseller_accounts' });
-
 const MercadoLibreLink = db.define('MercadoLibreLink', {
   id:              { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
   businessId:      { type: DataTypes.INTEGER, allowNull: false },
@@ -2603,7 +2582,7 @@ module.exports = {
   Business, BusinessLocation, BusinessCuit, BusinessArcaConfig, ArcaToken, VariantType, VariantStock,
   ArcaIntento,
   MercadoLibreAccount,
-  JumpsellerAccount, MercadoLibreLink, MercadoLibreMensaje, MercadoLibreReclamo,
+  MercadoLibreLink, MercadoLibreMensaje, MercadoLibreReclamo,
   PedidoPlataforma, PedidoPlataformaItem, PlataformaCobro,
   Role, Employee, EmployeeSession, SesionCuenta, PasswordResetCode, AccountChangeCode, Client,
   Product, ProductVariant, StockMovement, PrecioCambio, PrecioCambioDetalle,

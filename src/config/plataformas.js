@@ -11,7 +11,6 @@
  *
  *   mercadolibre  El negocio autoriza su cuenta de Mercado Libre (OAuth) y
  *                 Stocker va a buscar las ventas y publica el stock.
- *   jumpseller    El negocio carga la clave de su tienda Jumpseller.
  *   tienda        Una página propia que habla el contrato de movimientos con
  *                 una credencial de máquina (origen 'tienda').
  *   mayorista     El portal de pedidos mayoristas, con una credencial de
@@ -25,7 +24,6 @@ const { FEATURES } = require('./planes');
 
 const PLATAFORMAS = [
   { clave: 'mercadolibre', nombre: 'Mercado Libre',    feature: FEATURES.ECOMMERCE },
-  { clave: 'jumpseller',   nombre: 'Jumpseller',       feature: FEATURES.ECOMMERCE },
   { clave: 'tienda',       nombre: 'Tienda propia',    feature: FEATURES.TIENDA_PROPIA,    origen: 'tienda' },
   { clave: 'mayorista',    nombre: 'Portal mayorista', feature: FEATURES.PORTAL_MAYORISTA, origen: 'isuwaya' },
 ];

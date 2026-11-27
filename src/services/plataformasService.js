@@ -13,7 +13,7 @@
  * ── Lo que NO sale de acá ────────────────────────────────────────
  *
  * Ningún token: ni el de las credenciales de máquina (ni su hash, ni la pista),
- * ni los de Mercado Libre, ni la clave de Jumpseller. Se lee cada tabla con la
+ * ni los de Mercado Libre. Se lee cada tabla con la
  * lista de columnas que hace falta y nada más: un `findAll` sin `attributes`
  * es como un token termina viajando el día que alguien agrega un campo al
  * JSON.
@@ -22,7 +22,7 @@
 const { Op } = require('sequelize');
 const {
   Business, Plan, IntegracionExterna, SolicitudMayorista, Employee,
-  MercadoLibreAccount, JumpsellerAccount, CotizacionDesarrollo,
+  MercadoLibreAccount, CotizacionDesarrollo,
 } = require('../models');
 const { PLATAFORMAS } = require('../config/plataformas');
 const { CASILLAS } = require('../config/correo');
@@ -74,17 +74,13 @@ async function planMinimoPara(clave) {
 async function estadoDePlataformas(businessId) {
   const { estadoDe, heredaFeature } = require('./planService');
 
-  const [estado, negocio, ml, js, credenciales, pendientes, totalSolicitudes, ultimaCotizacion] = await Promise.all([
+  const [estado, negocio, ml, credenciales, pendientes, totalSolicitudes, ultimaCotizacion] = await Promise.all([
     estadoDe(businessId),
     Business.findByPk(businessId, { attributes: ['id', 'nombreNegocio', 'featuresHeredadas'] }),
     MercadoLibreAccount.findOne({
       where: { businessId },
       // refreshToken se pide sólo para saber si hay; no sale de esta función.
       attributes: ['id', 'nickname', 'refreshToken', 'ultimaSync', 'ultimoError'],
-    }),
-    JumpsellerAccount.findOne({
-      where: { businessId },
-      attributes: ['id', 'tienda', 'ultimaSync', 'ultimoError'],
     }),
     IntegracionExterna.findAll({
       where: { businessId, activa: true },
@@ -120,9 +116,6 @@ async function estadoDePlataformas(businessId) {
     if (p.clave === 'mercadolibre') {
       conectada = Boolean(ml?.refreshToken);
       if (ml) detalle = { cuenta: ml.nickname || null, ultimaSync: ml.ultimaSync, conError: Boolean(ml.ultimoError) };
-    } else if (p.clave === 'jumpseller') {
-      conectada = Boolean(js);
-      if (js) detalle = { cuenta: js.tienda || null, ultimaSync: js.ultimaSync, conError: Boolean(js.ultimoError) };
     } else if (p.origen) {
       const c = credPorOrigen.get(p.origen);
       conectada = Boolean(c);

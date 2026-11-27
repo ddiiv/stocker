@@ -9,7 +9,7 @@
  *      empieza a rebotar pedidos el día del despliegue.
  *   2. Que el estado que ve el cliente no lleve NINGÚN token: ni el de las
  *      credenciales de máquina (ni su hash, ni la pista), ni los de Mercado
- *      Libre, ni la clave de Jumpseller.
+ *      Libre.
  *   3. Que la cotización se guarde aunque el mail falle o se cuelgue, y que
  *      sólo la puedan pedir el dueño y los cargos con integraciones en edición.
  *
@@ -77,7 +77,7 @@ async function api(token, metodo, ruta, json) {
   const db = require('../src/config/database');
   const {
     Business, Subscription, Plan, Role, Employee, SesionCuenta, IntegracionExterna, PlatformSetting,
-    MercadoLibreAccount, JumpsellerAccount, CotizacionDesarrollo, SolicitudMayorista,
+    MercadoLibreAccount, CotizacionDesarrollo, SolicitudMayorista,
   } = require('../src/models');
   const { ensureColumns, heredarConexionesPropias, MARCA_CONEXIONES_PROPIAS } = require('../src/database/ensureColumns');
   const planService = require('../src/services/planService');
@@ -105,7 +105,6 @@ async function api(token, metodo, ruta, json) {
       await Role.destroy({ where: { businessId: b.id } });
       await IntegracionExterna.destroy({ where: { businessId: b.id } });
       await MercadoLibreAccount.destroy({ where: { businessId: b.id } });
-      await JumpsellerAccount.destroy({ where: { businessId: b.id } });
       await CotizacionDesarrollo.destroy({ where: { businessId: b.id } });
       await SolicitudMayorista.destroy({ where: { businessId: b.id } });
       await Subscription.destroy({ where: { businessId: b.id } });
@@ -185,7 +184,7 @@ async function api(token, metodo, ruta, json) {
     chk('cada origen de credencial abre su función', ['portalMayorista', 'tiendaPropia'],
       [FEATURE_POR_ORIGEN.isuwaya, FEATURE_POR_ORIGEN.tienda]);
     chk('las cuatro plataformas que existen, y ninguna más',
-      ['mercadolibre', 'jumpseller', 'tienda', 'mayorista'], PLATAFORMAS.map((p) => p.clave));
+      ['mercadolibre', 'tienda', 'mayorista'], PLATAFORMAS.map((p) => p.clave));
 
     // Un plan editado a mano recibe la función nueva, pero un false escrito se respeta.
     const filaFalsa = (features) => ({
@@ -208,21 +207,16 @@ async function api(token, metodo, ruta, json) {
       [por(eInicial, 'tienda').estado, por(eInicial, 'mayorista').estado]);
     chk('   y dicen desde qué plan: el Pro (sale de la base)', ['Plan Pro', 'Plan Pro'],
       [por(eInicial, 'tienda').desde?.nombre, por(eInicial, 'mayorista').desde?.nombre]);
-    chk('   Mercado Libre y Jumpseller también (el Inicial no trae ecommerce)', ['requiere_plan', 'requiere_plan'],
-      [por(eInicial, 'mercadolibre').estado, por(eInicial, 'jumpseller').estado]);
+    chk('   Mercado Libre también (el Inicial no trae ecommerce)', 'requiere_plan', por(eInicial, 'mercadolibre').estado);
 
     const ePro = await plataformas.estadoDePlataformas(pro.id);
-    chk('Pro sin nada: todo "sin conectar"', ['sin_conectar', 'sin_conectar', 'sin_conectar', 'sin_conectar'],
-      ['mercadolibre', 'jumpseller', 'tienda', 'mayorista'].map((c) => por(ePro, c).estado));
+    chk('Pro sin nada: todo "sin conectar"', ['sin_conectar', 'sin_conectar', 'sin_conectar'],
+      ['mercadolibre', 'tienda', 'mayorista'].map((c) => por(ePro, c).estado));
 
     // Credenciales y cuentas con secretos reconocibles, para buscarlos en la respuesta.
     const SECRETO_ML = `QA-ML-SECRETO-${SUF}`;
-    const SECRETO_JS = `QA-JS-SECRETO-${SUF}`;
     await MercadoLibreAccount.create({
       businessId: pro.id, mlUserId: '1', nickname: 'QA-NICK', accessToken: `${SECRETO_ML}-acc`, refreshToken: `${SECRETO_ML}-ref`,
-    });
-    await JumpsellerAccount.create({
-      businessId: pro.id, tienda: 'qa-tienda', loginKey: `${SECRETO_JS}-key`, authToken: `${SECRETO_JS}-tok`,
     });
     const { token: tokTiendaPro, integracion: credTiendaPro } = await integraciones.emitir({ businessId: pro.id, origen: 'tienda', nombre: 'QA' });
     const { token: tokPortalInicial } = await integraciones.emitir({ businessId: inicial.id, origen: 'isuwaya', nombre: 'QA' });
@@ -232,8 +226,8 @@ async function api(token, metodo, ruta, json) {
     chk('con la credencial de tienda, el Pro la ve "conectada"', 'conectada', por(ePro2, 'tienda').estado);
     chk('   con cuándo se conectó (el último uso todavía no hubo)', [true, null],
       [Boolean(por(ePro2, 'tienda').detalle.conectadaDesde), por(ePro2, 'tienda').detalle.ultimoUso ?? null]);
-    chk('Mercado Libre y Jumpseller "conectadas", con el nombre de la cuenta', ['conectada', 'QA-NICK', 'conectada', 'qa-tienda'],
-      [por(ePro2, 'mercadolibre').estado, por(ePro2, 'mercadolibre').detalle.cuenta, por(ePro2, 'jumpseller').estado, por(ePro2, 'jumpseller').detalle.cuenta]);
+    chk('Mercado Libre "conectada", con el nombre de la cuenta', ['conectada', 'QA-NICK'],
+      [por(ePro2, 'mercadolibre').estado, por(ePro2, 'mercadolibre').detalle.cuenta]);
 
     tit('2b. NINGÚN TOKEN EN LA RESPUESTA');
     const tokPro = await tokDuenio(pro);
@@ -244,7 +238,6 @@ async function api(token, metodo, ruta, json) {
     chk('   ni su hash', false, rPro.crudo.includes(credFila.tokenHash));
     chk('   ni la pista (los últimos caracteres)', false, rPro.crudo.includes(credFila.pista));
     chk('   ni los tokens de Mercado Libre', false, rPro.crudo.includes(SECRETO_ML));
-    chk('   ni la clave de Jumpseller', false, rPro.crudo.includes(SECRETO_JS));
     chk('   ni un campo que se llame token o hash', false, /token|hash|pista|loginKey|authToken/i.test(Object.keys(JSON.parse(rPro.crudo)).join() + JSON.stringify(rPro.json.plataformas.map((p) => Object.keys(p.detalle)))));
 
     tit('2c. QUIÉN VE EL ESTADO');
@@ -396,7 +389,7 @@ async function api(token, metodo, ruta, json) {
     const lectura = await negocio('Lectura', { plan: 'inicial', estado: 'lectura' });
     const tokLectura = await tokDuenio(lectura);
     chk('control: la cuenta está en lectura (otro POST → 402)', 402,
-      (await api(tokLectura, 'POST', '/jumpseller/conectar', { loginKey: 'x', authToken: 'y' })).status);
+      (await api(tokLectura, 'POST', '/mercadolibre/sync', {})).status);
     chk('pedir la cotización → 201', 201,
       (await api(tokLectura, 'POST', '/plataformas/cotizaciones', { tipo: 'portal_mayorista', detalle: DETALLE })).status);
 

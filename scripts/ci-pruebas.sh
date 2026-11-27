@@ -4,7 +4,7 @@
 # los limitadores viven en memoria, y 45 pruebas seguidas entrando como el mismo dueño los disparan.
 # Afuera quedan las que dependen de credenciales o datos que el demo no trae:
 # test-2fa, test-arca-delegacion (pide el certificado real de ARCA), test-arca-delegaciones, test-defensas-bloqueo, test-envios-dia (choca con el limitador),
-# test-jumpseller-sync, test-logo-factura, test-ml-sync, test-ml-webhook, test-nota-credito,
+# test-logo-factura, test-ml-sync, test-ml-webhook, test-nota-credito,
 # test-numeracion, test-tienda.
 set -uo pipefail
 cd "$(dirname "$0")/.."

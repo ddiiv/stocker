@@ -23,7 +23,7 @@
  *    cada venta sería pedir cientos de productos para actualizar uno.
  */
 
-const { ProductVariant, PackComponente, MercadoLibreAccount, JumpsellerAccount } = require('../models');
+const { ProductVariant, PackComponente, MercadoLibreAccount } = require('../models');
 const { log } = require('../utils/logger');
 
 // El nombre de la variable es el de siempre: ya estaba puesta en los deploys.
@@ -88,7 +88,6 @@ async function conLosPacksQueLosUsan(skus, businessId) {
 /** Los canales que este negocio tiene conectados y con la sincronización prendida. */
 async function canalesDe(businessId) {
   const ml = require('./mercadolibreService');
-  const jumpseller = require('./jumpsellerService');
   const salida = [];
 
   if (ml.estaConfigurado()) {
@@ -98,10 +97,6 @@ async function canalesDe(businessId) {
     }
   }
 
-  const tienda = await JumpsellerAccount.findOne({ where: { businessId } });
-  if (tienda && tienda.syncActiva !== false) {
-    salida.push({ nombre: 'jumpseller', sincronizar: (skus) => jumpseller.sincronizarStock(businessId, { skus }) });
-  }
   return salida;
 }
 
@@ -117,8 +112,8 @@ async function vaciar(businessId) {
   const canales = await canalesDe(businessId);
   for (const canal of canales) {
     /*
-     * Cada tienda en su propio try: que Mercado Libre esté caído no puede
-     * dejar a Jumpseller con el stock viejo, ni al revés.
+     * Cada canal en su propio try: que uno esté caído no puede dejar a otro
+     * con el stock viejo.
      */
     try {
       const r = await canal.sincronizar(skus);

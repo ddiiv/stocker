@@ -37,7 +37,6 @@ const businessCuitCtrl = require('../controllers/businessCuitController');
 const { testSend: whatsappTestSend } = require('../controllers/whatsappTestController');
 const mlCtrl = require('../controllers/mercadolibreController');
 const mlPostCtrl = require('../controllers/mercadolibrePostventaController');
-const jsCtrl = require('../controllers/jumpsellerController');
 const metricsCtrl = require('../controllers/metricsController');
 const creditCtrl = require('../controllers/creditController');
 const paymentCtrl = require('../controllers/paymentMethodController');
@@ -542,21 +541,6 @@ r.get   ('/mercadolibre/callback',    mlCtrl.callback);
  * API con nuestro token. Ver mercadolibrePedidosService.
  */
 r.post  ('/mercadolibre/notificaciones', mlCtrl.notificacion);
-/*
- * ── Jumpseller ────────────────────────────────────────────────────
- *
- * Se conecta con la clave de la tienda, así que no hay callback ni tokens que
- * renovar: sólo guardarla, probarla y sincronizar el stock por SKU.
- */
-r.get   ('/jumpseller/status',        requireAuth, requirePermission('integraciones','ver'),    jsCtrl.status);
-r.post  ('/jumpseller/conectar',      requireAuth, requirePermission('integraciones','editar'), requireFeature(FEATURES.ECOMMERCE), jsCtrl.conectar);
-r.delete('/jumpseller/conectar',      requireAuth, requirePermission('integraciones','editar'), jsCtrl.desconectar);
-r.get   ('/jumpseller/preview',       requireAuth, requirePermission('integraciones','ver'),    jsCtrl.preview);
-r.post  ('/jumpseller/sync',          requireAuth, requirePermission('integraciones','editar'), requireFeature(FEATURES.ECOMMERCE), jsCtrl.sync);
-r.get   ('/jumpseller/sync/estado',   requireAuth, requirePermission('integraciones','ver'),    jsCtrl.syncEstado);
-r.post  ('/jumpseller/importar-pedidos', requireAuth, requirePermission('integraciones','editar'), requireFeature(FEATURES.ECOMMERCE), jsCtrl.importar);
-r.get   ('/jumpseller/importar-pedidos/estado', requireAuth, requirePermission('integraciones','ver'), jsCtrl.importarEstado);
-
 r.get   ('/mercadolibre/status',      requireAuth, requirePermission('integraciones','ver'),    mlCtrl.status);
 r.get   ('/mercadolibre/auth-url',    requireAuth, requirePermission('integraciones','editar'), requireFeature(FEATURES.ECOMMERCE), mlCtrl.authUrl);
 r.delete('/mercadolibre/disconnect',  requireAuth, requirePermission('integraciones','editar'), mlCtrl.disconnect);
