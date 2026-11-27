@@ -742,6 +742,9 @@ const deleteVariant = async (req, res, next) => {
     const variant = await ProductVariant.findByPk(req.params.variantId, { include: [{ model: Product, as: 'producto' }] });
     if (!variant || variant.producto.businessId !== req.auth.businessId)
       return res.status(404).json({ message: 'Variante no encontrada.' });
+    // Borrarla con unidades apartadas deja el pedido online apuntando a nada: no se puede despachar ni cancelar bien.
+    if (await VariantStock.findOne({ where: { productVariantId: variant.id, reservado: { [Op.gt]: 0 } } }))
+      return res.status(409).json({ message: 'Esta variante tiene unidades apartadas para un pedido online. Despachá o cancelá el pedido antes de borrarla.' });
     await variant.destroy();
     res.status(204).send();
   } catch (error) { next(error); }

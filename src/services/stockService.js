@@ -611,7 +611,9 @@ async function reservar(variantId, locationId, businessId, cantidad, t = null) {
 async function liberarReserva(variantId, locationId, businessId, cantidad, t = null) {
   const n = Number(cantidad);
   if (!Number.isInteger(n) || n <= 0) return false;
-  const fila = await filaDe(variantId, locationId, businessId, t);
+  // Sin crear la fila: si no existe no hay nada apartado, y con una variante ya borrada crearla rompe la clave foránea y traba la cancelación.
+  const fila = await VariantStock.findOne({ where: { productVariantId: variantId, locationId }, transaction: t });
+  if (!fila) return false;
   const [tocadas] = await VariantStock.update(
     { reservado: literal(`reservado - ${n}`) },
     {
@@ -644,7 +646,9 @@ async function consumirReserva(
 ) {
   const n = Number(cantidad);
   if (!Number.isInteger(n) || n <= 0) return false;
-  const fila = await filaDe(variantId, locationId, businessId, t);
+  // Sin crear la fila: si no existe no hay nada apartado, y con una variante ya borrada crearla rompe la clave foránea y traba la cancelación.
+  const fila = await VariantStock.findOne({ where: { productVariantId: variantId, locationId }, transaction: t });
+  if (!fila) return false;
   const [tocadas] = await VariantStock.update(
     {
       stock:     literal(`stock - ${n}`),
