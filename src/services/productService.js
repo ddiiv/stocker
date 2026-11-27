@@ -146,7 +146,9 @@ export async function updateProduct(id, payload) {
 }
 
 export async function deleteVariant(variantId) {
-  return http.delete(`/products/variants/${variantId}`);
+  // Con muchas publicaciones, revisar Mercado Libre tarda más que un pedido común.
+  const { data } = await http.delete(`/products/variants/${variantId}`, { timeout: 120000 });
+  return data;
 }
 
 export async function deleteProduct(id) {

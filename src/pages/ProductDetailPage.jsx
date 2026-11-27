@@ -121,9 +121,10 @@ export default function ProductDetailPage() {
   }
 
   async function handleDeleteVariant(variant) {
-    if (!confirm(`¿Eliminar la variante ${variant.sku}? Esta acción no se puede deshacer.`)) return;
+    if (!confirm(`¿Eliminar la variante ${variant.sku}?\n\nSu stock queda en 0 (lo apartado para pedidos online se conserva) y, si está publicada en Mercado Libre, esa publicación también. El historial de ventas y movimientos no se borra.`)) return;
     try {
-      await deleteVariant(variant.id);
+      const r = await deleteVariant(variant.id);
+      if (r?.avisos?.length) alert(r.avisos.join("\n\n"));
       load();
     } catch (err) {
       alert(err.response?.data?.message || "Error al eliminar la variante");
