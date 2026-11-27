@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import {
-  ArrowLeft, Search, RefreshCw, AlertTriangle, ExternalLink, Calculator, FileText, Pause, Play, Plus, PackageSearch,
+  ArrowLeft, ChevronDown, Search, RefreshCw, AlertTriangle, ExternalLink, Calculator, FileText, Pause, Play, Plus, PackageSearch,
 } from "lucide-react";
 import {
   getMlPublicaciones, setMlEstadoPublicaciones, unificarColoresPublicacionesMl, getMlPreciosEstado,
@@ -247,18 +247,35 @@ export default function MercadoLibrePublicacionesPage() {
 function Grupo({ g, tildadas, tildar, trabado, onEditar, onCalcular, onEstado, onUnificar }) {
   const todas = g.variantes.every((v) => tildadas.has(v.itemId));
   const colorRepartido = g.problemas.some((p) => p.codigo === "COLOR_REPARTIDO");
+  // Cerrado por defecto: con muchos productos, las variantes a la vista tapan todo.
+  const [abierto, setAbierto] = useState(false);
+  const precios = g.variantes.map((v) => Number(v.precio)).filter((n) => n > 0);
+  const [desde, hasta] = [Math.min(...precios), Math.max(...precios)];
+  const pausadas = g.variantes.filter((v) => v.estado === "paused").length;
+  const elegidasAca = g.variantes.filter((v) => tildadas.has(v.itemId)).length;
   return (
     <Card className="!p-0">
       <div className="space-y-2 px-4 py-3">
         <div className="flex items-start gap-2">
           <input type="checkbox" className="mt-1" checked={todas} onChange={() => tildar(g.variantes, !todas)} aria-label={`Tildar todo el grupo ${g.nombre}`} />
-          <div className="min-w-0">
-            <p className="break-words font-display text-sm font-semibold text-ink-950">{g.nombre}</p>
-            <p className="text-xs text-ink-500">
-              {itemsDe(g.variantes).length} publicación(es) · {g.categoriaId}{g.modelo === "clasico" ? " · modelo viejo (variaciones en una sola publicación)" : ""}
-            </p>
-          </div>
+          <button type="button" className="flex min-w-0 flex-1 items-start gap-2 text-left" aria-expanded={abierto} onClick={() => setAbierto(!abierto)}>
+            <ChevronDown size={16} className={`mt-0.5 shrink-0 text-ink-500 transition-transform ${abierto ? "" : "-rotate-90"}`} />
+            <span className="min-w-0 flex-1">
+              <span className="block break-words font-display text-sm font-semibold text-ink-950">{g.nombre}</span>
+              <span className="block text-xs text-ink-500">
+                {g.variantes.length} variante{g.variantes.length === 1 ? "" : "s"} · stock en ML {g.variantes.reduce((n, v) => n + (v.stockMl || 0), 0)}
+                {precios.length > 0 && <> · {$(desde)}{hasta > desde && ` a ${$(hasta)}`}</>}
+                {pausadas > 0 && ` · ${pausadas} pausada${pausadas === 1 ? "" : "s"}`}
+                {elegidasAca > 0 && ` · ${elegidasAca} tildada${elegidasAca === 1 ? "" : "s"}`}
+              </span>
+            </span>
+            {g.problemas.length > 0 && <span className="badge badge-out shrink-0"><AlertTriangle size={11} className="mr-1 inline" />{g.problemas.length}<span className="sr-only"> problema(s)</span></span>}
+          </button>
         </div>
+        {abierto && (<>
+        <p className="text-xs text-ink-500">
+          {itemsDe(g.variantes).length} publicación(es) · {g.categoriaId}{g.modelo === "clasico" ? " · modelo viejo (variaciones en una sola publicación)" : ""}
+        </p>
         {g.problemas.map((p) => (
           <p key={`${p.codigo}:${p.mensaje}`} className="flex items-start gap-1.5 rounded bg-brick-50 px-2 py-1 text-xs text-brick-500">
             <AlertTriangle size={12} className="mt-0.5 shrink-0" />
@@ -270,15 +287,16 @@ function Grupo({ g, tildadas, tildar, trabado, onEditar, onCalcular, onEstado, o
           <button type="button" className="btn-ghost !px-3 !py-1.5 !text-xs" disabled={trabado} onClick={() => onEditar("descripcion", g.variantes[0].itemId)}><FileText size={13} /> Descripción</button>
           {colorRepartido && <button type="button" className="btn-ghost !px-3 !py-1.5 !text-xs" disabled={trabado} onClick={onUnificar}>Unificar colores</button>}
         </div>
+        </>)}
       </div>
-      <ul className="divide-y divide-line border-t border-line">
+      {abierto && <ul className="divide-y divide-line border-t border-line">
         {g.variantes.map((v) => (
           <Fila key={`${v.itemId}:${v.mlVariationId || ""}`} v={v} tildada={tildadas.has(v.itemId)} tildar={tildar} trabado={trabado}
             onEditar={onEditar} onCalcular={onCalcular} onEstado={onEstado}
             // Pausar y reactivar es de la publicación entera: se mandan todas sus filas.
             hermanas={g.variantes.filter((x) => x.itemId === v.itemId)} />
         ))}
-      </ul>
+      </ul>}
     </Card>
   );
 }
