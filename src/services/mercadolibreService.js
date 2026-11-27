@@ -1303,11 +1303,44 @@ async function sincronizarStock(businessId, { simular = false, skus = null } = {
  * venta de tres artículos disparaba dos tandas distintas. Acá queda sólo la
  * puerta de entrada, que es la que ya usaba el resto del sistema.
  */
+/*
+ * Pone en cero todas las publicaciones de un SKU que se dio de baja. Devuelve
+ * los avisos para quien la eliminó (nada, si no estaba publicada).
+ */
+async function dejarEnCero(businessId, sku) {
+  const cuenta = await MercadoLibreAccount.findOne({ where: { businessId } });
+  if (!cuenta) return [];
+  const { token, porSku, multiOrigen } = await destinosDeLaCuenta(cuenta, businessId);
+  const destino = porSku.get(sku);
+  if (!destino) return [];
+  const avisos = [];
+  const aMandar = [];
+  for (const d of [destino, ...(destino.otras || [])]) {
+    if (!d.editable || (multiOrigen && d.via === 'items')) {
+      avisos.push(`OJO: la publicación ${d.mlItemId} no se puede poner en cero desde Stocker. Pausala a mano: ${d.permalink || enlaceDe(d.mlItemId)}`);
+    } else if (Number(d.stockActual) !== 0) {
+      aMandar.push({ v: { id: null, sku }, destino: d, cantidad: 0, fila: null });
+    }
+  }
+  let enCero = 0;
+  for (const grupo of agruparEnvios(aMandar)) {
+    try {
+      await enviarGrupo(token, grupo);
+      enCero += grupo.length;
+    } catch (e) {
+      avisos.push(`OJO: no se pudo poner en cero ${grupo.map((x) => x.destino.mlItemId).join(', ')} en Mercado Libre (${detalleDeError(e)}). Pausala a mano.`);
+    }
+  }
+  if (enCero) avisos.push(`En Mercado Libre quedó en 0 (pausada): ${enCero} publicación(es).`);
+  return avisos;
+}
+
 function marcarParaSync(businessId, sku) {
   require('./avisoStockService').marcar(businessId, sku);
 }
 
 module.exports = {
+  dejarEnCero,
   httpML,
   enParalelo,
   enlaceDe,

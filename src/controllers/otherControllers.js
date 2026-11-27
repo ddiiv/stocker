@@ -592,7 +592,7 @@ const getDashboard = async (req, res, next) => {
        * Los de evento tampoco llevan stock, por el mismo motivo.
        */
       ProductVariant.findAll({
-        where: { esPack: false },
+        where: { esPack: false, activo: true },
         include: [{ model: Product, as: 'producto', where: { businessId, ...NO_ES_FERIA } }],
         order: [['stock', 'ASC']],
         limit: 200,

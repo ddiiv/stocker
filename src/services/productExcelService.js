@@ -84,7 +84,7 @@ async function buildExportWorkbook(businessId) {
        * que tiene adentro.
        */
       where: { businessId, [Op.and]: [NO_ES_FERIA, productoNoEsPack()] },
-      include: [{ model: ProductVariant, as: 'productVariants' }],
+      include: [{ model: ProductVariant, as: 'productVariants', where: { activo: true }, required: false }],
       order: [['titulo', 'ASC']],
     }),
     BusinessLocation.findAll({

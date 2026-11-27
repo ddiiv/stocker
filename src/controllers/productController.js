@@ -7,6 +7,7 @@ const { ilikeOperator, citar } = require('../utils/sqlHelpers');
 const { exportProductsXlsx, importProductsXlsx } = require('../services/productExcelService');
 const { generarCatalogoXlsx } = require('../services/catalogoService');
 const { exigirCupo } = require('../services/planService');
+const { darDeBaja } = require('../services/bajaVarianteService');
 const skuService = require('../services/skuService');
 const { generarEtiquetas, asignarCodigosInternos, ASIGNAN_CODIGO, TIPOS_CODIGO, digitoEan } = require('../services/labelService');
 const stockService = require('../services/stockService');
@@ -404,7 +405,7 @@ const getProduct = async (req, res, next) => {
   try {
     const product = await Product.findOne({
       where: { id: req.params.id, businessId: req.auth.businessId },
-      include: [{ model: ProductVariant, as: 'productVariants' }],
+      include: [{ model: ProductVariant, as: 'productVariants', where: { activo: true }, required: false }],
     });
     if (!product) return res.status(404).json({ message: 'Producto no encontrado.' });
     res.json(product);
@@ -416,7 +417,7 @@ const getProductPadreBySkuVariante = async (req, res, next) => {
   try {
     const product = await Product.findOne({
         where :{ sku: req.params.skuV, businessId: req.auth.businessId },
-        include: [{ model: ProductVariant, as: 'productVariants' }],
+        include: [{ model: ProductVariant, as: 'productVariants', where: { activo: true }, required: false }],
     });
     if (!product) return res.status(404).json({ message: 'Producto no encontrado.' });
     res.json(product);
@@ -523,7 +524,7 @@ const createProduct = async (req, res, next) => {
     }
 
     await t.commit();
-    const full = await Product.findByPk(product.id, { include: [{ model: ProductVariant, as: 'productVariants' }] });
+    const full = await Product.findByPk(product.id, { include: [{ model: ProductVariant, as: 'productVariants', where: { activo: true }, required: false }] });
     res.status(201).json(full);
   } catch (error) { await t.rollback().catch(() => {}); next(error); }
 };
@@ -544,7 +545,7 @@ const updateProduct = async (req, res, next) => {
       productId: product.id,
       lote: historial.nuevoLote({ businessId: req.auth.businessId, auth: req.auth, origen: 'manual' }),
     });
-    const full = await Product.findByPk(product.id, { include: [{ model: ProductVariant, as: 'productVariants' }] });
+    const full = await Product.findByPk(product.id, { include: [{ model: ProductVariant, as: 'productVariants', where: { activo: true }, required: false }] });
     res.json(full);
   } catch (error) { next(error); }
 };
@@ -740,13 +741,9 @@ const scanAdjustStock = async (req, res, next) => {
 const deleteVariant = async (req, res, next) => {
   try {
     const variant = await ProductVariant.findByPk(req.params.variantId, { include: [{ model: Product, as: 'producto' }] });
-    if (!variant || variant.producto.businessId !== req.auth.businessId)
+    if (!variant || !variant.activo || variant.producto.businessId !== req.auth.businessId)
       return res.status(404).json({ message: 'Variante no encontrada.' });
-    // Borrarla con unidades apartadas deja el pedido online apuntando a nada: no se puede despachar ni cancelar bien.
-    if (await VariantStock.findOne({ where: { productVariantId: variant.id, reservado: { [Op.gt]: 0 } } }))
-      return res.status(409).json({ message: 'Esta variante tiene unidades apartadas para un pedido online. Despachá o cancelá el pedido antes de borrarla.' });
-    await variant.destroy();
-    res.status(204).send();
+    res.json(await darDeBaja(variant, { businessId: req.auth.businessId, employeeId: req.auth.employeeId || null }));
   } catch (error) { next(error); }
 };
 
@@ -810,7 +807,7 @@ const agregarVariantesMasivo = async (req, res, next) => {
      * tiene y las pantallas que agrupan por eje la mostrarían suelta.
      */
     const existentes = await ProductVariant.findAll({
-      where: { productId: product.id }, transaction: t,
+      where: { productId: product.id, activo: true }, transaction: t,
     });
     const referencia = existentes[0];
     if (referencia) {
@@ -1456,7 +1453,7 @@ const getStockPorLocal = async (req, res, next) => {
      * están contados en su propia fila; mostrarlo sería contar dos veces la
      * misma prenda.
      */
-    const whereVariante = { businessId: req.auth.businessId, ...NO_ES_PACK };
+    const whereVariante = { businessId: req.auth.businessId, activo: true, ...NO_ES_PACK };
     if (q) {
       const texto = `%${String(q).trim()}%`;
       whereVariante[Op.or] = [
@@ -1617,6 +1614,7 @@ const getProductosPorLocal = async (req, res, next) => {
       include: [{
         model: ProductVariant, as: 'productVariants',
         attributes: ['id', 'stock', 'stockMinimo'],
+        where: { activo: true },
         required: false,
       }],
       order: [['titulo', 'ASC']],
@@ -1678,7 +1676,7 @@ const getVariantesPorLocal = async (req, res, next) => {
     if (!producto) return res.status(404).json({ message: 'Producto no encontrado.' });
 
     const variantes = await ProductVariant.findAll({
-      where: { productId: producto.id },
+      where: { productId: producto.id, activo: true },
       attributes: ['id', 'sku', 'codigoBarras', 'variante1Nombre', 'variante1Valor', 'variante2Nombre', 'variante2Valor', 'stock', 'stockMinimo'],
       order: [['sku', 'ASC']],
     });
@@ -2055,7 +2053,7 @@ const preciosPorcentaje = async (req, res, next) => {
     }
 
     const productos = await Product.findAll({
-      where, include: [{ model: ProductVariant, as: 'productVariants', required: false }], transaction: t,
+      where, include: [{ model: ProductVariant, as: 'productVariants', where: { activo: true }, required: false }], transaction: t,
     });
 
     const campo = CAMPO_PRECIO[precio];

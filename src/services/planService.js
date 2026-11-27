@@ -329,6 +329,7 @@ async function usoDe(businessId) {
     // Las variantes se cuentan por el negocio de su producto padre: la tabla de
     // variantes no lleva businessId propio.
     ProductVariant.count({
+      where: { activo: true },
       include: [{ model: Product, as: 'producto', attributes: [], where: { businessId }, required: true }],
     }),
     Invoice.count({ where: { businessId, createdAt: { [Op.gte]: desde } } }),

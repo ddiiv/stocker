@@ -383,7 +383,7 @@ async function definirComponentes(packVariantId, businessId, componentes, t = nu
    * ningún lado.
    */
   const hermanas = await ProductVariant.count({
-    where: { productId: pack.productId, id: { [Op.ne]: packVariantId }, esPack: false },
+    where: { productId: pack.productId, id: { [Op.ne]: packVariantId }, esPack: false, activo: true },
     transaction: t,
   });
   if (hermanas > 0) {
