@@ -200,6 +200,17 @@ export async function getMlPublicarEstado() {
  */
 const ADMIN = "/mercadolibre/admin";
 
+/** Dice a qué variante de Stocker corresponde una publicación; con escribirEnMl le escribe el SKU en ML. */
+export async function vincularPublicacionMl(cuerpo) {
+  const { data } = await http.post(`${ADMIN}/vinculo`, cuerpo, { timeout: 120000 });
+  return data;
+}
+
+export async function desvincularPublicacionMl(cuerpo) {
+  const { data } = await http.delete(`${ADMIN}/vinculo`, { data: cuerpo, timeout: 120000 });
+  return data;
+}
+
 export async function getMlPublicaciones(params) {
   const { data } = await http.get(`${ADMIN}/publicaciones`, { params });
   return data;

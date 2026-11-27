@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import {
-  ArrowLeft, ChevronDown, Search, RefreshCw, AlertTriangle, ExternalLink, Calculator, FileText, Pause, Play, Plus, PackageSearch,
+  ArrowLeft, ChevronDown, Link2, Search, RefreshCw, AlertTriangle, ExternalLink, Calculator, FileText, Pause, Play, Plus, PackageSearch,
 } from "lucide-react";
 import {
   getMlPublicaciones, setMlEstadoPublicaciones, unificarColoresPublicacionesMl, getMlPreciosEstado,
@@ -10,6 +10,7 @@ import { PageHeader, Card, EmptyState } from "../components/ui/Layout";
 import { Alerta, ResultadoPorItem, $, mensajeDe } from "../components/mercadolibre/comun";
 import { DescripcionModal, NombreModal } from "../components/mercadolibre/EditarPublicaciones";
 import CalculadoraMl from "../components/mercadolibre/CalculadoraMl";
+import VincularModal from "../components/mercadolibre/VincularModal";
 import { PreciosModal, AvancePrecios } from "../components/mercadolibre/PreciosTanda";
 import { enTandas } from "../utils/tandas";
 
@@ -38,6 +39,7 @@ export default function MercadoLibrePublicacionesPage() {
   const [hecho, setHecho] = useState(null); // {titulo, error, filas}
   const [editar, setEditar] = useState(null); // {tipo:'descripcion'|'nombre', grupo, itemId}
   const [calcular, setCalcular] = useState(null); // la fila
+  const [vinculo, setVinculo] = useState(null); // la fila
   const [precios, setPrecios] = useState(null); // [{itemId, precio?}]
   const [trabajo, setTrabajo] = useState(null);
   const pedido = useRef(0);
@@ -197,7 +199,7 @@ export default function MercadoLibrePublicacionesPage() {
         )}
         {datos?.grupos.map((g) => (
           <Grupo key={g.clave} g={g} tildadas={tildadas} tildar={tildar} trabado={trabado}
-            onEditar={(tipo, itemId) => setEditar({ tipo, grupo: g, itemId })} onCalcular={setCalcular}
+            onEditar={(tipo, itemId) => setEditar({ tipo, grupo: g, itemId })} onCalcular={setCalcular} onVincular={setVinculo}
             onEstado={cambiarEstado} onUnificar={() => unificar(g)} />
         ))}
       </div>
@@ -228,6 +230,7 @@ export default function MercadoLibrePublicacionesPage() {
       {editar?.tipo === "nombre" && (
         <NombreModal grupo={editar.grupo} delGrupo={itemsDe(editar.grupo.variantes)} onClose={() => setEditar(null)} onCambio={recargar} />
       )}
+      {vinculo && <VincularModal variante={vinculo} onClose={() => setVinculo(null)} onCambio={recargar} />}
       {calcular && (
         <CalculadoraMl variante={calcular} onClose={() => setCalcular(null)}
           onUsarPrecio={(precio) => { setPrecios([{ itemId: calcular.itemId, precio }]); setCalcular(null); }} />
@@ -244,7 +247,7 @@ export default function MercadoLibrePublicacionesPage() {
   );
 }
 
-function Grupo({ g, tildadas, tildar, trabado, onEditar, onCalcular, onEstado, onUnificar }) {
+function Grupo({ g, tildadas, tildar, trabado, onEditar, onCalcular, onVincular, onEstado, onUnificar }) {
   const todas = g.variantes.every((v) => tildadas.has(v.itemId));
   const colorRepartido = g.problemas.some((p) => p.codigo === "COLOR_REPARTIDO");
   // Cerrado por defecto: con muchos productos, las variantes a la vista tapan todo.
@@ -292,7 +295,7 @@ function Grupo({ g, tildadas, tildar, trabado, onEditar, onCalcular, onEstado, o
       {abierto && <ul className="divide-y divide-line border-t border-line">
         {g.variantes.map((v) => (
           <Fila key={`${v.itemId}:${v.mlVariationId || ""}`} v={v} tildada={tildadas.has(v.itemId)} tildar={tildar} trabado={trabado}
-            onEditar={onEditar} onCalcular={onCalcular} onEstado={onEstado}
+            onEditar={onEditar} onCalcular={onCalcular} onVincular={onVincular} onEstado={onEstado}
             // Pausar y reactivar es de la publicación entera: se mandan todas sus filas.
             hermanas={g.variantes.filter((x) => x.itemId === v.itemId)} />
         ))}
@@ -301,7 +304,7 @@ function Grupo({ g, tildadas, tildar, trabado, onEditar, onCalcular, onEstado, o
   );
 }
 
-function Fila({ v, hermanas, tildada, tildar, trabado, onEditar, onCalcular, onEstado }) {
+function Fila({ v, hermanas, tildada, tildar, trabado, onEditar, onCalcular, onVincular, onEstado }) {
   const [estado, clase] = ESTADOS[v.estado] || [v.estado || "Sin estado", "badge-out"];
   const distinto = v.sincroniza && !v.full && v.stockStocker != null && v.stockMl !== v.stockStocker;
   const boton = "btn-ghost !px-2.5 !py-1.5 !text-xs";
@@ -330,6 +333,7 @@ function Fila({ v, hermanas, tildada, tildar, trabado, onEditar, onCalcular, onE
         </p>
       </div>
       <div className="flex w-full flex-wrap gap-1.5 pl-6 sm:w-auto sm:pl-0">
+        <button type="button" className={boton} disabled={trabado} onClick={() => onVincular(v)}><Link2 size={13} /> {v.variantId ? "SKU" : "Vincular"}</button>
         <button type="button" className={boton} disabled={trabado} onClick={() => onCalcular(v)}><Calculator size={13} /> Calcular</button>
         <button type="button" className={boton} disabled={trabado} onClick={() => onEditar("descripcion", v.itemId)} aria-label={`Descripción de ${v.itemId}`}><FileText size={13} /> Descripción</button>
         {v.estado === "active" && <button type="button" className={boton} disabled={trabado} onClick={() => onEstado(hermanas, "paused")}><Pause size={13} /> Pausar</button>}

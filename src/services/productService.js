@@ -354,3 +354,9 @@ export async function fetchPreciosHistorialDetalle(id) {
   const { data } = await http.get(`/products/precios-historial/${id}`);
   return data;
 }
+
+/** Variantes del negocio que coinciden con un SKU, nombre, color o talle (hasta 25). */
+export async function buscarVariantes(q) {
+  const { data } = await http.get("/products/buscar-variantes", { params: { q } });
+  return data.data || [];
+}
