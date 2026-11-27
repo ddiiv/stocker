@@ -60,6 +60,8 @@ const PARAMETROS_POR_DEFECTO = {
   impuestos: 2000,
   umbral: 33000,
   extraPct: 5,
+  // Peso del paquete en gramos: en Argentina ML lo pide para cotizar el cargo (billable_weight).
+  pesoGramos: 300,
   tiendaUrl: 'https://apiisu.up.railway.app',
   fotosUrl: '',
 };
@@ -90,6 +92,7 @@ function validarParametros(entrada) {
   num('impuestos', 0, 1e7, 'Los impuestos');
   num('umbral', 1, 1e9, 'El umbral de envío gratis');
   num('extraPct', 0, 90, 'El extra para descuentos');
+  num('pesoGramos', 1, 100000, 'El peso en gramos');
   if (p.comisionPct + p.cuotasPct >= 100) throw error400('La comisión más las cuotas tienen que sumar menos de 100 %.');
   try {
     const u = new URL(String(p.tiendaUrl || ''));
@@ -611,12 +614,13 @@ const DESCUENTO_MIN_PCT = 5;
 const DIAS_DESCUENTO = 13;
 const UN_DIA_MS = 24 * 60 * 60 * 1000;
 const diaAr = (fecha) => new Date(fecha.getTime() - 3 * 60 * 60 * 1000).toISOString().slice(0, 10);
+// Para abajo: redondeado para arriba, un 5 % justo quedaría en 4,9 % y ML lo rechaza. La calculadora usa esta misma cuenta.
+const precioConDescuento = (precio, pct) => Math.floor(precio * (1 - pct / 100));
 
 async function ponerDescuento({ itemId, precio, pct, headers, http = ml.httpML, esperar = dormir, ahora = new Date() }) {
   const hasta = new Date(ahora.getTime() + DIAS_DESCUENTO * UN_DIA_MS);
   await con429(() => http.post(`${ML_API}/seller-promotions/items/${itemId}?app_version=v2`, {
-    // Para abajo: redondeado para arriba, un 5 % justo quedaría en 4,9 % y ML lo rechaza.
-    deal_price: Math.floor(precio * (1 - pct / 100)),
+    deal_price: precioConDescuento(precio, pct),
     start_date: `${diaAr(ahora)}T00:00:00`,
     finish_date: `${diaAr(hasta)}T00:00:00`,
     promotion_type: 'PRICE_DISCOUNT',
@@ -890,6 +894,20 @@ async function validar(businessId, pedido) {
   return validarItems({ items: itemsDe(vista, modeloDe, skus), headers });
 }
 
+/** Les pone a los ítems desviados de un color el COLOR que queda. Sólo toca ese atributo. */
+async function aplicarColor({ aCambiar, canonico, queda, headers, http = ml.httpML, esperar = dormir }) {
+  const porItem = {};
+  for (const { itemId, de } of aCambiar) {
+    try {
+      await con429(() => http.put(`${ML_API}/items/${itemId}`, { attributes: [canonico] }, { headers }), { esperar });
+      porItem[itemId] = { estado: 'unificado', de, a: queda };
+    } catch (e) {
+      porItem[itemId] = { estado: 'error', de, a: queda, error: textoDeError(e) };
+    }
+  }
+  return porItem;
+}
+
 /*
  * Unifica los colores repetidos de las publicaciones que ya existen: a cada
  * ítem que se desvió le pone el COLOR que tiene la mayoría de su color de
@@ -901,14 +919,7 @@ async function unificarColores(businessId, pedido, { http = ml.httpML, esperar =
   for (const prod of vista) {
     for (const c of prod.coloresDispersos || []) {
       const canonico = prod.variantes.find((v) => claveColor(v.color) === claveColor(c.color))?.colorMl;
-      for (const { itemId, de } of c.aCambiar) {
-        try {
-          await con429(() => http.put(`${ML_API}/items/${itemId}`, { attributes: [canonico] }, { headers }), { esperar });
-          porItem[itemId] = { estado: 'unificado', de, a: c.queda };
-        } catch (e) {
-          porItem[itemId] = { estado: 'error', de, a: c.queda, error: textoDeError(e) };
-        }
-      }
+      Object.assign(porItem, await aplicarColor({ aCambiar: c.aCambiar, canonico, queda: c.queda, headers, http, esperar }));
     }
   }
   cache.delete(`publicados:${businessId}`);
@@ -978,5 +989,8 @@ module.exports = {
   precioMl, fotosPorColor, indiceDeFotos, leerModelo, armarVista, armarItem,
   publicarItems, validarItems, con429, ponerDescuento, renovarDescuentos,
   vistaPrevia, validar, publicar, validarPedido, descontarPublicadas, unificarColores, coloresPublicados,
+  // Para la administración de publicaciones (mercadolibreAdminService).
+  textoDeError, aplicarColor, claveColor, tiene3Cuotas, precioConDescuento, DESCUENTO_MIN_PCT, TOPE_FAMILY_NAME,
+  conCache, olvidar: (clave) => cache.delete(clave),
   __limpiarCache: () => cache.clear(),
 };

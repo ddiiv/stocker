@@ -593,6 +593,17 @@ r.post  ('/mercadolibre/publicar/descuento',    ...permisoPublicar, mlCtrl.publi
 r.post  ('/mercadolibre/publicar/unificar-colores', ...permisoPublicar, mlCtrl.publicarUnificarColores);
 r.post  ('/mercadolibre/publicar',              ...permisoPublicar, mlCtrl.publicarTanda);
 r.get   ('/mercadolibre/publicar/estado',       ...permisoPublicar, mlCtrl.publicarEstado);
+// "Mis publicaciones" y la calculadora de precios (mercadolibreAdminService): mismo permiso que publicar.
+r.get   ('/mercadolibre/admin/publicaciones',          ...permisoPublicar, mlCtrl.adminListar);
+r.get   ('/mercadolibre/admin/descripcion/:itemId',    ...permisoPublicar, mlCtrl.adminDescripcion);
+r.put   ('/mercadolibre/admin/descripcion',            ...permisoPublicar, mlCtrl.adminGuardarDescripcion);
+r.put   ('/mercadolibre/admin/nombre',                 ...permisoPublicar, mlCtrl.adminNombre);
+r.post  ('/mercadolibre/admin/estado',                 ...permisoPublicar, mlCtrl.adminEstado);
+r.post  ('/mercadolibre/admin/unificar-colores',       ...permisoPublicar, mlCtrl.adminColores);
+r.post  ('/mercadolibre/admin/calcular',               ...permisoPublicar, mlCtrl.adminCalcular);
+r.post  ('/mercadolibre/admin/precios/vista-previa',   ...permisoPublicar, mlCtrl.adminPreciosVista);
+r.post  ('/mercadolibre/admin/precios/aplicar',        ...permisoPublicar, mlCtrl.adminPreciosAplicar);
+r.get   ('/mercadolibre/admin/precios/estado',         ...permisoPublicar, mlCtrl.adminPreciosEstado);
 
 r.post  ('/mercadolibre/links',       requireAuth, requirePermission('integraciones','editar'), requireFeature(FEATURES.ECOMMERCE), mlCtrl.upsertLink);
 r.delete('/mercadolibre/links/:id',   requireAuth, requirePermission('integraciones','editar'), mlCtrl.deleteLink);

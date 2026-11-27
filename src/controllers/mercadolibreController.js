@@ -1,6 +1,7 @@
 const ml = require('../services/mercadolibreService');
 const mlPedidos = require('../services/mercadolibrePedidosService');
 const mlPublicar = require('../services/mercadolibrePublicarService');
+const mlAdmin = require('../services/mercadolibreAdminService');
 const trabajos = require('../services/trabajosService');
 const { log, sinDatos } = require('../utils/logger');
 const { Op } = require('sequelize');
@@ -268,6 +269,45 @@ const publicarEstado = async (req, res, next) => {
 };
 
 /*
+ * "Mis publicaciones" y la calculadora de precios. Ver mercadolibreAdminService.
+ * Todo contesta en el pedido salvo aplicar precios, que va como trabajo.
+ */
+const admin = (fn) => async (req, res, next) => {
+  try { res.json(await fn(req.auth.businessId, req)); } catch (e) { next(e); }
+};
+
+const adminListar = admin((negocio, { query }) => mlAdmin.listar(negocio, {
+  buscar: String(query.buscar || ''), conProblemas: query.conProblemas === '1', fresco: query.fresco === '1',
+  pagina: query.pagina, porPagina: query.porPagina,
+}));
+const adminDescripcion = admin((negocio, { params }) => mlAdmin.leerDescripcion(negocio, params.itemId));
+const adminGuardarDescripcion = admin((negocio, { body }) => mlAdmin.guardarDescripcion(negocio, body || {}));
+const adminNombre = admin((negocio, { body }) => mlAdmin.renombrar(negocio, body || {}));
+const adminEstado = admin((negocio, { body }) => mlAdmin.cambiarEstado(negocio, body || {}));
+const adminColores = admin((negocio, { body }) => mlAdmin.unificarColores(negocio, body || {}));
+const adminCalcular = admin((negocio, { body }) => mlAdmin.calcular(negocio, body || {}));
+const adminPreciosVista = admin((negocio, { body }) => mlAdmin.vistaPreviaPrecios(negocio, body || {}));
+
+const adminPreciosAplicar = async (req, res, next) => {
+  try {
+    const { businessId } = req.auth;
+    const plan = await mlAdmin.prepararPrecios(businessId, req.body || {});
+    const clave = `ml-precios:${businessId}`;
+    // iniciar() devolvería el trabajo que ya corre, y la pantalla creería que estos precios entraron.
+    if (trabajos.estado(clave).estado === 'corriendo') {
+      return res.status(409).json({ message: 'Ya hay un cambio de precios en curso: esperá a que termine.' });
+    }
+    return res.status(202).json(trabajos.iniciar(clave, (avisar) => mlAdmin
+      .aplicarPrecios(plan, { onProgreso: avisar })
+      .then((r) => ({ ok: true, ...r }))));
+  } catch (e) { return next(e); }
+};
+
+const adminPreciosEstado = async (req, res, next) => {
+  try { res.json(trabajos.estado(`ml-precios:${req.auth.businessId}`)); } catch (e) { next(e); }
+};
+
+/*
  * GET  /api/mercadolibre/locales
  * PUT  /api/mercadolibre/locales   { locationIds: [1, 5] }
  *
@@ -438,4 +478,5 @@ const notificacion = async (req, res) => {
 };
 
 module.exports = { status, authUrl, callback, disconnect, preview, sync, importarPedidos, getLocales, setLocales, listLinks, upsertLink, deleteLink, notificacion, cobertura, republicar, reactivar, importarEstado,
-  publicarParametros, publicarGuardarParametros, publicarVistaPrevia, publicarValidar, publicarDescuento, publicarUnificarColores, publicarTanda, publicarEstado };
+  publicarParametros, publicarGuardarParametros, publicarVistaPrevia, publicarValidar, publicarDescuento, publicarUnificarColores, publicarTanda, publicarEstado,
+  adminListar, adminDescripcion, adminGuardarDescripcion, adminNombre, adminEstado, adminColores, adminCalcular, adminPreciosVista, adminPreciosAplicar, adminPreciosEstado };
