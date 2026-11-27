@@ -13,6 +13,7 @@
  * de ML se muestra tal cual.
  */
 
+const { Op } = require('sequelize');
 const { MercadoLibreAccount, MercadoLibreLink } = require('../models');
 const stockService = require('./stockService');
 const publicables = require('./stockPublicableService');
@@ -290,6 +291,72 @@ async function guardarDescripcion(businessId, { itemIds, texto } = {}) {
     }
   }
   return { cambiadas: resultados.filter((r) => r.ok).length, fallaron: resultados.filter((r) => !r.ok).length, resultados };
+}
+
+// ── SKU y vínculo ────────────────────────────────────────────────
+/*
+ * Dice a qué variante de Stocker corresponde una publicación (o una variación
+ * suya). El vínculo queda en Stocker, que es lo que usa la sincronización; con
+ * `escribirEnMl` además se le escribe el SKU en Mercado Libre.
+ *
+ * Cada variante tiene UN vínculo: si ya está publicada en otra, la
+ * sincronización va a escribirle a la nueva y dejar la otra en 0. Por eso eso
+ * se confirma aparte (409 SKU_EN_OTRA).
+ */
+async function vincular(businessId, { itemId, mlVariationId = null, variantId, escribirEnMl = false, confirmado = false } = {}) {
+  const { cuenta, headers } = await conectar(businessId);
+  const [item] = await itemsPropios(cuenta, headers, [itemId]);
+  const idItem = String(item.id);
+  const idVariacion = mlVariationId ? String(mlVariationId) : null;
+  const variaciones = item.variations || [];
+  if (idVariacion ? !variaciones.some((v) => String(v.id) === idVariacion) : variaciones.length) {
+    throw error400('Esa variación no es de la publicación. Actualizá la lista y probá de nuevo.');
+  }
+  const { cruce, destinos } = await leerGrupos(businessId, cuenta, { fresco: true });
+  const variante = cruce.variantes.find((v) => v.id === Number(variantId));
+  if (!variante) throw error400('Esa variante no está en Stocker (o está dada de baja).');
+  const sku = variante.sku;
+  const actual = destinos.porSku.get(sku);
+  if (!confirmado && actual && !(actual.mlItemId === idItem && String(actual.mlVariationId || '') === String(idVariacion || ''))) {
+    throw Object.assign(new Error(`El SKU ${sku} ya está en la publicación ${actual.mlItemId}. Si seguís, el stock se manda a ${idItem} y la otra puede quedar en 0.`),
+      { status: 409, detalles: { codigo: 'SKU_EN_OTRA' } });
+  }
+  // La publicación pasa a ser de este SKU: el vínculo que tuviera con otro se va.
+  await MercadoLibreLink.destroy({ where: { businessId, mlItemId: idItem, mlVariationId: idVariacion, sku: { [Op.ne]: sku } } });
+  const valores = { businessId, sku, mlItemId: idItem, mlVariationId: idVariacion, titulo: item.title || item.family_name || null };
+  const [link, nuevo] = await MercadoLibreLink.findOrCreate({ where: { businessId, sku }, defaults: valores });
+  if (!nuevo) {
+    // El descuento era de la publicación anterior: no se arrastra a otra.
+    await link.update({ ...valores, ...(link.mlItemId !== idItem ? { descuentoPct: null, descuentoHasta: null } : {}), ultimoError: null });
+  }
+
+  let enMl = null;
+  if (escribirEnMl) {
+    const atributo = { id: 'SELLER_SKU', value_name: sku };
+    // En el modelo viejo van TODAS las variaciones: la que no se manda, ML la borra.
+    const cuerpo = idVariacion
+      ? { variations: variaciones.map((v) => (String(v.id) === idVariacion ? { id: v.id, attributes: [atributo] } : { id: v.id })) }
+      : { attributes: [atributo] };
+    try {
+      await pub.con429(() => ml.httpML.put(`${ML_API}/items/${idItem}`, cuerpo, { headers }));
+      enMl = { ok: true };
+    } catch (e) {
+      // shortcut: que ML deje cambiar el SKU de lo ya publicado no está confirmado; el vínculo de Stocker alcanza para sincronizar.
+      enMl = { ok: false, error: pub.textoDeError(e) };
+    }
+  }
+  olvidar(businessId, cuenta);
+  ml.marcarParaSync(businessId, sku);
+  return { sku, itemId: idItem, mlVariationId: idVariacion, enMl };
+}
+
+/** Quita el vínculo manual de una publicación: vuelve a mandar el SKU que tenga escrito en ML. */
+async function desvincular(businessId, { itemId, mlVariationId = null } = {}) {
+  const { cuenta, headers } = await conectar(businessId);
+  const [item] = await itemsPropios(cuenta, headers, [itemId]);
+  const quitados = await MercadoLibreLink.destroy({ where: { businessId, mlItemId: String(item.id), mlVariationId: mlVariationId ? String(mlVariationId) : null } });
+  olvidar(businessId, cuenta);
+  return { quitados };
 }
 
 // ── Nombre ───────────────────────────────────────────────────────
@@ -792,6 +859,7 @@ async function aplicarPrecios({ businessId, cuenta, headers, plan }, { onProgres
 }
 
 module.exports = {
+  vincular, desvincular,
   conMotivo,
   listar, leerDescripcion, guardarDescripcion, renombrar, cambiarEstado, unificarColores,
   calcular, vistaPreviaPrecios, prepararPrecios, aplicarPrecios,

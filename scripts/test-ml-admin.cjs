@@ -140,6 +140,35 @@ publicables.cantidadesPublicables = async () => new Map([[1, { cantidad: 4 }], [
   const propio = new Error('bug');
   chk('un error que no es de ML queda como estaba', [propio, undefined], [a.conMotivo(propio), propio.status]);
 
+  tit('Vínculo manual: la publicación es sólo de ese SKU');
+  const mlSrv = require('../src/services/mercadolibreService');
+  const dest = (mlItemId, extra = {}) => ({ mlItemId, mlVariationId: null, otras: [], ...extra });
+  const mapa = new Map([['X', dest('MLA10')], ['Y', dest('MLA20', { otras: [dest('MLA10')] })], ['Z', dest('MLA10', { otras: [dest('MLA30')] })], ['M', dest('MLA10', { manual: true })]]);
+  mlSrv.quitarReclamadas(mapa, [{ sku: 'M', mlItemId: 'MLA10', mlVariationId: null }]);
+  chk('el SKU escrito en ML la pierde', false, mapa.has('X'));
+  chk('tampoco la deja en 0 como duplicada de otro', ['MLA20', []], [mapa.get('Y').mlItemId, mapa.get('Y').otras]);
+  chk('si tenía otra publicación, pasa a esa', 'MLA30', mapa.get('Z').mlItemId);
+  chk('el dueño del vínculo la conserva', 'MLA10', mapa.get('M').mlItemId);
+
+  tit('Vincular una publicación con una variante');
+  const rechazoDeAntes = rechazarPut; // la prueba del renombre que sigue lo usa
+  const [destroyReal, focReal, marcarReal] = [MercadoLibreLink.destroy, MercadoLibreLink.findOrCreate, ml.marcarParaSync];
+  const guardados = [];
+  MercadoLibreLink.destroy = async () => 0;
+  MercadoLibreLink.findOrCreate = async ({ defaults }) => { guardados.push([defaults.sku, defaults.mlItemId, defaults.mlVariationId]); return [{}, true]; };
+  ml.marcarParaSync = () => {};
+  escrituras.length = 0; rechazarPut = () => null;
+  chk('una publicación ajena: 403', 403, (await falla(() => a.vincular(1, { itemId: 'MLA999', variantId: 1 }))).status);
+  chk('el SKU que ya está en otra publicación pide confirmación', ['SKU_EN_OTRA', 0], [(await falla(() => a.vincular(1, { itemId: 'MLA2', variantId: 1 }))).detalles?.codigo, guardados.length]);
+  await a.vincular(1, { itemId: 'MLA2', variantId: 1, confirmado: true });
+  chk('confirmado: se guarda el vínculo y no se escribe en ML', [[['N-S', 'MLA2', null]], 0], [guardados, escrituras.length]);
+  items.MLA6 = mkItem('MLA6', 'X', 'Negro', 'S', { variations: [{ id: 101 }, { id: 102 }, { id: 103 }] });
+  chk('modelo viejo sin decir la variación: no', 400, (await falla(() => a.vincular(1, { itemId: 'MLA6', variantId: 1, confirmado: true }))).status);
+  await a.vincular(1, { itemId: 'MLA6', mlVariationId: '102', variantId: 2, escribirEnMl: true, confirmado: true });
+  chk('al escribir el SKU van TODAS las variaciones (la que falta, ML la borra)', [{ id: 101 }, { id: 102, attributes: [{ id: 'SELLER_SKU', value_name: 'N-M' }] }, { id: 103 }], escrituras[0][1].variations);
+  Object.assign(MercadoLibreLink, { destroy: destroyReal, findOrCreate: focReal }); ml.marcarParaSync = marcarReal;
+  reiniciar(); escrituras.length = 0; rechazarPut = rechazoDeAntes;
+
   tit('Renombrar: se corta en el primer error');
   escrituras.length = 0;
   const n = await a.renombrar(1, { itemIds: ['MLA1', 'MLA2', 'MLA3'], nombre: 'Remera  Nueva' });

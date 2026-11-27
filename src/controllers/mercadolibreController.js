@@ -283,6 +283,8 @@ const adminListar = admin((negocio, { query }) => mlAdmin.listar(negocio, {
 const adminDescripcion = admin((negocio, { params }) => mlAdmin.leerDescripcion(negocio, params.itemId));
 const adminGuardarDescripcion = admin((negocio, { body }) => mlAdmin.guardarDescripcion(negocio, body || {}));
 const adminNombre = admin((negocio, { body }) => mlAdmin.renombrar(negocio, body || {}));
+const adminVincular = admin((negocio, { body }) => mlAdmin.vincular(negocio, body || {}));
+const adminDesvincular = admin((negocio, { body }) => mlAdmin.desvincular(negocio, body || {}));
 const adminEstado = admin((negocio, { body }) => mlAdmin.cambiarEstado(negocio, body || {}));
 const adminColores = admin((negocio, { body }) => mlAdmin.unificarColores(negocio, body || {}));
 const adminCalcular = admin((negocio, { body }) => mlAdmin.calcular(negocio, body || {}));
@@ -479,4 +481,4 @@ const notificacion = async (req, res) => {
 
 module.exports = { status, authUrl, callback, disconnect, preview, sync, importarPedidos, getLocales, setLocales, listLinks, upsertLink, deleteLink, notificacion, cobertura, republicar, reactivar, importarEstado,
   publicarParametros, publicarGuardarParametros, publicarVistaPrevia, publicarValidar, publicarDescuento, publicarUnificarColores, publicarTanda, publicarEstado,
-  adminListar, adminDescripcion, adminGuardarDescripcion, adminNombre, adminEstado, adminColores, adminCalcular, adminPreciosVista, adminPreciosAplicar, adminPreciosEstado };
+  adminVincular, adminDesvincular, adminListar, adminDescripcion, adminGuardarDescripcion, adminNombre, adminEstado, adminColores, adminCalcular, adminPreciosVista, adminPreciosAplicar, adminPreciosEstado };

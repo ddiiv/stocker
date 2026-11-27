@@ -1150,6 +1150,7 @@ const updateVariant = async (req, res, next) => {
       req.body.margenMl = margen;
     }
 
+    const skuAnterior = variant.sku;
     await historial.actualizar({
       instancia: variant,
       valores: soloCampos(req.body, CAMPOS_VARIANTE),
@@ -1158,6 +1159,11 @@ const updateVariant = async (req, res, next) => {
       lote: historial.nuevoLote({ businessId: req.auth.businessId, auth: req.auth, origen: 'manual' }),
     });
     res.json(variant);
+    if (variant.sku !== skuAnterior) {
+      // Sin esperar: buscar en ML tarda, y el SKU ya quedó guardado.
+      require('../services/mercadolibreService').conservarVinculo(req.auth.businessId, skuAnterior, variant.sku)
+        .catch((e) => require('../utils/logger').log.warn('mercadolibre', 'no se pudo conservar el vínculo al cambiar el SKU', { businessId: req.auth.businessId, sku: variant.sku, motivo: e.message?.slice(0, 200) }));
+    }
   } catch (error) { next(error); }
 };
 

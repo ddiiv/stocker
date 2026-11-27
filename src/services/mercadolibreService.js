@@ -760,6 +760,45 @@ async function enviarGrupo(token, grupo) {
  * la pantalla podría decir que un SKU está publicado y la sincronización elegir
  * otra publicación, que es la clase de diferencia que nadie entiende después.
  */
+/*
+ * Una publicación vinculada a mano es SÓLO de ese SKU, aunque en ML tenga
+ * escrito otro. Sin esto el SKU escrito la seguía contando como suya: la
+ * sincronización le mandaba dos stocks distintos, o la dejaba en 0 por
+ * "duplicada".
+ */
+function quitarReclamadas(porSku, manuales) {
+  if (!manuales.length) return porSku;
+  const clave = (d) => `${d.mlItemId}:${d.mlVariationId || ''}`;
+  const duenos = new Map(manuales.map((l) => [`${l.mlItemId}:${l.mlVariationId || ''}`, l.sku]));
+  for (const [sku, destino] of [...porSku]) {
+    const ajena = (d) => duenos.has(clave(d)) && duenos.get(clave(d)) !== sku;
+    const otras = (destino.otras || []).filter((o) => !ajena(o));
+    if (!ajena(destino)) { porSku.set(sku, { ...destino, otras }); continue; }
+    const [primera, ...resto] = otras;
+    if (primera) porSku.set(sku, { ...primera, otras: resto });
+    else porSku.delete(sku);
+  }
+  return porSku;
+}
+
+/*
+ * Cambió el SKU de una variante en Stocker: su publicación no se tiene que
+ * soltar (quedaría con el stock viejo). El vínculo manual se renombra; si no
+ * había, se busca por el SKU anterior y se crea uno.
+ */
+async function conservarVinculo(businessId, viejo, nuevo) {
+  const [renombrados] = await MercadoLibreLink.update({ sku: nuevo }, { where: { businessId, sku: viejo } });
+  if (renombrados) return;
+  const cuenta = await MercadoLibreAccount.findOne({ where: { businessId } });
+  if (!cuenta) return;
+  const destino = (await destinosDeLaCuenta(cuenta, businessId)).porSku.get(viejo);
+  if (!destino) return;
+  await MercadoLibreLink.findOrCreate({
+    where: { businessId, sku: nuevo },
+    defaults: { businessId, sku: nuevo, mlItemId: destino.mlItemId, mlVariationId: destino.mlVariationId, titulo: destino.titulo || null },
+  });
+}
+
 async function destinosDeLaCuenta(cuenta, businessId, { incluirFinalizadas = false } = {}) {
   const token = await tokenValido(cuenta);
   const headersMl = { Authorization: `Bearer ${token}` };
@@ -791,6 +830,7 @@ async function destinosDeLaCuenta(cuenta, businessId, { incluirFinalizadas = fal
         idsVariaciones: [], subEstados: [], relacionados: [], manual: true, otras,
       });
   }
+  quitarReclamadas(porSku, manuales);
   const multiOrigen = (await etiquetasDelVendedor(cuenta, headersMl)).includes('warehouse_management');
   return { token, headersMl, publicaciones, porSku, multiOrigen };
 }
@@ -1340,6 +1380,7 @@ function marcarParaSync(businessId, sku) {
 }
 
 module.exports = {
+  quitarReclamadas, conservarVinculo,
   dejarEnCero,
   httpML,
   enParalelo,

@@ -599,6 +599,8 @@ r.get   ('/mercadolibre/admin/descripcion/:itemId',    ...permisoPublicar, mlCtr
 r.put   ('/mercadolibre/admin/descripcion',            ...permisoPublicar, mlCtrl.adminGuardarDescripcion);
 r.put   ('/mercadolibre/admin/nombre',                 ...permisoPublicar, mlCtrl.adminNombre);
 r.post  ('/mercadolibre/admin/estado',                 ...permisoPublicar, mlCtrl.adminEstado);
+r.post  ('/mercadolibre/admin/vinculo',                 ...permisoPublicar, mlCtrl.adminVincular);
+r.delete('/mercadolibre/admin/vinculo',                 ...permisoPublicar, mlCtrl.adminDesvincular);
 r.post  ('/mercadolibre/admin/unificar-colores',       ...permisoPublicar, mlCtrl.adminColores);
 r.post  ('/mercadolibre/admin/calcular',               ...permisoPublicar, mlCtrl.adminCalcular);
 r.post  ('/mercadolibre/admin/precios/vista-previa',   ...permisoPublicar, mlCtrl.adminPreciosVista);
